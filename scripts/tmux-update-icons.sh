@@ -492,7 +492,7 @@ main() {
 				esac
 			done
 		fi
-		if [[ $has_agent != "${win_cur_has_agent[$wkey]:-}" ]]; then
+		if [[ -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 && $has_agent != "${win_cur_has_agent[$wkey]:-}" ]]; then
 			if [[ -n $has_agent ]]; then
 				tmux set -qw -t "$target" @window_has_agent 1
 			else
