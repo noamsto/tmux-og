@@ -5,6 +5,10 @@ on:
     - cron: '0 8 * * 1' # Weekly, Monday 8am UTC
   workflow_dispatch:
 
+concurrency:
+  group: bump-tmux
+  cancel-in-progress: false
+
 jobs:
   bump:
     runs-on: ubuntu-latest
@@ -13,6 +17,9 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
+
+      - name: Reset onto fresh main
+        run: git fetch origin main && git reset --hard FETCH_HEAD
 
       - name: Get current and latest revs
         id: revs
@@ -80,10 +87,19 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           branch="chore/bump-tmux-upstream"
           git checkout -B "$branch"
+
+          if git diff --quiet -- flake.nix flake.lock; then
+            echo "already at ${latest} on main; nothing to commit"
+            exit 0
+          fi
+
           git add flake.nix flake.lock
           git commit -m "chore(tmux): bump upstream pin to ${short} (next-3.8)"
           git push -f origin "$branch"
-          body="Auto-bumped tmux upstream from \`${current:0:7}\` to \`${short}\` (next-3.8).
+
+          existing=$(gh pr list --head "$branch" --state open --base main --json number --jq length)
+          if [ "$existing" -eq 0 ]; then
+            body="Auto-bumped tmux upstream from \`${current:0:7}\` to \`${short}\` (next-3.8).
 
           ## Commits since previous pin
 
@@ -95,10 +111,12 @@ jobs:
           - [ ] CI green (build + flake check)
           - [ ] Review upstream changelog for breaking changes
           - [ ] Deploy via nix-config bump + server restart"
-          gh pr create \
-            --title "chore(tmux): bump upstream pin to ${short} (next-3.8)" \
-            --body "$body" \
-            --base main \
-            --head "$branch" \
-            --assignee "@me" \
-            || echo "PR already open for this branch; branch updated."
+            gh pr create \
+              --title "chore(tmux): bump upstream pin to ${short} (next-3.8)" \
+              --body "$body" \
+              --base main \
+              --head "$branch" \
+              --assignee "@me"
+          else
+            echo "PR already open for $branch targeting main; branch updated, no new PR needed."
+          fi
