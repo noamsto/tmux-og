@@ -553,7 +553,7 @@ wait_for_client() {
 	[ "$(t show-options -t mirror -qv @bridge_session)" = upstream ]
 }
 
-# === Sixel capability via #{I/f:sixel} client interrogation (#649/3a) ===
+# === Sixel capability via #{I/f:sixel} client interrogation (#649) ===
 #
 # picker/remotebridge/daemon/viewident.go reads #{I/f:sixel} per-client rather
 # than matching client_termfeatures tokens in Go — these cases pin the tmux
@@ -600,11 +600,10 @@ sixel_field_for_one_client() {
 }
 
 @test "I/f:sixel is empty (not 0) for a control-mode client" {
-	# Matches 3a.0's own scratch-server measurement: a control client's
-	# client_termfeatures is always empty (E1), and #{I/f:sixel} for one
-	# reads as empty, not the string "0" — resolveViewIdentity relies on
-	# control rows being skipped outright rather than on this specific value,
-	# but the field's shape is worth pinning since it is what 3a.0 measured.
+	# A control client's client_termfeatures is always empty (E1), and
+	# #{I/f:sixel} for one reads as empty, not the string "0" —
+	# resolveViewIdentity relies on control rows being skipped outright rather
+	# than on this specific value, but the field's shape is worth pinning.
 	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t s; }
 	wait_for_client
 

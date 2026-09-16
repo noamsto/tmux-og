@@ -20,9 +20,8 @@ type Relay struct {
 // client_termfeatures tokens in Go. raw is kept only for Proxy.Filter's drop
 // diagnostic (R1).
 //
-// Named NewRelayFromClient rather than the plan's NewRelay to avoid colliding
-// with proxy.go's existing NewRelay (the *Proxy constructor) in this same
-// package.
+// Named NewRelayFromClient rather than NewRelay to avoid colliding with
+// proxy.go's existing NewRelay (the *Proxy constructor) in this same package.
 func NewRelayFromClient(sixel bool, raw string) Relay {
 	return Relay{sixel: sixel, raw: raw}
 }
