@@ -285,6 +285,7 @@
     "tmux-dir-display"
     "tmux-window-nav"
     "tmux-kill-pane-guard"
+    "tmux-reap-pane"
     "tmux-smart-nav"
     "tmux-reconcile-window"
     "tmux-float-refit"
@@ -543,6 +544,8 @@
     then claude-status-pkg
     else if name == "tmux-kill-pane-guard"
     then mkScriptWithLibs name
+    else if name == "tmux-reap-pane"
+    then mkScriptWithLibs name
     else if name == "tmux-splash-maybe"
     then mkScriptSplash name
     else if name == "tmux-reconcile-window"
@@ -691,6 +694,7 @@
     "tmux-dir-display"
     "tmux-float-refit"
     "tmux-kill-pane-guard"
+    "tmux-reap-pane"
     "tmux-reconcile-window"
     "tmux-reflow-windows"
     "tmux-scratchpad"
