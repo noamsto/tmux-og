@@ -242,6 +242,18 @@ set_lines() {
 	[ "$stamped" = "pi '--name' 'reef' '--model' 'y' --session '$SESS'" ]
 }
 
+@test "PI_USER_ARGC with a leading zero falls back to replay-all (bash would read it as octal)" {
+	# "010" fed straight into (( )) arithmetic is octal 8, not decimal 10 —
+	# a zero-padded value is never what the wrapper's own $# produces, so
+	# reject it whole rather than silently drop real user args.
+	run env PI_USER_ARGC=010 bash "$STAMP" "$SESS" --name reef --model y
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "pi '--name' 'reef' '--model' 'y' --session '$SESS'" ]
+}
+
 @test "PI_USER_ARGC larger than the available args falls back to replay-all" {
 	run env PI_USER_ARGC=99 bash "$STAMP" "$SESS" --name reef --model y
 

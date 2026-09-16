@@ -67,10 +67,12 @@ if [[ -z $cmd ]]; then
 	# once garbage-collected, and replaying them re-injects the CURRENT
 	# wrapper's flags a second time on top. Keep only the last PI_USER_ARGC
 	# entries of the argv the extension forwarded. Unset (no wrapper, or an
-	# older one) or malformed (non-integer, or larger than the available
-	# args) falls back to today's replay-all — never crash, never stamp
-	# garbage.
-	if [[ -n ${PI_USER_ARGC:-} && $PI_USER_ARGC =~ ^[0-9]+$ ]] && ((PI_USER_ARGC <= $#)); then
+	# older one) or malformed (non-integer, a leading zero other than the
+	# literal "0" — bash's own $# is never zero-padded, and a zero-padded
+	# value would be misread as octal by the arithmetic below, silently
+	# dropping real args — or larger than the available args) falls back to
+	# today's replay-all — never crash, never stamp garbage.
+	if [[ -n ${PI_USER_ARGC:-} && $PI_USER_ARGC =~ ^(0|[1-9][0-9]*)$ ]] && ((PI_USER_ARGC <= $#)); then
 		((PI_USER_ARGC < $#)) && shift $(($# - PI_USER_ARGC))
 	fi
 
