@@ -1755,6 +1755,23 @@
               touch $out
             '';
 
+          # Live proof for #647: pane-exited/pane-died on the wrapped server
+          # delete exactly one pane's claude-status files, and a second wrapped
+          # server sharing CLAUDE_STATUS_DIR cannot reap a foreign session.
+          reap-pane-hook-tests =
+            pkgs.runCommand "reap-pane-hook-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/reap-pane-hook.bats
+              touch $out
+            '';
+
           remote-tests =
             pkgs.runCommand "remote-tests" {
               # bash: the cold-start cases run the launcher through an explicit

@@ -55,10 +55,12 @@ under() {
 # Arms `agent-detect` on agent panes that don't already have a live pipe,
 # stamps each agent pane's presence for lib-claude's dead-agent floor, and (for
 # the per-tick status-format caller only, see below) reaps claude-status state
-# for panes list-panes -a no longer reports (issue #341) — a third job riding
-# the same list-panes roundtrip. Using #{pane_pipe} as the gate means a dead
-# parser (pipe closes -> pane_pipe 0) self-heals on a later tick. Arm/stamp
-# gate independently of each other and of the reap.
+# as a ~60s backstop for death paths no pane hook fires on (kill-pane /
+# kill-window / kill-session / respawn-pane -k — measured) — a third job riding
+# the same list-panes roundtrip. pane-exited/pane-died own the common
+# process-exit path. Using #{pane_pipe} as the gate means a dead parser (pipe
+# closes -> pane_pipe 0) self-heals on a later tick. Arm/stamp gate
+# independently of each other and of the reap.
 arm_agent_detect() {
 	local arm=1 stamp=0
 	[[ $AGENT_DETECT_BIN == @* ]] && arm=0
@@ -86,11 +88,16 @@ arm_agent_detect() {
 	# does not touch -- by checking each pane id against THIS CALLER's own
 	# list-panes -a, so it cannot tell whose state it is deleting. The per-tick
 	# caller ($1 empty) runs only while this server has a real client drawing a
-	# status line; the sweep caller ($1 non-empty) runs on a client-independent
-	# timer on every wrapped-tmux server, so a second scratch server would
-	# continuously wipe the real server's live agent state. Arming below is
+	# status line, and only every ~60s: the hooks own the common path, this is
+	# the structural-kill backstop. Arming and live/ presence stamping keep the
+	# 5s cadence (CLAUDE_LIVE_SWEEP_FRESH=15 is calibrated to it). The sweep
+	# caller ($1 non-empty) runs on a client-independent timer on every
+	# wrapped-tmux server, so a second scratch server would continuously wipe
+	# the real server's live agent state — it must never reap. Arming below is
 	# non-destructive and stays unconditional.
-	[[ -n ${1:-} ]] || claude_reap_dead_panes "$rows"
+	if [[ -z ${1:-} ]] && ((CLAUDE_NOW % 60 == 0)); then
+		claude_reap_dead_panes "$rows"
+	fi
 
 	((arm || stamp)) || return 0
 

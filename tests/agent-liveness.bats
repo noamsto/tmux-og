@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2030,SC2031 # bats @test blocks run in subshells; export is intentional
 # Tests the dead-agent floor: the presence sweep in tmux-update-icons.sh (writer)
 # and the read_pane_state veto it feeds in lib-claude.sh (reader).
 
@@ -249,6 +250,8 @@ setup_sweep() {
 
 @test "sweep calls claude_reap_dead_panes with the fetched rows" {
 	setup_sweep
+	# setup_sweep's CLAUDE_NOW=100 fails the 60s reap gate (100 % 60 != 0).
+	export CLAUDE_NOW=120
 	run bash -c '
 		claude_reap_dead_panes() { printf "%s" "$1" >"'"$BATS_TEST_TMPDIR"'/reap.log"; }
 		source scripts/tmux-update-icons.sh
@@ -283,6 +286,8 @@ setup_sweep() {
 	# list-panes roundtrip ever happened — the reap must not share that fate,
 	# since it (unlike arm/stamp) has to work regardless of either feature.
 	setup_sweep
+	# setup_sweep's CLAUDE_NOW=100 fails the 60s reap gate (100 % 60 != 0).
+	export CLAUDE_NOW=120
 	run bash -c '
 		unset AGENT_DETECT_BIN
 		claude_reap_dead_panes() { printf "%s" "$1" >"'"$BATS_TEST_TMPDIR"'/reap.log"; }

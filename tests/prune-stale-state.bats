@@ -7,8 +7,33 @@ setup() {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
 	unset TMUX TMUX_PANE
 	setup_lib_claude
-	mkdir -p "$CLAUDE_NAMES_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_PANES_DIR" "$CLAUDE_INTERRUPT_DIR" \
-		"$CLAUDE_SCREEN_DIR" "$CLAUDE_WATCHERS_DIR" "$CLAUDE_LIVE_DIR"
+	mkdir -p "$CLAUDE_NAMES_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_PANES_DIR" \
+		"$CLAUDE_INTERRUPT_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_WATCHERS_DIR" "$CLAUDE_LIVE_DIR"
+}
+
+seed_reap_files() {
+	local id="$1" dir
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" \
+		"$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
+		printf 'x' >"$dir/$id"
+	done
+}
+
+# Fake tmux on PATH. $1 is has-session's exit status (0 = session exists).
+# display-message (claude_progress_emit) fails closed; the helper never aborts.
+install_fake_tmux() {
+	local has_session="${1:-1}"
+	FAKEBIN="$BATS_TEST_TMPDIR/bin"
+	mkdir -p "$FAKEBIN"
+	cat >"$FAKEBIN/tmux" <<-EOF
+		#!/bin/sh
+		case "\$*" in
+		*"has-session"*) exit $has_session ;;
+		*) exit 1 ;;
+		esac
+	EOF
+	chmod +x "$FAKEBIN/tmux"
+	export PATH="$FAKEBIN:$PATH"
 }
 
 # A server that booted mid-2017 — after the fixed "old" mtime below, before now.
@@ -69,17 +94,19 @@ stamp() {
 	[ ! -e "$CLAUDE_STATUS_DIR/.server_start" ]
 }
 
-@test "reap drops dead pane files across panes/screen/interrupt/watchers, keeps live ones" {
+@test "reap drops dead pane files across panes/screen/interrupt/tasks/issues/watchers, keeps live ones" {
 	local rows
 	rows="$(printf '%%3|codex|0\n%%5|fish|0\n')"
 	local dir id
-	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_WATCHERS_DIR"; do
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" \
+		"$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
 		for id in 3 5 8; do
 			printf 'x' >"$dir/$id"
 		done
 	done
 	claude_reap_dead_panes "$rows"
-	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_WATCHERS_DIR"; do
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" \
+		"$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
 		[ ! -e "$dir/8" ]
 		[ -e "$dir/3" ]
 		[ -e "$dir/5" ]
@@ -104,4 +131,68 @@ stamp() {
 	local rows
 	rows="$(printf '%%3|codex|0\n')"
 	claude_reap_dead_panes "$rows"
+}
+
+@test "reap_pane deletes exactly the named pane's six files, keeps a sibling's" {
+	install_fake_tmux 0
+	seed_reap_files 5
+	seed_reap_files 8
+	claude_reap_pane 5
+	local dir
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" \
+		"$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
+		[ ! -e "$dir/5" ]
+		[ -e "$dir/8" ]
+	done
+}
+
+@test "reap_pane rejects empty, garbage, %12x, and command-injection ids" {
+	install_fake_tmux 0
+	seed_reap_files 5
+	claude_reap_pane ""
+	claude_reap_pane garbage
+	claude_reap_pane '%12x'
+	claude_reap_pane '5; rm -rf /'
+	local dir
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" \
+		"$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
+		[ -e "$dir/5" ]
+	done
+}
+
+@test "reap_pane guard: has-session failure keeps files" {
+	install_fake_tmux 1
+	printf 'state=idle\nsession=alpha\n' >"$CLAUDE_PANES_DIR/5"
+	printf 'x' >"$CLAUDE_SCREEN_DIR/5"
+	claude_reap_pane 5
+	[ -e "$CLAUDE_PANES_DIR/5" ]
+	[ -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "reap_pane guard: has-session success deletes files" {
+	install_fake_tmux 0
+	printf 'state=idle\nsession=alpha\n' >"$CLAUDE_PANES_DIR/5"
+	printf 'x' >"$CLAUDE_SCREEN_DIR/5"
+	claude_reap_pane 5
+	[ ! -e "$CLAUDE_PANES_DIR/5" ]
+	[ ! -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "reap_pane screen-only pane deletes unguarded" {
+	install_fake_tmux 1
+	printf 'x' >"$CLAUDE_SCREEN_DIR/5"
+	printf 'x' >"$CLAUDE_TASKS_DIR/5"
+	claude_reap_pane 5
+	[ ! -e "$CLAUDE_SCREEN_DIR/5" ]
+	[ ! -e "$CLAUDE_TASKS_DIR/5" ]
+}
+
+@test "reap_pane accepts bare 5 and %5 equally" {
+	install_fake_tmux 0
+	seed_reap_files 5
+	claude_reap_pane 5
+	[ ! -e "$CLAUDE_PANES_DIR/5" ]
+	seed_reap_files 5
+	claude_reap_pane %5
+	[ ! -e "$CLAUDE_PANES_DIR/5" ]
 }

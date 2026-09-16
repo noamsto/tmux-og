@@ -751,6 +751,8 @@
     set-hook -gu window-unlinked
     set-hook -gu after-resize-pane
     set-hook -gu after-kill-pane
+    set-hook -gu pane-exited
+    set-hook -gu pane-died
     set-hook -gu pane-focus-in
     set-hook -gu after-select-pane
 
@@ -836,9 +838,14 @@
     # coexists with any future consumer; the bare `set-hook -gu` above clears it.
     set-hook -g after-select-pane[20] "if-shell -F '${bridgeGate}' { run-shell -b \"${bridgeCtl} focus #{q:@bridge_pane}\" }"
 
-    # The `pane-exited` hook is a silent no-op on the pinned tmux (confirmed
-    # via show-hooks -g), so per-pane claude-status cleanup instead rides the
-    # every-5th-tick full-server sweep in tmux-update-icons.sh (issue #341).
+    # Measured on the pinned next-3.9 binary: process exit/signal fires pane-exited
+    # (remain-on-exit off) or pane-died (remain-on-exit on, corpse stays).
+    # Structural kills (kill-pane/kill-window/kill-session/respawn-pane -k) fire no
+    # pane hook, which is why the sweep survives as backstop. Index 0 is tmux-og's
+    # primary-hook convention (remux sits at [99]). run-shell -b keeps the fork off
+    # the server's command queue.
+    set-hook -g pane-exited 'run-shell -b "${script.tmux-reap-pane}/bin/tmux-reap-pane #{q:hook_pane}"'
+    set-hook -g pane-died   'run-shell -b "${script.tmux-reap-pane}/bin/tmux-reap-pane #{q:hook_pane}"'
 
     # A scratchpad dies with its parent session ([99] is tmux-remux's capture-event)
     set-hook -g session-closed[98] 'run-shell -b "tmux kill-session -t =scratch-#{qs:hook_session_name} 2>/dev/null || true"'

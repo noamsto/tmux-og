@@ -135,13 +135,54 @@ claude_progress_emit() {
 	return 0
 }
 
+# claude_reap_pane PANE_ID
+# Single-id unlink for pane-exited/pane-died. CLAUDE_STATUS_DIR is a bare /tmp
+# path shared by every tmux server on the machine, and pane ids are per-server
+# %N counters, so this never iterates a directory: the file's session= field is
+# the only ownership evidence once the pane is gone. Guard residuals, accepted:
+# two servers with a same-named session and a colliding id pass; a
+# rename-session between the last write and death fails closed and waits for
+# the backstop. names/ and live/ are excluded — ids are monotonic within a
+# server run, so that residue can never attach to a new pane;
+# claude_prune_stale_state already owns them.
+claude_reap_pane() {
+	local id="${1:-}"
+	[[ $id == %* ]] || id="%${id}"
+	# Fail closed on anything that isn't a pane id, same posture as the sweep's
+	# row check (#373). Files on disk are the bare N, so strip after validating.
+	[[ $id =~ ^%[0-9]+$ ]] || return 0
+	id="${id#%}"
+
+	local pane_file="$CLAUDE_PANES_DIR/$id"
+	if [[ -f $pane_file ]]; then
+		local sess="" key val
+		while IFS='=' read -r key val; do
+			[[ $key == session ]] && {
+				sess="$val"
+				break
+			}
+		done <"$pane_file"
+		if [[ -n $sess ]]; then
+			tmux has-session -t "=$sess" 2>/dev/null || return 0
+		fi
+	fi
+
+	claude_progress_emit "$id" clear
+	rm -f "$CLAUDE_PANES_DIR/$id" "$CLAUDE_SCREEN_DIR/$id" "$CLAUDE_INTERRUPT_DIR/$id" \
+		"$CLAUDE_TASKS_DIR/$id" "$CLAUDE_ISSUES_DIR/$id" "$CLAUDE_WATCHERS_DIR/$id"
+}
+
 # claude_reap_dead_panes ROWS
-# ROWS is tmux list-panes -a output: "%N|..." per line, extra columns
-# ignored. Removes panes/screen/interrupt/watchers state for any pane id not
-# present in ROWS. Full-server positive evidence: the caller must only pass
-# ROWS from a list-panes call that is known to have succeeded and returned
-# real data (see tmux-update-icons.sh) — an empty/failed ROWS is a no-op here,
-# never reaping anything, so a bad call site can only under-reap, not wipe.
+# BACKSTOP for death paths no pane hook fires on: kill-pane, kill-window,
+# kill-session, respawn-pane -k, and a server crash (measured matrix in
+# SPEC.md). pane-exited/pane-died own the common process-exit path via
+# claude_reap_pane. ROWS is tmux list-panes -a output: "%N|..." per line, extra
+# columns ignored. Removes panes/screen/interrupt/tasks/issues/watchers state
+# for any pane id not present in ROWS. Full-server positive evidence: the
+# caller must only pass ROWS from a list-panes call that is known to have
+# succeeded and returned real data (see tmux-update-icons.sh) — an empty/failed
+# ROWS is a no-op here, never reaping anything, so a bad call site can only
+# under-reap, not wipe.
 #
 # '|' and not a tab: tmux rewrites non-printable bytes to "_" unless the
 # querying client's locale is UTF-8, so a tab-delimited format collapses to one
@@ -165,7 +206,7 @@ claude_reap_dead_panes() {
 
 	local dir f id
 	local -A cleared=()
-	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_WATCHERS_DIR"; do
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
 		[[ -d $dir ]] || continue
 		for f in "$dir"/*; do
 			[[ -f $f ]] || continue
