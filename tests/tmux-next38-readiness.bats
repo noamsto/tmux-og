@@ -527,6 +527,13 @@ wait_for_client() {
 	[[ $output == *'-O key'* ]]
 }
 
+# tmux 3.8 added auto-hide as a pane-scrollbars CHOICE value (replacing the
+# old modal narrowing behaviour, #649): pin that the built config actually
+# ships it.
+@test "pane-scrollbars is auto-hide" {
+	[ "$(t show-options -g -qv pane-scrollbars)" = "auto-hide" ]
+}
+
 @test "session user options read back with a bare -t target, not the = exact-match prefix" {
 	# Pins the targeting asymmetry og-remote-open's mirror dedup relies on:
 	# show-options rejects the "=" prefix has-session accepts, and -q hides that
