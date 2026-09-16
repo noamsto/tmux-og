@@ -965,10 +965,11 @@ default through `programs.tmux-og.splash.enable`.
 - **Remote (ssh) attach:** `programs.tmux-og.splash.remote` (`full` default,
   `static`, or `skip`) controls what `tmux-splash-maybe` does when the client
   that attached to the session came in over ssh. Detected via
-  `SSH_CONNECTION` in the *session's* environment table (`tmux
-  show-environment`) — tmux's default `update-environment` list ships it, and
-  this repo only ever appends to that list, so it survives to the gate script
-  even though the hook itself runs server-side. `static` launches
+  `#{I/e:SSH_CONNECTION}`, tmux's per-client environment interrogation
+  (`format.c`'s `I` modifier reading `ft->c->environ` for the *attaching*
+  client named by `-c`), which is strictly more correct than the old
+  session-table read since it can no longer be confused by whichever client
+  most recently attached to the session. `static` launches
   `tmux-splash --static` (forces the existing single small-frame fallback,
   with no dissolve-in and no periodic redraw — the bandwidth-light path);
   `skip` opens nothing for that attach and leaves `@splash_shown` unset, so a
