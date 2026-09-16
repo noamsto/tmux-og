@@ -13,13 +13,14 @@
 //   - turn_end fires per turn (one LLM response + tool calls), so a session
 //     that survives multiple saves/restores re-stamps the file it is on.
 //
-// process.argv inside pi is ["bun", "/$bunfs/root/pi", <user args...>] on
-// 0.85.1 — the slice(2) is what the invoking shell/launcher actually typed
-// (on a machine with the nix-config pi wrapper, that includes its injected
-// -e/--skill/--prompt-template flags, which a restore replay reproduces).
-// The relaunch replays those flags minus the positional launch prompt and any
-// session-selection flags, then appends --session <file>, so restore resumes
-// the exact session with the same extension loads, model and thinking level.
+// process.argv inside pi is ["bun", "/$bunfs/root/pi", <all args...>] on
+// 0.85.1 — the slice(2) is everything the invoking shell/launcher passed to
+// the real pi binary, including any wrapper-injected flags ahead of the
+// caller's own (e.g. this machine's nix-config pi wrapper injects
+// -e/--skill/--prompt-template /nix/store paths). The bash side reads
+// PI_USER_ARGC and CREW_WORKER_ID off the environment it inherits through
+// this execFile call to strip such injected prefixes before replaying — see
+// scripts/pi-relaunch-stamp.sh for the actual contract.
 //
 // A launch carrying --no-session (ephemeral) yields getSessionFile() ===
 // undefined, and --no-extensions disables auto-discovery of this file in the

@@ -516,6 +516,28 @@ in {
           bump that adds a new value-taking flag degrades to a possibly-broken
           (never exploitable) relaunch. Restore is manual-by-default
           (restoreMode = "off"), so this only fires on an explicit restore.
+
+          `pi` on PATH is often a wrapper that injects its own flags ahead of
+          the caller's (e.g. this machine's own `home/ai/pi/default.nix`,
+          which loads a hook-bridge extension via `/nix/store` paths) —
+          replaying the wrapper's own injected flags verbatim would run them
+          a second time on restore AND persist a store path that goes stale
+          once garbage-collected. A wrapper that exports `PI_USER_ARGC=$#`
+          right before its `exec` (the count of trailing args that are the
+          caller's own) lets the stamper replay only that trailing slice; an
+          older wrapper with no such export falls back to replaying
+          everything, same as before this contract existed.
+
+          A pi pane launched by this repo's dispatcher (crew/dispatch) faces
+          the same staleness on its own worker flags (e.g.
+          `--append-system-prompt <store path>/WORKER_PROTOCOL.md`). The
+          stamper detects a dispatcher-launched pane via `CREW_WORKER_ID` in
+          its environment (set by dispatch's own launch command) and stamps
+          `dispatch resume` instead of a raw pi replay for a worker lead
+          (`worker:…`); a role-grid pane sharing the worktree (`role:…`)
+          stamps nothing and restores as a bare shell, since there is no
+          "resume as role" verb and role panes must not each launch a second
+          lead — a role pane's resume onto the crew bus is out of scope here.
         '';
       };
 
