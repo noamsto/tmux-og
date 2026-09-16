@@ -111,10 +111,10 @@ wait_for_client() {
 	return 1
 }
 
-@test "wrapper runs pinned next-3.8 tmux and catppuccin renders theme variables" {
+@test "wrapper runs the pinned upstream tmux and catppuccin renders theme variables" {
 	run t -V
 	[ "$status" -eq 0 ]
-	[[ $output == *"next-3.8"* ]]
+	[[ $output == *"next-3.9"* ]]
 
 	thm_bg="$(t show -gv @thm_bg)"
 	thm_mauve="$(t show -gv @thm_mauve)"
