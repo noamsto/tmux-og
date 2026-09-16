@@ -5,6 +5,7 @@
 //	tmux-picker-generate --tui              # session picker
 //	tmux-picker-generate --tui --windows    # window picker (add --agent to filter)
 //	tmux-picker-generate --tui --wall       # same, as a grid of live pane captures
+//	tmux-picker-generate --which-key        # which-key keybind popup (#629)
 package main
 
 import (
@@ -118,7 +119,14 @@ func main() {
 	for _, a := range args {
 		flags[a] = true
 	}
-	if err := runTUI(flags["--windows"], flags["--agent"], flags["--wall"], flags["--remote-pick"]); err != nil {
+
+	var err error
+	if flags["--which-key"] {
+		err = RunWhichKey()
+	} else {
+		err = runTUI(flags["--windows"], flags["--agent"], flags["--wall"], flags["--remote-pick"])
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

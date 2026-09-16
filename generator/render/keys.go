@@ -63,8 +63,8 @@ func floatNewPaneGuard(f floatShape, prefix, suffix string) string {
 		mk(f.flags), mk(f.flagsNoA))
 }
 
-func floatBind(key string, f floatShape, prefix, suffix string) string {
-	return "bind-key " + key + " " + floatNewPaneGuard(f, prefix, suffix)
+func floatBind(key, note string, f floatShape, prefix, suffix string) string {
+	return "bind-key -N '" + note + "' " + key + " " + floatNewPaneGuard(f, prefix, suffix)
 }
 
 // bridgedFloatTool hands the tool to the ctl `tool` verb in a mirror window:
@@ -77,9 +77,9 @@ func floatBind(key string, f floatShape, prefix, suffix string) string {
 // (#643). It is #{qs:}, not #{q:} — the value is a path, and run-shell hands it
 // to a shell that would otherwise split it on a space. An unset option quotes
 // as an empty argument, which the verb reads as "no cwd".
-func bridgedFloatTool(p *paths.Paths, key, tool string, f floatShape, prefix, suffix string) string {
-	return fmt.Sprintf("bind-key %s if-shell -F '%s' { run-shell \"%s tool #{q:@bridge_pane} %s #{qs:@bridge_dir}\" } { %s }",
-		key, bridgeGate, bridgeCtl(p), tool, floatNewPaneGuard(f, prefix, suffix))
+func bridgedFloatTool(p *paths.Paths, key, note, tool string, f floatShape, prefix, suffix string) string {
+	return fmt.Sprintf("bind-key -N '%s' %s if-shell -F '%s' { run-shell \"%s tool #{q:@bridge_pane} %s #{qs:@bridge_dir}\" } { %s }",
+		note, key, bridgeGate, bridgeCtl(p), tool, floatNewPaneGuard(f, prefix, suffix))
 }
 
 // carouselBind is empty when the toggle package is not wired in. It carries no
@@ -89,7 +89,7 @@ func carouselBind(p *paths.Paths) string {
 	if p.CarouselToggle == nil {
 		return ""
 	}
-	return fmt.Sprintf("bind I if-shell -F '%s' { run-shell \"%s carousel #{q:@bridge_pane}\" } { run-shell 'TMUX_PANE=#{q:pane_id} %s' }",
+	return fmt.Sprintf("bind -N 'Toggle image carousel' I if-shell -F '%s' { run-shell \"%s carousel #{q:@bridge_pane}\" } { run-shell 'TMUX_PANE=#{q:pane_id} %s' }",
 		bridgeGate, bridgeCtl(p), *p.CarouselToggle)
 }
 
@@ -97,29 +97,29 @@ func prdashBind(p *paths.Paths) string {
 	if p.Prdash == nil {
 		return ""
 	}
-	return bridgedFloatTool(p, "p", "prdash", floatShort, "-c '#{pane_current_path}' ",
+	return bridgedFloatTool(p, "p", "Open PR dashboard", "prdash", floatShort, "-c '#{pane_current_path}' ",
 		*p.Prdash+" \\; set -p @pane_label prdash")
 }
 
 func lazygitBind(p *paths.Paths) string {
-	return bridgedFloatTool(p, "g", "lazygit", floatFull, "-c '#{pane_current_path}' ",
+	return bridgedFloatTool(p, "g", "Open lazygit", "lazygit", floatFull, "-c '#{pane_current_path}' ",
 		"lazygit \\; set -p @pane_label lazygit")
 }
 
 func yaziBind(p *paths.Paths) string {
-	return bridgedFloatTool(p, "y", "yazi", floatShort, "-c '#{pane_current_path}' ",
+	return bridgedFloatTool(p, "y", "Open yazi file manager", "yazi", floatShort, "-c '#{pane_current_path}' ",
 		"yazi \\; set -p @pane_label yazi")
 }
 
 func btopBind() string {
-	return floatBind("b", floatFull, "", "btop \\; set -p @pane_label btop")
+	return floatBind("b", "Open btop", floatFull, "", "btop \\; set -p @pane_label btop")
 }
 
 // k9s is reached through PATH only, unlike the binds above: a pkgs.k9s
 // fallback dragged k9s + kubectl into every closure for a bind only k8s users
 // press.
 func k9sBind() string {
-	return floatBind("k", floatFull, "",
+	return floatBind("k", "Open k9s", floatFull, "",
 		`"command -v k9s >/dev/null 2>&1 && exec k9s || { echo 'k9s not found in PATH — add pkgs.k9s to programs.tmux-og.popupTools'; read -r; }" \; set -p @pane_label k9s`)
 }
 
@@ -180,5 +180,5 @@ func enrichCardBind(cfg *config.Config, p *paths.Paths) string {
 		i["failure"], i["merged"],
 		i["closed"], i["conflict"],
 		i["draft"])
-	return floatBind("i", floatCard, "", suffix)
+	return floatBind("i", "Show issue/PR enrichment card", floatCard, "", suffix)
 }

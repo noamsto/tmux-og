@@ -421,7 +421,7 @@
               grep -q 'set-hook -gu alert-activity' "$CONF"
               grep -E 'alert-bell\[20\].*/nix/store/[^ ]*/bin/og-notify .*--window #\{q:window_id\}' "$CONF"
               grep -E 'alert-activity\[20\].*/nix/store/[^ ]*/bin/og-notify .*--window #\{q:window_id\}' "$CONF"
-              grep -E 'bind-key n display-popup -E .*/nix/store/[^ ]*/bin/og-notify-center' "$CONF"
+              grep -E "bind-key( -N '[^']*')? n display-popup -E .*/nix/store/[^ ]*/bin/og-notify-center" "$CONF"
 
               # ORDER, not just presence: the clear must precede the setter, or
               # every config load (fresh server AND prefix+r) erases the hook.
@@ -493,6 +493,39 @@
               clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
               setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
               [ "$clear" -lt "$setter" ]
+              touch $out
+            '';
+
+          # "Every bind has a description" (#629's which-key popup reads -N to
+          # build its rows): fails on any bind/bind-key line with no -N flag.
+          # Same joined-lines technique as float-conf-assertions above, since a
+          # note-bearing bind can itself span a backslash continuation (the
+          # enrich card).
+          #
+          # Scope limits, both accepted rather than worked around:
+          #   * CONF is tmuxConfig.tmuxConf, the single default build (every
+          #     {{if}}-gated bind block here — splash, notify, enrich, carousel —
+          #     defaults to enabled, so this already covers them in practice; it
+          #     is not the full off/on matrix tmux-conf-extraction-assertions
+          #     builds, so a bind newly hidden behind a toggle that defaults off
+          #     would not be caught here).
+          #   * extraConfText (config/tmux.conf.nix's passthrough for downstream
+          #     home-manager callers) is copied verbatim into CONF and could
+          #     carry an unrelated caller's own unnoted bind; the default build's
+          #     extraConfText is empty, so this doesn't block anything today, but
+          #     a caller who sets it and adds a bind of their own would trip this
+          #     check on content this repo doesn't own.
+          bind-note-assertions =
+            pkgs.runCommand "bind-note-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
+
+              if grep -E '^bind(-key)? ' joined | grep -vE -- "-N ('[^']*'|\"[^\"]*\")"; then
+                echo "bind above has no -N description — the which-key popup reads it" >&2
+                exit 1
+              fi
               touch $out
             '';
 
@@ -1937,8 +1970,8 @@
               nativeBuildInputs = [pkgs.gnugrep];
               CONF = tmuxConfig.tmuxConf;
             } ''
-              grep -qE 'bind I if-shell -F .*@bridge_win' "$CONF"
-              grep -qE 'bind I if-shell -F .*--display-error.*client_name' "$CONF"
+              grep -qE "bind( -N '[^']*')? I if-shell -F .*@bridge_win" "$CONF"
+              grep -qE "bind( -N '[^']*')? I if-shell -F .*--display-error.*client_name" "$CONF"
               touch $out
             '';
 
@@ -1952,8 +1985,8 @@
               CONF = tmuxConfig.tmuxConf;
             } ''
               for k in p g y; do
-                grep -qE "bind-key $k if-shell -F .*@bridge_win" "$CONF"
-                grep -qE "bind-key $k if-shell -F .*bridge-ctl .*tool #\{q:@bridge_pane\} [a-z]+ #\{qs:@bridge_dir\}" "$CONF"
+                grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*@bridge_win" "$CONF"
+                grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*bridge-ctl .*tool #\{q:@bridge_pane\} [a-z]+ #\{qs:@bridge_dir\}" "$CONF"
               done
               grep -qE "new-pane -c '#\{pane_current_path\}'.*prdash" "$CONF"
               for label in prdash lazygit yazi; do

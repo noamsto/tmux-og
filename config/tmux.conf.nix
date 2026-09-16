@@ -280,6 +280,7 @@
     "tmux-session-picker"
     "tmux-window-picker"
     "tmux-window-wall"
+    "tmux-which-key"
     "tmux-update-icons"
     "tmux-branch-display"
     "tmux-dir-display"
@@ -453,6 +454,17 @@
       (builtins.readFile ../scripts/${name}.sh)
     );
 
+  # The which-key popup: only needs the picker binary's store path, none of
+  # scriptsWithIcons' icon-map/library placeholders — its own minimal builder
+  # rather than folding into mkScriptFull for a script that uses one of its
+  # six substitutions.
+  scriptsWithPickerBin = ["tmux-which-key"];
+  mkScriptPickerBin = name:
+    pkgs.writeShellScriptBin name (
+      builtins.replaceStrings ["@picker_generate@"] [picker-generate-bin]
+      (builtins.readFile ../scripts/${name}.sh)
+    );
+
   # The notification router + history center. Both source lib-notify; the router
   # also sources lib-log (acquire_lock / file_mtime, reached via notify_prune).
   scriptsWithNotify = ["og-notify" "og-notify-center"];
@@ -558,6 +570,8 @@
     then mkRemoteScript name
     else if builtins.elem name scriptsWithRemotePicker
     then mkScriptRemotePicker name
+    else if builtins.elem name scriptsWithPickerBin
+    then mkScriptPickerBin name
     else if builtins.elem name scriptsWithNotify
     then mkScriptNotify name
     else mkScript name);
@@ -609,6 +623,10 @@
     "pick wall" = {
       script = "tmux-window-wall";
       summary = "Tiled grid of live window previews";
+    };
+    "pick which-key" = {
+      script = "tmux-which-key";
+      summary = "Which-key popup: every bind, grouped and filterable";
     };
     "issue stamp" = {
       script = "tmux-issue-stamp";

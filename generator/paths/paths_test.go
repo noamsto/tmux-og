@@ -45,8 +45,11 @@ func TestLoadComplete(t *testing.T) {
 	if p.Bash != "/store/bash/bin/bash" {
 		t.Errorf("bash = %q", p.Bash)
 	}
-	if len(p.Scripts) != 26 {
-		t.Errorf("scripts = %d keys, want 26", len(p.Scripts))
+	if len(p.Scripts) != len(RequiredScripts) {
+		t.Errorf("scripts = %d keys, want %d", len(p.Scripts), len(RequiredScripts))
+	}
+	if got := p.Scripts["tmux-which-key"]; got != "/store/tmux-which-key/bin/tmux-which-key" {
+		t.Errorf("scripts[tmux-which-key] = %q", got)
 	}
 	if got := p.Plugins["catppuccin"]; !strings.HasSuffix(got, "/catppuccin.tmux") {
 		t.Errorf("plugins.catppuccin = %q", got)

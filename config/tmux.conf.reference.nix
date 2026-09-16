@@ -159,7 +159,7 @@
   # string before exec.
   carouselBind =
     lib.optionalString (carousel-toggle != null)
-    "bind I if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} carousel #{q:@bridge_pane}\" } { run-shell 'TMUX_PANE=#{q:pane_id} ${carousel-toggle}/bin/tmux-claude-images' }";
+    "bind -N 'Toggle image carousel' I if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} carousel #{q:@bridge_pane}\" } { run-shell 'TMUX_PANE=#{q:pane_id} ${carousel-toggle}/bin/tmux-claude-images' }";
 
   # Float geometry, declared once per shape. tmux resolves the percentages into
   # absolute cells at creation and never revisits them (layout_resize skips
@@ -185,7 +185,7 @@
     esc = builtins.replaceStrings ["\""] ["\\\""];
     mk = flags: esc "new-pane ${prefix}${flags} ${suffix} \\; ${float.stamp}";
   in "if-shell \"tmux list-commands new-pane | grep -q -- -A\" \"${mk float.flags}\" \"${mk float.flagsNoA}\"";
-  floatBind = key: float: prefix: suffix: "bind-key ${key} ${floatNewPaneGuard float prefix suffix}";
+  floatBind = key: note: float: prefix: suffix: "bind-key -N '${note}' ${key} ${floatNewPaneGuard float prefix suffix}";
   floatFull = mkFloat "90%" "90%" "5%" "5%";
   floatShort = mkFloat "90%" "85%" "5%" "8%";
   # The enrich card sizes to its contents, not to the client; only its offsets
@@ -202,7 +202,7 @@
   # (#643). It is #{qs:}, not #{q:} — the value is a path, and run-shell hands it
   # to a shell that would otherwise split it on a space. An unset option quotes
   # as an empty argument, which the verb reads as "no cwd".
-  bridgedFloatTool = key: tool: float: prefix: suffix: "bind-key ${key} if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} tool #{q:@bridge_pane} ${tool} #{qs:@bridge_dir}\" } { ${floatNewPaneGuard float prefix suffix} }";
+  bridgedFloatTool = key: note: tool: float: prefix: suffix: "bind-key -N '${note}' ${key} if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} tool #{q:@bridge_pane} ${tool} #{qs:@bridge_dir}\" } { ${floatNewPaneGuard float prefix suffix} }";
 
   # prdash PR dashboard (prefix+p), scoped to the pane's repo. `enter` opens a git
   # worktree: prdash execs `wt switch` itself as it exits, so the tmux window
@@ -212,7 +212,7 @@
   # and the cascade counter survives kill-pane. @pane_label → mauve border title.
   prdashBind =
     lib.optionalString (prdash != null)
-    (bridgedFloatTool "p" "prdash" floatShort "-c '#{pane_current_path}' "
+    (bridgedFloatTool "p" "Open PR dashboard" "prdash" floatShort "-c '#{pane_current_path}' "
       "${prdash}/bin/prdash \\; set -p @pane_label prdash");
 
   # In kitty-pane mode (AEYE_HOST=kitty) the carousel is a kitty split that doesn't
@@ -343,26 +343,27 @@
     # Prefix (configurable; default backtick)
     unbind C-b
     set-option -g prefix ${prefix}
-    bind ${prefix} send-prefix
+    bind -N 'Send the prefix key to the pane' ${prefix} send-prefix
 
   '';
 
   keysText = ''
     # Config reload
-    bind r source-file ~/.config/tmux/tmux.conf \; display "Config reloaded!"
+    bind -N 'Reload tmux config' r source-file ~/.config/tmux/tmux.conf \; display "Config reloaded!"
 
-    # Sorted, table-labeled keybinding list (tmux 3.7+ list-keys -O/-F). Adds
-    # the key table name (crew/enrich/splash/... this repo defines many) next
-    # to tmux's default prefix+key+note popup, sorted by key code.
-    bind-key ? list-keys -N -O key -F "#{key_table}: #{key_prefix}#{key_string} #{?key_note,#{key_note},#{key_command}}"
+    # which-key popup (#629): every bind, grouped by key table and note,
+    # fuzzy-filterable; Enter replays the pick against this pane. ctrl+r inside
+    # the popup toggles the old sorted-by-key raw listing (see whichKeyRawFormat,
+    # picker/whichkey.go) in place.
+    bind-key -N 'Show keybindings' ? run-shell '${script.tmux-which-key}/bin/tmux-which-key #{?client_name,--client #{q:client_name},} --origin-pane #{q:pane_id}'
 
     # Vi copy mode
     setw -g mode-keys vi
     set -g status-keys vi
     unbind-key -T copy-mode-vi v
-    bind-key -T copy-mode-vi v send -X begin-selection
-    bind-key -T copy-mode-vi C-v send -X rectangle-toggle
-    bind-key -T copy-mode-vi 'y' send -X copy-pipe
+    bind-key -N 'Begin selection' -T copy-mode-vi v send -X begin-selection
+    bind-key -N 'Toggle rectangle selection' -T copy-mode-vi C-v send -X rectangle-toggle
+    bind-key -N 'Copy selection' -T copy-mode-vi 'y' send -X copy-pipe
 
     # Copy mode styling (tmux 3.6+)
     set -g copy-mode-position-style "bg=#{@thm_surface_0},fg=#{@thm_mauve}"
@@ -372,39 +373,39 @@
 
     # Clear screen — except on a @pane_keys_raw pane, where M-l is the TUI's
     # own scroll key.
-    bind -n M-l if-shell -F '#{@pane_keys_raw}' "send-keys M-l" "send-keys C-l"
+    bind -N 'Clear screen (or scroll a raw-keys TUI)' -n M-l if-shell -F '#{@pane_keys_raw}' "send-keys M-l" "send-keys C-l"
 
     # Shift+Enter: process-aware newline for Claude Code / Amp / OpenCode
-    bind -n S-Enter if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^(amp|bun|opencode)$'" "send-keys \\\\ Enter" "send-keys M-Enter"
+    bind -N 'Insert newline in agent CLI' -n S-Enter if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^(amp|bun|opencode)$'" "send-keys \\\\ Enter" "send-keys M-Enter"
 
     # Pane splitting (| and _)
     unbind %
-    bind | if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} split-h #{q:@bridge_pane}" } { split-window -h -c "#{pane_current_path}" }
+    bind -N 'Split pane horizontally' | if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} split-h #{q:@bridge_pane}" } { split-window -h -c "#{pane_current_path}" }
     unbind '"'
-    bind _ if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} split-v #{q:@bridge_pane}" } { split-window -v -c "#{pane_current_path}" }
-    bind c if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} new-window #{q:@bridge_pane}" } { if-shell -F '#{m:scratch-*,#{session_name}}' 'display-message "scratchpad: new windows disabled"' 'new-window -c "#{pane_current_path}"' }
+    bind -N 'Split pane vertically' _ if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} split-v #{q:@bridge_pane}" } { split-window -v -c "#{pane_current_path}" }
+    bind -N 'Create new window' c if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} new-window #{q:@bridge_pane}" } { if-shell -F '#{m:scratch-*,#{session_name}}' 'display-message "scratchpad: new windows disabled"' 'new-window -c "#{pane_current_path}"' }
     # Zoom, like every other structural gesture, happens on the remote in a
     # mirror: zooming the local renderer pane grows it without growing the
     # remote pane, so the remote program keeps rendering at its old size and
     # the rows gained are dead space.
-    bind z if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} zoom #{q:@bridge_pane}" } { resize-pane -Z }
+    bind -N 'Toggle pane zoom' z if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} zoom #{q:@bridge_pane}" } { resize-pane -Z }
     # client_name is tty-derived (never ~-initial); conditionals/--display-error= make empty values harmless.
     # #{q:} and NOT \"...\", as at client-attached[50]. Bare #{q:client_name}
     # would be zero words when no client exists, sliding the session name into
     # --client's slot; #{?...} emits the flag and its value together or neither,
     # which is what this script's `$1 == --client` parsing needs (no = form).
-    bind S run-shell '${script.tmux-scratchpad}/bin/tmux-scratchpad #{?client_name,--client #{q:client_name},} #{qs:session_name}'
+    bind -N 'Open scratchpad session' S run-shell '${script.tmux-scratchpad}/bin/tmux-scratchpad #{?client_name,--client #{q:client_name},} #{qs:session_name}'
     ${carouselBind}
 
     # Yank pane's current working directory to system clipboard
-    bind Y run-shell 'tmux display-message -p #{qs:pane_current_path} | wl-copy'
+    bind -N 'Copy pane path to clipboard' Y run-shell 'tmux display-message -p #{qs:pane_current_path} | wl-copy'
 
     # Resize panes. In a mirror window the resize lands on the remote pane and the
     # mirror re-fits from the remote's new layout; -r still repeats.
-    bind -r -T prefix M-Up    if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} U 5" } { resize-pane -U 5 }
-    bind -r -T prefix M-Down  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} D 5" } { resize-pane -D 5 }
-    bind -r -T prefix M-Left  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} L 5" } { resize-pane -L 5 }
-    bind -r -T prefix M-Right if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} R 5" } { resize-pane -R 5 }
+    bind -N 'Resize pane up' -r -T prefix M-Up    if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} U 5" } { resize-pane -U 5 }
+    bind -N 'Resize pane down' -r -T prefix M-Down  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} D 5" } { resize-pane -D 5 }
+    bind -N 'Resize pane left' -r -T prefix M-Left  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} L 5" } { resize-pane -L 5 }
+    bind -N 'Resize pane right' -r -T prefix M-Right if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} R 5" } { resize-pane -R 5 }
 
     # === Remote bridge: keys this config did NOT previously bind ===
     # Gating them means the config now owns them, so each else-branch reproduces
@@ -434,25 +435,25 @@
 
     # Alt-shift window navigation: H/L step within a row, J/K move row-to-row in
     # the reflowed multi-line window grid (no-op when there is no row that way).
-    bind -n M-H previous-window
-    bind -n M-L next-window
-    bind -n M-J run-shell '${script.tmux-window-nav}/bin/tmux-window-nav down #{qs:session_name} #{q:window_index} #{q:@window_per}'
-    bind -n M-K run-shell '${script.tmux-window-nav}/bin/tmux-window-nav up #{qs:session_name} #{q:window_index} #{q:@window_per}'
+    bind -N 'Previous window' -n M-H previous-window
+    bind -N 'Next window' -n M-L next-window
+    bind -N 'Move down a row in the window grid' -n M-J run-shell '${script.tmux-window-nav}/bin/tmux-window-nav down #{qs:session_name} #{q:window_index} #{q:@window_per}'
+    bind -N 'Move up a row in the window grid' -n M-K run-shell '${script.tmux-window-nav}/bin/tmux-window-nav up #{qs:session_name} #{q:window_index} #{q:@window_per}'
 
     # Session/window pickers (wrappers pre-compute agent status), plus the
     # tiled wall (W) — the same window list rendered as live preview tiles.
-    bind s run-shell '${script.tmux-session-picker}/bin/tmux-session-picker #{?client_name,--client #{q:client_name},} --current #{qs:session_name}'
-    bind w run-shell '${script.tmux-window-picker}/bin/tmux-window-picker #{?client_name,--client #{q:client_name},}'
-    bind a run-shell '${script.tmux-window-picker}/bin/tmux-window-picker #{?client_name,--client #{q:client_name},} --agent'
-    bind W run-shell '${script.tmux-window-wall}/bin/tmux-window-wall #{?client_name,--client #{q:client_name},}'
+    bind -N 'Open session picker' s run-shell '${script.tmux-session-picker}/bin/tmux-session-picker #{?client_name,--client #{q:client_name},} --current #{qs:session_name}'
+    bind -N 'Open window picker' w run-shell '${script.tmux-window-picker}/bin/tmux-window-picker #{?client_name,--client #{q:client_name},}'
+    bind -N 'Open window picker (agent view)' a run-shell '${script.tmux-window-picker}/bin/tmux-window-picker #{?client_name,--client #{q:client_name},} --agent'
+    bind -N 'Open window wall' W run-shell '${script.tmux-window-wall}/bin/tmux-window-wall #{?client_name,--client #{q:client_name},}'
     # Click session name in status bar (the #[range=left] marker in the Go
     # statusline) to open the session picker.
-    bind -T root MouseDown1StatusLeft run-shell '${script.tmux-session-picker}/bin/tmux-session-picker #{?client_name,--client #{q:client_name},} --current #{qs:session_name}'
+    bind -N 'Open session picker' -T root MouseDown1StatusLeft run-shell '${script.tmux-session-picker}/bin/tmux-session-picker #{?client_name,--client #{q:client_name},} --current #{qs:session_name}'
 
     ${lib.optionalString splashEnable ''
       # Summon the welcome splash on demand (bypasses the once-per-session gate;
       # no auto-timeout — dismiss with any key).
-      bind C-Space display-popup -E -B -w 100% -h 100% '${picker-splash-bin} --no-timeout'
+      bind -N 'Show welcome splash' C-Space display-popup -E -B -w 100% -h 100% '${picker-splash-bin} --no-timeout'
     ''}
 
     ${lib.optionalString enrichEnable ''
@@ -470,7 +471,7 @@
       # gets a ctl handle (--bridge-ctl-bin/--bridge-sock/--bridge-pane, all
       # empty on a non-mirror window) so [r] refresh can reach the remote poller
       # without moving the launch there.
-      ${floatBind "i" floatCard "" ''        "${picker-card-bin} \
+      ${floatBind "i" "Show issue/PR enrichment card" floatCard "" ''        "${picker-card-bin} \
                 --target '#{session_id}:#{window_id}' \
                 --pr-enrich-bin '${script.tmux-pr-enrich}/bin/tmux-pr-enrich' \
                 --bridge-ctl-bin '${picker-bridge-ctl-bin}' \
@@ -493,27 +494,27 @@
       # for next/previous window and M-J / M-K for row-to-row movement, so
       # next-window on the prefix table is dead weight. With notifications off,
       # n reverts to next-window.
-      bind-key n display-popup -E -w 80% -h 60% '${script.og-notify-center}/bin/og-notify-center'
+      bind-key -N 'Show notification history' n display-popup -E -w 80% -h 60% '${script.og-notify-center}/bin/og-notify-center'
     ''}
 
     # Floating panes (window-scoped; see the yazi comment below for why floats
     # over popups — full escape-sequence passthrough, and a pane is mirrorable
     # across the remote bridge in principle where a popup can never be).
-    ${bridgedFloatTool "g" "lazygit" floatFull "-c '#{pane_current_path}' " "lazygit \\; set -p @pane_label lazygit"}
-    ${floatBind "b" floatFull "" "btop \\; set -p @pane_label btop"}
+    ${bridgedFloatTool "g" "Open lazygit" "lazygit" floatFull "-c '#{pane_current_path}' " "lazygit \\; set -p @pane_label lazygit"}
+    ${floatBind "b" "Open btop" floatFull "" "btop \\; set -p @pane_label btop"}
     # PATH only, unlike the binds above: falling back to a pkgs.k9s store path
     # dragged k9s + kubectl into every closure — 237 MB, its largest single
     # item — for a bind only k8s users press. Add pkgs.k9s to popupTools.
-    ${floatBind "k" floatFull "" ''"command -v k9s >/dev/null 2>&1 && exec k9s || { echo 'k9s not found in PATH — add pkgs.k9s to programs.tmux-og.popupTools'; read -r; }" \; set -p @pane_label k9s''}
+    ${floatBind "k" "Open k9s" floatFull "" ''"command -v k9s >/dev/null 2>&1 && exec k9s || { echo 'k9s not found in PATH — add pkgs.k9s to programs.tmux-og.popupTools'; read -r; }" \; set -p @pane_label k9s''}
     ${prdashBind}
-    bind-key D run-shell '${script.og-debug}/bin/og-debug toggle'
+    bind-key -N 'Toggle debug overlay' D run-shell '${script.og-debug}/bin/og-debug toggle'
     # yazi in a tmux 3.7 floating pane: unlike display-popup, floating panes have
     # full escape-sequence passthrough, so yazi's image preview / terminal
     # detection work. Scoped to the launching window (no window-line entry).
-    ${bridgedFloatTool "y" "yazi" floatShort "-c '#{pane_current_path}' " "yazi \\; set -p @pane_label yazi"}
+    ${bridgedFloatTool "y" "Open yazi file manager" "yazi" floatShort "-c '#{pane_current_path}' " "yazi \\; set -p @pane_label yazi"}
 
     # New session prompt
-    bind N command-prompt -p "New session name:" "new-session -s '%%'"
+    bind -N 'Create new session' N command-prompt -p "New session name:" "new-session -s '%%'"
 
     # An idle shell and an idle Claude pane kill instantly; a Claude pane
     # mid-work (processing/compacting/waiting/denied) or anything else running
@@ -523,8 +524,8 @@
     # In a mirror window the guard would be reading the wrong process — a mirror
     # pane runs the renderer, not the remote workload — so a bridge kill always
     # confirms, naming the remote pane, then kills it on the remote.
-    bind-key x if-shell -F '${bridgeGate}' { confirm-before -p "kill remote pane #{@bridge_pane}#{?@bridge_proc, (#{@bridge_proc}),} on #{@bridge_host}? (y/n)" { run-shell "${bridgeCtl} kill-pane #{q:@bridge_pane}" } } { if-shell '${script.tmux-kill-pane-guard}/bin/tmux-kill-pane-guard #{q:pane_id} #{qs:pane_current_command}' kill-pane 'confirm-before -p "kill-pane #P (#{pane_current_command})? (y/n)" kill-pane' }
-    bind-key & if-shell -F '${bridgeGate}' { confirm-before -p "kill remote window #{@window_bridge_name}? (y/n)" { run-shell "${bridgeCtl} kill-window #{q:@bridge_pane}" } } { confirm-before -p "kill-window #W? (y/n)" kill-window }
+    bind-key -N 'Kill pane' x if-shell -F '${bridgeGate}' { confirm-before -p "kill remote pane #{@bridge_pane}#{?@bridge_proc, (#{@bridge_proc}),} on #{@bridge_host}? (y/n)" { run-shell "${bridgeCtl} kill-pane #{q:@bridge_pane}" } } { if-shell '${script.tmux-kill-pane-guard}/bin/tmux-kill-pane-guard #{q:pane_id} #{qs:pane_current_command}' kill-pane 'confirm-before -p "kill-pane #P (#{pane_current_command})? (y/n)" kill-pane' }
+    bind-key -N 'Kill window' & if-shell -F '${bridgeGate}' { confirm-before -p "kill remote window #{@window_bridge_name}? (y/n)" { run-shell "${bridgeCtl} kill-window #{q:@bridge_pane}" } } { confirm-before -p "kill-window #W? (y/n)" kill-window }
     # detach-client is not lost in a mirror, just deferred: the detach kills the
     # mirror session, and detach-on-destroy off (below) lands the client on
     # another local session, where d is this bind's other branch.
@@ -532,7 +533,7 @@
     # -b is load-bearing, not just responsiveness: the script waits for the
     # daemon's teardown to kill the mirror session, and that teardown issues its
     # kill-session through the same command queue a foreground run-shell holds.
-    bind-key d if-shell -F '${bridgeGate}' { run-shell -b "${script.og-remote-detach}/bin/og-remote-detach #{qs:session_name}" } { detach-client }
+    bind-key -N 'Detach client' d if-shell -F '${bridgeGate}' { run-shell -b "${script.og-remote-detach}/bin/og-remote-detach #{qs:session_name}" } { detach-client }
     set -g detach-on-destroy off
 
     # Vim-tmux navigation (respects zoom)
@@ -543,10 +544,10 @@
     # The trailing @pane_keys_raw arg makes smart-nav send the key on instead
     # of navigating — see tmux-smart-nav for which panes set it and why.
     is_vim="ps -o state= -o comm= -t #{q:pane_tty} | grep -iqE '^[^TXZ ]+ +(\\S+\\/)?g?(view|l?n?vim?x?|fzf)(diff)?$'"
-    bind-key -n C-h if-shell "$is_vim" "send-keys C-h" "run-shell 'tmux-smart-nav L left #{q:window_zoomed_flag} #{q:pane_at_left} #{q:@pane_keys_raw}'"
-    bind-key -n C-j if-shell "$is_vim" "send-keys C-j" "run-shell 'tmux-smart-nav D down #{q:window_zoomed_flag} #{q:pane_at_bottom} #{q:@pane_keys_raw}'"
-    bind-key -n C-k if-shell "$is_vim" "send-keys C-k" "run-shell 'tmux-smart-nav U up #{q:window_zoomed_flag} #{q:pane_at_top} #{q:@pane_keys_raw}'"
-    bind-key -n C-l if-shell "$is_vim" "send-keys C-l" "run-shell 'tmux-smart-nav R right #{q:window_zoomed_flag} #{q:pane_at_right} #{q:@pane_keys_raw}'"
+    bind-key -N 'Navigate left' -n C-h if-shell "$is_vim" "send-keys C-h" "run-shell 'tmux-smart-nav L left #{q:window_zoomed_flag} #{q:pane_at_left} #{q:@pane_keys_raw}'"
+    bind-key -N 'Navigate down' -n C-j if-shell "$is_vim" "send-keys C-j" "run-shell 'tmux-smart-nav D down #{q:window_zoomed_flag} #{q:pane_at_bottom} #{q:@pane_keys_raw}'"
+    bind-key -N 'Navigate up' -n C-k if-shell "$is_vim" "send-keys C-k" "run-shell 'tmux-smart-nav U up #{q:window_zoomed_flag} #{q:pane_at_top} #{q:@pane_keys_raw}'"
+    bind-key -N 'Navigate right' -n C-l if-shell "$is_vim" "send-keys C-l" "run-shell 'tmux-smart-nav R right #{q:window_zoomed_flag} #{q:pane_at_right} #{q:@pane_keys_raw}'"
 
   '';
 
