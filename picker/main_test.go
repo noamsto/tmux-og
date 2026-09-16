@@ -224,21 +224,27 @@ func TestBuildSessionItemsMarksCurrent(t *testing.T) {
 	}
 }
 
-func TestUnquoteTmuxOptValue(t *testing.T) {
-	cases := map[string]string{
-		`''`:              "",          // tmux's rendering of an option set to ""
-		`""`:              "",          //
-		`"tp-g6 mbp"`:     "tp-g6 mbp", // quoted because it holds a space
-		`tp-g6`:           "tp-g6",     // bare, no quoting needed
-		`'tp-g6 mbp'`:     "tp-g6 mbp",
-		`"unbalanced`:     `"unbalanced`, // no matched pair: leave it alone
-		`ends"`:           `ends"`,
-		`"outer 'inner'"`: `outer 'inner'`, // only the one outer pair comes off
+func TestParseShowOptionsLine(t *testing.T) {
+	cases := []struct {
+		name      string
+		line      string
+		wantName  string
+		wantValue string
+		wantOK    bool
+	}{
+		{"normal", "@opt value", "@opt", "value", true},
+		{"empty value, trailing space", "@opt ", "@opt", "", true},
+		{"internal spaces", "@opt some value with spaces", "@opt", "some value with spaces", true},
+		{"no space at all", "@opt", "", "", false},
 	}
-	for in, want := range cases {
-		if got := unquoteTmuxOptValue(in); got != want {
-			t.Errorf("unquoteTmuxOptValue(%s) = %q, want %q", in, got, want)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			name, value, ok := parseShowOptionsLine(c.line)
+			if name != c.wantName || value != c.wantValue || ok != c.wantOK {
+				t.Errorf("parseShowOptionsLine(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					c.line, name, value, ok, c.wantName, c.wantValue, c.wantOK)
+			}
+		})
 	}
 }
 
@@ -405,12 +411,13 @@ func TestParseWindowPaneRowsBridgeProcOverride(t *testing.T) {
 }
 
 func TestEmptyRemoteHostsOptionYieldsNoSection(t *testing.T) {
-	// The '' form reached parseRemoteHosts as a one-element list, so a user with
-	// no remote hosts configured got a Remote section holding a host named ''.
-	if got := parseRemoteHosts(unquoteTmuxOptValue(`''`)); got != nil {
+	// readTmuxOpts's raw -F read returns an unset/empty option as "" directly
+	// (#474), so callers now receive an already-raw empty string rather than
+	// the quoted '' show -g used to print.
+	if got := parseRemoteHosts(""); got != nil {
 		t.Errorf("got %q, want no hosts", got)
 	}
-	if got := pendingRemoteItems(map[string]string{"@remote_bridge_hosts": unquoteTmuxOptValue(`''`)}, nil); got != nil {
+	if got := pendingRemoteItems(map[string]string{"@remote_bridge_hosts": ""}, nil); got != nil {
 		t.Errorf("got %d rows, want no Remote section", len(got))
 	}
 }

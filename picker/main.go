@@ -1337,28 +1337,32 @@ func ansiBg(hex string) string {
 	return fmt.Sprintf("\033[48;2;%d;%d;%dm", r, g, b)
 }
 
-// unquoteTmuxOptValue strips the one matched quote pair `show -g` wraps a value
-// in. It quotes with single quotes as readily as double — an option set to the
-// empty string prints as ” — so trimming only double quotes turned "no remote
-// hosts configured" into a host literally named ” with a Remote section of its
-// own. Only a matched pair is removed, so a value that merely starts with a
-// quote survives.
-func unquoteTmuxOptValue(v string) string {
-	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-		return v[1 : len(v)-1]
+// parseShowOptionsLine splits one line of `show -g -F '#{option_name}
+// #{option_value}'` output into name and value. #{option_value} in this
+// custom format is raw — unquoted, unescaped — unlike the default `show -g`
+// template's #{q/a:option_value}, so an empty-string option reads back as
+// empty rather than the literal ”. A line with no space (malformed) reports
+// ok=false.
+func parseShowOptionsLine(line string) (name, value string, ok bool) {
+	i := strings.IndexByte(line, ' ')
+	if i <= 0 {
+		return "", "", false
 	}
-	return v
+	return line[:i], strings.TrimRight(line[i+1:], " \t\r"), true
 }
 
+// readTmuxOpts reads every global option's raw value in one call via a
+// custom -F format, which bypasses the default template's quote-escaping —
+// so an empty-string option comes back empty, not the literal ”.
 func readTmuxOpts() map[string]string {
-	out, err := exec.Command("tmux", "show", "-g").Output()
+	out, err := exec.Command("tmux", "show", "-g", "-F", "#{option_name} #{option_value}").Output()
 	if err != nil {
 		return nil
 	}
 	m := make(map[string]string)
 	for _, line := range strings.Split(string(out), "\n") {
-		if i := strings.IndexByte(line, ' '); i > 0 {
-			m[line[:i]] = unquoteTmuxOptValue(strings.TrimRight(line[i+1:], " \t\r"))
+		if name, value, ok := parseShowOptionsLine(line); ok {
+			m[name] = value
 		}
 	}
 	return m

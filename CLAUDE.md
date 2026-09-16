@@ -109,13 +109,12 @@ Functions use the `REPLY` variable pattern (set `REPLY` instead of echoing) to a
   `renderHeaderItem` composes glyph + label + a rule that ends exactly at the
   edge. `isColumnHeader` marks the one header that is not a section, so the pin
   passes its own `display` through untouched.
-- **`unquoteTmuxOptValue`**: bare `show -g` quotes with single quotes as readily
-  as double, and an option set to the empty string prints as `''`. Trimming only
-  double quotes turned "no remote hosts configured" into a host literally named
-  `''`, with a Remote section of its own. Only a matched pair is stripped. The quoting is an
-  artifact of bare `show -g`: `show -gv` and `-F '#{@opt}'` both return the raw
-  value (the same empty option prints as `@opt ''` under `show -g`, as an empty
-  line under `show -gv`), so reading with `-gv` retires this helper.
+- **`readTmuxOpts`** reads `tmux show -g -F '#{option_name} #{option_value}'`
+  directly — the custom `-F` format bypasses `show -g`'s default quote-escaping
+  template, so `#{option_value}` is already raw. An option set to the empty
+  string now reads back as an empty string with no quote-stripping needed
+  (previously `show -g` printed it as `''`, which is what `unquoteTmuxOptValue`
+  used to unwrap; that helper is gone).
 
 ### Two Icon Variables
 
