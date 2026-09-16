@@ -552,8 +552,9 @@ option.
   `xterm-kitty`/`xterm-ghostty`-prefixed termname, `sixel` iff every one's own
   `#{I/f:sixel}` — tmux's own per-client capability interrogation — reads `1`.
   `client_termfeatures` is still read alongside it, only for the raw
-  diagnostic and the kitty-prefix check; the sixel bool itself is never
-  re-derived from matching tokens in it. Control-mode clients are excluded
+  diagnostic — the kitty-prefix check reads `client_termname` alone; the sixel
+  bool itself is never re-derived from matching tokens in `client_termfeatures`.
+  Control-mode clients are excluded
   outright — their `client_termfeatures` (and `#{I/f:sixel}`) is always
   empty, so counting one would force sixel false and could hand it the
   termname pick for a "client" that paints nothing. The advertised termname

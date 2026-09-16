@@ -957,9 +957,10 @@ wait_bridge_disconnected() {
 #
 # A sixel crossing the bridge is either dropped (no client sixel capability to
 # paint it, the default) or relayed bare, gated by Relay.Sixel() — a value
-# computed once from the daemon's own --termfeatures flag (R6) and published
-# to the remote SESSION as OG_RELAY_GRAPHICS (R5) — so a program there can tell whether handing the terminal a sixel directly will actually
-# reach it.
+# read continuously via #{I/f:sixel} client interrogation (R6), not derived
+# once from --termfeatures, and published to the remote SESSION as
+# OG_RELAY_GRAPHICS (R5) — so a program there can tell whether handing the
+# terminal a sixel directly will actually reach it.
 #
 # capture-pane cannot see any of this: tmux's own DCS parser eats a sixel, so
 # it reads as green whether or not the bytes crossed. pipe-pane on the mirror

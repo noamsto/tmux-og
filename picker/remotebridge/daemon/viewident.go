@@ -14,7 +14,8 @@ import (
 // #{client_control_mode}|... convention, so the "skip this row" test reads
 // the same way in both places. The trailing #{I/f:sixel} is tmux's own
 // per-client capability interrogation (R6) — client_termfeatures is still
-// carried alongside it for the raw diagnostic and the kitty-prefix check.
+// carried alongside it only for the raw diagnostic; the kitty-prefix check
+// reads client_termname alone.
 // '|'-delimited per R12/CLAUDE.md: a tab or newline collapses the row to one
 // field for any client without a UTF-8 locale, and none of these four fields
 // is free-form enough to carry one anyway.
