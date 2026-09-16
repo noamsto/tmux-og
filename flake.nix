@@ -45,7 +45,9 @@
     # autoreconfHook and bison are already in nixpkgs tmux's nativeBuildInputs, so
     # overriding src to a raw git checkout (no pre-generated configure) just
     # works. The version must be a substring of `tmux -V` output ("tmux
-    # next-3.8") for the versionCheckHook to pass.
+    # next-3.9") for the versionCheckHook to pass — upstream cut release_3.8 in
+    # 9b3268a2 (2026-09-09) and master moved on, so a bump across a branch point
+    # fails the build here until this string follows it.
     # --disable-asan: ASan's runtime deadlocks during init on macOS 26
     # (llvm/llvm-project#200447), hanging every tmux call before main(). Upstream
     # now defaults ASan off on Darwin, so this is belt-and-suspenders — it keeps
@@ -56,7 +58,7 @@
     # render). jemalloc avoids that, so opt in and add the lib to buildInputs.
     mkTmux = pkgs:
       pkgs.tmux.overrideAttrs (old: {
-        version = "next-3.8";
+        version = "next-3.9";
         src = inputs.tmux-upstream;
         configureFlags =
           old.configureFlags
