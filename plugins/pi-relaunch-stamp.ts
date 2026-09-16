@@ -14,22 +14,13 @@
 //     that survives multiple saves/restores re-stamps the file it is on.
 //
 // process.argv inside pi is ["bun", "/$bunfs/root/pi", <all args...>] on
-// 0.85.1 — the slice(2) is everything the invoking shell/launcher actually
-// passed to the real pi binary, which on a machine with the nix-config pi
-// wrapper (home/ai/pi/default.nix) includes its injected -e/--skill/
-// --prompt-template flags ahead of the caller's own args. Those are
-// /nix/store paths: replaying them verbatim would run the wrapper's
-// injections a second time on restore (double hook-bridge load) AND persist
-// a store path that goes stale once garbage-collected. The bash side reads
-// PI_USER_ARGC — exported by that wrapper as $# right before its `exec`,
-// i.e. the count of trailing args that are the caller's own — off the
-// environment (inherited by this execFile call from the wrapper through pi)
-// and keeps only that trailing slice, so the replay carries the caller's own
-// flags minus the positional launch prompt and any session-selection flags,
-// then appends --session <file> — restore resumes the exact session through
-// the CURRENT wrapper, which re-injects its own current store paths, with
-// the same model and thinking level. Without PI_USER_ARGC (no wrapper, or an
-// older one predating it) the bash side falls back to replaying everything.
+// 0.85.1 — the slice(2) is everything the invoking shell/launcher passed to
+// the real pi binary, including any wrapper-injected flags ahead of the
+// caller's own (e.g. this machine's nix-config pi wrapper injects
+// -e/--skill/--prompt-template /nix/store paths). The bash side reads
+// PI_USER_ARGC and CREW_WORKER_ID off the environment it inherits through
+// this execFile call to strip such injected prefixes before replaying — see
+// scripts/pi-relaunch-stamp.sh for the actual contract.
 //
 // A launch carrying --no-session (ephemeral) yields getSessionFile() ===
 // undefined, and --no-extensions disables auto-discovery of this file in the

@@ -43,12 +43,10 @@ quote() {
 # WORKER_TASK.md instead of replaying stale argv. The dispatcher tags
 # CREW_WORKER_ID into this pane's environment at launch (`worker:<branch>#…`
 # for a lead, `role:<branch>:<role>` for a role-grid pane sharing this
-# worktree) and it is inherited straight through to this script, so it is the
-# one reliable signal for "this pane is a dispatched worker" without guessing
-# at pi's own argv. A lead gets the `dispatch resume` stamp (no store paths);
-# a role pane restores as a bare shell — a documented limitation, since there
-# is no "resume as role" verb and role panes must not each launch a second
-# lead.
+# worktree), inherited straight through to this script. A lead gets the
+# `dispatch resume` stamp (no store paths); a role pane restores as a bare
+# shell — there is no "resume as role" verb, and role panes must not each
+# launch a second lead.
 cmd=""
 case "${CREW_WORKER_ID:-}" in
 worker:*) cmd="dispatch resume" ;;
