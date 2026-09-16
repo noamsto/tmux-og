@@ -107,29 +107,42 @@ func shellQuote(s string) string {
 }
 
 // remotePickNewPaneArgs builds the `new-pane` argv that floats
-// og-remote-pick over host, in the house float form shared by the
-// bind-key y/p sites (config/tmux.conf.nix). bin is @remote_pick_bin's store
-// path — reached by option rather than bare name, since the tmux server's
-// PATH is frozen until a restart (#336) and a fresh script is absent from it
-// until then. host is shell-quoted because tmux hands the command string on
-// to the pane's own shell, not to us. @float_geom repeats the percentages so
-// tmux-float-refit can reassert them when the window resizes (#371) — tmux
-// itself bakes them into cells at creation and never revisits them.
-// @pane_keys_raw keeps C-hjkl and M-l for the remote picker's own keymap, which
-// the root key table would otherwise eat (tmux-smart-nav). remain-on-exit off is
-// mkFloat's other stamp: a mirror window sets it on (#547) and this float is
-// opened from inside one, which left its pane dead on screen (#587).
+// og-remote-pick over host. Unlike the bind-key y/p tool floats
+// (generator/render/keys.go's mkFloat/floatBind), this one is modal
+// (-O -K -C, #648): it hosts the REMOTE's own interactive picker over ssh, so
+// it needs every key including the prefix sequence — the tool floats stay
+// non-modal on purpose (you tab away from a running lazygit/btop/yazi and
+// leave it running). -K alone doesn't block select-pane away from the float;
+// -O does. -C (close on click outside) is the mouse escape for a host stuck
+// in the ^o hang (#486, scripts/og-remote-picker.sh's unbounded interactive
+// ssh leg) now that -K also swallows prefix + x. No version guard, unlike
+// floatNewPaneGuard: this float only ever runs from the local, pinned wrapped
+// tmux, same as the already-unguarded -A here.
+//
+// bin is @remote_pick_bin's store path — reached by option rather than bare
+// name, since the tmux server's PATH is frozen until a restart (#336) and a
+// fresh script is absent from it until then. host is shell-quoted because
+// tmux hands the command string on to the pane's own shell, not to us.
+// @float_geom repeats the percentages so tmux-float-refit can reassert them
+// when the window resizes (#371) — tmux itself bakes them into cells at
+// creation and never revisits them. remain-on-exit off is mkFloat's other
+// stamp: a mirror window sets it on (#547) and this float is opened from
+// inside one, which left its pane dead on screen (#587).
+//
+// While this float is open, the bridge daemon's focusLocalPane
+// (picker/remotebridge/daemon/reconcile.go) refuses its own select-pane on
+// this window like any other pane-switch attempt; it self-corrects on the
+// next remote focus change to a different pane or the next local focus
+// gesture.
 func remotePickNewPaneArgs(bin, host string) []string {
 	return []string{
 		"new-pane",
-		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A",
+		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A", "-O", "-K", "-C",
 		bin + " " + shellQuote(host),
 		";",
 		"set", "-p", "@pane_label", "remote " + host,
 		";",
 		"set", "-p", "@float_geom", "90% 85% 5% 8%",
-		";",
-		"set", "-p", "@pane_keys_raw", "1",
 		";",
 		"set", "-p", "remain-on-exit", "off",
 	}
