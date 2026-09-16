@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Invoked by the pane-shell-prompt hook (OSC 133;A) with #{q:hook_pane}
-# #{q:pane_current_command} #{q:session_name}. Clears an exited agent's state,
+# #{qs:pane_current_command} #{qs:session_name}. Clears an exited agent's state,
 # but only when the foreground command at the prompt is no longer an agent: a
 # still-running agent emitting a nested prompt (subshell, `!`) reports itself as
 # the foreground process-group leader and must not read as "agent gone".
