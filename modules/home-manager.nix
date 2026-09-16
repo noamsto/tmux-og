@@ -164,6 +164,10 @@
   # installed to act on @remux_relaunch, mirroring resumeCodexEnable above.
   resumeCursorEnable = cfg.persist.enable && cfg.persist.package != null && cfg.persist.resumeCursor;
 
+  # Only install the pi extension + stamper when tmux-remux is actually
+  # installed to act on @remux_relaunch, mirroring resumeCursorEnable above.
+  resumePiEnable = cfg.persist.enable && cfg.persist.package != null && cfg.persist.resumePi;
+
   # Only stamp the carousel pane's @remux_relaunch when tmux-remux is actually
   # installed to read it, mirroring resumeCursorEnable above.
   # carousel-aeye is part of the gate, not just persist: with the viewer package
@@ -484,6 +488,33 @@ in {
           Claude transcript path. If a future Cursor CLI version renames or drops
           the id field, the hook stamps nothing and the pane restores as a plain
           shell rather than a broken resume command. Restore is manual-by-default
+          (restoreMode = "off"), so this only fires on an explicit restore.
+        '';
+      };
+
+      resumePi = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Resume pi sessions when a window is restored. When on, home-manager
+          installs the pi-relaunch-stamp extension into `~/.pi/agent/extensions/`
+          (pi's global auto-discovery dir) and adds `pi-relaunch-stamp` to PATH;
+          the extension stamps each pi pane's `@remux_relaunch` on session start
+          and every turn with `pi <original flags> --session <file>`, so
+          tmux-remux relaunches the resumed pi session on restore instead of a
+          bare shell.
+
+          Caveats, like `resumeCursor`'s: an extension only loads into pi
+          processes started after the install (no settings hook exists to
+          retrofit a running one), a launch carrying `--no-extensions` or
+          `--no-session` never stamps (bare-shell restore), `--api-key` is
+          dropped from the replay (the credential would be persisted in the
+          pane option and tmux-remux's state.db — a keyed launch restores
+          through the provider's env var instead), a user who sets
+          `PI_CODING_AGENT_DIR` away from `~/.pi/agent` must install the
+          extension into their own config dir's `extensions/`, and a future pi
+          bump that adds a new value-taking flag degrades to a possibly-broken
+          (never exploitable) relaunch. Restore is manual-by-default
           (restoreMode = "off"), so this only fires on an explicit restore.
         '';
       };
@@ -1062,6 +1093,7 @@ in {
           ]
           ++ lib.optionals resumeCodexEnable [tmuxConfig.script.codex-relaunch-stamp]
           ++ lib.optionals resumeCursorEnable [tmuxConfig.script.cursor-relaunch-stamp tmuxConfig.script.cursor-relaunch-hooks-install]
+          ++ lib.optionals resumePiEnable [tmuxConfig.script.pi-relaunch-stamp]
           ++ lib.optionals resumeCarouselEnable [tmuxConfig.script.tmux-carousel-restore]
           ++ lib.optionals cfg.enrich.enable [
             tmuxConfig.script.tmux-issue-stamp
@@ -1092,6 +1124,13 @@ in {
           )
           // lib.optionalAttrs cfg.opencode.enable {
             ".config/opencode/plugin/opencode-status.ts".source = ../plugins/opencode-status.ts;
+          }
+          # pi has no settings hook for its extension set — install into pi's
+          # global auto-discovery dir (~/.pi/agent/extensions/, default config
+          # dir) and pi picks it up on its next start. Symlink into the
+          # home-manager generation, the opencode-status.ts precedent.
+          // lib.optionalAttrs resumePiEnable {
+            ".pi/agent/extensions/pi-relaunch-stamp.ts".source = ../plugins/pi-relaunch-stamp.ts;
           };
 
         # Reload tmux config + reflow all sessions after profile switch.

@@ -401,6 +401,22 @@ layer (replaces tmux-resurrect/tmux-continuum). Enabled by default via
 - Storage: `$XDG_DATA_HOME/tmux-remux/state.db` + scrollbacks dir.
 - `restoreMode` defaults to `"off"` (manual `prefix + R` only). Set to `"auto"`
   to apply the smart filter on tmux server start.
+- Pi sessions resume like the other agents via `persist.resumePi` (default false):
+  home-manager installs `pi-relaunch-stamp.ts` into `~/.pi/agent/extensions/`
+  (pi's global auto-discovery dir — pi has no settings hook, so the extension
+  only loads into pi processes started after the install) and adds
+  `pi-relaunch-stamp` to PATH. The extension replies to `session_start` and
+  `turn_end` by calling `pi-relaunch-stamp <session-file> <argv...>`, which
+  stamps the pane's `@remux_relaunch` with `pi <original flags> --session
+  <file>` — every flag replayed with per-arg single quotes, the positional
+  launch prompt, the session-selection flags (`--session`/`--continue`/
+  `--resume`/`--fork`/`--session-id`/`--no-session`) and `--api-key` (the
+  credential would be persisted in the pane option / state.db; a keyed launch
+  restores via the provider env var) dropped. It stamps on every turn, so
+  repeated restore cycles survive as long as one message is sent per cycle
+  (the cursor caveat), and never stamps an ephemeral session (`--no-session`
+  ⇒ `getSessionFile()` is undefined) or a value containing `|` or any control
+  byte (C0 + DEL — the tmux format reader mangles them).
 - Restored windows already get `@worktree`/`@branch`/`@issue_*` from the
   ordinary `after-new-window`/`after-new-session` creation hooks — tmux-remux's
   restore/undo/pick all create windows via `new-window -c`/`new-session -c`
