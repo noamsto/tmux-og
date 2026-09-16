@@ -135,6 +135,35 @@ set_lines() {
 	run ! grep -q '^set-option' "$TMUX_LOG"
 }
 
+@test "control bytes that fall inside POSIX [:space:] still refuse to stamp" {
+	# CR, VT and FF are space-class, so a naive 'printable-or-space' reject
+	# lets them through (#661 review finding) — the cntrl-class reject covers
+	# C0 + DEL. Pin the gap class, and a non-space C0 byte for good measure.
+	cr="$(printf 'a\rb')" # shell injection can't happen (single-quoted), the
+	# tmux format reader still mangles it — reject whole.
+	run bash "$STAMP" "$SESS" --name "$cr"
+	[ "$status" -eq 0 ]
+	run ! grep -q '^set-option' "$TMUX_LOG"
+
+	: >"$TMUX_LOG"
+	run bash "$STAMP" "$SESS" --name "$(printf 'a\x01b')"
+	[ "$status" -eq 0 ]
+	run ! grep -q '^set-option' "$TMUX_LOG"
+}
+
+@test "--api-key is dropped with its value, like the session-selection flags" {
+	# The key would be persisted in the pane option / state.db and re-exposed
+	# per restore; a keyed launch restores via the provider env var instead.
+	run bash "$STAMP" "$SESS" --model y --api-key sk-not-a-real-key --name reef
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	run ! grep -qF 'sk-not-a-real-key' "$TMUX_LOG"
+	run ! grep -qF -- '--api-key' "$TMUX_LOG"
+	[ "$stamped" = "pi '--model' 'y' '--name' 'reef' --session '$SESS'" ]
+}
+
 @test "empty session file (--no-session) is a no-op with no tmux call at all" {
 	run bash "$STAMP" "" --print hi
 

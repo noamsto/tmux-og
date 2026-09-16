@@ -61,7 +61,10 @@ sessions restore as bare shells.
       positional — dropped like any positional).
     - Session flags dropped entirely (flag + its value): `--session --session-id --fork
       --continue -c --resume -r` (plus `--no-session`, which cannot be in effect when the file
-      exists and must not contradict the appended `--session`).
+      exists and must not contradict the appended `--session`). `--api-key <key>` is dropped
+      likewise: the credential would be persisted in the pane option / tmux-remux's state.db
+      and re-exposed in the restored pane's argv — a keyed launch restores through the
+      provider's env var instead (review finding #2).
     - Any other `-`-leading token is a kept flag. A `--` separator: drop it and everything after
       (all positional by definition).
     - A token that is neither (a positional message / `@file`) is dropped: it is the launch
@@ -76,9 +79,10 @@ sessions restore as bare shells.
     restore, the documented failure mode.
   - Assemble `cmd="pi <each kept token single-quoted> --session '<session-file>'"` using the
     `'\''` trick (`shellQuoteSingle`, same as tmux-remux's own helper).
-  - Reject: if the raw (pre-quoted) command string matches `[|]` or contains a byte < 0x20
-    (tab/newline/other control) → exit 0, no stamp (degrade to bare-shell restore, never a broken
-    or exploitable relaunch).
+  - Reject: if the raw (pre-quoted) command string contains `|` → exit 0, or matches the POSIX
+    `[:cntrl:]` class (C0 + DEL — tab, newline, CR, VT, FF included, which fall inside
+    `[:space:]` on their own so the rule must be cntrl-not-space; review finding #1) → exit 0,
+    no stamp (degrade to bare-shell restore, never a broken or exploitable relaunch).
   - Change-gate: `cur=$(tmux show-option -pqv -t "$TMUX_PANE" @remux_relaunch 2>/dev/null) ||
     cur=""`; exit 0 when `$cmd == "$cur"`; else
     `tmux set-option -p -t "$TMUX_PANE" @remux_relaunch "$cmd"` (no `-q`, matching update-icons'

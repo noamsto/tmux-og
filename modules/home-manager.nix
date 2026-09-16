@@ -507,7 +507,10 @@ in {
           Caveats, like `resumeCursor`'s: an extension only loads into pi
           processes started after the install (no settings hook exists to
           retrofit a running one), a launch carrying `--no-extensions` or
-          `--no-session` never stamps (bare-shell restore), a user who sets
+          `--no-session` never stamps (bare-shell restore), `--api-key` is
+          dropped from the replay (the credential would be persisted in the
+          pane option and tmux-remux's state.db — a keyed launch restores
+          through the provider's env var instead), a user who sets
           `PI_CODING_AGENT_DIR` away from `~/.pi/agent` must install the
           extension into their own config dir's `extensions/`, and a future pi
           bump that adds a new value-taking flag degrades to a possibly-broken
