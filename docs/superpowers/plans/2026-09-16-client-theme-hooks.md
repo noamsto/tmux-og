@@ -95,8 +95,8 @@ After the `run-shell -b "{{index .Paths.Scripts "og-remote-theme"}}"` line, add 
 comment block (spec §2–§6 in brief) and:
 
 ```
-set-hook -g 'client-light-theme[40]' 'set -g @og_client_theme_want light \; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}}"'
-set-hook -g 'client-dark-theme[40]' 'set -g @og_client_theme_want dark \; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}}"'
+set-hook -g 'client-light-theme[40]' { set -g @og_client_theme_want light ; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}}" }
+set-hook -g 'client-dark-theme[40]' { set -g @og_client_theme_want dark ; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}}" }
 ```
 
 Mirror both in `config/tmux.conf.reference.nix` with

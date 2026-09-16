@@ -92,8 +92,8 @@ looking at.
 A new script, `tmux-client-theme` (no arguments; it reads `@og_client_theme_want`), backgrounded:
 
 ```
-set-hook -g 'client-light-theme[40]' 'set -g @og_client_theme_want light \; run-shell -b "<tmux-client-theme>"'
-set-hook -g 'client-dark-theme[40]'  'set -g @og_client_theme_want dark \; run-shell -b "<tmux-client-theme>"'
+set-hook -g 'client-light-theme[40]' { set -g @og_client_theme_want light ; run-shell -b "<tmux-client-theme>" }
+set-hook -g 'client-dark-theme[40]'  { set -g @og_client_theme_want dark ; run-shell -b "<tmux-client-theme>" }
 ```
 
 The theme is a literal per hook, never `#{client_theme}`, so no format value
