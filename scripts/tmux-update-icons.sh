@@ -496,8 +496,13 @@ main() {
 			if [[ -n $has_agent ]]; then
 				tmux set -qw -t "$target" @window_has_agent 1
 			else
+				# Target by pane id, not "$sess:$idx" — renumber-windows can slide
+				# an index onto a different window between this batched read and
+				# this write, and unlike the @window_has_agent set above, this call
+				# is destructive (deletes names/tasks/issues files), so it must not
+				# risk landing on the wrong window.
 				# shellcheck disable=SC2086  # win_panes is a space-joined string of bare pane ids; word-split intentionally into positional args
-				claude_clear_window_naming "$target" "${win_cur_manual[$wkey]:-}" ${win_panes[$wkey]:-}
+				claude_clear_window_naming "%${win_panes[$wkey]%% *}" "${win_cur_manual[$wkey]:-}" ${win_panes[$wkey]:-}
 			fi
 			sess_need_reflow[$s]=1
 		fi
