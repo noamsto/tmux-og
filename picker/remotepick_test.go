@@ -210,17 +210,18 @@ func TestRemotePickHost(t *testing.T) {
 }
 
 func TestRemotePickNewPaneArgsHostWithoutQuotes(t *testing.T) {
-	args := remotePickNewPaneArgs("/nix/store/xxx-og-remote-pick/bin/og-remote-pick", "tp-g6")
+	bin := "/nix/store/xxx-og-remote-pick/bin/og-remote-pick"
+	host := "tp-g6"
+	args := remotePickNewPaneArgs(bin, host)
+	cmdStr := bin + " " + shellQuote(host)
 	want := []string{
 		"new-pane",
-		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A",
-		"/nix/store/xxx-og-remote-pick/bin/og-remote-pick 'tp-g6'",
+		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A", "-O", "-K", "-C",
+		cmdStr,
 		";",
-		"set", "-p", "@pane_label", "remote tp-g6",
+		"set", "-p", "@pane_label", "remote " + host,
 		";",
 		"set", "-p", "@float_geom", "90% 85% 5% 8%",
-		";",
-		"set", "-p", "@pane_keys_raw", "1",
 		";",
 		"set", "-p", "remain-on-exit", "off", // inherited on inside a mirror (#587)
 	}
@@ -232,8 +233,23 @@ func TestRemotePickNewPaneArgsHostWithoutQuotes(t *testing.T) {
 			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
 		}
 	}
-	if args[13] != ";" {
-		t.Errorf("`;` must be its own argv token, got %q at index 13: %#v", args[13], args)
+	// Semicolons must be their own argv token, or tmux would merge one into a
+	// neighbouring word (e.g. "off ;") and silently misparse the command
+	// chain. Located by the command string's value rather than a hardcoded
+	// index, so the next flag added to remotePickNewPaneArgs can't silently
+	// turn this into a no-op.
+	cmdIdx := -1
+	for i, a := range args {
+		if a == cmdStr {
+			cmdIdx = i
+			break
+		}
+	}
+	if cmdIdx == -1 {
+		t.Fatalf("command string %q not found in args: %#v", cmdStr, args)
+	}
+	if args[cmdIdx+1] != ";" {
+		t.Errorf("expected %q immediately after the command string, got %q at index %d: %#v", ";", args[cmdIdx+1], cmdIdx+1, args)
 	}
 }
 
@@ -241,7 +257,7 @@ func TestRemotePickNewPaneArgsHostWithoutQuotes(t *testing.T) {
 // string tmux hands to the pane's own shell.
 func TestRemotePickNewPaneArgsHostWithEmbeddedQuote(t *testing.T) {
 	args := remotePickNewPaneArgs("/bin/og-remote-pick", "o'brien")
-	cmdStr := args[12]
+	cmdStr := args[15] // after -x/-y/-X/-Y/-B heavy/-A/-O/-K/-C (#648)
 	want := `/bin/og-remote-pick 'o'\''brien'`
 	if cmdStr != want {
 		t.Errorf("command string = %q, want %q", cmdStr, want)

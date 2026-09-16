@@ -1758,6 +1758,21 @@
               touch $out
             '';
 
+          pane-border-format-tests =
+            pkgs.runCommand "pane-border-format-tests" {
+              # mkTmux, not pkgs.tmux: this test creates a real -O/-K/-C
+              # floating pane and reads pane_floating_flag, same trap as
+              # float-refit-tests above (nixpkgs' stock tmux advertises but
+              # rejects these new-pane flags at parse time).
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR
+              bats tests/pane-border-format.bats
+              touch $out
+            '';
+
           default-size-tests =
             pkgs.runCommand "default-size-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils];
