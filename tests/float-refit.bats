@@ -27,10 +27,9 @@
 setup() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
 
-	TMUX_TMPDIR="/tmp/og-fr-$$-${BATS_TEST_NUMBER}"
+	export TMUX_TMPDIR="/tmp/og-fr-$$-${BATS_TEST_NUMBER}"
 	rm -rf "$TMUX_TMPDIR"
 	mkdir -p "$TMUX_TMPDIR"
-	export TMUX_TMPDIR
 	unset TMUX
 	# A private TMUX_TMPDIR does not isolate CLAUDE_STATUS_DIR (CLAUDE.md: it
 	# defaults to a bare /tmp path shared by every tmux server on the
