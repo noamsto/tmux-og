@@ -172,6 +172,53 @@ claude_reap_pane() {
 		"$CLAUDE_TASKS_DIR/$id" "$CLAUDE_ISSUES_DIR/$id" "$CLAUDE_WATCHERS_DIR/$id"
 }
 
+# claude_clear_agent_state PANE_ID SESSION
+# Clears an exited agent's state from the pane-shell-prompt hook (OSC 133;A,
+# #646): the shell redrew its prompt, so any foreground agent has finished. The
+# ownership guard is stronger than claude_reap_pane's because the pane is ALIVE
+# here — the firing pane's own session name (passed from #{session_name}) is
+# compared against the state file's session= field, not just existence-checked.
+#
+# Clears the modern state only: panes/screen/interrupt (so shell AND Go
+# consumers stop rendering it) plus the @claude_status/@agent_screen pane
+# options the bridge shipper reads. tasks/issues/names are deliberately left:
+# they are the workspace identity the floor never touched, owned by
+# claude-status-update clear (clean SessionEnd) and claude_reap_pane (death).
+claude_clear_agent_state() {
+	local id="${1:-}" sess="${2:-}"
+	[[ $id == %* ]] || id="%${id}"
+	[[ $id =~ ^%[0-9]+$ ]] || return 0
+	id="${id#%}"
+
+	# Short-circuit: no agent state on this pane — one [[ -f ]] per prompt, no
+	# forks. The clearable options are written atomically with their file, so a
+	# file-less stale option is unreachable except by a partial failure, which
+	# the next write/clear re-syncs.
+	[[ -f $CLAUDE_PANES_DIR/$id || -f $CLAUDE_SCREEN_DIR/$id || -f $CLAUDE_INTERRUPT_DIR/$id ]] || return 0
+
+	# Ownership: clear only when the file's session= matches the firing pane's
+	# (or names none — a screen-only pane, same residual as claude_reap_pane).
+	local pane_file="$CLAUDE_PANES_DIR/$id"
+	if [[ -f $pane_file ]]; then
+		local file_sess="" key val
+		while IFS='=' read -r key val || [[ -n $key ]]; do
+			[[ $key == session ]] && {
+				file_sess="$val"
+				break
+			}
+		done <"$pane_file"
+		# Fail closed: an empty caller session proves nothing, so it must not
+		# clear a file naming a real owner — and an empty $sess would defeat
+		# the mismatch check below by never being "!=" anything real.
+		[[ -z $sess ]] && return 0
+		[[ -n $file_sess && $file_sess != "$sess" ]] && return 0
+	fi
+
+	claude_progress_emit "$id" clear
+	rm -f "$CLAUDE_PANES_DIR/$id" "$CLAUDE_SCREEN_DIR/$id" "$CLAUDE_INTERRUPT_DIR/$id"
+	tmux set -pq -t "%${id}" @claude_status "" \; set -pq -t "%${id}" @agent_screen "" 2>/dev/null || true
+}
+
 # claude_reap_dead_panes ROWS
 # BACKSTOP for death paths no pane hook fires on: kill-pane, kill-window,
 # kill-session, respawn-pane -k, and a server crash (measured matrix in

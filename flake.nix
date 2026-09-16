@@ -1831,6 +1831,29 @@
               touch $out
             '';
 
+          # Live proof for #646: pane-shell-prompt (OSC 133;A) on the wrapped
+          # server clears an exited agent's state, its pane_current_command
+          # discriminator refuses a nested prompt inside a live agent, no OSC 133
+          # leaves state for the floor, and a colliding pane id on a second
+          # server is skipped (ownership guard).
+          osc-133-dead-agent-tests =
+            pkgs.runCommand "osc-133-dead-agent-tests" {
+              # scripts/ is also copied below: the writer-fixture case runs the RAW
+              # scripts/claude-status-update.sh directly (bash scripts/…), same
+              # pattern as remote-tests.
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/pane-shell-prompt.bats
+              touch $out
+            '';
+
           remote-tests =
             pkgs.runCommand "remote-tests" {
               # bash: the cold-start cases run the launcher through an explicit

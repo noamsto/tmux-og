@@ -227,6 +227,16 @@
   in
     pkgs.writeShellScriptBin name patched;
 
+  # tmux-shell-prompt needs lib substitution plus the agent-manifest list the
+  # sweep also carries, so the discriminator and the arm-sweep cannot diverge.
+  mkScriptShellPrompt = name:
+    pkgs.writeShellScriptBin name (
+      builtins.replaceStrings
+      ["@lib_claude@" "@AGENT_COMMANDS@"]
+      ["${lib-claude}" agentCommands]
+      (builtins.readFile ../scripts/${name}.sh)
+    );
+
   # Scripts that source only lib-log (gated event logging). Includes
   # claude-status-update, which is run RAW by tests/claude-issues.bats — its
   # source is guarded so the raw script defines no-op stubs.
@@ -287,6 +297,7 @@
     "tmux-window-nav"
     "tmux-kill-pane-guard"
     "tmux-reap-pane"
+    "tmux-shell-prompt"
     "tmux-smart-nav"
     "tmux-reconcile-window"
     "tmux-float-refit"
@@ -559,6 +570,8 @@
     then mkScriptWithLibs name
     else if name == "tmux-reap-pane"
     then mkScriptWithLibs name
+    else if name == "tmux-shell-prompt"
+    then mkScriptShellPrompt name
     else if name == "tmux-splash-maybe"
     then mkScriptSplash name
     else if name == "tmux-reconcile-window"
@@ -721,6 +734,7 @@
     "tmux-reconcile-window"
     "tmux-reflow-windows"
     "tmux-scratchpad"
+    "tmux-shell-prompt"
     "tmux-smart-nav"
     "tmux-splash-maybe"
     "tmux-update-icons"
