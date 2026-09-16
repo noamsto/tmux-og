@@ -188,9 +188,6 @@ EOF
 	local a_id
 	a_id="$(t list-panes -t alpha -F '#{pane_id}')"
 	[ -n "$a_id" ]
-	# Seed alpha's own panes/<id> file; the option seeding is irrelevant here.
-	printf 'state=processing\ntimestamp=1000000000\nsession=alpha\n' \
-		>"$CLAUDE_STATUS_DIR/panes/$(bare_id "$a_id")"
 
 	SCRATCH_SOCK="$BATS_TEST_TMPDIR/scratch.sock"
 	tb new-session -d -s beta -x 80 -y 24 -c "$PWD" -- bash
@@ -199,6 +196,22 @@ EOF
 	[ -n "$b_id" ]
 	# Both are first panes: the ids collide (per-server %N).
 	[ "$a_id" = "$b_id" ]
+
+	# beta's own config-load synchronously prunes CLAUDE_STATUS_DIR of anything
+	# older than its start_time (claude_prune_stale_state, unrelated to the
+	# ownership guard under test — CLAUDE.md's "Every hand-rolled tmux repro"
+	# entry). `tb new-session` already blocked on that run-shell, so its
+	# once-per-generation marker is written by now; assert it rather than
+	# assume it, so a future change that backgrounds that run-shell fails loud
+	# here instead of quietly reopening the same race.
+	[ "$(cat "$CLAUDE_STATUS_DIR/.server_start" 2>/dev/null)" = "$(tb display-message -p '#{start_time}')" ]
+
+	# Seed alpha's own panes/<id> file only now, after beta's startup prune has
+	# already run: a file written strictly after beta booted always has an
+	# mtime >= beta's start_time, so that prune can never race it. The option
+	# seeding is irrelevant here.
+	printf 'state=processing\ntimestamp=1000000000\nsession=alpha\n' \
+		>"$CLAUDE_STATUS_DIR/panes/$(bare_id "$a_id")"
 
 	# beta's prompt fires the hook; the handler reads session=alpha vs beta and
 	# must refuse to clear.
