@@ -1900,6 +1900,29 @@
               touch $out
             '';
 
+          # Live proof for #663: the client-light-theme[40]/client-dark-theme[40]
+          # hooks on the wrapped server drive tmux-client-theme.sh end to end,
+          # via a real nested attach client fed synthetic \e[?997;{1,2}n
+          # reports through an outer, config-less scratch server (mkTmux's raw
+          # tmux, never the wrapped one -- it must never source this repo's
+          # config itself).
+          client-theme-tests =
+            pkgs.runCommand "client-theme-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_CONF = "${tmuxConfig.tmuxConf}";
+              OUTER_TMUX = "${mkTmux pkgs}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/client-theme.bats
+              touch $out
+            '';
+
           remote-tests =
             pkgs.runCommand "remote-tests" {
               # bash: the cold-start cases run the launcher through an explicit
