@@ -552,3 +552,65 @@ wait_for_client() {
 	# The bare form reads it, and an exact match still beats the prefix sibling.
 	[ "$(t show-options -t mirror -qv @bridge_session)" = upstream ]
 }
+
+# === Sixel capability via #{I/f:sixel} client interrogation (#649/3a) ===
+#
+# picker/remotebridge/daemon/viewident.go reads #{I/f:sixel} per-client rather
+# than matching client_termfeatures tokens in Go — these cases pin the tmux
+# behavior that resolveViewIdentity now leans on entirely, replacing the
+# deleted TestRelayFromTermFeatures unit test's whole-token-vs-substring
+# property with a claim about tmux itself.
+#
+# sixel_field_for_one_client attaches exactly one non-control client to
+# session "s" via a throwaway obs-host server, targets it with -T (which sets
+# that one client's client_termfeatures directly — no terminal-features/TERM
+# pattern lookup involved), reads #{I/f:sixel} for the lone non-control
+# client, then tears the obs server down before returning.
+sixel_field_for_one_client() {
+	local tfeat=$1
+	local obs="og-next38-${BATS_TEST_NUMBER}-$$-obs-${2:-$tfeat}"
+	"$TMUX_BIN" -L "$obs" new-session -d -x 80 -y 24 \
+		"env TERM=xterm-256color $TMUX_BIN -L $SOCKET -T $tfeat attach -t s"
+	local got=""
+	local i
+	for i in {1..50}; do
+		got="$(t list-clients -F '#{?client_control_mode,,#{I/f:sixel}}' 2>/dev/null | grep -v '^$' || true)"
+		[[ -n $got ]] && break
+		sleep 0.1
+	done
+	"$TMUX_BIN" -L "$obs" kill-server 2>/dev/null || true
+	for i in {1..30}; do
+		[[ "$(t list-clients -t s 2>/dev/null | wc -l)" -eq 0 ]] && break
+		sleep 0.1
+	done
+	printf '%s' "$got"
+}
+
+@test "I/f:sixel is 1 for a client carrying a whole sixel client_termfeatures token" {
+	[ "$(sixel_field_for_one_client sixel)" = "1" ]
+}
+
+@test "I/f:sixel is 0 for substring-only tokens (nosixel, sixelfoo), not a whole match" {
+	# tmux's own -T validation drops an unrecognized feature name rather than
+	# storing it, so neither client ends up with a "sixel" token at all — the
+	# negative case this repo's deleted Go test used to police is now a
+	# property of tmux itself, not of this repo's code.
+	[ "$(sixel_field_for_one_client nosixel)" = "0" ]
+	[ "$(sixel_field_for_one_client sixelfoo)" = "0" ]
+}
+
+@test "I/f:sixel is empty (not 0) for a control-mode client" {
+	# Matches 3a.0's own scratch-server measurement: a control client's
+	# client_termfeatures is always empty (E1), and #{I/f:sixel} for one
+	# reads as empty, not the string "0" — resolveViewIdentity relies on
+	# control rows being skipped outright rather than on this specific value,
+	# but the field's shape is worth pinning since it is what 3a.0 measured.
+	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t s; }
+	wait_for_client
+
+	got="$(t list-clients -F '#{?client_control_mode,#{I/f:sixel},}')"
+
+	kill "$CTL_PID" 2>/dev/null || true
+
+	[ "$got" = "" ]
+}

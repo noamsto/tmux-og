@@ -249,8 +249,8 @@ func TestLocalCtlCmdEnvCarriesDesiredTermAndInheritsEnvironment(t *testing.T) {
 // by reaching into the proxy's unexported fields.
 func TestNewGraphicsGatesOnRelayOnBothTransportBranches(t *testing.T) {
 	const sixel = "\x1bPq#0;2;100;0;0@@@@@@\x1b\\"
-	sixelOn := graphics.RelayFromTermFeatures("bpaste,sixel")
-	sixelOff := graphics.RelayFromTermFeatures("bpaste")
+	sixelOn := graphics.NewRelayFromClient(true, "bpaste,sixel")
+	sixelOff := graphics.NewRelayFromClient(false, "bpaste")
 
 	for _, tc := range []struct {
 		name    string
@@ -662,9 +662,9 @@ esac
 // which sample only the invoking client.
 func TestSeedViewPrefersTheResolvedIdentityOverTheFlags(t *testing.T) {
 	resolve := func() (daemon.ViewIdentity, bool) {
-		return daemon.ViewIdentity{Term: "foot", Relay: graphics.RelayFromTermFeatures("sixel")}, true
+		return daemon.ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true
 	}
-	view := seedView(resolve, "xterm-256color", "")
+	view := seedView(resolve, "xterm-256color", "", "0")
 
 	if got := view.Desired(); got != "foot" {
 		t.Errorf("Desired() = %q, want the resolved foot, not the flag seed", got)
@@ -682,7 +682,7 @@ func TestSeedViewPrefersTheResolvedIdentityOverTheFlags(t *testing.T) {
 // session yet, where the flags are all there is.
 func TestSeedViewFallsBackToFlagsWhenUnresolvable(t *testing.T) {
 	resolve := func() (daemon.ViewIdentity, bool) { return daemon.ViewIdentity{}, false }
-	view := seedView(resolve, "xterm-256color", "bpaste,sixel")
+	view := seedView(resolve, "xterm-256color", "bpaste,sixel", "1")
 
 	if got := view.Desired(); got != "xterm-256color" {
 		t.Errorf("Desired() = %q, want the flag seed xterm-256color", got)
@@ -691,6 +691,6 @@ func TestSeedViewFallsBackToFlagsWhenUnresolvable(t *testing.T) {
 		t.Errorf("Advertised() = %q, want xterm-256color", got)
 	}
 	if !view.Relay.Load().Sixel() {
-		t.Error("Relay was not seeded from the -termfeatures flag")
+		t.Error("Relay was not seeded from the -sixel flag")
 	}
 }

@@ -1025,7 +1025,7 @@ relay_env() {
 # (a) — relay off, the RED-first assertion (spec R8): an oversized sixel must
 # not reach the mirror pane's pty at all, not the introducer and not any of
 # the body. This is a teeth-check, not just a positive case: swapping this
-# test's --termfeatures for "sixel" (assertion (b)'s value below) makes it
+# test's --sixel 0/absent for --sixel 1 (assertion (b)'s value below) makes it
 # fail, which is how it is known the absence check below is not vacuously
 # green against an empty or not-yet-written pipe file.
 @test "sixel relay off: an oversized sixel never reaches the mirror pane's pty" {
@@ -1081,7 +1081,7 @@ relay_env() {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
 
-	bridge_up 1 gxon --termfeatures sixel
+	bridge_up 1 gxon --termfeatures sixel --sixel 1
 
 	f="$BATS_TEST_TMPDIR/gxon.pipe"
 	$DST pipe-pane -o -t host-sess:1.0 "cat >> $f"
@@ -1113,7 +1113,7 @@ relay_env() {
 }
 
 # (c) — the DYNAMIC half of R8/#574: the two tests above bake the capability in
-# at daemon startup via --termfeatures. This one proves it instead FOLLOWS
+# at daemon startup via --sixel. This one proves it instead FOLLOWS
 # whichever client is attached to the LOCAL mirror session (host-sess) right
 # now — attach a non-sixel viewer, confirm the drop; switch to a sixel-capable
 # one, confirm the relay flips on with no re-dial (acceptance 3), and that no

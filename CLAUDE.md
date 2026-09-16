@@ -550,9 +550,12 @@ option.
 - **The multi-client rule is capability intersection, never last-writer-wins
   or `list-clients` order.** Every non-control client attached to the mirror
   session votes on two ANDs: `kitty` iff every one of them carries an
-  `xterm-kitty`/`xterm-ghostty`-prefixed termname, `sixel` iff every one
-  carries a whole `sixel` token in `client_termfeatures`. Control-mode
-  clients are excluded outright — their `client_termfeatures` is always
+  `xterm-kitty`/`xterm-ghostty`-prefixed termname, `sixel` iff every one's own
+  `#{I/f:sixel}` — tmux's own per-client capability interrogation — reads `1`.
+  `client_termfeatures` is still read alongside it, only for the raw
+  diagnostic and the kitty-prefix check; the sixel bool itself is never
+  re-derived from matching tokens in it. Control-mode clients are excluded
+  outright — their `client_termfeatures` (and `#{I/f:sixel}`) is always
   empty, so counting one would force sixel false and could hand it the
   termname pick for a "client" that paints nothing. The advertised termname
   is the lexicographically **smallest** termname among the clients that
@@ -634,7 +637,7 @@ option.
 - **The gate is the AND of every non-control client's own `sixel`
   terminal-feature currently attached to the mirror session** — not, since
   #574, a single sample of whichever client launched the bridge.
-  `client_termfeatures` is read continuously off `list-clients` (the
+  `#{I/f:sixel}` is interrogated continuously off `list-clients` (the
   daemon's `watchLocalClient` watcher, nudged by `client-session-changed` and
   `client-detached` session hooks) rather than once via a launch-time
   `display-message`, and every `Proxy.Filter` plus the `OG_RELAY_GRAPHICS`

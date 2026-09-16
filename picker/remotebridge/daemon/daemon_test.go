@@ -737,7 +737,7 @@ func runWatchLocalClientView(t *testing.T, seedRelay graphics.Relay, seedTerm st
 // RelayEnvCmd carrying the new value, and the new capability is stored.
 func TestWatchLocalClientPublishesOnCapabilityChange(t *testing.T) {
 	sent, view := runWatchLocalClientView(t, graphics.Relay{}, "foot",
-		ViewIdentity{Term: "foot", Relay: graphics.RelayFromTermFeatures("sixel")}, true)
+		ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true)
 
 	want := []string{RelayEnvCmd("sess", "sixel")}
 	if !reflect.DeepEqual(sent, want) {
@@ -751,8 +751,8 @@ func TestWatchLocalClientPublishesOnCapabilityChange(t *testing.T) {
 // TestWatchLocalClientSkipsUnchangedCapability: the same capability resolving
 // again must not re-publish (R5 fires on a CHANGE, not on every tick).
 func TestWatchLocalClientSkipsUnchangedCapability(t *testing.T) {
-	sent, _ := runWatchLocalClientView(t, graphics.RelayFromTermFeatures("sixel"), "xterm-kitty",
-		ViewIdentity{Term: "xterm-kitty", Relay: graphics.RelayFromTermFeatures("sixel")}, true)
+	sent, _ := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty",
+		ViewIdentity{Term: "xterm-kitty", Relay: graphics.NewRelayFromClient(true, "sixel")}, true)
 
 	if len(sent) != 0 {
 		t.Fatalf("sent = %v, want none — the capability did not change", sent)
@@ -763,8 +763,8 @@ func TestWatchLocalClientSkipsUnchangedCapability(t *testing.T) {
 // reads it fresh, so asserting it is free) but nothing is published from this
 // path — RelayEnvCmd carries only the capability, never the termname.
 func TestWatchLocalClientTermOnlyChangeSendsNothing(t *testing.T) {
-	sent, view := runWatchLocalClientView(t, graphics.RelayFromTermFeatures("sixel"), "xterm-kitty",
-		ViewIdentity{Term: "foot", Relay: graphics.RelayFromTermFeatures("sixel")}, true)
+	sent, view := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty",
+		ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true)
 
 	if len(sent) != 0 {
 		t.Fatalf("sent = %v, want none (termname-only change)", sent)
@@ -780,7 +780,7 @@ func TestWatchLocalClientTermOnlyChangeSendsNothing(t *testing.T) {
 // every client-session-changed/client-detached tick, so a mirror nobody is
 // looking at must not be degraded by it.
 func TestWatchLocalClientEmptyResolutionPreservesState(t *testing.T) {
-	sent, view := runWatchLocalClientView(t, graphics.RelayFromTermFeatures("sixel"), "xterm-kitty",
+	sent, view := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty",
 		ViewIdentity{}, false)
 
 	if len(sent) != 0 {

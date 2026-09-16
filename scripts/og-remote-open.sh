@@ -476,7 +476,10 @@ export OG_DAEMON_REMOTE_OPEN="${BASH_SOURCE[0]}"
 # The remote viewer picks its graphics backend from #{client_termname} and
 # #{client_termfeatures}, which are whatever the daemon's ssh advertises — so
 # hand it the identity of the terminal that will actually paint the pixels.
-# Empty (no client, or a control-mode client — client_termfeatures is always
+# The third field, #{I/f:sixel}, is tmux's own per-client sixel-capability
+# interrogation (R6) — the daemon seeds its Relay from it directly rather than
+# re-deriving a capability from client_termfeatures in Go. Empty (no client,
+# or a control-mode client — client_termfeatures and #{I/f:sixel} are both
 # empty for one) is fine: the remote then falls back to block art, which
 # renders anywhere. A bare `display-message` with no -t falls back to the
 # server's most-recently-used session, not necessarily this process's own
@@ -486,12 +489,14 @@ term_target=()
 [[ -n ${TMUX_PANE:-} ]] && term_target=(-t "$TMUX_PANE")
 # Guarded like the cur_sess read below: now that this targets a specific pane
 # it can fail on a stale $TMUX_PANE, and an empty identity is a valid answer
-# (block art everywhere) rather than a reason to abort the launch.
-term_raw="$(tmux display-message -p "${term_target[@]}" '#{client_termname}|#{client_termfeatures}' 2>/dev/null || true)"
-term="${term_raw%%|*}"
-termfeatures="${term_raw#*|}"
+# (block art everywhere) rather than a reason to abort the launch. An explicit
+# IFS split, not a two-field suffix-strip: a suffix-strip would fold the third
+# field into termfeatures' tail once a field was merely appended.
+term_raw="$(tmux display-message -p "${term_target[@]}" '#{client_termname}|#{client_termfeatures}|#{I/f:sixel}' 2>/dev/null || true)"
+IFS='|' read -r term termfeatures sixel_flag <<<"$term_raw"
 export OG_BRIDGE_TERM="$term"
 export OG_BRIDGE_TERMFEATURES="$termfeatures"
+export OG_BRIDGE_SIXEL="$sixel_flag"
 
 # COLORTERM/TERM_PROGRAM (#543) ride into the INVOKING client's session via
 # update-environment on attach (config/tmux.conf.nix), the same channel
