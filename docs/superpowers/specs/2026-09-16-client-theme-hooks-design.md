@@ -89,7 +89,7 @@ looking at.
 
 ### 3. What the hook runs
 
-A new script, `tmux-client-theme <light|dark>`, backgrounded:
+A new script, `tmux-client-theme` (no arguments; it reads `@og_client_theme_want`), backgrounded:
 
 ```
 set-hook -g 'client-light-theme[40]' 'set -g @og_client_theme_want light \; run-shell -b "<tmux-client-theme>"'
@@ -97,7 +97,10 @@ set-hook -g 'client-dark-theme[40]'  'set -g @og_client_theme_want dark \; run-s
 ```
 
 The theme is a literal per hook, never `#{client_theme}`, so no format value
-reaches a shell.
+reaches a shell. The body must be a `{ … ; … }` block. The same two commands
+as a quoted value joined by `\;` get re-split into too many `set-hook`
+arguments, and the hook is silently never set (measured during
+implementation).
 
 **Serialization.** The hook stamps `@og_client_theme_want` *synchronously*, on
 the server's command queue, so the stamps land in report order. The
