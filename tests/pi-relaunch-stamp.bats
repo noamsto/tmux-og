@@ -8,6 +8,10 @@ bats_require_minimum_version 1.5.0 # run !
 # of a fake that never answers. Every argv line is also logged for the no-write checks.
 
 setup() {
+	# Tests run from a plain interactive pi launch unless a case opts in —
+	# unset rather than assume empty, since a dispatched worker pane (this
+	# one, possibly) already has this in its real environment.
+	unset CREW_WORKER_ID PI_USER_ARGC
 	export TMUX_PANE="%7"
 	STAMP="$BATS_TEST_DIRNAME/../scripts/pi-relaunch-stamp.sh"
 	export TMUX_LOG="$BATS_TEST_TMPDIR/tmux.log"
@@ -195,6 +199,80 @@ set_lines() {
 @test "no-op when TMUX_PANE is unset" {
 	unset TMUX_PANE
 	run bash "$STAMP" "$SESS" --print hi
+	[ "$status" -eq 0 ]
+	[ ! -s "$TMUX_LOG" ]
+}
+
+@test "PI_USER_ARGC drops the wrapper-injected prefix, keeping only the trailing user args" {
+	run env PI_USER_ARGC=5 bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills \
+		--name reef --model y "resume me"
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	run ! grep -qF '/nix/store/abc-hook-bridge.ts' "$TMUX_LOG"
+	run ! grep -qF -- '--skill' "$TMUX_LOG"
+	[ "$stamped" = "pi '--name' 'reef' '--model' 'y' --session '$SESS'" ]
+}
+
+@test "PI_USER_ARGC=0 drops every argv entry, stamping only --session" {
+	run env PI_USER_ARGC=0 bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "pi --session '$SESS'" ]
+}
+
+@test "PI_USER_ARGC unset replays everything, same as today" {
+	run bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills --name reef
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "pi '-e' '/nix/store/abc-hook-bridge.ts' '--skill' '/home/x/.claude/skills' '--name' 'reef' --session '$SESS'" ]
+}
+
+@test "malformed PI_USER_ARGC (non-integer) falls back to replay-all" {
+	run env PI_USER_ARGC=nope bash "$STAMP" "$SESS" --name reef --model y
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "pi '--name' 'reef' '--model' 'y' --session '$SESS'" ]
+}
+
+@test "PI_USER_ARGC larger than the available args falls back to replay-all" {
+	run env PI_USER_ARGC=99 bash "$STAMP" "$SESS" --name reef --model y
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "pi '--name' 'reef' '--model' 'y' --session '$SESS'" ]
+}
+
+@test "CREW_WORKER_ID=worker:… stamps dispatch resume, ignoring argv entirely" {
+	run env CREW_WORKER_ID='worker:feat/661-x#s123' bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --name reef
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "dispatch resume" ]
+	run ! grep -qF 'nix/store' "$TMUX_LOG"
+}
+
+@test "CREW_WORKER_ID=worker:… stamps dispatch resume even with no session file" {
+	run env CREW_WORKER_ID='worker:feat/661-x#s123' bash "$STAMP" "" --print hi
+
+	[ "$status" -eq 0 ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "dispatch resume" ]
+}
+
+@test "CREW_WORKER_ID=role:… is a no-op, no tmux call at all" {
+	run env CREW_WORKER_ID='role:feat/661-x:reviewer' bash "$STAMP" "$SESS" --name reef
+
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_LOG" ]
 }
