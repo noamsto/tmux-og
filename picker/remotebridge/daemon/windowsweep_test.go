@@ -44,6 +44,31 @@ func TestWindowSweeperFloorsRepeatedPasses(t *testing.T) {
 	}
 }
 
+// force() is the death-nudge case's way of getting the very next sweep() to
+// actually run: a bare wake with no force is silently swallowed by the
+// windowSweepInterval floor, which would leave the event path no faster than
+// the mainLoopTickInterval backstop it exists to shortcut. Calling sweep() a
+// second time with no elapsed gap is floored (TestWindowSweeperFloorsRepeatedPasses
+// pins that); force()ing first must make that same call run anyway.
+func TestWindowSweeperForceBypassesTheFloor(t *testing.T) {
+	forks := 0
+	cfg := countingCfg("@0|%0|0|%0\n@143|%1|0|%1\n", &forks)
+	reg := newRegistry()
+	reg.add("@1", "@143")
+
+	var s windowSweeper
+	s.sweep(cfg, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), emptyRemote())
+	if forks != 1 {
+		t.Fatalf("local tmux forks = %d after the first sweep, want 1", forks)
+	}
+
+	s.force()
+	s.sweep(cfg, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), emptyRemote())
+	if forks != 2 {
+		t.Errorf("local tmux forks = %d after force()+sweep() called well inside windowSweepInterval, want 2 — force() must bypass the floor", forks)
+	}
+}
+
 // One listing answers for the whole registry AND for both passes: a fork per
 // entry made the sweep scale with window count, and a fork per pass doubled it
 // (#547). mirrorPaneRows is why both are one read.

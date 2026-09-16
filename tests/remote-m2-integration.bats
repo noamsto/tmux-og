@@ -2949,21 +2949,76 @@ transport_child() {
 		tail -60 "$BATS_TEST_TMPDIR/killrnd.log" >&3 2>/dev/null || true
 	fi
 
-	# mainLoopTickInterval is 5s; heal runs on that sweep. 20s covers a
-	# contended tick plus resetWindow's spawn/hello/seed.
+	# Quiesce: send nothing to $SRC while polling for the rebuild. The
+	# renderer's own socket to the daemon closed the instant the SIGKILL
+	# above landed, which is what arms deathNudge's 250ms debounce
+	# (deathSweepDelay) and forces the very next sweep pass open — a
+	# connection-close signal, not a tmux pane-died hook (a session-scoped
+	# hook there was measured to shadow the repo's own global pane-died
+	# hook tmux-reap-pane depends on, #647).
+	#
+	# The old body here sent send-keys marker traffic on every poll
+	# iteration below. That traffic itself produces %output on the
+	# daemon's control stream and wakes runConn's main loop regardless of
+	# whether this event path works at all, so no deadline value could
+	# distinguish "healed via the connection-close signal" from "healed
+	# via the unconditional loopTick backstop, which the marker traffic
+	# was always going to wake in time for anyway". Quiescing removes that
+	# specific ambiguity.
+	#
+	# Budget: deathSweepDelay (250ms) + one windowSweepInterval-scale fork
+	# (~sub-second) + resetWindow's spawn/hello/seed round trip on a
+	# loaded CI box. 4s is generous for that sum.
+	#
+	# Not a guaranteed regression gate on its own: loopTick is a plain
+	# time.NewTicker built once at daemon startup (never reset), so its
+	# phase relative to this SIGKILL is uncontrolled — on an unlucky phase
+	# a REVERTED event path could still have its next backstop tick land
+	# inside this 4s window by coincidence and pass anyway. The
+	# deterministic regression coverage for the actual mechanism
+	# (deathSweepDelay's debounce, force() bypassing windowSweepInterval's
+	# floor, deadRendererRecovery keeping the strike cap honest under the
+	# event path) lives in deathnudge_test.go,
+	# TestWindowSweeperForceBypassesTheFloor and
+	# TestHealDeadRenderersStaysCappedUnderEventDrivenCrashLoop
+	# (picker/remotebridge/daemon) — this case is the E2E smoke/liveness
+	# check on top of that, proving the wiring actually heals promptly
+	# against a real tmux server. Poll pane_dead flipping back to 0 at the
+	# same target: resetWindow rebuilds the window in place (same window
+	# id), replacing the dead pane with a freshly spawned, live one.
+	rebuild_deadline=$((SECONDS + 4))
+	rebuilt=no
+	while [ "$SECONDS" -lt "$rebuild_deadline" ]; do
+		if [ "$($DST display-message -p -t host-sess:1.0 '#{pane_dead}' 2>/dev/null)" = 0 ]; then
+			rebuilt=yes
+			break
+		fi
+		sleep 0.1
+	done
+	if [ "$rebuilt" != yes ]; then
+		printf -- '--- no rebuild within budget ---\n%s\n--- daemon log ---\n' \
+			"$($DST list-panes -s -t host-sess -F '#{window_id}|#{pane_id}|#{pane_dead}|#{@bridge_pane}' 2>&1)" >&3
+		tail -60 "$BATS_TEST_TMPDIR/killrnd.log" >&3 2>/dev/null || true
+	fi
+
+	# Only once the rebuild is observed do we resume sending traffic, to
+	# confirm the new renderer actually repaints — the original repaint
+	# assertion, now decoupled from the timing assertion above.
 	marker="KILLHEAL_$$"
 	healed=no
-	deadline=$((SECONDS + 20))
-	while [ "$SECONDS" -lt "$deadline" ]; do
-		$SRC send-keys -t rem "printf '$marker\\n'" Enter
-		for _ in $(seq 1 10); do
-			if mirror_contains 1 "$marker"; then
-				healed=yes
-				break 2
-			fi
-			sleep 0.1
+	if [ "$rebuilt" = yes ]; then
+		deadline=$((SECONDS + 20))
+		while [ "$SECONDS" -lt "$deadline" ]; do
+			$SRC send-keys -t rem "printf '$marker\\n'" Enter
+			for _ in $(seq 1 10); do
+				if mirror_contains 1 "$marker"; then
+					healed=yes
+					break 2
+				fi
+				sleep 0.1
+			done
 		done
-	done
+	fi
 	if [ "$healed" != yes ]; then
 		printf -- '--- DST panes ---\n%s\n--- daemon log ---\n' \
 			"$($DST list-panes -s -t host-sess -F '#{window_id}|#{pane_id}|#{pane_dead}|#{@bridge_pane}' 2>&1)" >&3
@@ -2974,6 +3029,7 @@ transport_child() {
 	wait "$daemon_pid" 2>/dev/null || true
 
 	[ "$saw_corpse" = yes ]
+	[ "$rebuilt" = yes ]
 	[ "$healed" = yes ]
 }
 

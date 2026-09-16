@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // paneRowsCfg answers the sweep's listing with mirrorPaneListFormat rows.
@@ -155,11 +156,82 @@ func TestHealDeadRenderersReturnsTheBudgetAfterAHealthyPass(t *testing.T) {
 	for i := 0; i < deadRendererStrikes; i++ {
 		rig.heal(cfg, map[string]bool{"@143": true}, reg, s)
 	}
+	// The healthy pass below must land outside deadRendererRecovery of the
+	// last rebuild, or it reads as that rebuild's own died() echo rather than
+	// the unrelated later recovery this test means to exercise.
+	s.lastRebuild["@1"] = time.Now().Add(-deadRendererRecovery - time.Second)
 	rig.heal(cfg, map[string]bool{}, reg, s)             // healthy: the strike is forgotten
 	rig.heal(cfg, map[string]bool{"@143": true}, reg, s) // a fresh death is repaired, not refused
 
 	if rig.count() != deadRendererStrikes+1 {
 		t.Errorf("rebuilds = %d, want %d — a healthy pass has to return the budget",
 			rig.count(), deadRendererStrikes+1)
+	}
+}
+
+// TestHealDeadRenderersStaysCappedUnderEventDrivenCrashLoop pins the strike
+// cap under the event path: a rebuild's own resetWindow closes the
+// superseded conns, which fires died() — so the very next pass after a
+// rebuild looks exactly like a healthy pass, with no wall-clock gap to tell
+// "the rebuild's own echo" apart from "an unrelated later recovery". Unlike
+// TestHealDeadRenderersReturnsTheBudgetAfterAHealthyPass, this never advances
+// s.lastRebuild past deadRendererRecovery — every healthy pass here lands
+// immediately after its preceding rebuild, the way the echo actually would.
+//
+// Without deadRendererRecovery gating the healthy branch, each of these
+// echoes would delete the strike outright and a crash-looping renderer would
+// be rebuilt forever instead of capping at deadRendererStrikes.
+func TestHealDeadRenderersStaysCappedUnderEventDrivenCrashLoop(t *testing.T) {
+	cfg := paneRowsCfg("@143|%0|1|%0")
+	reg := newRegistry()
+	reg.add("@1", "@143")
+	rig := &healRig{}
+	s := &windowSweeper{}
+
+	for i := 0; i < deadRendererStrikes+3; i++ {
+		rig.heal(cfg, map[string]bool{"@143": true}, reg, s) // dead pass: may rebuild
+		rig.heal(cfg, map[string]bool{}, reg, s)             // its own died() echo, no time gap
+	}
+
+	if rig.count() != deadRendererStrikes {
+		t.Errorf("rebuilds = %d, want %d — an interleaved healthy pass inside deadRendererRecovery must not return the strike budget, or a crash-looping renderer rebuilds forever under the event path",
+			rig.count(), deadRendererStrikes)
+	}
+}
+
+// TestHealDeadRenderersStampsLastRebuildAfterResetWindowFinishes pins the
+// stamp ordering: lastRebuild must be set AFTER resetWindow returns, not
+// before, or a rebuild slower than deadRendererRecovery blows through the
+// recovery window on its own duration alone — no echo needed — since the
+// clock would have already started before the slow work even began. Drives a
+// resetWindow slow enough (via a send hook that sleeps on setupWindow's
+// first, unconditional call) to prove the stamp waits for it to finish rather
+// than racing ahead of it.
+func TestHealDeadRenderersStampsLastRebuildAfterResetWindowFinishes(t *testing.T) {
+	cfg := paneRowsCfg("@143|%0|1|%0")
+	reg := newRegistry()
+	reg.add("@1", "@143")
+
+	const delay = 50 * time.Millisecond
+	var once sync.Once
+	send := func(cmd string) {
+		if strings.Contains(cmd, "aggressive-resize off") {
+			once.Do(func() { time.Sleep(delay) })
+		}
+	}
+
+	s := &windowSweeper{}
+	before := time.Now()
+	s.healDeadRenderers(cfg, map[string]bool{"@143": true}, send, NewRouter(), noHellos, newCtlState(), reg, newConverger(), emptyRemote())
+
+	stamp := s.lastRebuild["@1"]
+	if stamp.IsZero() {
+		t.Fatal("lastRebuild was never stamped")
+	}
+	if stamp.Before(before.Add(delay)) {
+		t.Errorf("lastRebuild stamped at %v, want at or after %v (resetWindow's own delay) — "+
+			"the stamp must follow resetWindow's completion, not precede it, or a slow rebuild's own "+
+			"duration alone can blow through deadRendererRecovery before any echo is even involved",
+			stamp, before.Add(delay))
 	}
 }
