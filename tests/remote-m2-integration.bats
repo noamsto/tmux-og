@@ -72,6 +72,14 @@ sorted_dims() {
 	$1 list-panes -t "$2" -F '#{pane_width}x#{pane_height}' | sort
 }
 
+# sorted_tiled_dims is sorted_dims restricted to the non-floating panes: a
+# float's own dims don't move when the tiled tree reshapes around it, so
+# comparing the full pane set behind an open float would compare noise
+# alongside the thing that's actually under test (#535).
+sorted_tiled_dims() {
+	$1 list-panes -t "$2" -F '#{?pane_floating_flag,,#{pane_width}x#{pane_height}}' | grep -v '^$' | sort
+}
+
 @test "daemon mirrors a 2-pane remote window with matching pane dims" {
 	# remote: a 210x52 window, uneven horizontal split.
 	$SRC new-session -d -s rem -x 210 -y 52
@@ -3426,4 +3434,73 @@ attach_pty_client() {
 
 	[ "$src_z" = "$dst_z" ]
 	[ "$src_dims" = "$dst_dims" ]
+}
+
+# #645: the pin bump (#652) made `#{window_layout}` over a control client
+# without `refresh-client -f new-layouts` report v1 tiled-only — the remote's
+# float vanished from every read the daemon does. Fails on main post-#652:
+# no floating pane is ever created on DST.
+@test "a remote float is mirrored as a local float" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 float1
+
+	# Created after the mirror is already live, so this exercises
+	# reconcileFloats' add path, not the initial setup. The daemon's local
+	# float is sized from the remote's inner cell (list-panes' pane_width x
+	# pane_height), not these outer -x/-y/-X/-Y flags — compare inner cells.
+	$SRC new-pane -d -t rem -x 40 -y 10 -X 5 -Y 3
+
+	src_float="" dst_float=""
+	for _ in $(seq 1 60); do
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_width}x#{pane_height}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_width}x#{pane_height}')"
+		[ -n "$dst_float" ] && [ "$src_float" = "$dst_float" ] && break
+		sleep 0.15
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$src_float" ]
+	[ "$src_float" = "$dst_float" ]
+}
+
+# #535: a float that is the USER's, not the daemon's, opened directly on
+# DST inside the mirror window. applyLayout's drop-mirrored-floats step and
+# the local-cells short-circuit used to exist only to route around the local
+# `select-layout` refusing a v1 string behind any float; now that the v1
+# tiled-only string is itself the float-tolerant form on the pinned local
+# server, that workaround is gone, so a reshape behind this float applies
+# straight through and the float is never touched.
+@test "a reshape behind a local user float applies (#535)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 2 userfloat
+
+	# The user's float, created after bridge_up's gate already proves both
+	# renderer panes are live and wired.
+	user_float="$($DST new-pane -d -P -F '#{pane_id}' -t host-sess:1 -x 20 -y 5)"
+	[ -n "$user_float" ]
+
+	$SRC resize-pane -t rem.1 -x 30
+	for _ in $(seq 1 60); do
+		src_dims="$(sorted_tiled_dims "$SRC" rem)"
+		dst_dims="$(sorted_tiled_dims "$DST" host-sess:1)"
+		[ "$src_dims" = "$dst_dims" ] && break
+		sleep 0.15
+	done
+
+	# Still there, at its original pane id — reconcile reshaped the tiled
+	# panes without killing the user's float (the drop-and-readd workaround
+	# no longer runs).
+	still_there="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | grep -Fxc "$user_float" || true)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$src_dims" ]
+	[ "$src_dims" = "$dst_dims" ]
+	[ "$still_there" -eq 1 ]
 }

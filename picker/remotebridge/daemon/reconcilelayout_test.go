@@ -24,13 +24,6 @@ import (
 const (
 	tiledLayout      = "4ed4,190x45,0,0{95x45,0,0,0,94x45,96,0,1}"
 	tiledFloatLayout = "9999,190x45,0,0{95x45,0,0,0,94x45,96,0,1,18x6,11,6,9}<18x6,11,6,9>"
-	// The mirror window's own layout, read back by the geometry short-circuit:
-	// the same cells under the local renderers' own pane ids, plus the local
-	// float mirroring %9.
-	localMatchingLayout = "0000,190x45,0,0{95x45,0,0,70,94x45,96,0,71,18x6,11,6,72}<18x6,11,6,72>"
-	// One tiled pane where the remote has two — a length mismatch, which is a
-	// short-circuit miss.
-	localShortLayout = "0000,190x45,0,0,70"
 	// What setupWindow reads back when the reset path rebuilds the window.
 	onePaneFloatLayout = "9999,190x45,0,0{190x45,0,0,0,18x6,11,6,9}<18x6,11,6,9>"
 	// The same tiled pair under two floats, for the case where one of them is
@@ -82,15 +75,13 @@ func floatSeedScript(seq int, screen string) string {
 
 // layoutTmux fakes the local tmux seam for the shape path, recording every argv
 // and answering each read by what it asks for rather than by call order — the
-// code under test interleaves window_layout, window_zoomed_flag, list-windows
+// code under test interleaves window_zoomed_flag, list-windows
 // (#{window_id} lines for localWindowGone) and list-panes reads, so a
 // positional script would break on any reordering.
 type layoutTmux struct {
 	mu   sync.Mutex
 	argv [][]string
 
-	windowLayout    string
-	windowLayoutErr error
 	selectLayoutErr error
 	// listPanes is consumed one entry per call, the last repeating: the Append
 	// path re-reads the window before and after its split.
@@ -117,10 +108,7 @@ func (f *layoutTmux) out(argv ...string) (string, error) {
 	f.argv = append(f.argv, argv)
 	switch argv[0] {
 	case "display-message":
-		switch argv[len(argv)-1] {
-		case "#{window_layout}":
-			return f.windowLayout, f.windowLayoutErr
-		case "#{window_id}":
+		if argv[len(argv)-1] == "#{window_id}" {
 			return f.windowID, nil
 		}
 		return "0\n", nil // #{window_zoomed_flag}: not zoomed
@@ -210,175 +198,100 @@ func mirrorWithFloat() *mirrorWindow {
 	return w
 }
 
-// The cheap path: the FitWindowCmd resize alone already reproduced the remote's
-// cells (the remote's layout_resize is deterministic and path-independent), so
-// the shape needs no select-layout — and no float has to die for one. Verified
-// per pass against the mirror's own window_layout rather than assumed, so the
-// compare is on cells only: the pane ids belong to two different hosts.
-func TestApplyLayoutShortCircuitsWhenTheFitAlreadyMatched(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout}
-	w := mirrorWithFloat()
-	L := mustLayout(t, tiledFloatLayout)
-
-	if !applyLayout(f.config(), w, L, NewRouter()) {
-		t.Fatal("applyLayout ok = false, want true: the window already carries L's cells")
-	}
-	if got := f.verbs("select-layout"); got != nil {
-		t.Errorf("issued %v, want no select-layout at all", got)
-	}
-	if got := f.verbs("kill-pane"); got != nil {
-		t.Errorf("issued %v, want the float left alone", got)
-	}
-	if w.layout != L.Raw {
-		t.Errorf("w.layout = %q, want %q so a later pass neither re-pays the read nor reads as failed", w.layout, L.Raw)
-	}
-	if w.localFloats["%9"] != "%l9" {
-		t.Errorf("localFloats = %v, want the mirrored float still there", w.localFloats)
-	}
-	if w.floatsDropped {
-		t.Error("floatsDropped = true on a hit; the token must stay unspent for a later real drop")
-	}
-}
-
-// A pane count that disagrees is a miss, not a partial match: the pairing is
-// positional, so there is no way to read a shorter local list as "the same
-// cells". The drop then makes the window float-free for select-layout, which
-// tmux otherwise refuses outright ("have 4 panes but need 3").
-func TestApplyLayoutDropsFloatsWhenTheCellsDisagree(t *testing.T) {
-	f := &layoutTmux{windowLayout: localShortLayout}
+// The tiled-only string reshapes the tiled panes and leaves every float where
+// it is, so a window holding a mirrored float is shaped like any other: one
+// select-layout of L.Raw and no float surgery around it.
+func TestApplyLayoutReshapesBehindAMirroredFloat(t *testing.T) {
+	f := &layoutTmux{}
 	w := mirrorWithFloat()
 	w.appliedZoom = true
 	L := mustLayout(t, tiledFloatLayout)
 
-	if !applyLayout(f.config(), w, L, NewRouter()) {
+	if !applyLayout(f.config(), w, L) {
 		t.Fatal("applyLayout ok = false, want true: select-layout succeeded")
 	}
-	want := []string{"kill-pane", "-t", "%l9"}
-	if got := f.verbs("kill-pane"); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
-		t.Fatalf("kill-pane argv = %v, want exactly one %v", got, want)
+	want := []string{"select-layout", "-t", "@101", L.Raw}
+	if got := f.verbs("select-layout"); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Errorf("select-layout argv = %v, want exactly one %v", got, want)
 	}
-	if f.at("kill-pane", "%l9") > f.at("select-layout", L.Raw) {
-		t.Error("select-layout ran before the drop; the window still held a float tmux would count")
+	if got := f.verbs("kill-pane"); got != nil {
+		t.Errorf("issued %v, want the mirrored float left alone", got)
 	}
-	if len(w.localFloats) != 0 || len(w.floatGeom) != 0 {
-		t.Errorf("after the drop: localFloats=%v floatGeom=%v, want both empty so reconcileFloats re-adds",
-			w.localFloats, w.floatGeom)
+	if w.localFloats["%9"] != "%l9" || w.floatGeom["%9"] != float9 {
+		t.Errorf("localFloats=%v floatGeom=%v, want the mirrored float still recorded", w.localFloats, w.floatGeom)
 	}
-	if !w.floatsDropped {
-		t.Error("floatsDropped = false; a second applyLayout in the same pass would respawn the renderers again")
+	if w.floatsDropped {
+		t.Error("floatsDropped = true, but nothing was dropped")
+	}
+	if w.layout != L.Raw {
+		t.Errorf("w.layout = %q, want %q", w.layout, L.Raw)
 	}
 	if w.appliedZoom {
 		t.Error("appliedZoom still true after select-layout, want false")
 	}
 }
 
-// The short-circuit's read is an optimisation, so an unreadable window costs a
-// respawn, not correctness — and must not take the daemon down on the way.
-func TestApplyLayoutDropsFloatsWhenTheLocalReadFails(t *testing.T) {
-	f := &layoutTmux{windowLayoutErr: errors.New("can't find window: @101")}
+// A select-layout the local server refuses kills nothing to get through: the
+// float stays, the shape stays unrecorded so the next remote change retries it,
+// and ok=false is what keeps the caller from broadcasting the remote's geometry.
+func TestApplyLayoutFailureBehindAMirroredFloatKillsNothing(t *testing.T) {
+	f := &layoutTmux{selectLayoutErr: errors.New("invalid layout")}
 	w := mirrorWithFloat()
 	L := mustLayout(t, tiledFloatLayout)
 
-	if !applyLayout(f.config(), w, L, NewRouter()) {
-		t.Fatal("applyLayout ok = false, want true: select-layout succeeded")
-	}
-	if got := f.verbs("kill-pane"); len(got) != 1 {
-		t.Errorf("kill-pane argv = %v, want the drop to have run once", got)
-	}
-	if got := f.verbs("select-layout"); len(got) != 1 {
-		t.Errorf("select-layout argv = %v, want the shape still applied", got)
-	}
-}
-
-// A mirror window can hold a float this daemon never made — prefix + b/k/i are
-// unguarded float binds — and the daemon must not reap a pane of the user's.
-// Only ids in localFloats are killed, so select-layout still counts the foreign
-// float and still fails; the mirror keeps its last-good screen. A documented
-// degradation, not a handled case.
-func TestApplyLayoutNeverKillsAFloatItDidNotCreate(t *testing.T) {
-	f := &layoutTmux{
-		windowLayout:    localShortLayout,
-		selectLayoutErr: errors.New("have 4 panes but need 3"),
-	}
-	w := mirrorWithFloat()
-	L := mustLayout(t, tiledFloatLayout)
-
-	if applyLayout(f.config(), w, L, NewRouter()) {
+	if applyLayout(f.config(), w, L) {
 		t.Fatal("applyLayout ok = true, want false so the caller suppresses the broadcast")
 	}
-	// %lforeign is the window's other float. It has no localFloats entry, which
-	// is precisely why nothing here can name it.
-	for _, a := range f.verbs("kill-pane") {
-		for _, word := range a {
-			if word == "%lforeign" {
-				t.Fatalf("killed a float the daemon did not create: %v", a)
-			}
-		}
+	if got := f.verbs("kill-pane"); got != nil {
+		t.Errorf("issued %v, want no float killed on a failed shape", got)
 	}
-	if got := f.verbs("kill-pane"); len(got) != 1 || got[0][len(got[0])-1] != "%l9" {
-		t.Errorf("kill-pane argv = %v, want only the daemon's own %%l9", got)
+	if w.localFloats["%9"] != "%l9" {
+		t.Errorf("localFloats = %v, want the mirrored float still recorded", w.localFloats)
 	}
-	if w.shapeFailedFor != L.Raw {
-		t.Errorf("shapeFailedFor = %q, want %q so the next identical pass logs nothing", w.shapeFailedFor, L.Raw)
-	}
-	// A later pass that does land the shape clears the record, so a genuinely
-	// new failure is reported rather than swallowed.
-	f.selectLayoutErr = nil
-	w.layout = "stale"
-	if !applyLayout(f.config(), w, L, NewRouter()) {
-		t.Fatal("applyLayout ok = false on the retry")
-	}
-	if w.shapeFailedFor != "" {
-		t.Errorf("shapeFailedFor = %q after a successful shape, want cleared", w.shapeFailedFor)
+	if w.layout != "stale" {
+		t.Errorf("w.layout = %q, want it untouched by a shape that failed", w.layout)
 	}
 }
 
-// The drop is per reconcileLayout call, not per applyLayout: a pass that does
-// pane surgery calls applyLayout twice (once inside applyPaneOps, once after
-// it), and each drop respawns every mirrored renderer.
-func TestReconcileLayoutDropsFloatsOnceAcrossBothShapeAttempts(t *testing.T) {
-	f := &layoutTmux{
-		windowLayout: localShortLayout,
-		// The window before the split, then after it — the Append path re-reads
-		// both times. The float keeps its own ordinal slot in tmux's listing.
-		listPanes:  []string{"%l0 0\n", "%l0 0\n%l1 0\n%l9 1\n"},
-		newPaneIDs: []string{"%lre\n"},
-		windowID:   "@101\n",
-	}
-	w := newRegistry().add("@1", "@101")
-	w.remotePanes = []string{"%0"}
-	w.localPanes = []string{"%l0"}
-	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
-	w.layout = "stale"
-	// A stale token from an earlier call must not suppress this call's drop.
-	w.floatsDropped = true
+// The same failure seen from the whole pass: no float is killed or re-created,
+// and neither the remote's dims nor a reseed reaches a tiled renderer.
+func TestReconcileLayoutShapeFailureBehindAMirroredFloatSkipsTheBroadcast(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
 
-	rt, _ := scriptedRT(strings.Join([]string{
+	router := NewRouter()
+	router.Register("%0", newOutputSink(conn, nil))
+
+	f := &layoutTmux{selectLayoutErr: errors.New("invalid layout"), windowID: "@101\n"}
+	w := mirrorWithFloat()
+
+	var issued []string
+	rt := recordingRT(strings.Join([]string{
 		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout
 		"%begin 1 2 1", tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
-	}, "\n") + "\n")
+	}, "\n")+"\n", &issued)
 
-	if retire := reconcileLayout(f.config(), w, func(string) {}, NewRouter(), noHellos,
+	if retire := reconcileLayout(f.config(), w, func(string) {}, router, noHellos,
 		newCtlState(), newConverger(), rt); retire {
-		t.Fatal("reconcileLayout retire = true, want false")
+		t.Fatal("reconcileLayout retire = true; the local window is still there")
 	}
-
-	var killedFloat int
-	for _, a := range f.verbs("kill-pane") {
-		if a[len(a)-1] == "%l9" {
-			killedFloat++
+	for _, verb := range []string{"kill-pane", "new-pane"} {
+		if got := f.verbs(verb); got != nil {
+			t.Errorf("issued %v, want no float surgery around a failed shape", got)
 		}
 	}
-	if killedFloat != 1 {
-		t.Errorf("killed %%l9 %d times, want exactly 1 across both applyLayout calls", killedFloat)
+	for _, cmd := range issued {
+		if strings.Contains(cmd, "capture-pane") {
+			t.Fatalf("re-seeded after a failed shape: %q", cmd)
+		}
 	}
-	if got := f.verbs("select-layout"); len(got) != 1 {
-		t.Errorf("select-layout argv = %v, want one: the second call site finds the shape already applied", got)
+	peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
+	if fr, err := wire.ReadFrame(peer); err == nil {
+		t.Fatalf("sent %v %q to a pane that never took the shape", fr.Type, fr.Payload)
 	}
-	// The post-loop reconcileFloats is what makes the drop survivable.
-	if f.at("new-pane", "@101") < f.at("kill-pane", "%l9") {
-		t.Errorf("the float was not re-added after the drop: %v", f.argv)
+	if w.localFloats["%9"] != "%l9" {
+		t.Errorf("localFloats = %v, want the mirrored float still recorded", w.localFloats)
 	}
 }
 
@@ -428,7 +341,7 @@ func TestReconcileLayoutSuppressesTheBroadcastWhenTheShapeFails(t *testing.T) {
 // post-loop reconcileFloats would then apply the float set from before it
 // existed.
 func TestReconcileLayoutRerunsWhenOnlyTheFloatSetMoved(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
+	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}
@@ -471,10 +384,9 @@ func TestReconcileLayoutResetPathSkipsTheTail(t *testing.T) {
 	go io.Copy(io.Discard, peer)
 
 	f := &layoutTmux{
-		windowLayout: localMatchingLayout,
-		listPanes:    []string{"%l0 0\n"},
-		newPaneIDs:   []string{"%lf\n"},
-		windowID:     "@101\n",
+		listPanes:  []string{"%l0 0\n"},
+		newPaneIDs: []string{"%lf\n"},
+		windowID:   "@101\n",
 	}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%7"} // no surviving pane -> planPaneOps.Reset
@@ -514,7 +426,7 @@ func TestReconcileLayoutResetPathSkipsTheTail(t *testing.T) {
 // set too — otherwise the mirror never learns about the very floats this whole
 // path exists to render.
 func TestReconcileLayoutDoesNotSkipAFloatOnlyChange(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
+	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}
@@ -548,7 +460,7 @@ func TestReconcileLayoutFloatOnlyChangeLeavesTheTiledPanesAlone(t *testing.T) {
 		peers[id] = peer
 	}
 
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
+	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
 	w := shapedMirror(t)
 
 	var issued []string
@@ -585,7 +497,7 @@ func TestReconcileLayoutFloatOnlyChangeLeavesTheTiledPanesAlone(t *testing.T) {
 // + g) made it the remote's active pane, and without following, the user's
 // keystrokes go on landing in a tiled renderer.
 func TestReconcileLayoutFocusFollowsANewlyAddedFloat(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
+	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%lf\n"}}
 	w := shapedMirror(t)
 
 	rt, _ := scriptedRT(strings.Join([]string{
@@ -606,7 +518,7 @@ func TestReconcileLayoutFocusFollowsANewlyAddedFloat(t *testing.T) {
 // local focus on every unrelated reconcile — here, a second float opening
 // somewhere else in the same window.
 func TestReconcileLayoutDoesNotRefocusAnAlreadyMirroredFloat(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n", newPaneIDs: []string{"%lf8\n"}}
+	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%lf8\n"}}
 	w := shapedMirror(t)
 	w.localFloats["%9"] = "%l9"
 	w.floatGeom["%9"] = float9
@@ -646,16 +558,13 @@ func TestFloatCellsEqualIgnoresOrder(t *testing.T) {
 	}
 }
 
-// applyPaneOps' own applyLayout drops every mirrored float so a select-layout
-// can land, and a failure after that returns straight out — past the post-loop
-// reconcileFloats that would have put them back. Left there, the floats stay
-// dead until some later reconcile of this window happens to succeed.
-func TestReconcileLayoutReAddsFloatsAfterAFailedPaneOp(t *testing.T) {
+// A pane op that fails returns straight out of the pass, past the post-loop
+// reconcileFloats. Nothing on that path touches a float, so the mirrored one
+// must come out the other side alive and without a duplicate.
+func TestReconcileLayoutKeepsFloatsThroughAFailedPaneOp(t *testing.T) {
 	f := &layoutTmux{
-		windowLayout: localShortLayout, // a cell miss, so the shape needs the drop
-		listPanes:    []string{"%l0 0\n", "%l0 0\n%l1 0\n"},
-		newPaneIDs:   []string{"%lre\n"},
-		windowID:     "@101\n",
+		listPanes: []string{"%l0 0\n", "%l0 0\n%l1 0\n"},
+		windowID:  "@101\n",
 	}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%0"}
@@ -664,39 +573,32 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedPaneOp(t *testing.T) {
 	w.floatGeom["%9"] = float9
 	w.layout = "stale"
 
-	// The appended pane's renderer never connects, which is what fails
-	// applyPaneOps after the drop; the float's own wait then succeeds.
-	calls := 0
-	waiter := func([]string) (map[string]net.Conn, error) {
-		calls++
-		if calls == 1 {
-			return nil, errors.New("renderer never connected")
-		}
-		return map[string]net.Conn{"%9": drainedPipe(t)}, nil
-	}
-
 	rt, _ := scriptedRT("%begin 1 1 1\n" + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
 
-	if retire := reconcileLayout(f.config(), w, func(string) {}, NewRouter(), waiter,
+	// The appended pane's renderer never connects, which is what fails
+	// applyPaneOps.
+	if retire := reconcileLayout(f.config(), w, func(string) {}, NewRouter(),
+		func([]string) (map[string]net.Conn, error) { return nil, errors.New("renderer never connected") },
 		newCtlState(), newConverger(), rt); retire {
 		t.Fatal("reconcileLayout retire = true; the local window is still there")
 	}
-	if w.localFloats["%9"] != "%lre" {
-		t.Fatalf("localFloats = %v, want the dropped float re-added", w.localFloats)
+	if w.localFloats["%9"] != "%l9" {
+		t.Errorf("localFloats = %v, want the mirrored float untouched", w.localFloats)
 	}
-	if kill, add := f.at("kill-pane", "%l9"), f.at("new-pane", "@101"); kill < 0 || add < kill {
-		t.Errorf("kill at %d, add at %d: want the re-add after the drop", kill, add)
+	if got := f.verbs("new-pane"); got != nil {
+		t.Errorf("issued %v, want no float re-created", got)
+	}
+	if f.at("kill-pane", "%l9") >= 0 {
+		t.Errorf("killed the mirrored float: %v", f.argv)
 	}
 }
 
-// resetLostWindow first: a mirror whose local window is gone is retired, and
-// pointing a burst of new-panes at a window id that no longer resolves can only
-// produce one failed create per float.
-func TestReconcileLayoutDoesNotReAddFloatsIntoALostWindow(t *testing.T) {
+// A failed pane op in a window that is gone retires the mirror, and aims
+// nothing at a window id that no longer resolves.
+func TestReconcileLayoutRetiresAFailedPaneOpInALostWindow(t *testing.T) {
 	f := &layoutTmux{
-		windowLayout: localShortLayout,
-		listPanes:    []string{"%l0 0\n", "%l0 0\n%l1 0\n"},
-		windowID:     "@999\n", // not w.localWin: the window is gone
+		listPanes: []string{"%l0 0\n", "%l0 0\n%l1 0\n"},
+		windowID:  "@999\n", // not w.localWin: the window is gone
 	}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%0"}
@@ -717,16 +619,15 @@ func TestReconcileLayoutDoesNotReAddFloatsIntoALostWindow(t *testing.T) {
 	}
 }
 
-// A rebuild strands the mirrored floats exactly as a select-layout drop does:
-// dropMirroredPanes kills them unconditionally, and setupWindow's own
+// A rebuild strands the mirrored floats: dropMirroredPanes kills them
+// unconditionally, and setupWindow's own
 // reconcileFloats is the last thing it does, so a rebuild that fails anywhere
 // earlier never puts them back. The local window survives that failure —
 // dropMirroredPanes keeps pane 0 — so the mirror stays live and floatless.
 func TestReconcileLayoutReAddsFloatsAfterAFailedReset(t *testing.T) {
 	f := &layoutTmux{
-		windowLayout: localMatchingLayout,
-		newPaneIDs:   []string{"%lre\n"},
-		windowID:     "@101\n", // still w.localWin: the window is alive
+		newPaneIDs: []string{"%lre\n"},
+		windowID:   "@101\n", // still w.localWin: the window is alive
 	}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%7"} // no surviving pane -> planPaneOps.Reset
@@ -760,7 +661,7 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedReset(t *testing.T) {
 // consulted first, so the mirror retires instead of aiming one doomed new-pane
 // per float at a window id that no longer resolves.
 func TestReconcileLayoutDoesNotReAddFloatsAfterAResetIntoALostWindow(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@999\n"}
+	f := &layoutTmux{windowID: "@999\n"}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%7"}
 	w.localPanes = []string{"%l7"}
@@ -789,7 +690,6 @@ func TestReconcileLayoutDoesNotReAddFloatsAfterAResetIntoALostWindow(t *testing.
 // forced the rebuild in the first place.
 func TestReconcileLayoutReAddsFloatsAfterAFailedDesyncReset(t *testing.T) {
 	f := &layoutTmux{
-		windowLayout: localMatchingLayout,
 		// Two tiled panes where the daemon believes one: the positional mapping
 		// applyPaneOps rests on is broken, so it refuses to act on it.
 		listPanes:  []string{"%l0 0\n%l1 0\n%l9 1\n"},
@@ -818,59 +718,5 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedDesyncReset(t *testing.T) {
 	}
 	if w.localFloats["%9"] != "%lre" {
 		t.Errorf("localFloats = %v, want the dropped float re-added", w.localFloats)
-	}
-}
-
-// #535: the float over the mirror is the USER's — prefix + b/k/I are unguarded
-// float binds — so w.localFloats is empty and the remote has no float at all.
-// The window still holds one as far as tmux is concerned, so select-layout
-// would be refused ("have 3 panes but need 2") and the mirror would sit on its
-// last-good screen until the float closed. The cells check has to run on
-// w.localFloats being empty, not only on it being non-empty.
-func TestApplyLayoutShortCircuitsForAFloatTheDaemonDidNotCreate(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout}
-	w := newRegistry().add("@1", "@101")
-	w.remotePanes = []string{"%0", "%1"}
-	w.localPanes = []string{"%l0", "%l1"}
-	w.layout = "stale"
-	// No localFloats entry: nothing here mirrors a remote float.
-	L := mustLayout(t, tiledLayout)
-
-	if !applyLayout(f.config(), w, L, NewRouter()) {
-		t.Fatal("applyLayout ok = false, want true: the window already carries L's cells")
-	}
-	if got := f.verbs("select-layout"); got != nil {
-		t.Errorf("issued %v — real tmux refuses that outright while the user's float is open", got)
-	}
-	if got := f.verbs("kill-pane"); got != nil {
-		t.Errorf("issued %v, want the user's float left alone — it is not ours to reap", got)
-	}
-	if w.layout != L.Raw {
-		t.Errorf("w.layout = %q, want %q so the next pass reads as converged", w.layout, L.Raw)
-	}
-	if w.floatsDropped {
-		t.Error("floatsDropped = true, but this daemon created no float to drop")
-	}
-}
-
-// The float-free case must keep working, and now also skips the select-layout
-// when the fit alone already reproduced the cells — one read in place of one
-// write, not a read on top of one.
-func TestApplyLayoutShortCircuitsWithNoFloatsAnywhere(t *testing.T) {
-	f := &layoutTmux{windowLayout: "0000,190x45,0,0{95x45,0,0,70,94x45,96,0,71}"}
-	w := newRegistry().add("@1", "@101")
-	w.remotePanes = []string{"%0", "%1"}
-	w.localPanes = []string{"%l0", "%l1"}
-	w.layout = "stale"
-	L := mustLayout(t, tiledLayout)
-
-	if !applyLayout(f.config(), w, L, NewRouter()) {
-		t.Fatal("applyLayout ok = false, want true")
-	}
-	if got := f.verbs("select-layout"); got != nil {
-		t.Errorf("issued %v, want none: the window already carries L's cells", got)
-	}
-	if w.layout != L.Raw {
-		t.Errorf("w.layout = %q, want %q", w.layout, L.Raw)
 	}
 }

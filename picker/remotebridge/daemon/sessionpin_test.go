@@ -115,17 +115,24 @@ func TestSessionPinSwitchesBackReseedsAndHandsOff(t *testing.T) {
 	}
 }
 
+// newLayoutsFlagAck models the reply to readIdentity's leading
+// `refresh-client -f new-layouts`. It is claimed and, on success, ignored, so
+// its content never matters — only that a reply block sits there for the
+// flag command's ordinal to land on, ahead of the identity reply that
+// follows.
+const newLayoutsFlagAck = "%begin 1 0 1\n%end 1 0 1\n"
+
 func TestNewSessionPinRejectsNonID(t *testing.T) {
 	// A reply that is not a session id (an error text, a truncated read) must
 	// not be interpolated into switch-client.
-	rt, _ := scriptedRT("%begin 1 1 1\nnot-an-id\n%end 1 1 1\n")
+	rt, _ := scriptedRT(newLayoutsFlagAck + "%begin 1 1 1\nnot-an-id\n%end 1 1 1\n")
 	if p := newSessionPin(Config{RemoteSession: "A"}, rt); p.id != "" {
 		t.Errorf("id = %q, want pinning disabled", p.id)
 	}
 }
 
 func TestNewSessionPinReadsID(t *testing.T) {
-	rt, sent := scriptedRT("%begin 1 1 1\n2151|1788283304|$3\n%end 1 1 1\n")
+	rt, sent := scriptedRT(newLayoutsFlagAck + "%begin 1 1 1\n2151|1788283304|$3\n%end 1 1 1\n")
 	p := newSessionPin(Config{RemoteSession: "my proj"}, rt)
 	if p.id != "$3" {
 		t.Errorf("id = %q, want $3", p.id)
@@ -139,6 +146,35 @@ func TestNewSessionPinReadsID(t *testing.T) {
 	if !strings.Contains(sent.String(), "-t 'my proj'") {
 		t.Errorf("sent %q, want the session name quoted as one token", sent.String())
 	}
+	// The flag must lead the batch: a reattach or replacement that sent it
+	// after the identity read would still open the connection unbound, but a
+	// remote that answered the identity command before seeing the flag could
+	// still race a %layout-change against it.
+	if flagAt, idAt := strings.Index(sent.String(), "refresh-client -f new-layouts"), strings.Index(sent.String(), "#{pid}"); flagAt < 0 || idAt < 0 || flagAt > idAt {
+		t.Errorf("sent %q, want the new-layouts flag before the identity read", sent.String())
+	}
+}
+
+// TestNewSessionPinToleratesAnOldRemoteRejectingTheFlag: an %error on the
+// flag's own reply means an older remote that cannot take it — still reports
+// v1, not a reason to fail the identity read that follows.
+func TestNewSessionPinToleratesAnOldRemoteRejectingTheFlag(t *testing.T) {
+	// Real %error framing: the error text is the block's body, and %error
+	// itself is the terminator — there is no trailing %end (readBlock returns
+	// as soon as it sees %error).
+	script := "%begin 1 0 1\nunknown flag: new-layouts\n%error 1 0 1\n" +
+		"%begin 1 1 1\n2151|1788283304|$3\n%end 1 1 1\n"
+	var p *sessionPin
+	logs := captureRouterStderr(t, func() {
+		rt, _ := scriptedRT(script)
+		p = newSessionPin(Config{RemoteSession: "A"}, rt)
+	})
+	if p.id != "$3" || !p.identityKnown {
+		t.Errorf("id = %q identityKnown = %v, want $3 / true — an %%error on the flag reply must not fail the identity read", p.id, p.identityKnown)
+	}
+	if !strings.Contains(logs, "unknown flag: new-layouts") || !strings.Contains(logs, "floats will not be mirrored") {
+		t.Errorf("logs = %q, want the flag's error text and the floats warning", logs)
+	}
 }
 
 // TestNewSessionPinAttach1NeverTearsDown: an unusable identity at the first
@@ -146,9 +182,9 @@ func TestNewSessionPinReadsID(t *testing.T) {
 // to compare a later attach against.
 func TestNewSessionPinAttach1NeverTearsDown(t *testing.T) {
 	for name, script := range map[string]string{
-		"malformed":  "%begin 1 1 1\nnot-an-id\n%end 1 1 1\n",
-		"empty body": "%begin 1 1 1\n\n%end 1 1 1\n",
-		"error":      "%begin 1 1 1\n%error 1 1 1\nboom\n%end 1 1 1\n",
+		"malformed":  newLayoutsFlagAck + "%begin 1 1 1\nnot-an-id\n%end 1 1 1\n",
+		"empty body": newLayoutsFlagAck + "%begin 1 1 1\n\n%end 1 1 1\n",
+		"error":      newLayoutsFlagAck + "%begin 1 1 1\n%error 1 1 1\nboom\n%end 1 1 1\n",
 		"eof":        "%exit\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -208,9 +244,10 @@ func TestReadIdentityDistinguishesRetryFromTeardown(t *testing.T) {
 		wantRetry bool
 	}{
 		{"eof mid-read", "%exit\n", true},
-		{"error reply", "%begin 1 1 1\n%error 1 1 1\nboom\n%end 1 1 1\n", false},
-		{"malformed body", "%begin 1 1 1\nnot-an-id\n%end 1 1 1\n", false},
-		{"empty body", "%begin 1 1 1\n\n%end 1 1 1\n", false},
+		{"eof after the flag reply", newLayoutsFlagAck, true},
+		{"error reply", newLayoutsFlagAck + "%begin 1 1 1\n%error 1 1 1\nboom\n%end 1 1 1\n", false},
+		{"malformed body", newLayoutsFlagAck + "%begin 1 1 1\nnot-an-id\n%end 1 1 1\n", false},
+		{"empty body", newLayoutsFlagAck + "%begin 1 1 1\n\n%end 1 1 1\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -231,7 +268,7 @@ func TestReadIdentityDistinguishesRetryFromTeardown(t *testing.T) {
 }
 
 func TestReadIdentityWellFormed(t *testing.T) {
-	rt, sent := scriptedRT("%begin 1 1 1\n2151|1788283304|$1\n%end 1 1 1\n")
+	rt, sent := scriptedRT(newLayoutsFlagAck + "%begin 1 1 1\n2151|1788283304|$1\n%end 1 1 1\n")
 	id, err := readIdentity(rt, "my proj")
 	if err != nil {
 		t.Fatalf("readIdentity: %v", err)
@@ -245,6 +282,13 @@ func TestReadIdentityWellFormed(t *testing.T) {
 	}
 	if !strings.Contains(sent.String(), "#{pid}|#{start_time}|#{session_id}") {
 		t.Errorf("sent %q, want the pipe-delimited identity format", sent.String())
+	}
+	// The flag leads every attach: a reattach or replacement that sent it
+	// after the identity read would still race a %layout-change over the old
+	// flags.
+	flagAt, idAt := strings.Index(sent.String(), "refresh-client -f new-layouts"), strings.Index(sent.String(), "display-message")
+	if flagAt < 0 || idAt < 0 || flagAt > idAt {
+		t.Errorf("sent %q, want the new-layouts flag before the identity read", sent.String())
 	}
 }
 

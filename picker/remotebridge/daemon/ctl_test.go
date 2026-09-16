@@ -1013,7 +1013,7 @@ func TestEnrichRefreshVerbGuardsBranchAndDir(t *testing.T) {
 // The probe rides the round-trip seam, which is the only place inside the loop a
 // test can observe.
 func TestCtlResolvesAMirroredFloatDuringAReconcile(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n"}
+	f := &layoutTmux{windowID: "@101\n"}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}
@@ -1061,7 +1061,7 @@ func TestCtlResolvesAMirroredFloatDuringAReconcile(t *testing.T) {
 // A float the reconcile itself created has to be routable too: reconcileFloats
 // runs after the pass loop, so only the trailing re-assert can know about it.
 func TestCtlResolvesAFloatAddedByTheReconcile(t *testing.T) {
-	f := &layoutTmux{windowLayout: localMatchingLayout, windowID: "@101\n", newPaneIDs: []string{"%l9\n"}}
+	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%l9\n"}}
 	w := newRegistry().add("@1", "@101")
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}

@@ -41,9 +41,12 @@ func parseLayoutNotice(l controlmode.Line) (layoutNotice, bool) {
 	}
 }
 
-// layoutShaped reports whether s starts like a layout dump: a four-digit
-// lowercase hex checksum, a comma, then at least one more byte.
+// layoutShaped reports whether s starts like a layout dump: v2 JSON, or v1's
+// four-digit lowercase hex checksum, a comma, then at least one more byte.
 func layoutShaped(s string) bool {
+	if strings.HasPrefix(s, `{"V":`) {
+		return true
+	}
 	if len(s) < 6 || s[4] != ',' {
 		return false
 	}

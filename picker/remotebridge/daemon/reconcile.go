@@ -73,24 +73,17 @@ func reconcileLayoutFrom(cfg Config, w *mirrorWindow, l controlmode.Line, send f
 		return false
 	}
 	// A zoomed reshape needs the active pane for the -Z toggle and the zoomed
-	// pane's dims; applyLayout can drop a mirrored float and reconcileFloats
-	// re-add it inside the pass, and that re-add's focus-follow needs it too.
-	if n.zoomed || len(w.localFloats) > 0 {
+	// pane's dims.
+	if n.zoomed {
 		return reconcileLayout(cfg, w, send, router, waitHellos, cst, cv, rt)
 	}
-	// Geometry only: same panes, same floats, no zoom reported. No active
-	// pane id is passed because nothing on this path consumes one — focus-
-	// follow is gated on a structural diff, the -Z toggle and zoomed-pane dims
-	// on a zoom, the post-loop float focus on an added float. A line the
-	// remote has already moved past costs one pass: the trailing re-read
-	// below runs the next one on its own ground-truth triple.
-	//
-	// Not covered: a mirror still zoomed when this fires, with local cells
-	// the window fit alone already matches, so localCellsMatch skips the
-	// select-layout that would unzoom it and no toggle can fire. Unreached
-	// here — a zoomed mirror's #{window_layout} is the saved tree it last
-	// applied, and no tmux emitter produces a flag-off geometry line under a
-	// zoom (the unzoom lines carry the layout unchanged and land above).
+	// Geometry only: same panes, same floats, no zoom reported — whether or
+	// not the window holds a float, since the tiled-only select-layout leaves
+	// every float where it is. No active pane id is passed because nothing on
+	// this path consumes one — focus-follow is gated on a structural diff, the
+	// -Z toggle and zoomed-pane dims on a zoom, the post-loop float focus on an
+	// added float. A line the remote has already moved past costs one pass: the
+	// trailing re-read below runs the next one on its own ground-truth triple.
 	return reconcileSnapshot(cfg, w, L, "", false, send, router, waitHellos, cst, cv, rt)
 }
 
@@ -143,8 +136,8 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 		}
 	}
 
-	// One drop of the mirrored floats per call, however many passes and
-	// applyLayout calls this takes.
+	// Only a rebuild inside this call may raise it, so a value left over from an
+	// earlier call must not read as floats this one owes a re-add.
 	w.floatsDropped = false
 	remote := w.remotePanes
 	converged := false
@@ -189,7 +182,7 @@ passes:
 		// failure. On a miss the mirror keeps its last-good screen instead.
 		// applyPaneOps' own inner seed is deliberately NOT gated this way: a
 		// pane it just appended has no last-good screen to keep.
-		if applyLayout(cfg, w, L, router) {
+		if applyLayout(cfg, w, L) {
 			// Bounded on both sides: after applyLayout, because select-layout unzooms
 			// the window it shapes (measured), and before the dims and seeds below,
 			// which describe and paint the pane at whatever geometry it holds now.
@@ -295,8 +288,8 @@ passes:
 		// float-blind: without it a float that appeared or moved mid-pass would
 		// read as converged and the reconcileFloats below would apply the stale
 		// L.Floats. Compared against L.Floats — the previous REMOTE read — never
-		// against w.floatGeom, which a drop above may have just emptied and which
-		// would then never converge.
+		// against w.floatGeom, which only the post-loop reconcileFloats updates
+		// and which would then never converge.
 		fresh, freshActive, freshZoom, err := readLayout(rt, target)
 		if err != nil || (fresh.Raw == L.Raw && freshZoom == zoomed && floatCellsEqual(fresh.Floats, L.Floats)) {
 			converged = true
@@ -309,10 +302,9 @@ passes:
 		w.remotePanes = remote
 	}
 	// After the loop, so one pass's worth of float surgery runs however many
-	// times the tiled shape had to be re-applied — and so a drop above is undone
-	// by the matching re-add. The exits that return instead of breaking skip
-	// this: a rebuild that succeeded has already settled the window's floats,
-	// and one that failed went through retireOrRestoreFloats.
+	// times the tiled shape had to be re-applied. The exits that return instead
+	// of breaking skip this: a rebuild that succeeded has already settled the
+	// window's floats, and one that failed went through retireOrRestoreFloats.
 	added := reconcileFloats(cfg, w, L, send, router, waitHellos, rt)
 	// The in-loop setWindowPanes asserted the TILED set, and setWindowPanes
 	// clears every pane mapped to the window before re-setting, so the
@@ -385,16 +377,14 @@ func resetLostWindow(cfg Config, w *mirrorWindow) bool {
 }
 
 // retireOrRestoreFloats settles a reconcileLayout pass that failed and returns
-// rather than breaking, so it never reaches the post-loop reconcileFloats that
-// undoes a drop.
+// rather than breaking, so it never reaches the post-loop reconcileFloats.
 //
-// Every such exit can have lost the mirrored floats already, by one of two
-// routes: applyLayout kills them to get a select-layout through, and
-// dropMirroredPanes discards them for a rebuild whose setupWindow then failed
-// before its own trailing reconcileFloats could put them back. Both raise
-// floatsDropped, so this one re-add covers all of them. It is orthogonal to
-// whatever else the failure left broken — reconcileFloats touches no tiled pane
-// mapping, and L.Floats is still the wanted set.
+// A failed rebuild can have lost the mirrored floats already: dropMirroredPanes
+// discards them, and setupWindow can fail before its own trailing
+// reconcileFloats puts them back. The drop raises floatsDropped, so this re-add
+// runs only when there is something to restore. It is orthogonal to whatever
+// else the failure left broken — reconcileFloats touches no tiled pane mapping,
+// and L.Floats is still the wanted set.
 //
 // resetLostWindow first, never after: a window that is genuinely gone must not
 // be handed a burst of doomed new-panes.
@@ -412,75 +402,35 @@ func retireOrRestoreFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, se
 // The fit comes first: an unfitted window would make select-layout rescale the
 // remote's layout to the local client's size instead of taking the remote's.
 //
-// The shape is skipped when the window already carries L: tmux counts floating
-// panes against the layout's cell count and rejects the whole string when they
-// disagree ("have 4 panes but need 3"), so a select-layout the mirror does not
-// need is one that can only fail. applyPaneOps clears w.layout, so surgery that
-// reshapes the window always shapes it back.
+// The shape is skipped when the window already carries L, and applyPaneOps
+// clears w.layout, so surgery that reshapes the window always shapes it back.
 //
-// There is no float-tolerant select-layout — the tiled-only string, tmux's own
-// float-bearing string and a float kept as an ordinary leaf all fail, three
-// different ways — so a window holding floats has to lose them before it can be
-// reshaped. Two steps, cheapest first: verify the fit alone already reproduced
-// the remote's cells (localCellsMatch), and only otherwise kill the mirrored
-// floats, which the caller's trailing reconcileFloats then re-creates.
-//
-// The cells check runs before any float bookkeeping is consulted, because the
-// window can hold a float this daemon did not make: prefix + b/k/I are
-// unguarded float binds, and one open over a mirror used to skip the check
-// entirely — w.localFloats is empty for a float we did not create — and go
-// straight to a select-layout that could only fail, freezing the mirror on its
-// last-good screen for as long as the float stayed open (#535). It is also
-// the cheaper order outright: a matching window needs no select-layout at all,
-// float or no float. Only the drop below stays keyed on w.localFloats — a
-// float the user opened is still not ours to reap.
+// L.Raw is the tiled-only v1 string, which select-layout applies while leaving
+// every float in place, the user's own included (#535). A resident local server
+// older than the pinned tmux refuses it while any float is open, so the mirror
+// keeps its last-good screen until a remote change lands with none open.
 //
 // ok is false only when select-layout itself failed. The caller gates the
 // remote's dims and screen on it: painting them into panes that never took the
 // shape is the blank-mirror failure.
-func applyLayout(cfg Config, w *mirrorWindow, L controlmode.Layout, router *Router) (ok bool) {
+func applyLayout(cfg Config, w *mirrorWindow, L controlmode.Layout) (ok bool) {
 	if err := cfg.LocalTmux(FitWindowCmd(w.localWin, L)...); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: layout-change resize-window: %v\n", err)
 	}
 	if L.Raw == w.layout {
 		return true
 	}
-	if localCellsMatch(cfg, w, L) {
-		w.layout = L.Raw
-		w.shapeFailedFor = ""
-		return true
-	}
-	if len(w.localFloats) > 0 {
-		// Once per reconcileLayout call, never once per applyLayout: this runs
-		// twice a pass (here and from applyPaneOps) and up to maxReconcilePasses
-		// times, and each drop respawns every mirrored renderer.
-		if !w.floatsDropped {
-			w.floatsDropped = true
-			// Only what this daemon created: a float the user opened over the
-			// mirror is not ours to reap. A genuine reshape with one of those
-			// open is the case this cannot rescue — select-layout still fails
-			// and the caller keeps the last-good screen, which is the whole of
-			// what remains of #535's degradation.
-			for _, id := range sortedFloatIDs(w.localFloats) {
-				removeFloat(cfg, w, router, id)
-			}
-		}
-	}
 	if err := cfg.LocalTmux("select-layout", "-t", w.localWin, L.Raw); err != nil {
-		if w.shapeFailedFor != L.Raw {
-			w.shapeFailedFor = L.Raw
-			fmt.Fprintf(os.Stderr, "daemon: layout-change select-layout: %v\n", err)
-		}
+		fmt.Fprintf(os.Stderr, "daemon: layout-change select-layout: %v\n", err)
 		return false
 	}
-	w.shapeFailedFor = ""
 	w.appliedZoom = false // select-layout unzooms; caller's assertMirrorZoom may set it again
 	w.layout = L.Raw
 	return true
 }
 
-// sortedFloatIDs returns localFloats' keys in a fixed order, so a drop kills the
-// window's floats in the same sequence every time rather than in map order.
+// sortedFloatIDs returns localFloats' keys in a fixed order, so a rebuild kills
+// the window's floats in the same sequence every time rather than in map order.
 func sortedFloatIDs(localFloats map[string]string) []string {
 	ids := make([]string, 0, len(localFloats))
 	for id := range localFloats {
@@ -488,42 +438,6 @@ func sortedFloatIDs(localFloats map[string]string) []string {
 	}
 	sort.Strings(ids)
 	return ids
-}
-
-// localCellsMatch reports whether the mirror window's tiled panes already sit at
-// L's cell geometry, so the shape needs no select-layout and no float has to
-// die for one. The window fit above usually gets there on its own: the remote's
-// layout_resize is deterministic and path-independent (probed), so resizing the
-// mirror to the remote's size reproduces the remote's cells. Verified per pass
-// rather than assumed — a miss is merely slower, never wrong.
-//
-// Cells only, pairwise in order: pane ids differ between the two hosts, so this
-// can never be a string compare. The pairing is valid because list-panes order
-// equals the layout's depth-first cell order — the same invariant PlanWindow and
-// applyPaneOps already rest on — and ParseLayout prunes floats from both sides,
-// a float overlaying without displacing any tiled cell. A refactor that breaks
-// that ordering voids this silently.
-//
-// Any answer short of a proven match is a miss: a different pane count, an
-// unreadable window, an unparsable layout. All fall through to the drop.
-func localCellsMatch(cfg Config, w *mirrorWindow, L controlmode.Layout) bool {
-	out, err := cfg.LocalTmuxOut("display-message", "-p", "-t", w.localWin, "-F", "#{window_layout}")
-	if err != nil {
-		return false
-	}
-	local, err := controlmode.ParseLayout(strings.TrimSpace(out))
-	if err != nil {
-		return false
-	}
-	if len(local.Panes) != len(L.Panes) {
-		return false
-	}
-	for i, c := range local.Panes {
-		if c.W != L.Panes[i].W || c.H != L.Panes[i].H || c.X != L.Panes[i].X || c.Y != L.Panes[i].Y {
-			return false
-		}
-	}
-	return true
 }
 
 // floatCellsEqual reports whether two remote float sets are the same floats at
@@ -654,7 +568,7 @@ func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout
 		// handshake rather than for a frame (#408). The swaps below exchange
 		// panes between cells without changing cell geometry, so this stays
 		// correct and the caller's pass becomes idempotent.
-		applyLayout(cfg, w, L, router)
+		applyLayout(cfg, w, L)
 
 		// Seeding is sequential over the single control stream, so every new
 		// renderer must be connected first (mirrors setupWindow).
@@ -770,12 +684,12 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 // daemon did not create — the user's own, from the unguarded prefix + b/k/i
 // binds — is not its to reap.
 //
-// The mirrored floats have to go with them: setupWindow ends in a select-layout,
-// tmux counts a floating pane against the layout string's cell count, and the
-// rebuild of a window that held one would fail on that alone. reconcileFloats
-// re-creates them from the remote's own layout during that same setupWindow —
-// unless the rebuild fails before reaching it, which is why the drop raises the
-// same floatsDropped signal applyLayout's does.
+// The mirrored floats go with them, so the rebuild starts from scratch and
+// setupWindow's reconcileFloats re-creates them from the remote's own layout.
+// That teardown is also what repairs a float whose renderer died: a rebuild
+// that kept live floats would need to tell a dead one apart. A rebuild that
+// fails before reaching reconcileFloats leaves them gone, which is why the drop
+// raises floatsDropped.
 func dropMirroredPanes(cfg Config, w *mirrorWindow) {
 	for i := len(w.localPanes) - 1; i > 0; i-- {
 		if err := cfg.LocalTmux("kill-pane", "-t", w.localPanes[i]); err != nil {
