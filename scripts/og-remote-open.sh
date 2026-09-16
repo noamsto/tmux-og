@@ -526,7 +526,7 @@ if command -v setsid >/dev/null 2>&1; then     # portable-ok: guard, verified fa
 	setsid "$daemon" >/dev/null 2>"${sock}.log" & # portable-ok: guarded above; else branch is the verified macOS fallback
 else
 	nohup "$daemon" >/dev/null 2>"${sock}.log" &
-	disown
+	disown 2>/dev/null || true
 fi
 
 tmux switch-client -t "=$local_sess"
