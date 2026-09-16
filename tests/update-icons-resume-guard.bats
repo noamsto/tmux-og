@@ -128,6 +128,20 @@ run_update_icons_with_carousel() {
 	assert_relaunch "cursor-agent --resume abc123"
 }
 
+@test "screen-only pi pane's relaunch stamp survives (resumePi, #661)" {
+	# agent-detect scrapes pi like every known agent CLI, so a pi pane is a
+	# screen-only pane with no transcript — the same guard shape as the cursor
+	# case above, pinned for the pi relaunch value. The fixture is a realistic
+	# pi-relaunch-stamp output: replayed flags + appended --session <file>.
+	printf 'state=idle\ntimestamp=%s\n' "$(date +%s)" >"$CLAUDE_STATUS_DIR/screen/$PANE_ID"
+	tmux set -p -t "%$PANE_ID" @remux_relaunch "pi --name reef --no-approve --session '/home/u/.pi/agent/sessions/--slug--/2026-09-16T00-00-00-000Z_01a0aa66-2252-76fc-a266-37d19900b74d.jsonl'"
+
+	run_update_icons
+
+	[ -e "$CLAUDE_STATUS_DIR/screen/$PANE_ID" ]
+	assert_relaunch "pi --name reef --no-approve --session '/home/u/.pi/agent/sessions/--slug--/2026-09-16T00-00-00-000Z_01a0aa66-2252-76fc-a266-37d19900b74d.jsonl'"
+}
+
 @test "hook pane with a transcript still stamps claude --resume <uuid>" {
 	TRANSCRIPT="$TDIR/deadbeef-0000-0000-0000-000000000001.jsonl"
 	: >"$TRANSCRIPT"

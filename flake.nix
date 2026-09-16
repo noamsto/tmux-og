@@ -333,6 +333,16 @@
               touch $out
             '';
 
+          pi-relaunch-stamp-tests =
+            pkgs.runCommand "pi-relaunch-stamp-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/pi-relaunch-stamp.bats
+              touch $out
+            '';
+
           cursor-relaunch-hooks-install-tests =
             pkgs.runCommand "cursor-relaunch-hooks-install-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];

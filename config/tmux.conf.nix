@@ -301,6 +301,7 @@
     "og-log-event"
     "og-debug"
     "codex-relaunch-stamp"
+    "pi-relaunch-stamp"
     "cursor-status-hook"
     "cursor-hooks-install"
     "cursor-relaunch-stamp"
@@ -649,6 +650,10 @@
     "codex stamp" = {
       script = "codex-relaunch-stamp";
       summary = "Stamp Codex relaunch state";
+    };
+    "pi stamp" = {
+      script = "pi-relaunch-stamp";
+      summary = "Stamp pi relaunch state (run by the pi extension, not interactive)";
     };
     "notify" = {
       script = "og-notify";
