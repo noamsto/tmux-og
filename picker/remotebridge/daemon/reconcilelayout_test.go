@@ -83,6 +83,12 @@ type layoutTmux struct {
 	argv [][]string
 
 	selectLayoutErr error
+	// paneCountListing, when set, answers every list-panes read — the shape
+	// localPaneCountDesynced asks for. It overrides listPanes rather than
+	// joining the queue: that one is consumed positionally by the Append path,
+	// and a desync read landing in the middle of it would shift every later
+	// answer.
+	paneCountListing string
 	// listPanes is consumed one entry per call, the last repeating: the Append
 	// path re-reads the window before and after its split.
 	listPanes  []string
@@ -115,6 +121,9 @@ func (f *layoutTmux) out(argv ...string) (string, error) {
 	case "list-windows":
 		return f.windowID, nil
 	case "list-panes":
+		if f.paneCountListing != "" {
+			return f.paneCountListing, nil
+		}
 		i := f.panesRead
 		f.panesRead++
 		if i >= len(f.listPanes) {
@@ -207,7 +216,7 @@ func TestApplyLayoutReshapesBehindAMirroredFloat(t *testing.T) {
 	w.appliedZoom = true
 	L := mustLayout(t, tiledFloatLayout)
 
-	if !applyLayout(f.config(), w, L) {
+	if ok, _ := applyLayout(f.config(), w, L); !ok {
 		t.Fatal("applyLayout ok = false, want true: select-layout succeeded")
 	}
 	want := []string{"select-layout", "-t", "@101", L.Raw}
@@ -239,7 +248,7 @@ func TestApplyLayoutFailureBehindAMirroredFloatKillsNothing(t *testing.T) {
 	w := mirrorWithFloat()
 	L := mustLayout(t, tiledFloatLayout)
 
-	if applyLayout(f.config(), w, L) {
+	if ok, _ := applyLayout(f.config(), w, L); ok {
 		t.Fatal("applyLayout ok = true, want false so the caller suppresses the broadcast")
 	}
 	if got := f.verbs("kill-pane"); got != nil {

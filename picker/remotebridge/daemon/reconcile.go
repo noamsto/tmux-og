@@ -182,7 +182,22 @@ passes:
 		// failure. On a miss the mirror keeps its last-good screen instead.
 		// applyPaneOps' own inner seed is deliberately NOT gated this way: a
 		// pane it just appended has no last-good screen to keep.
-		if applyLayout(cfg, w, L) {
+		shaped, desynced := applyLayout(cfg, w, L)
+		if desynced {
+			// The same recovery the structural path runs for
+			// errLocalPanesDesynced, reached from the one path that has no
+			// applyPaneOps to raise it.
+			fmt.Fprintf(os.Stderr, "daemon: layout-change %s: local pane count disagrees with %d remote; rebuilding\n",
+				w.remoteID, len(L.Panes))
+			if err := resetWindow(cfg, w, send, router, waitHellos, cst, cv, rt); err != nil {
+				fmt.Fprintf(os.Stderr, "daemon: layout-change reset %s: %v\n", w.remoteID, err)
+				w.remotePanes = remote
+				return retireOrRestoreFloats(cfg, w, L, send, router, waitHellos, cst, rt)
+			}
+			// setupWindow re-read the layout and re-shaped the window itself.
+			return false
+		}
+		if shaped {
 			// Bounded on both sides: after applyLayout, because select-layout unzooms
 			// the window it shapes (measured), and before the dims and seeds below,
 			// which describe and paint the pane at whatever geometry it holds now.
@@ -406,26 +421,71 @@ func retireOrRestoreFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, se
 // clears w.layout, so surgery that reshapes the window always shapes it back.
 //
 // L.Raw is the tiled-only v1 string, which select-layout applies while leaving
-// every float in place, the user's own included (#535). A resident local server
-// older than the pinned tmux refuses it while any float is open, so the mirror
-// keeps its last-good screen until a remote change lands with none open.
+// every float in place, the user's own included (#535) — floats do not count
+// toward the pane total it validates against (measured). Dead panes do, which
+// is what desynced is for.
 //
 // ok is false only when select-layout itself failed. The caller gates the
 // remote's dims and screen on it: painting them into panes that never took the
 // shape is the blank-mirror failure.
-func applyLayout(cfg Config, w *mirrorWindow, L controlmode.Layout) (ok bool) {
+//
+// desynced reports that the refusal was a pane-count mismatch — the window
+// holds a different number of tiled panes than L describes. That one never
+// clears on a retry, and on the non-structural path nothing else looks: a pure
+// reshape runs no applyPaneOps, so errLocalPanesDesynced's own check never
+// gets a chance and the mirror would keep stale geometry for the life of the
+// window while its renderers went on painting the remote's current screen into
+// it (#672). The caller rebuilds on it.
+func applyLayout(cfg Config, w *mirrorWindow, L controlmode.Layout) (ok, desynced bool) {
 	if err := cfg.LocalTmux(FitWindowCmd(w.localWin, L)...); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: layout-change resize-window: %v\n", err)
 	}
 	if L.Raw == w.layout {
-		return true
+		return true, false
 	}
 	if err := cfg.LocalTmux("select-layout", "-t", w.localWin, L.Raw); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: layout-change select-layout: %v\n", err)
-		return false
+		return false, localPaneCountDesynced(cfg, w, L)
 	}
 	w.appliedZoom = false // select-layout unzooms; caller's assertMirrorZoom may set it again
 	w.layout = L.Raw
+	return true, false
+}
+
+// localPaneCountDesynced asks, of a select-layout that was just refused,
+// whether the window holds a different number of tiled panes than L describes.
+//
+// Counted the way select-layout counts: floats are excluded (parseLocalPaneList
+// drops them, and tmux does not validate against them) while a DEAD pane is
+// included, because it is still a pane to both. A mirror window carries
+// remain-on-exit on so a dying renderer leaves a corpse rather than taking the
+// session with it (#547), so a corpse between the death and healDeadRenderers'
+// rebuild — or past its strike cap, where the corpse is left for good — is the
+// ordinary way a mirror ends up over-count.
+//
+// Only on an error path, so the extra read costs nothing on the pass that
+// works. Positive evidence only: a listing that cannot be made, or that comes
+// back with no tiled pane at all, reports no desync. A live window always holds
+// one, so an empty answer is a window that has gone rather than a count to act
+// on — and the retire path owns that, where rebuilding a healthy window on a
+// transient read is the worse failure.
+//
+// On a desync it adopts the listing into w.localPanes, and that is load-bearing
+// rather than tidy: the rebuild it triggers reaps through dropMirroredPanes,
+// which kills w.localPanes[1:] — so a stale list leaves the very pane that
+// caused the mismatch alive, setupWindow's own select-layout is refused for the
+// same reason, and the rebuild repairs nothing. A pass that reports no desync
+// leaves the caller's view untouched, since it decided to do nothing.
+func localPaneCountDesynced(cfg Config, w *mirrorWindow, L controlmode.Layout) bool {
+	out, err := cfg.LocalTmuxOut("list-panes", "-t", w.localWin, "-F", localPaneListFormat)
+	if err != nil {
+		return false
+	}
+	tiled, _ := parseLocalPaneList(out)
+	if len(tiled) == 0 || len(tiled) == len(L.Panes) {
+		return false
+	}
+	w.localPanes = tiled
 	return true
 }
 
