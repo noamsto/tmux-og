@@ -49,6 +49,11 @@ type Config struct {
 	// ssh ControlMaster and returns the remote path it landed at (#361). nil
 	// disables ctrl+v image-paste interception (tests, --test-local).
 	PasteUpload func(ctx context.Context, ext string, data []byte) (string, error)
+	// RendererDied is death.wake, stamped onto cfg once per Run so pumpInput
+	// can wake the main loop without threading a parameter through the whole
+	// reconcile call chain. nil is legal — every test that builds a bare
+	// Config{} directly, and any call path that predates this field.
+	RendererDied func()
 	// SendCtl is Run's sendCtl, the bool-reporting form of send, stamped onto
 	// cfg once per Run so paster() can hand it to pasteHandler without
 	// threading a parameter through the whole reconcile call chain. Unset in
@@ -676,6 +681,13 @@ func Run(cfg Config) error {
 	// Session lifetime, like replacer and loopTick: runConn selects on its
 	// timer, and one built per attach would leak a timer per reconnect.
 	carousel := newCarouselProbe()
+	// Session lifetime, like carousel: runConn selects on its timer too, and
+	// it is set on cfg here, before any call that might invoke pumpInput (the
+	// earliest is inside the mirror-window setup loop, well after this point
+	// in Run's body) — cfg is a value parameter, so every later call site that
+	// receives a copy of it carries the field once it is set here.
+	death := newDeathNudge()
+	cfg.RendererDied = death.wake
 	// The listener outlives a drop, so a keybind pressed mid-outage reaches
 	// here and gets nacked by the closed stream rather than hanging. The nack
 	// must carry a non-empty error or the keybind claims a gesture landed that
@@ -1067,6 +1079,15 @@ func Run(cfg Config) error {
 				// its own reply block back. The replacement itself runs in the
 				// attach loop, the only place a round-trip may run.
 				return connReplace
+			case <-death.C():
+				// deathSweepDelay has now elapsed since the first connection close in
+				// this batch, giving tmux time to settle pane_dead. force() ensures
+				// the sweep below actually runs this pass instead of being floored by
+				// windowSweepInterval — a bare wake-up with no force can be silently
+				// swallowed by that floor, which would leave this no faster than the
+				// mainLoopTickInterval backstop it exists to shortcut.
+				death.fired()
+				sweeper.force()
 			}
 		}
 	}
@@ -1315,7 +1336,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 
 	for i, remotePane := range paneIDs {
 		if wired[i] {
-			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster())
+			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied)
 			continue
 		}
 		// A sole pane's failure is fatal: this error is what makes addWindow /
@@ -1327,7 +1348,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
-		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster())
+		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied)
 	}
 
 	// A window that already holds a float when the bridge opens mirrors it now
@@ -1883,7 +1904,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
 	seedRenderer(rt, router, hc.conn, hc.paneID, rendererDims(mw, hc.paneID), cfg.graphicsFor(hc.paneID))
-	go pumpInput(hc.conn, hc.paneID, send, cfg.paster())
+	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied)
 }
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
@@ -2252,10 +2273,18 @@ func (s *outputSink) Close() {
 // pumpInput forwards conn's FrameInput frames to the remote pane as
 // send-keys commands, until conn closes. A non-nil paste handler intercepts
 // ctrl+v image pastes first (see paste.go); nil forwards input verbatim.
-func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler) {
+//
+// died fires for every connection close, not just crashes — the caller
+// (sweeper.sweep, once the debounced timer forces it) re-derives which
+// window is actually dead, so a spurious wake costs one no-op forced sweep
+// pass, never a wrong repair.
+func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func()) {
 	for {
 		f, err := wire.ReadFrame(conn)
 		if err != nil {
+			if died != nil {
+				died()
+			}
 			return
 		}
 		if f.Type != wire.FrameInput {

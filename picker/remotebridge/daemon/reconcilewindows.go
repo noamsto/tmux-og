@@ -179,6 +179,15 @@ func mirrorPaneRows(cfg Config) (live, deadRenderer map[string]bool, ok bool) {
 // session.
 const deadRendererStrikes = 3
 
+// deadRendererRecovery bounds how soon a healthy pass after a window's own
+// rebuild counts as evidence the renderer is staying up. A pass inside this
+// window of the rebuild is that rebuild's own echo — resetWindow closing the
+// superseded conns arms the same died() the event path wakes on, not a
+// second data point — and mainLoopTickInterval is the sweep's own former
+// cadence, so using it as the threshold means the event path can never return
+// the budget faster than the sweep it replaces did.
+const deadRendererRecovery = mainLoopTickInterval
+
 // healDeadRenderers rebuilds every mirror holding a dead renderer pane.
 //
 // A renderer's exit is not structural any more — stampMirrorWindow sets
@@ -203,6 +212,9 @@ func (s *windowSweeper) healDeadRenderers(cfg Config, dead map[string]bool, send
 	if s.deadStrikes == nil {
 		s.deadStrikes = map[string]int{}
 	}
+	if s.lastRebuild == nil {
+		s.lastRebuild = map[string]time.Time{}
+	}
 	for _, remoteID := range reg.remoteIDs() {
 		mw, ok := reg.byRemoteID(remoteID)
 		if !ok {
@@ -211,8 +223,13 @@ func (s *windowSweeper) healDeadRenderers(cfg Config, dead map[string]bool, send
 		if !dead[mw.localWin] {
 			// A pass that finds this mirror healthy returns its budget: the cap
 			// exists to stop a repeating failure, not to ration repairs over a
-			// session in which renderers die once and come back.
-			delete(s.deadStrikes, remoteID)
+			// session in which renderers die once and come back. But a pass
+			// inside deadRendererRecovery of the window's own last rebuild is
+			// that rebuild's own died() echo, not a second data point — see
+			// deadRendererRecovery's doc comment.
+			if last := s.lastRebuild[remoteID]; last.IsZero() || time.Since(last) >= deadRendererRecovery {
+				delete(s.deadStrikes, remoteID)
+			}
 			continue
 		}
 		if s.deadStrikes[remoteID] >= deadRendererStrikes {
@@ -222,6 +239,13 @@ func (s *windowSweeper) healDeadRenderers(cfg Config, dead map[string]bool, send
 		if err := resetWindow(cfg, mw, send, router, waitHellos, cst, cv, rt); err != nil {
 			fmt.Fprintf(os.Stderr, "daemon: dead renderer in %s: %v\n", remoteID, err)
 		}
+		// Stamped after resetWindow returns, not before: deadRendererRecovery
+		// measures "has the renderer stayed up since the rebuild FINISHED",
+		// and resetWindow's own spawn/hello/seed round trip can itself run
+		// past deadRendererRecovery on a loaded box — stamping first would let
+		// the rebuild's own duration, not just its echo, blow through the
+		// recovery window it exists to close.
+		s.lastRebuild[remoteID] = time.Now()
 		if s.deadStrikes[remoteID] == deadRendererStrikes {
 			fmt.Fprintf(os.Stderr, "daemon: %s: renderer keeps dying after %d rebuilds; leaving it\n",
 				remoteID, deadRendererStrikes)
@@ -237,12 +261,35 @@ func (s *windowSweeper) healDeadRenderers(cfg Config, dead map[string]bool, send
 const windowSweepInterval = time.Second
 
 // windowSweeper carries that floor across the main loop's iterations, and
-// across a reconnect: no pass holds connection-scoped state. deadStrikes is
-// the exception to "no state" — it has to outlive the mirrorWindow it counts
-// against, which a rebuild replaces.
+// across a reconnect: no pass holds connection-scoped state. deadStrikes and
+// lastRebuild are the exception to "no state" — they have to outlive the
+// mirrorWindow they count against, which a rebuild replaces.
 type windowSweeper struct {
 	lastPass    time.Time
 	deadStrikes map[string]int
+	// lastRebuild is when healDeadRenderers last rebuilt each remote id's
+	// window — see deadRendererRecovery.
+	lastRebuild map[string]time.Time
+}
+
+// force resets the floor so the very next sweep call actually runs. Used only
+// from the death-nudge case in runConn: windowSweepInterval exists to stop a
+// per-stream-line fork storm, not to defer a corpse a connection close just
+// reported.
+//
+// The real cost: a successful heal's own resetWindow closes the superseded
+// conns, which arms a follow-up force too (that is what deadRendererRecovery
+// exists to keep from being read as a second data point) — so a single death
+// episode costs on the order of two forced sweeps, not one, and under
+// sustained reconcile churn (a remote repeatedly splitting/closing panes) the
+// forced cadence tops out at one sweep per deathSweepDelay (4/s) — still far
+// below the per-stream-line storm the floor exists to prevent. A forced sweep
+// whose own mirrorPaneRows listing fails still spends lastPass (sweep's
+// s.lastPass = time.Now() precedes the listing read) — the one way a force is
+// consumed without doing anything, and harmless since the backstop still
+// applies.
+func (s *windowSweeper) force() {
+	s.lastPass = time.Time{}
 }
 
 // sweep runs the registry-wide repair passes, at most once per interval.
