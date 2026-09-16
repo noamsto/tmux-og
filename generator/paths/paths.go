@@ -52,6 +52,7 @@ var RequiredScripts = []string{
 	"tmux-reflow-windows",
 	"tmux-scratchpad",
 	"tmux-session-picker",
+	"tmux-shell-prompt",
 	"tmux-splash-maybe",
 	"tmux-update-icons",
 	"tmux-which-key",

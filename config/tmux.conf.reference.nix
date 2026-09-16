@@ -754,6 +754,7 @@
     set-hook -gu after-kill-pane
     set-hook -gu pane-exited
     set-hook -gu pane-died
+    set-hook -gu pane-shell-prompt
     set-hook -gu pane-focus-in
     set-hook -gu after-select-pane
 
@@ -847,6 +848,19 @@
     # the server's command queue.
     set-hook -g pane-exited 'run-shell -b "${script.tmux-reap-pane}/bin/tmux-reap-pane #{q:hook_pane}"'
     set-hook -g pane-died   'run-shell -b "${script.tmux-reap-pane}/bin/tmux-reap-pane #{q:hook_pane}"'
+
+    # Dead-agent detection from the shell's own prompt mark (#646): OSC 133;A fires
+    # pane-shell-prompt whenever the shell redraws a prompt, so the handler clears
+    # the exited agent's state. pane_current_command is the foreground pgrp leader's
+    # argv[0], so a nested prompt inside a still-running agent reads as the agent
+    # and the handler skips it. pane-command-finished/started are deliberately
+    # unwired: the prompt event is the conservative "back at a prompt" signal.
+    # Index 0 (tmux-og's convention; remux owns [99]); run-shell -b keeps the fork
+    # off the command queue. pane_current_command and session_name are wrap-required
+    # formats so they take bare #{qs:} (never #{q:}, which loses a leading ~/word);
+    # #{q:hook_pane} is a %N id. session_name (never session_id — its $N re-expands
+    # in run-shell) carries the ownership guard.
+    set-hook -g pane-shell-prompt 'run-shell -b "${script.tmux-shell-prompt}/bin/tmux-shell-prompt #{q:hook_pane} #{qs:pane_current_command} #{qs:session_name}"'
 
     # A scratchpad dies with its parent session ([99] is tmux-remux's capture-event)
     set-hook -g session-closed[98] 'run-shell -b "tmux kill-session -t =scratch-#{qs:hook_session_name} 2>/dev/null || true"'
