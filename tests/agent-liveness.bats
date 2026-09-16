@@ -271,6 +271,9 @@ setup_sweep() {
 	# argument is exactly how main() marks that caller (see its
 	# OG_TICK_SWEEP dispatch), so arm_agent_detect must not reap on it.
 	setup_sweep
+	# CLAUDE_NOW must pass the 60s gate (setup_sweep's 100 does not), or the
+	# clock alone explains the empty log and the $1 gate is never exercised.
+	export CLAUDE_NOW=120
 	run bash -c '
 		claude_reap_dead_panes() { printf "%s" "$1" >"'"$BATS_TEST_TMPDIR"'/reap.log"; }
 		source scripts/tmux-update-icons.sh
