@@ -868,9 +868,11 @@
     set -g window-style "fg=#{@thm_fg},bg=#{@thm_mantle}"
     set -g window-active-style "fg=#{@thm_fg},bg=#{@thm_bg}"
 
-    # Pane scrollbars (tmux 3.6+): modal so a pane is only narrowed while its
-    # scrollbar is visible (copy/view mode), never in normal editing.
-    set -g pane-scrollbars modal
+    # Pane scrollbars (tmux 3.8+): auto-hide overlays the scrollbar on scroll or
+    # hover and lets it disappear after pane-scrollbars-timeout (500ms default,
+    # fine as-is) instead of narrowing the pane while it's visible (the old modal
+    # behaviour).
+    set -g pane-scrollbars auto-hide
     set -g pane-scrollbars-style "fg=#{@thm_mauve},bg=#{@thm_surface_0},width=1"
     set -g pane-scrollbars-position right
 

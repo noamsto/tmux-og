@@ -109,13 +109,12 @@ Functions use the `REPLY` variable pattern (set `REPLY` instead of echoing) to a
   `renderHeaderItem` composes glyph + label + a rule that ends exactly at the
   edge. `isColumnHeader` marks the one header that is not a section, so the pin
   passes its own `display` through untouched.
-- **`unquoteTmuxOptValue`**: bare `show -g` quotes with single quotes as readily
-  as double, and an option set to the empty string prints as `''`. Trimming only
-  double quotes turned "no remote hosts configured" into a host literally named
-  `''`, with a Remote section of its own. Only a matched pair is stripped. The quoting is an
-  artifact of bare `show -g`: `show -gv` and `-F '#{@opt}'` both return the raw
-  value (the same empty option prints as `@opt ''` under `show -g`, as an empty
-  line under `show -gv`), so reading with `-gv` retires this helper.
+- **`readTmuxOpts`** reads `tmux show -g -F '#{option_name} #{option_value}'`
+  directly — the custom `-F` format bypasses `show -g`'s default quote-escaping
+  template, so `#{option_value}` is already raw. An option set to the empty
+  string now reads back as an empty string with no quote-stripping needed
+  (previously `show -g` printed it as `''`, which is what `unquoteTmuxOptValue`
+  used to unwrap; that helper is gone).
 
 ### Two Icon Variables
 
@@ -550,9 +549,13 @@ option.
 - **The multi-client rule is capability intersection, never last-writer-wins
   or `list-clients` order.** Every non-control client attached to the mirror
   session votes on two ANDs: `kitty` iff every one of them carries an
-  `xterm-kitty`/`xterm-ghostty`-prefixed termname, `sixel` iff every one
-  carries a whole `sixel` token in `client_termfeatures`. Control-mode
-  clients are excluded outright — their `client_termfeatures` is always
+  `xterm-kitty`/`xterm-ghostty`-prefixed termname, `sixel` iff every one's own
+  `#{I/f:sixel}` — tmux's own per-client capability interrogation — reads `1`.
+  `client_termfeatures` is still read alongside it, only for the raw
+  diagnostic — the kitty-prefix check reads `client_termname` alone; the sixel
+  bool itself is never re-derived from matching tokens in `client_termfeatures`.
+  Control-mode clients are excluded
+  outright — their `client_termfeatures` (and `#{I/f:sixel}`) is always
   empty, so counting one would force sixel false and could hand it the
   termname pick for a "client" that paints nothing. The advertised termname
   is the lexicographically **smallest** termname among the clients that
@@ -634,7 +637,7 @@ option.
 - **The gate is the AND of every non-control client's own `sixel`
   terminal-feature currently attached to the mirror session** — not, since
   #574, a single sample of whichever client launched the bridge.
-  `client_termfeatures` is read continuously off `list-clients` (the
+  `#{I/f:sixel}` is interrogated continuously off `list-clients` (the
   daemon's `watchLocalClient` watcher, nudged by `client-session-changed` and
   `client-detached` session hooks) rather than once via a launch-time
   `display-message`, and every `Proxy.Filter` plus the `OG_RELAY_GRAPHICS`
@@ -962,10 +965,11 @@ default through `programs.tmux-og.splash.enable`.
 - **Remote (ssh) attach:** `programs.tmux-og.splash.remote` (`full` default,
   `static`, or `skip`) controls what `tmux-splash-maybe` does when the client
   that attached to the session came in over ssh. Detected via
-  `SSH_CONNECTION` in the *session's* environment table (`tmux
-  show-environment`) — tmux's default `update-environment` list ships it, and
-  this repo only ever appends to that list, so it survives to the gate script
-  even though the hook itself runs server-side. `static` launches
+  `#{I/e:SSH_CONNECTION}`, tmux's per-client environment interrogation
+  (`format.c`'s `I` modifier reading `ft->c->environ` for the *attaching*
+  client named by `-c`), which is strictly more correct than the old
+  session-table read since it can no longer be confused by whichever client
+  most recently attached to the session. `static` launches
   `tmux-splash --static` (forces the existing single small-frame fallback,
   with no dissolve-in and no periodic redraw — the bandwidth-light path);
   `skip` opens nothing for that attach and leaves `@splash_shown` unset, so a

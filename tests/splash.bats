@@ -17,12 +17,6 @@ setup() {
 		last_arg() { eval "echo \"\${$#}\""; }
 		case "$1" in
 		show-option) echo "${FAKE_SHOWN:-}";;
-		show-environment)
-			case "${FAKE_SSH:-unset}" in
-			set) echo "SSH_CONNECTION=1.2.3.4 1111 5.6.7.8 22";;
-			unset) echo "-SSH_CONNECTION";;
-			error) exit 1;;
-			esac;;
 		display-message)
 			fmt="$(last_arg "$@")"
 			case "$fmt" in
@@ -30,6 +24,12 @@ setup() {
 			'#{session_windows}') echo "${FAKE_WINDOWS:-1}";;
 			'#{window_panes}') echo "${FAKE_PANES:-1}";;
 			'#{pane_current_command}') echo "${FAKE_CMD:-fish}";;
+			'#{I/e:SSH_CONNECTION}')
+				case "${FAKE_SSH:-unset}" in
+				set) echo "1.2.3.4 1111 5.6.7.8 22";;
+				unset) echo "";;
+				error) exit 1;;
+				esac;;
 			esac;;
 		list-clients) printf '%s %s\n' "${FAKE_CONTROL:-0}" "${FAKE_CLIENT:-/dev/ttys0}";;
 		set-option)   echo "$*" >>"$SETOPT_LOG";;

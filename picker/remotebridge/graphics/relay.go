@@ -1,7 +1,6 @@
 package graphics
 
 import (
-	"strings"
 	"sync/atomic"
 )
 
@@ -15,24 +14,16 @@ type Relay struct {
 	raw   string // the raw client_termfeatures this was derived from (R1 logging)
 }
 
-// RelayFromTermFeatures derives a Relay from tmux's raw, comma-separated
-// client_termfeatures (e.g. "bpaste,focus,RGB,sixel,title"). It is the ONLY
-// constructor from external input, so nothing wider than tmux's own render
-// condition can be injected at the boundary (R6).
+// NewRelayFromClient builds a Relay from a capability already resolved by
+// tmux's own #{I/f:sixel} client interrogation (R6) — sixel is whatever tmux
+// itself reports for the client, never re-derived by matching
+// client_termfeatures tokens in Go. raw is kept only for Proxy.Filter's drop
+// diagnostic (R1).
 //
-// Sixel is set iff a whole "sixel" token is present — a token that merely
-// contains "sixel" as a substring ("nosixel", "sixelfoo") must not match, so
-// this splits on commas and compares whole, trimmed tokens rather than
-// searching the raw string.
-func RelayFromTermFeatures(feats string) Relay {
-	r := Relay{raw: feats}
-	for _, tok := range strings.Split(feats, ",") {
-		if strings.TrimSpace(tok) == "sixel" {
-			r.sixel = true
-			break
-		}
-	}
-	return r
+// Named NewRelayFromClient rather than NewRelay to avoid colliding with
+// proxy.go's existing NewRelay (the *Proxy constructor) in this same package.
+func NewRelayFromClient(sixel bool, raw string) Relay {
+	return Relay{sixel: sixel, raw: raw}
 }
 
 // String renders the cross-repo grammar the daemon publishes to the remote

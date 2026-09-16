@@ -9,14 +9,17 @@ import (
 
 // viewClientFormat lists the mirror session's own clients for
 // resolveViewIdentity (R1/R2): one row per attached client, in
-// #{client_control_mode}|#{client_termname}|#{client_termfeatures} order —
-// the control flag leads, matching scripts/tmux-default-size.sh's own
+// #{client_control_mode}|#{client_termname}|#{client_termfeatures}|#{I/f:sixel}
+// order — the control flag leads, matching scripts/tmux-default-size.sh's own
 // #{client_control_mode}|... convention, so the "skip this row" test reads
-// the same way in both places. '|'-delimited per R12/CLAUDE.md: a tab or
-// newline collapses the row to one field for any client without a UTF-8
-// locale, and none of these three fields is free-form enough to carry one
-// anyway.
-const viewClientFormat = "#{client_control_mode}|#{client_termname}|#{client_termfeatures}"
+// the same way in both places. The trailing #{I/f:sixel} is tmux's own
+// per-client capability interrogation (R6) — client_termfeatures is still
+// carried alongside it only for the raw diagnostic; the kitty-prefix check
+// reads client_termname alone.
+// '|'-delimited per R12/CLAUDE.md: a tab or newline collapses the row to one
+// field for any client without a UTF-8 locale, and none of these four fields
+// is free-form enough to carry one anyway.
+const viewClientFormat = "#{client_control_mode}|#{client_termname}|#{client_termfeatures}|#{I/f:sixel}"
 
 // ViewIdentity is what resolveViewIdentity resolves the mirror's attached
 // clients down to: the termname a control client should advertise, and the
@@ -46,10 +49,10 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 	for _, line := range lines {
 		line = strings.TrimRight(line, "\r")
 		fields := strings.Split(line, "|")
-		if len(fields) != 3 {
+		if len(fields) != 4 {
 			continue // malformed/short row; one bad line must not fail the whole resolve
 		}
-		control, term, feats := fields[0], fields[1], fields[2]
+		control, term, feats, sixelFlag := fields[0], fields[1], fields[2], fields[3]
 		if control == "1" {
 			// A control-mode client's client_termfeatures is always empty
 			// (E1), so counting it here would force the AND'd sixel
@@ -61,7 +64,7 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 			term:  term,
 			feats: feats,
 			kitty: strings.HasPrefix(term, "xterm-kitty") || strings.HasPrefix(term, "xterm-ghostty"),
-			sixel: graphics.RelayFromTermFeatures(feats).Sixel(),
+			sixel: sixelFlag == "1",
 		})
 	}
 	if len(clients) == 0 {
@@ -96,8 +99,9 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 	// concatenating every client's termfeatures — a union of tokens would
 	// falsely read as sixel-capable the moment any one client's list carried
 	// the token, which is exactly the AND this resolver exists to compute.
-	// Re-deriving through RelayFromTermFeatures on the chosen witness's own
-	// raw string is what keeps Sixel() and raw honestly paired.
+	// The AND itself (sixelAll) is computed directly from each client's
+	// #{I/f:sixel}-interrogated sixel flag above — raw is carried only for
+	// the diagnostic, never re-derived from it.
 	feats := ""
 	for _, c := range clients {
 		if sixelAll && !c.sixel {
@@ -111,7 +115,7 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 		}
 	}
 
-	return ViewIdentity{Term: term, Relay: graphics.RelayFromTermFeatures(feats)}, true
+	return ViewIdentity{Term: term, Relay: graphics.NewRelayFromClient(sixelAll, feats)}, true
 }
 
 // ResolveLocalViewIdentity runs viewClientFormat's list-clients query against

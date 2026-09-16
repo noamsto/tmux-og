@@ -36,24 +36,17 @@ fish | bash | zsh | sh | dash | nu) ;;
 *) exit 0 ;;
 esac
 
-# SSH_CONNECTION is attach-scoped: tmux's update-environment copies it from
-# the attaching client into the SESSION's environment table at attach time
-# (this repo only ever appends to that default list, never replaces it — see
-# `set -ga update-environment` in config/tmux.conf.nix), so it's readable here
-# even though this hook itself runs server-side, not in the client's shell.
-# A client-session-changed firing reflects whichever client most recently
-# attached, not necessarily the one that triggered this particular call.
-# show-environment exits 0 both when the var is set (`NAME=value`) and when
-# it was never set by the attaching client (tmux prints a `-NAME` removal
-# marker) — so the exit code alone can't distinguish remote from local; the
-# value must be inspected.
+# `#{I/e:SSH_CONNECTION}` reads SSH_CONNECTION out of the *client's own*
+# environment (`ft->c->environ` in tmux, format.c) directly — strictly more
+# correct than the old session-environment-table read, which reflected
+# whichever client most recently attached to the session, not necessarily the
+# one that triggered this particular call. Interrogating `$client` by name
+# removes that ambiguity entirely. An unset var and an interrogation error are
+# treated the same (both mean "not remote"), same fail-safe shape as before.
 is_remote_attach() {
 	local v
-	v="$(tmux show-environment -t "$session" SSH_CONNECTION 2>/dev/null)" || return 1
-	case "$v" in
-	SSH_CONNECTION=?*) return 0 ;;
-	*) return 1 ;;
-	esac
+	v="$(tmux display-message -c "$client" -p '#{I/e:SSH_CONNECTION}' 2>/dev/null)" || return 1
+	[ -n "$v" ]
 }
 
 # Baked in at build time from programs.tmux-og.splash.remote (skip|static|full).

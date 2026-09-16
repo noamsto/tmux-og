@@ -346,9 +346,9 @@ func TestProxyRetentionCapEvictsOldestID(t *testing.T) {
 
 // relaySrc builds a RelaySource seeded from termfeatures, sparing every
 // caller that only wants a fixed capability from writing NewRelaySource(
-// RelayFromTermFeatures(...)) out in full.
+// NewRelayFromClient(...)) out in full.
 func relaySrc(feats string) *RelaySource {
-	return NewRelaySource(RelayFromTermFeatures(feats))
+	return NewRelaySource(NewRelayFromClient(strings.Contains(feats, "sixel"), feats))
 }
 
 // The gate on and off against the same input (R1/R6): a complete bare sixel
@@ -416,7 +416,7 @@ func TestProxyFollowsRelaySourceFlips(t *testing.T) {
 		t.Fatalf("phase 1 (off): logged = %d, want 1", logged)
 	}
 
-	src.Store(RelayFromTermFeatures("sixel"))
+	src.Store(NewRelayFromClient(true, "sixel"))
 	if got := string(p.Filter([]byte(sixel))); got != sixel {
 		t.Fatalf("phase 2 (on): out = %q, want the sixel relayed byte-identically", got)
 	}
@@ -438,7 +438,7 @@ func TestProxyFollowsRelaySourceFlips(t *testing.T) {
 	bigBody := strings.Repeat("~", 70<<10)
 	bigSixel := "\x1bPq" + bigBody + st
 
-	src.Store(RelayFromTermFeatures("sixel"))
+	src.Store(NewRelayFromClient(true, "sixel"))
 	half := len(bigSixel) / 2
 	if got := string(p.Filter([]byte(bigSixel[:half]))); got != "" {
 		t.Fatalf("big sixel first half (hold applied): out = %q, want it held, not forwarded", got)

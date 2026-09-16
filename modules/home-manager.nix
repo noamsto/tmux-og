@@ -727,10 +727,11 @@ in {
           already-resolved frame with no periodic redraw (cheaper over a
           slow link); "skip" shows nothing for that attach (a later local
           attach on the same tmux server still gets the splash it never
-          got). Detected via SSH_CONNECTION in the session's environment
-          table (tmux's default `update-environment`), not this process's
-          own env. Does not affect the on-demand `prefix + C-Space` splash,
-          which always shows the full animated version.
+          got). Detected via `#{I/e:SSH_CONNECTION}` interrogated against the
+          attaching client directly, not the session's environment table and
+          not this process's own env. Does not affect the on-demand
+          `prefix + C-Space` splash, which always shows the full animated
+          version.
         '';
       };
     };
