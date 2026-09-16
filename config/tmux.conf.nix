@@ -307,6 +307,7 @@
     "tmux-default-size"
     "tmux-worktree-match"
     "tmux-apply-theme-colors"
+    "tmux-client-theme"
     "tmux-scratchpad"
     "tmux-issue-stamp"
     "tmux-issue-stamp-linear"
@@ -448,6 +449,24 @@
       (builtins.readFile ../scripts/${name}.sh)
     );
 
+  # tmux-client-theme's recovery replay runs catppuccin, tmux-apply-theme-colors
+  # and og-remote-theme directly (the same three the config's own load order
+  # runs), plus lib-log for the lock and log_event. catppuccin needs both its
+  # own path and bash to run it with, exactly as pluginRunShells does.
+  mkScriptClientTheme = name:
+    pkgs.writeShellScriptBin name (
+      builtins.replaceStrings
+      ["@lib_log@" "@catppuccin@" "@bash@" "@apply_theme_colors@" "@remote_theme@"]
+      [
+        "${lib-log}"
+        "${catppuccin}/share/tmux-plugins/catppuccin/catppuccin.tmux"
+        "${pkgs.bash}/bin/bash"
+        "${script.tmux-apply-theme-colors}/bin/tmux-apply-theme-colors"
+        "${script.og-remote-theme}/bin/og-remote-theme"
+      ]
+      (builtins.readFile ../scripts/${name}.sh)
+    );
+
   # The remote-side session picker's dual-role wrapper (#356). The remote copy
   # execs the picker and needs zoxide by store path — the ssh PATH carries neither,
   # and guessing at profile bin dirs would only degrade the miss instead of
@@ -581,6 +600,8 @@
     then mkScriptReconcile name
     else if name == "tmux-carousel-restore"
     then mkScriptCarouselRestore name
+    else if name == "tmux-client-theme"
+    then mkScriptClientTheme name
     else if builtins.elem name scriptsWithLog
     then mkScriptWithLog name
     else if builtins.elem name scriptsWithRemote
@@ -729,6 +750,7 @@
     "tmux-agent-usage-cursor"
     "tmux-apply-theme-colors"
     "tmux-branch-display"
+    "tmux-client-theme"
     "tmux-default-size"
     "tmux-dir-display"
     "tmux-float-refit"

@@ -391,6 +391,8 @@ set-hook -gu after-kill-pane
 set-hook -gu pane-exited
 set-hook -gu pane-died
 set-hook -gu pane-shell-prompt
+set-hook -gu 'client-light-theme[40]'
+set-hook -gu 'client-dark-theme[40]'
 set-hook -gu pane-focus-in
 set-hook -gu after-select-pane
 
@@ -565,6 +567,19 @@ run-shell "{{index .Paths.Scripts "tmux-apply-theme-colors"}}"
 # that the theme moved; the script itself is a no-op unless the flavor
 # actually changed, so `prefix + r` costs nothing.
 run-shell -b "{{index .Paths.Scripts "og-remote-theme"}}"
+
+# Follow the terminal's own reported theme (#663). tmux 3.6+ fires these on
+# every report, not only on a change (measured), so the handler carries its
+# own no-op guard and lock; the hook only has to stamp the want synchronously,
+# on the server's command queue, so concurrent reports land in report order.
+# The literal per hook, never #{client_theme}, so no format value reaches a
+# shell. `set -g @og_follow_client_theme off` disables this at runtime.
+# Control-mode clients (the remote bridge) have no tty and never fire.
+# The { } command list is load-bearing, not style: a hook value chained with
+# a bare `\;` (measured) is re-split by tmux's own parser into too many
+# arguments for set-hook, and the second command is silently never set.
+set-hook -g 'client-light-theme[40]' { set -g @og_client_theme_want light ; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}}" }
+set-hook -g 'client-dark-theme[40]' { set -g @og_client_theme_want dark ; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}}" }
 
 run-shell {{index .Paths.Plugins "fingers"}}
 
