@@ -514,17 +514,23 @@ wait_for_client() {
 	[ "$prev_split" -eq "$total_windows" ]
 }
 
-@test "focus-follows-mouse, copy-mode-line-numbers, and the ? list-keys rebind are wired" {
+@test "focus-follows-mouse, copy-mode-line-numbers, and the ? which-key popup rebind are wired" {
 	[ "$(t show-options -g -qv focus-follows-mouse)" = "off" ]
 	[ "$(t show-options -g -qv copy-mode-line-numbers)" = "off" ]
 
+	# #629: ? now launches the which-key popup (tmux-which-key) instead of
+	# printing a raw list-keys listing directly; that raw format moved into
+	# picker/whichkey.go's whichKeyRawFormat, driving an in-popup toggle
+	# (covered by the Go tests there, not here — this file only sees the
+	# rendered tmux config, not the Go binary's internals).
 	run t list-keys -T prefix '?'
 	[ "$status" -eq 0 ]
-	# tmux normalizes flag order in its own list-keys echo (-N -F "..." -O key),
-	# so check each flag/value independently rather than the literal source order.
-	[[ $output == *'list-keys -N'* ]]
-	[[ $output == *'-F "#{key_table}: #{key_prefix}#{key_string}'* ]]
-	[[ $output == *'-O key'* ]]
+	[[ $output == *'run-shell'* ]]
+	[[ $output == *'tmux-which-key'* ]]
+	[[ $output == *'--origin-pane'* ]]
+
+	which_key="$(store_path '/nix/store/[[:alnum:]]*-tmux-which-key/bin/tmux-which-key')"
+	[[ -x $which_key ]]
 }
 
 # tmux 3.8 added auto-hide as a pane-scrollbars CHOICE value (replacing the
