@@ -88,7 +88,11 @@ display_of() {
 	[ -z "$(padded_of B:0)" ]
 	[ -z "$(padded_of B:1)" ]
 
-	bash "$UPDATE_ICONS" A >/dev/null 2>&1
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ] || {
+		echo "update-icons exited $status: $output"
+		false
+	}
 
 	local n=0 sess idx padded disp
 	while IFS='|' read -r sess idx; do
@@ -127,7 +131,11 @@ display_of() {
 		skip "tmux $(tmux -V) rejects session names containing |"
 	fi
 
-	bash "$UPDATE_ICONS" A >/dev/null 2>&1
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ] || {
+		echo "update-icons exited $status: $output"
+		false
+	}
 
 	local line sid sname padded
 	sid=""

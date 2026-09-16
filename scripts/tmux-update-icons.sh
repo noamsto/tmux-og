@@ -497,7 +497,7 @@ main() {
 					# above can slide onto a neighbour before either lands.
 					tmux set-option -t "${win_cwd_pane[$wkey]}" -w @window_cwd_seen "$cwd"
 					"$RECONCILE_BIN" "${win_cwd_pane[$wkey]}" --cwd-move >/dev/null 2>&1 &
-					disown
+					disown 2>/dev/null || true
 				fi
 			fi
 		fi
@@ -536,7 +536,7 @@ main() {
 				# per-window lock, so this never races post-switch or `enrich`.
 				if [[ -n $ISSUE_STAMP_BIN && $ISSUE_STAMP_BIN != @* && -n ${win_cur_branch[$wkey]:-} && -n $branch ]]; then
 					"$ISSUE_STAMP_BIN" "$target" "$git_root" "$branch" >/dev/null 2>&1 &
-					disown
+					disown 2>/dev/null || true
 				fi
 			fi
 		fi
@@ -653,7 +653,9 @@ main() {
 	# name; we map from the id we keyed on.
 	for s in "${!sess_need_reflow[@]}"; do
 		@reflow@ "${sess_name[$s]}" --force >/dev/null 2>&1 &
-		disown
+		# Instant reflow can finish before disown; a reaped job makes disown
+		# return 1, which is then the process exit (main's last command).
+		disown 2>/dev/null || true
 	done
 }
 
