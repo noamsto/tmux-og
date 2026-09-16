@@ -8,11 +8,10 @@ import (
 	"testing"
 )
 
-// A rebuild ends in setupWindow's select-layout, and tmux counts a floating
-// pane against the layout string's cell count — so a window rebuilt with its
-// mirrored floats still open can only fail the reshape. The user's own float
-// carries no localFloats entry and stays, as does pane 0, which resetWindow
-// keeps for the respawn.
+// A rebuild starts from scratch, mirrored floats included — setupWindow's
+// reconcileFloats re-creates them, which is also what repairs a float whose
+// renderer died. The user's own float carries no localFloats entry and stays,
+// as does pane 0, which resetWindow keeps for the respawn.
 func TestDropMirroredPanesReapsMirroredFloats(t *testing.T) {
 	var got [][]string
 	cfg := recordingCfg("%l0 0\n%l1 0\n%l9 1\n%lforeign 1\n", &got)
@@ -165,10 +164,9 @@ func TestReseedPanesRepaintsMirroredFloats(t *testing.T) {
 }
 
 // The drop's signal is what a failing reconcile exit reads to know it owes the
-// floats a re-add, and applyLayout reads the same token to avoid killing them
-// twice in one pass. So it must be raised on a real discard only: raising it on
-// a floatless window would have applyLayout skip a later legitimate drop and
-// take a select-layout into a window still holding a float tmux counts.
+// floats a re-add, so it must be raised on a real discard only: raised on a
+// floatless window, a failed rebuild would run a float reconcile for floats
+// that were never lost.
 func TestDropMirroredPanesRaisesFloatsDroppedOnlyForAFloat(t *testing.T) {
 	var got [][]string
 	cfg := recordingCfg("%l0 0\n%l1 0\n", &got)

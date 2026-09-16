@@ -1,7 +1,9 @@
 package controlmode
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -14,35 +16,35 @@ type PaneCell struct {
 type Layout struct {
 	W, H  int
 	Panes []PaneCell
-	// Floats holds panes that are floating (tmux next-3.8's trailing
-	// "<...>" layout section — see ParseLayout). Each cell is the INNER box
+	// Floats holds the window's floating panes. Each cell is the INNER box
 	// and equals the pane's usable size, so it feeds a renderer's dims
 	// unconverted; only tmux's create/resize/move flags take the border
 	// inset. Mirrored by the daemon as local floating panes.
 	Floats []PaneCell
-	// Raw is the layout string for the TILED panes only, incl. checksum
-	// prefix, safe to feed to `select-layout` (tmux rejects its own
-	// float-bearing layout strings when replayed — see ParseLayout).
-	// Identical to the input string when the window has no floats.
+	// Raw is the v1 layout string for the TILED panes only, incl. checksum
+	// prefix, whatever format the input was. select-layout keeps a window's
+	// floats in place for a v1 string, while a v2 string must name every
+	// local pane, floats included, or is rejected — and the mirror's local
+	// floats never match the remote's one for one (a user's own float).
 	Raw string
 }
 
-// ParseLayout parses a tmux layout string (window_layout / %layout-change payload).
-// Panes are returned depth-first in cell order — the order local panes must be
-// created in, since select-layout assigns panes to cells positionally.
+// ParseLayout parses a tmux layout string (window_layout / %layout-change
+// payload) in either format tmux emits: v2 JSON, which a control client gets
+// only after `refresh-client -f new-layouts` (tmux/tmux#5390), or v1. The
+// string is self-describing — v2 starts with "{". Panes are returned
+// depth-first in cell order — the order local panes must be created in,
+// since select-layout assigns panes to cells positionally.
 //
-// tmux next-3.8 encodes a window's floating panes two ways in the same
-// string: as ordinary leaves interleaved into the tiled split tree (so a
-// naive walk would create phantom local panes for them and feed a
-// select-layout string tmux itself rejects — verified: tmux errors
-// "invalid layout" replaying its own output), and again as a trailing
-// "<WxH,X,Y,id[,WxH,X,Y,id...]>" section listing exactly the float ids.
-// tmux 3.7b has no such trailing section (and no floats in the tree either).
-// ParseLayout uses the trailing section as the authoritative float id set,
-// prunes those leaves out of the tree (collapsing any split left with a
-// single child), and recomputes the checksum for the pruned body so Raw
-// stays select-layout-safe.
+// Floats are leaves of the tree in both formats: v2 marks each with a "z"
+// field; a next-3.8 remote predating v2 lists their ids again in a trailing
+// "<WxH,X,Y,id[,...]>" section. A current tmux's v1 dump leaves floats out
+// entirely. Float leaves are pruned out of the tree (collapsing any split
+// left with a single child) and the checksum recomputed over the pruned body.
 func ParseLayout(s string) (Layout, error) {
+	if strings.HasPrefix(s, "{") {
+		return parseLayoutV2(s)
+	}
 	// Strip the leading "<checksum>," prefix.
 	_, body, ok := strings.Cut(s, ",")
 	if !ok {
@@ -89,6 +91,132 @@ func ParseLayout(s string) (Layout, error) {
 		return Layout{}, fmt.Errorf("layout: no panes in %q", s)
 	}
 	return out, nil
+}
+
+// maxLayoutDepth matches tmux's own v1 nesting limit; the v2 walk is
+// recursive, and the tree comes from the remote.
+const maxLayoutDepth = 1000
+
+// jsonCell is one node of tmux's v2 "L" tree: "t" is "p" (pane) or "h"/"v"
+// (split). Decoded in one pass: a per-level json.RawMessage decode re-scans
+// every subtree once per ancestor, quadratic on a deep remote-supplied tree.
+// Ignore must stay: without a field tagged "i" (the pane index),
+// encoding/json's case-insensitive match puts that int into I.
+type jsonCell struct {
+	T      string     `json:"t"`
+	W      *int       `json:"w"`
+	H      *int       `json:"h"`
+	X      *int       `json:"x"`
+	Y      *int       `json:"y"`
+	I      string     `json:"I"`
+	C      []jsonCell `json:"c"`
+	Z      *int       `json:"z"`
+	Ignore int        `json:"i"`
+}
+
+func parseLayoutV2(s string) (Layout, error) {
+	var doc struct {
+		V *int     `json:"V"`
+		L jsonCell `json:"L"`
+	}
+	dec := json.NewDecoder(strings.NewReader(s))
+	if err := dec.Decode(&doc); err != nil {
+		return Layout{}, fmt.Errorf("layout: bad v2 json in %q: %w", s, err)
+	}
+	// dec.More() reports false for a trailing "}" or "]".
+	if _, err := dec.Token(); err != io.EOF {
+		return Layout{}, fmt.Errorf("layout: trailing data after v2 json in %q", s)
+	}
+	if doc.V == nil || *doc.V != 2 {
+		return Layout{}, fmt.Errorf("layout: unsupported v2 version %v in %q", doc.V, s)
+	}
+
+	var floats []PaneCell
+	root, err := buildV2Node(doc.L, 0, &floats)
+	if err != nil {
+		return Layout{}, err
+	}
+
+	var out Layout
+	out.W, out.H = root.w, root.h
+	out.Floats = floats
+
+	floatIDs := make(map[string]bool, len(floats))
+	for _, f := range floats {
+		floatIDs[f.ID] = true
+	}
+	tiled := pruneFloats(root, floatIDs)
+	if tiled == nil {
+		return Layout{}, fmt.Errorf("layout: no tiled panes in %q", s)
+	}
+	var sb strings.Builder
+	writeCell(tiled, &sb)
+	out.Raw = fmt.Sprintf("%04x,%s", layoutChecksum(sb.String()), sb.String())
+
+	collectLeaves(tiled, &out.Panes)
+	if len(out.Panes) == 0 {
+		return Layout{}, fmt.Errorf("layout: no panes in %q", s)
+	}
+	return out, nil
+}
+
+// buildV2Node converts a decoded v2 cell into a *node, appending each float
+// leaf to *floats in tree order.
+func buildV2Node(c jsonCell, depth int, floats *[]PaneCell) (*node, error) {
+	if depth > maxLayoutDepth {
+		return nil, fmt.Errorf("layout: v2 nesting exceeds %d", maxLayoutDepth)
+	}
+	if c.W == nil || c.H == nil || c.X == nil || c.Y == nil {
+		return nil, fmt.Errorf("layout: v2 cell missing w/h/x/y")
+	}
+	n := &node{w: *c.W, h: *c.H, x: *c.X, y: *c.Y}
+	switch c.T {
+	case "p":
+		if len(c.C) != 0 {
+			return nil, fmt.Errorf("layout: v2 pane has children")
+		}
+		if !validPaneID(c.I) {
+			return nil, fmt.Errorf("layout: v2 pane id %q not %%+digits", c.I)
+		}
+		n.id = c.I
+		if c.Z != nil {
+			*floats = append(*floats, PaneCell{ID: n.id, W: n.w, H: n.h, X: n.x, Y: n.y})
+		}
+		return n, nil
+	case "h", "v":
+		if len(c.C) < 2 {
+			return nil, fmt.Errorf("layout: v2 split has %d children, want >= 2", len(c.C))
+		}
+		if c.T == "h" {
+			n.kind = '{'
+		} else {
+			n.kind = '['
+		}
+		for _, rawChild := range c.C {
+			child, err := buildV2Node(rawChild, depth+1, floats)
+			if err != nil {
+				return nil, err
+			}
+			n.children = append(n.children, child)
+		}
+		return n, nil
+	default:
+		return nil, fmt.Errorf("layout: v2 unknown cell type %q", c.T)
+	}
+}
+
+// validPaneID reports whether id is "%" followed by one or more digits, the
+// same shape v1 leaf ids always have.
+func validPaneID(id string) bool {
+	if len(id) < 2 || id[0] != '%' {
+		return false
+	}
+	for _, r := range id[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type node struct {

@@ -60,8 +60,28 @@ func (e *identityReadErr) Retry() bool { return e.retry }
 // round-trip and parses it strictly: pid and session_id are required, the
 // same posture sessionIDRe and parseWindowID already take for anything
 // interpolated into a later command — malformed is rejected, never coerced.
+//
+// It first opts the control client into v2 layouts: flags are per control
+// client, every attach leads with this read, and without the flag tmux
+// leaves floats out of a control client's layout dumps. A remote that
+// refuses the flag still mirrors its tiled panes, so that is logged, not
+// fatal.
 func readIdentity(rt roundTrip, session string) (remoteIdentity, error) {
-	l, ok := one(rt, fmt.Sprintf("display-message -p -t %s -F '#{pid}|#{start_time}|#{session_id}'", tmuxQuote(session)))
+	next := rt(
+		"refresh-client -f new-layouts",
+		fmt.Sprintf("display-message -p -t %s -F '#{pid}|#{start_time}|#{session_id}'", tmuxQuote(session)),
+	)
+	flagReply, ok := next()
+	if !ok {
+		return remoteIdentity{}, &identityReadErr{
+			err:   fmt.Errorf("daemon: identity read for %s: connection closed before reply", session),
+			retry: true,
+		}
+	}
+	if flagReply.Kind == controlmode.Error {
+		fmt.Fprintf(os.Stderr, "daemon: remote refused refresh-client -f new-layouts (%s); floats will not be mirrored\n", strings.TrimSpace(string(flagReply.Data)))
+	}
+	l, ok := next()
 	if !ok {
 		return remoteIdentity{}, &identityReadErr{
 			err:   fmt.Errorf("daemon: identity read for %s: connection closed before reply", session),

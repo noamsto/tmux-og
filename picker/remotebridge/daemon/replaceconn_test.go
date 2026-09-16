@@ -295,7 +295,7 @@ func TestReplaceConnDialFailureLeavesTheMirrorAlone(t *testing.T) {
 // been replaced drops that stream too — where reattach makes the call.
 func TestReplaceConnIdentityMismatchDoesNotTearTheMirrorDown(t *testing.T) {
 	f := newReplaceFixture(t)
-	next := newRecordConn(f.log, "new", "%begin 1 1 1\n9999|1788283304|$1\n%end 1 1 1\n")
+	next := newRecordConn(f.log, "new", newLayoutsFlagAck+"%begin 1 1 1\n9999|1788283304|$1\n%end 1 1 1\n")
 	cfg := f.cfg(f.dialing(next))
 
 	c, outcome := replaceConn(cfg, f.router, f.hold, f.want, f.reg, func() bool { return true })

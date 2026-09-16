@@ -76,7 +76,10 @@ func reattachCfg(dial func() (io.ReadWriteCloser, error), attempts int) Config {
 	}
 }
 
-const identityMatch = "%begin 1 1 1\n2151|1788283304|$1\n%end 1 1 1\n"
+// identityMatch is the reply to a whole readIdentity batch: the new-layouts
+// flag ack (newLayoutsFlagAck, see sessionpin_test.go) followed by a matching
+// identity reply.
+const identityMatch = newLayoutsFlagAck + "%begin 1 1 1\n2151|1788283304|$1\n%end 1 1 1\n"
 
 // TestReattachDropsOutputFromAnUnverifiedConnection is the trust boundary: the
 // identity round-trip runs readReplyRouting, which routes %output into
@@ -89,7 +92,7 @@ func TestReattachDropsOutputFromAnUnverifiedConnection(t *testing.T) {
 	sink := &capBuf{}
 	router.Register("%1", sink)
 
-	conn := newScriptConn("%output %1 INTRUDER\n" +
+	conn := newScriptConn("%output %1 INTRUDER\n" + newLayoutsFlagAck +
 		"%begin 1 1 1\n9999|1788283304|$1\n%end 1 1 1\n")
 	cfg := reattachCfg(func() (io.ReadWriteCloser, error) { return conn, nil }, 2)
 
@@ -123,8 +126,9 @@ func TestReattachBindsTheRouterOnlyAfterIdentityMatches(t *testing.T) {
 	if sink.Len() != 0 {
 		t.Fatalf("output from before the identity check leaked: %q", sink.String())
 	}
-	// Ordinal 2 on the same stream: a round-trip that answers proves the rebind
-	// reused this connection's counters rather than restarting them.
+	// Ordinal 3 on the same stream (identityMatch's flag ack and identity reply
+	// claim 1 and 2): a round-trip that answers proves the rebind reused this
+	// connection's counters rather than restarting them.
 	if _, ok := one(c.rt, "list-windows"); !ok {
 		t.Fatal("round-trip on the rebound connection found no reply")
 	}

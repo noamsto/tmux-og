@@ -193,8 +193,7 @@ func TestReconcileSeedsPaneBeforeItsLaterOutputArrives(t *testing.T) {
 
 	// A two-pane layout, unchanged across the reconcile pass: the point is the
 	// re-seed loop's ordering, not any pane add/remove/swap. w.layout stays empty
-	// so the dedup early-out does not skip the pass; LocalTmuxOut satisfies
-	// applyLayout's localCellsMatch short-circuit instead.
+	// so the dedup early-out does not skip the pass.
 	const layout = "4ed4,190x45,0,0{95x45,0,0,0,94x45,96,0,1}"
 	w := &mirrorWindow{
 		remoteID: "@1", localWin: "@101",
@@ -214,13 +213,8 @@ func TestReconcileSeedsPaneBeforeItsLaterOutputArrives(t *testing.T) {
 	rt := scriptedRTRouter(script, router)
 
 	cfg := Config{
-		LocalTmux: func(...string) error { return nil },
-		LocalTmuxOut: func(args ...string) (string, error) {
-			if len(args) >= 5 && args[4] == "#{window_layout}" {
-				return layout + "\n", nil
-			}
-			return "", nil
-		},
+		LocalTmux:    func(...string) error { return nil },
+		LocalTmuxOut: func(...string) (string, error) { return "", nil },
 	}
 	go reconcileLayout(cfg, w, func(string) {}, router, noHellos, newCtlState(), newConverger(), rt)
 

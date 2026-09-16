@@ -229,58 +229,6 @@ func (s *windowSweeper) healDeadRenderers(cfg Config, dead map[string]bool, send
 	}
 }
 
-// retryFailedShapes re-drives reconcile for any mirror whose last select-layout
-// failed, once the float that blocked it has gone.
-//
-// applyLayout drops its OWN floats and retries within the pass, so a failure
-// that outlives one is a float the user opened over the mirror (prefix + b/k/I,
-// and ^o's remote picker) — not ours to reap, and tmux has no float-tolerant
-// select-layout to work around it (tmux/tmux#5577: even its own window_layout
-// does not parse back in). The reshape genuinely has to wait.
-//
-// What must not wait is the recovery. reconcileLayout is reached via
-// reconcileLayoutFrom on a %layout-change or a coalesced batch of them — which
-// may answer and return before ever reaching here — or directly on a
-// reattach; all remote events. Closing a local float is none of those, so the
-// mirror kept the stale shape until the remote happened to move that window
-// again, which on an idle one can be a long time.
-// applyLayout already leaves w.layout stale on failure precisely so a later pass
-// retries; this is the pass.
-//
-// Gated on the local float check rather than retried blind: the retry costs a
-// readLayout round-trip, and while the float is still open it can only fail
-// again. That check is a local fork, and only for a window actually in the
-// failed state — normally none are, so the steady-state cost is zero.
-func retryFailedShapes(cfg Config, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, reg *registry, cv *converger, rt roundTrip) {
-	// By id, re-read each time: retireMirror reconciles the whole registry, so
-	// an entry taken before it ran may no longer be the one for that window.
-	for _, remoteID := range reg.remoteIDs() {
-		mw, ok := reg.byRemoteID(remoteID)
-		if !ok || mw.shapeFailedFor == "" {
-			continue
-		}
-		if localWindowHasFloat(cfg, mw.localWin) {
-			continue
-		}
-		if reconcileLayout(cfg, mw, send, router, waitHellos, cst, cv, rt) {
-			retireMirror(cfg, send, router, waitHellos, cst, reg, cv, rt, remoteID)
-		}
-	}
-}
-
-// localWindowHasFloat reports whether the local window still holds any floating
-// pane. A failed read answers true: that keeps a window whose state we cannot
-// establish out of the retry, which is the same thing the tick would do next
-// pass anyway, rather than spending a round-trip on a guess.
-func localWindowHasFloat(cfg Config, localWin string) bool {
-	out, err := cfg.LocalTmuxOut("list-panes", "-t", localWin, "-F", localPaneListFormat)
-	if err != nil {
-		return true
-	}
-	_, floats := parseLocalPaneList(out)
-	return len(floats) > 0
-}
-
 // windowSweepInterval is the floor between two maintenance sweeps, the agent
 // and label shippers'. Both passes fork a local tmux client (~30ms measured),
 // and the main loop's maintenance block runs once per control-stream LINE, not
@@ -312,5 +260,4 @@ func (s *windowSweeper) sweep(cfg Config, send func(string), router *Router, wai
 	// leaves the replacement alone rather than rebuilding it again.
 	healLostWindows(cfg, live, send, router, waitHellos, cst, reg, cv, rt)
 	s.healDeadRenderers(cfg, dead, send, router, waitHellos, cst, reg, cv, rt)
-	retryFailedShapes(cfg, send, router, waitHellos, cst, reg, cv, rt)
 }

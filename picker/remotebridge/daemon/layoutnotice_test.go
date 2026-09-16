@@ -10,6 +10,12 @@ func TestParseLayoutNotice(t *testing.T) {
 	const (
 		layout  = "c195,80x24,0,0[80x12,0,0,0,80x11,0,13,1]"
 		visible = "b25e,80x24,0,0,1"
+
+		// Captured on the pinned binary (next-3.9) after
+		// `refresh-client -f new-layouts`: layoutV2 is the unzoomed tree,
+		// visibleV2 the single-pane view a zoom reports in field 2.
+		layoutV2  = `{"V":2,"L":{"t":"v","w":100,"h":30,"x":0,"y":0,"c":[{"t":"p","w":100,"h":15,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":100,"h":14,"x":0,"y":16,"i":1,"I":"%1"}]}}`
+		visibleV2 = `{"V":2,"L":{"t":"p","w":100,"h":30,"x":0,"y":0,"a":true,"i":0,"I":"%0"}}`
 	)
 
 	tests := []struct {
@@ -57,6 +63,33 @@ func TestParseLayoutNotice(t *testing.T) {
 		{
 			name:   "2 fields",
 			raw:    "%layout-change @0 " + layout,
+			wantOK: false,
+		},
+		{
+			// Real %layout-change captured with the new-layouts flag taken:
+			// field 1 == field 2 when the window isn't zoomed, both the full
+			// unzoomed tree.
+			name:       "4 fields, v2 JSON, not zoomed",
+			raw:        "%layout-change @0 " + layoutV2 + " " + layoutV2 + " *",
+			wantOK:     true,
+			wantLayout: layoutV2,
+			wantZoomed: false,
+		},
+		{
+			// Real %layout-change captured with the new-layouts flag taken,
+			// for a zoomed window: field 1 stays the unzoomed tree, field 2
+			// is the zoomed single-pane view, flags carry Z.
+			name:       "4 fields, v2 JSON, zoomed",
+			raw:        "%layout-change @0 " + layoutV2 + " " + visibleV2 + " *Z",
+			wantOK:     true,
+			wantLayout: layoutV2,
+			wantZoomed: true,
+		},
+		{
+			// JSON-shaped but missing the "V": tag layoutShaped keys on;
+			// must not be mistaken for a v2 dump.
+			name:   "4 fields, JSON without the V tag",
+			raw:    `%layout-change @0 {"foo":1} {"foo":1} *`,
 			wantOK: false,
 		},
 		{

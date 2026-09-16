@@ -37,16 +37,11 @@ type mirrorWindow struct {
 	// its local mirror — the "have" side of planFloatOps, so a reconcile only
 	// ever reasserts what actually changed.
 	floatGeom map[string]controlmode.PaneCell
-	// floatsDropped records that this reconcile pass has already discarded the
-	// window's mirrored floats, whether to get a select-layout through or for a
-	// rebuild. It gates applyLayout against killing them twice in one pass, and
-	// tells a failing exit that owes them a re-add.
+	// floatsDropped records that a rebuild in this reconcile call has discarded
+	// the window's mirrored floats, telling a failing exit that it owes them a
+	// re-add.
 	floatsDropped bool
-	// shapeFailedFor is the L.Raw a select-layout last failed on, so the
-	// failure is reported once rather than on every reconcile that re-runs
-	// against an unchanged remote. Cleared whenever a shape lands.
-	shapeFailedFor string
-	layout         string // last tiled layout string applied locally, "" = none yet
+	layout        string // last tiled layout string applied locally, "" = none yet
 	// appliedZoom is the zoom flag last successfully asserted on the mirror
 	// window via if -F. Compared against readLayout's remote flag for dedup;
 	// zero value is unzoomed.
