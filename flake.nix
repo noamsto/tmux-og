@@ -1699,6 +1699,22 @@
               touch $out
             '';
 
+          float-refit-tests =
+            pkgs.runCommand "float-refit-tests" {
+              # mkTmux, not pkgs.tmux: this test creates real floating panes
+              # (-B/-X/-Y), which nixpkgs' stock tmux only *advertises* via
+              # `list-commands new-pane` and then rejects at parse time (see
+              # pickerChecked's comment above) — a plain pkgs.tmux would make
+              # every float-creating case skip instead of run.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR
+              bats tests/float-refit.bats
+              touch $out
+            '';
+
           default-size-tests =
             pkgs.runCommand "default-size-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils];
