@@ -47,6 +47,7 @@ var volatileFields = []string{
 	"#{@bridge_crew_name}", "#{@bridge_crew_color}",
 	"#{@bridge_label_id}", "#{@bridge_label_rest_long}",
 	"#{@bridge_proc}",
+	"#{@window_has_agent}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message
@@ -74,6 +75,7 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	a.bridgeCrewName, a.bridgeCrewColor = f[16], f[17]
 	a.bridgeLabelID, a.bridgeLabelRestLong = f[18], f[19]
 	a.bridgeProc = f[20]
+	a.windowHasAgent = f[21]
 	return f[0] == "1", true
 }
 
@@ -122,6 +124,7 @@ type args struct {
 	branch, panePath, gitRoot                       string
 	paneIcon, paneCmd, claudeFg, bridgeProc         string
 	crewName, crewColor                             string
+	windowHasAgent                                  string
 	bridgeWin, bridgeHost, bridgeState              string
 	bridgeCrewName, bridgeCrewColor                 string
 	bridgeLabelID, bridgeLabelRestLong              string
@@ -225,7 +228,9 @@ func sessionSegment(a args, prefixActive bool) string {
 
 	// Agent-codename badge for the active window (fan-out harness stamp). Tinted
 	// by its @crew_color when set; the issue/branch block below re-sets fg.
-	if a.crewName != "" {
+	// Gated on @window_has_agent so the badge doesn't outlive the agent that
+	// earned it (#671).
+	if a.crewName != "" && a.windowHasAgent == "1" {
 		fg := a.crewColor
 		if fg == "" {
 			fg = a.thmMauve

@@ -323,7 +323,7 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 	}
 	for _, line := range lines {
 		parts := strings.Split(line, "|")
-		if len(parts) != 34 {
+		if len(parts) != 35 {
 			continue
 		}
 		sess := parts[0]
@@ -378,6 +378,11 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 				if labelID == "" && labelRest != "" {
 					bridgeName = labelRest
 				}
+			} else if field(parts, 34) != "1" {
+				// No live agent in this window: the crew codename badge
+				// outlived the agent that earned it (#671).
+				crewName = ""
+				crewColor = ""
 			}
 
 			wi = &winInfo{
@@ -414,7 +419,7 @@ func collectWindows() []windowData {
 	// Fetch both @branch and pane path basename. The window_name contains
 	// icons/colors from automatic-rename-format so we reconstruct a clean name.
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}").Output()
+		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}").Output()
 	if err != nil {
 		return nil
 	}

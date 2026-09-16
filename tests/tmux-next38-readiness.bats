@@ -244,13 +244,20 @@ wait_for_client() {
 # non-bridge behavior must stay byte-identical to next-3.8's default, so assert
 # the else-branch command and the -N note against the pinned upstream text. This
 # turns a hand transcription into a claim that fails loudly on the next tmux bump.
+#
+# #671 appends `; set-window-option @window_manual_name 1` to the else-branch
+# rename so a manual rename survives the next agent-exit reset — a deliberate
+# behavior change from tmux's stock default, not a regression (see the plan's
+# "Manual-rename durability" section). The assertion below is the real printed
+# text (captured via `list-keys`), not a hand transcription of the source.
 @test "keys the bridge gate newly owns keep their upstream default and note" {
 	run t list-keys -T prefix ,
 	[ "$status" -eq 0 ]
-	# else-branch is tmux's default rename prompt, seeded from #W. Compared in the
-	# form list-keys itself prints (tmux normalises the `--` away), which is also
-	# the form a future tmux bump would change.
-	[[ $output == *'{ command-prompt -I "#W" { rename-window "%%" } }'* ]]
+	# else-branch is tmux's default rename prompt, seeded from #W, plus the
+	# manual-name stamp #671 added. Compared in the form list-keys itself prints
+	# (tmux normalises the `--` away), which is also the form a future tmux bump
+	# would change.
+	[[ $output == *'{ command-prompt -I "#W" { rename-window "%%" ; set-window-option @window_manual_name 1 } }'* ]]
 
 	run t list-keys -T prefix '{'
 	[ "$status" -eq 0 ]

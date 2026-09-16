@@ -229,11 +229,14 @@
 
   # tmux-shell-prompt needs lib substitution plus the agent-manifest list the
   # sweep also carries, so the discriminator and the arm-sweep cannot diverge.
+  # @reflow@ (#671) is the same forced-reflow seam mkScriptWithLog's scripts
+  # get below — the event trigger's window-wide naming/crew reset forces a
+  # reflow on a genuine transition, same as claude-status-update's window_stamp.
   mkScriptShellPrompt = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings
-      ["@lib_claude@" "@AGENT_COMMANDS@"]
-      ["${lib-claude}" agentCommands]
+      ["@lib_claude@" "@AGENT_COMMANDS@" "@reflow@"]
+      ["${lib-claude}" agentCommands "${script.tmux-reflow-windows}/bin/tmux-reflow-windows"]
       (builtins.readFile ../scripts/${name}.sh)
     );
 

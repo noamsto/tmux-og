@@ -52,7 +52,7 @@ func TestSessionSegmentIssueVariant(t *testing.T) {
 func TestSessionSegmentCrewBadge(t *testing.T) {
 	a := args{
 		session: "work", branch: "feat/x", panePath: "/repo",
-		crewName: "coral", crewColor: "colour210",
+		crewName: "coral", crewColor: "colour210", windowHasAgent: "1",
 		iconSession: "S", iconBranch: "B",
 		thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd",
 	}
@@ -66,12 +66,24 @@ func TestSessionSegmentCrewBadge(t *testing.T) {
 func TestSessionSegmentCrewBadgeColorFallback(t *testing.T) {
 	a := args{
 		session: "work", branch: "feat/x", panePath: "/repo",
-		crewName: "coral", crewColor: "",
+		crewName: "coral", crewColor: "", windowHasAgent: "1",
 		iconSession: "S", iconBranch: "B",
 		thmMauve: "#c6a", thmBlue: "#89b",
 	}
 	if got := sessionSegment(a, false); !strings.Contains(got, "#[fg=#c6a]coral  ") {
 		t.Fatalf("empty crew-color should fall back to mauve, got %q", got)
+	}
+}
+
+func TestSessionSegmentCrewBadgeNoAgent(t *testing.T) {
+	a := args{
+		session: "work", branch: "feat/x", panePath: "/repo",
+		crewName: "coral", crewColor: "colour210", windowHasAgent: "",
+		iconSession: "S", iconBranch: "B",
+		thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd",
+	}
+	if got := sessionSegment(a, false); strings.Contains(got, "coral") {
+		t.Fatalf("badge should be hidden when window has no live agent, got %q", got)
 	}
 }
 

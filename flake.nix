@@ -506,6 +506,31 @@
               touch $out
             '';
 
+          # Crew badge display gate (#671). status-format[1]'s single-line
+          # window list wraps the existing bridge-aware crew-name ternary
+          # (bridgeOpts() in generator/render/status.go: for name "crew_name",
+          # #{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}) in an `&&`
+          # against @window_has_agent — but the inner
+          # #{?#{@bridge_win},1,#{@window_has_agent}} collapses to literal `1`
+          # for a bridge window, so its `&&` reduces to exactly the pre-#671
+          # crew-name check, unchanged. Asserted here as a static text check
+          # (not a bats suite: tests/pane-border-format.bats starts a live
+          # scratch server against /dev/null and has no access to the
+          # generated conf text to grep at all), modeled on
+          # float-conf-assertions above — same CONF, same grep-a-derivation
+          # shape.
+          crew-badge-conf-assertions =
+            pkgs.runCommand "crew-badge-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              if ! grep -qF '#{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},#{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}},' "$CONF"; then
+                echo "status-format[1]'s crew badge condition does not collapse to a no-op for a bridge window — see CLAUDE.md's #671 note" >&2
+                exit 1
+              fi
+              touch $out
+            '';
+
           # "Every bind has a description" (#629's which-key popup reads -N to
           # build its rows): fails on any bind/bind-key line with no -N flag.
           # Same joined-lines technique as float-conf-assertions above, since a
@@ -1850,13 +1875,19 @@
           # server clears an exited agent's state, its pane_current_command
           # discriminator refuses a nested prompt inside a live agent, no OSC 133
           # leaves state for the floor, and a colliding pane id on a second
-          # server is skipped (ownership guard).
+          # server is skipped (ownership guard). Also covers #671's window-wide
+          # naming/crew reset (the same hook's second trigger) — its cases drive
+          # tmux-reflow-windows/tmux-update-icons directly against this suite's
+          # own -L socket (via a `tmux` PATH shim, same trick as
+          # tests/test-display.sh's SHIM_DIR), so both are added to PATH here
+          # by their real, substituted package rather than grepped out of the
+          # generated conf.
           osc-133-dead-agent-tests =
             pkgs.runCommand "osc-133-dead-agent-tests" {
               # scripts/ is also copied below: the writer-fixture case runs the RAW
               # scripts/claude-status-update.sh directly (bash scripts/…), same
               # pattern as remote-tests.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs) tmuxConfig.script.tmux-reflow-windows tmuxConfig.script.tmux-update-icons];
               TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";

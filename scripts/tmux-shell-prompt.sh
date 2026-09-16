@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # Invoked by the pane-shell-prompt hook (OSC 133;A) with #{q:hook_pane}
-# #{qs:pane_current_command} #{qs:session_name}. Clears an exited agent's state,
-# but only when the foreground command at the prompt is no longer an agent: a
-# still-running agent emitting a nested prompt (subshell, `!`) reports itself as
-# the foreground process-group leader and must not read as "agent gone".
+# #{qs:pane_current_command} #{qs:session_name} #{q:window_id}
+# #{q:@window_has_agent}. Clears an exited agent's state, but only when the
+# foreground command at the prompt is no longer an agent: a still-running
+# agent emitting a nested prompt (subshell, `!`) reports itself as the
+# foreground process-group leader and must not read as "agent gone".
+#
+# Also the event trigger for #671: when this was the window's last live
+# agent, resets the window's naming/crew display state (never
+# @crew_name/@crew_color themselves — dispatcher-owned, CLAUDE.md hard
+# constraint). tmux-update-icons.sh's backstop is the ground truth for
+# whatever this event path can't reach (a host whose only clients are
+# control-mode remote-bridge transports never ticks that poller, so
+# @window_has_agent is never written there and this event path stays inert).
 
 set -euo pipefail
 
@@ -19,6 +28,12 @@ fi
 # The agent manifest, compiled at build time — the same @AGENT_COMMANDS@ list
 # tmux-update-icons' sweep uses to arm detection, so the two can't diverge.
 AGENT_COMMANDS="${AGENT_COMMANDS:-@AGENT_COMMANDS@}"
+
+# Reflow seam, pinned to the store path for the reason tmux-update-icons' own
+# @reflow@ is: a bare name resolves against the tmux server's frozen PATH and
+# stays stale until a server restart (#336). Still starting with '@' means the
+# placeholder was never substituted, and disables the forced reflow.
+REFLOW_BIN="@reflow@"
 
 # normalize_wrapped_cmd CMD — strip makeWrapper's `.foo-wrapped` shape, exactly
 # as tmux-update-icons.sh does. return 0 keeps this safe under set -e (the
@@ -43,3 +58,36 @@ case " $AGENT_COMMANDS " in
 esac
 
 claude_clear_agent_state "${1:-}" "${3:-}"
+
+# Window-wide naming/crew reset (#671). Gated on the passed-through
+# @window_has_agent (hook-fire-time value, no fork) first: pane-shell-prompt
+# fires on every prompt redraw of every shell pane, not just on agent exit, so
+# an unconditional window-wide scan here would fork on every prompt draw in
+# every plain shell pane in the fleet.
+window_id="${4:-}"
+[[ ${5:-} == 1 && -n $window_id ]] || exit 0
+
+bridge_manual=$(tmux display-message -p -t "$window_id" '#{@bridge_win}|#{@window_manual_name}')
+[[ ${bridge_manual%%|*} == 1 ]] && exit 0
+manual="${bridge_manual#*|}"
+
+still_has_agent=""
+pane_ids=()
+while IFS='|' read -r p_id p_cmd; do
+	[[ -n $p_id ]] || continue
+	pane_ids+=("$p_id")
+	normalize_wrapped_cmd "$p_cmd"
+	case " $AGENT_COMMANDS " in *" $REPLY "*)
+		still_has_agent=1
+		break
+		;;
+	esac
+done < <(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_current_command}')
+
+[[ -n $still_has_agent ]] && exit 0
+
+claude_clear_window_naming "$window_id" "$manual" "${pane_ids[@]}"
+
+if [[ $REFLOW_BIN != @* ]]; then
+	"$REFLOW_BIN" "${3:-}" --force >/dev/null 2>&1 &
+fi
