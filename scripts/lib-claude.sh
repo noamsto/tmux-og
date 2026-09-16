@@ -201,13 +201,17 @@ claude_clear_agent_state() {
 	local pane_file="$CLAUDE_PANES_DIR/$id"
 	if [[ -f $pane_file ]]; then
 		local file_sess="" key val
-		while IFS='=' read -r key val; do
+		while IFS='=' read -r key val || [[ -n $key ]]; do
 			[[ $key == session ]] && {
 				file_sess="$val"
 				break
 			}
 		done <"$pane_file"
-		[[ -n $file_sess && -n $sess && $file_sess != "$sess" ]] && return 0
+		# Fail closed: an empty caller session proves nothing, so it must not
+		# clear a file naming a real owner — and an empty $sess would defeat
+		# the mismatch check below by never being "!=" anything real.
+		[[ -z $sess ]] && return 0
+		[[ -n $file_sess && $file_sess != "$sess" ]] && return 0
 	fi
 
 	claude_progress_emit "$id" clear

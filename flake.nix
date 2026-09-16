@@ -1828,11 +1828,15 @@
           # server is skipped (ownership guard).
           osc-133-dead-agent-tests =
             pkgs.runCommand "osc-133-dead-agent-tests" {
+              # scripts/ is also copied below: the writer-fixture case runs the RAW
+              # scripts/claude-status-update.sh directly (bash scripts/…), same
+              # pattern as remote-tests.
               nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
               TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
             } ''
+              cp -r ${./scripts} scripts
               cp -r ${./tests} tests
               export HOME=$TMPDIR/home
               mkdir -p "$HOME"
