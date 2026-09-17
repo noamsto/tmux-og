@@ -314,6 +314,11 @@ TALL_CLIENT_ROWS=40
 # 8-char issue ids). Below it the grid degrades to illegible slivers, so fall
 # through to short.
 LONG_TRUNC_FLOOR=24
+# Floor for rung 1.5 (one row with the widest labels clipped): keep the row only
+# while every clipped label still shows this much branch/title. Below it the row
+# says too little to be worth keeping, and the grid — which gives each label a
+# whole column — shows more.
+SINGLE_CLIP_FLOOR=16
 
 # Per-window widths driving the grid: a floor (id + badge + zoom marker, none of
 # which the renderer can shrink) and a want (floor + branch/title). The rest is
@@ -324,11 +329,15 @@ MAX_REST_WIDTH=40
 floor_list=""
 want_long_list=""
 want_short_list=""
+rest_long_list=""
 total_long=0
 total_short=0
 for idx in "${indices[@]}"; do
 	floor=$((win_id_dw[$idx] + win_crew_dw[$idx] + win_zoom_dw[$idx]))
 	rest_long=$((win_long_dw[$idx] - win_id_dw[$idx]))
+	# Uncapped, unlike the grid want below: rung 1.5 clips what the single-line
+	# format really renders, which is the whole rest.
+	rest_long_list+="${rest_long_list:+ }$rest_long"
 	((rest_long > MAX_REST_WIDTH)) && rest_long=$MAX_REST_WIDTH
 	rest_short=$((win_short_dw[$idx] - win_id_dw[$idx]))
 	((rest_short > MAX_REST_WIDTH)) && rest_short=$MAX_REST_WIDTH
@@ -346,11 +355,13 @@ total_short=$((total_short + (total - 1) * SEP_WIDTH))
 # lib-reflow.sh so it's unit-testable without tmux (tests/reflow.bats).
 reflow_pick_layout "$floor_list" "$want_long_list" "$want_short_list" \
 	"$total_long" "$total_short" "$total" "$available" "$zoom_extra" \
-	"$overhead" "$SEP_WIDTH" "$MAX_WIN_LINES" "$LONG_TRUNC_FLOOR"
+	"$overhead" "$SEP_WIDTH" "$MAX_WIN_LINES" "$LONG_TRUNC_FLOOR" \
+	"$rest_long_list" "$SINGLE_CLIP_FLOOR"
 labels_mode=$REPLY_LABELS_MODE
 needs_multiline=$REPLY_NEEDS_MULTILINE
 per=$REPLY_PER
 read -ra colws <<<"$REPLY_COLWS"
+read -ra clipped_rests <<<"$REPLY_RESTS"
 
 # Resolved display segments per window. The name column is rendered as
 # bold(@window_label_id_disp) + @window_label_disp, so identity + rest fills the
@@ -374,6 +385,13 @@ for pos in "${!indices[@]}"; do
 	if ((! needs_multiline)); then
 		win_id_disp[$idx]="${win_id[$idx]}"
 		win_crew_disp[$idx]="${win_crew[$idx]}"
+		# Empty unless rung 1.5 shaved this row to fit. The clip lands on the
+		# display copy alone — @window_label_rest_long stays the full identity
+		# the pickers and tmux-statusline read.
+		if [[ -n ${clipped_rests[pos]} ]]; then
+			truncate_to_width "$cur_rest" "${clipped_rests[pos]}"
+			cur_rest="$REPLY"
+		fi
 		win_disp[$idx]="$cur_rest"
 		continue
 	fi

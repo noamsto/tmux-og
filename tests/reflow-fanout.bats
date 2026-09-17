@@ -384,3 +384,51 @@ stamp_mirror() {
 	[ "$(tmux show -wv -t S:1 @window_label_id)" = "G 123" ]
 	[ -z "$(tmux show -wv -t S:1 @window_pr_num)" ]
 }
+
+@test "a PR badge appearing clips the widest label instead of adding a row" {
+	# #686: the single-line fit charges every window its own PR segment, so a
+	# badge arriving on one window used to tip a full row into the multi-line
+	# grid — a whole status line, and every label capped at its column on top.
+	tmux set -wq -t S:0 @branch "feat/a-long-branch-name-with-room-to-clip"
+	tmux new-window -d
+	tmux set -wq -t S:1 @branch "feat/another-branch"
+	tmux new-window -d
+	tmux set -wq -t S:2 @branch "feat/third-branch"
+
+	row_is_whole() {
+		[ "$(tmux show-options -t S -qv status)" = 2 ] || return 1
+		local w
+		for w in 0 1 2; do
+			case "$(tmux show -wv -t "S:$w" @window_label_disp)" in
+			*…) return 1 ;;
+			esac
+		done
+	}
+
+	# Narrowest width that renders one row with every label whole — i.e. the row
+	# is exactly full, which is where a badge's 6 cells decide the layout.
+	local lo=40 hi=200 mid full=0
+	while ((lo <= hi)); do
+		mid=$(((lo + hi) / 2))
+		bash "$REFLOW" S "$mid" --force >/dev/null 2>&1
+		if row_is_whole; then
+			full=$mid
+			hi=$((mid - 1))
+		else
+			lo=$((mid + 1))
+		fi
+	done
+	[ "$full" -gt 0 ]
+
+	tmux set -wq -t S:0 @pr_number 12
+	tmux set -wq -t S:0 @pr_state open
+	tmux set -wq -t S:0 @pr_check_state success
+	bash "$REFLOW" S "$full" --force >/dev/null 2>&1
+
+	[ "$(tmux show -wv -t S:0 @window_pr_plain)" = " S #12" ]
+	[ "$(tmux show-options -t S -qv status)" = 2 ]
+	# The widest label pays for it, and only its display copy — the pickers and
+	# the bridge read @window_label_rest_long for the full identity.
+	[[ "$(tmux show -wv -t S:0 @window_label_disp)" == *… ]]
+	[[ "$(tmux show -wv -t S:0 @window_label_rest_long)" != *… ]]
+}

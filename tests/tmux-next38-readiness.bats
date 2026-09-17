@@ -159,9 +159,16 @@ wait_for_client() {
 	done
 
 	line1="$(t display-message -p -F "$(t show -gv status-format[1])" | strip_styles)"
-	line2="$(t display-message -p -F "$(t show -gv status-format[2])" | strip_styles)"
 	[[ $line1 == *"1:"* ]]
-	[[ $line1 == *"next38"* || $line2 == *"next38"* ]]
+
+	# The branch text is only legible where the row has the width for it: at 36
+	# cells every label is clipped to a sliver of its column. Reflow wide enough
+	# that all ten labels fit whole, which drops back to the single row the
+	# global format serves, and the W loop must expand the label itself there.
+	PATH="$SHIM_DIR:$PATH" "$reflow" s 700 --force
+	[ "$(t show-options -t s -qv status)" = 2 ]
+	line1="$(t display-message -p -F "$(t show -gv status-format[1])" | strip_styles)"
+	[[ $line1 == *"next38"* ]]
 }
 
 @test "popup bindings and picker tmux data path are present" {

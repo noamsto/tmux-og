@@ -73,6 +73,41 @@ row_width() {
 	[ "$REPLY_FITS" = 0 ]
 }
 
+# reflow_clip_rests RESTS OVERSHOOT MIN_REST
+
+@test "clip_rests: the overshoot comes off the widest label" {
+	reflow_clip_rests "40 20 10" 5 16
+	[ "$REPLY_OK" = 1 ]
+	[ "$REPLY_RESTS" = "35 20 10" ]
+}
+
+@test "clip_rests: the widest labels level off before a shorter one is touched" {
+	# 40 and 38 meet at 34 (6 + 4 cells); the 10 never pays.
+	reflow_clip_rests "40 38 10" 10 16
+	[ "$REPLY_OK" = 1 ]
+	[ "$REPLY_RESTS" = "34 34 10" ]
+}
+
+@test "clip_rests: an integer cap's surplus goes back to a label it cut" {
+	# Only cap 39 recovers 2 cells, and it recovers 3 -- the spare cell returns
+	# to a clipped label, never to one this pass left alone.
+	reflow_clip_rests "41 40" 2 16
+	[ "$REPLY_OK" = 1 ]
+	[ "$REPLY_RESTS" = "40 39" ]
+}
+
+@test "clip_rests: refuses when the cap would sink below the floor" {
+	reflow_clip_rests "20 20" 30 16
+	[ "$REPLY_OK" = 0 ]
+	[ "$REPLY_RESTS" = "20 20" ]
+}
+
+@test "clip_rests: nothing to recover leaves every label whole" {
+	reflow_clip_rests "40 20" 0 16
+	[ "$REPLY_OK" = 1 ]
+	[ "$REPLY_RESTS" = "40 20" ]
+}
+
 # reflow_pick_layout FLOORS WANTS_LONG WANTS_SHORT TOTAL_LONG TOTAL_SHORT
 #                     TOTAL AVAILABLE ZOOM_EXTRA OVERHEAD SEP_WIDTH
 #                     MAX_WIN_LINES LONG_TRUNC_FLOOR
@@ -87,6 +122,29 @@ row_width() {
 @test "pick_layout: zoom_extra can tip a fitting single line into the grid" {
 	reflow_pick_layout "0 0 0" "30 30 30" "10 10 10" 78 30 3 80 4 10 3 3 24
 	[ "$REPLY_NEEDS_MULTILINE" = 1 ]
+}
+
+@test "pick_layout: rung 1.5 keeps the row and clips the widest label" {
+	# 6 cells over (zoom marker included): shaving them off the 40-cell label
+	# beats a second status row, which would cap every label at its column too.
+	reflow_pick_layout "0 0 0" "30 30 30" "10 10 10" 82 30 3 80 4 10 3 3 24 "40 20 20" 16
+	[ "$REPLY_LABELS_MODE" = long ]
+	[ "$REPLY_NEEDS_MULTILINE" = 0 ]
+	[ "$REPLY_PER" = 3 ]
+	[ "$REPLY_RESTS" = "34 20 20" ]
+}
+
+@test "pick_layout: rung 1.5 hands the row to the grid below the clip floor" {
+	# 120 cells over, with only 12 to give above the floor.
+	reflow_pick_layout "0 0 0" "30 30 30" "10 10 10" 200 30 3 80 0 10 3 3 24 "20 20 20" 16
+	[ "$REPLY_NEEDS_MULTILINE" = 1 ]
+	[ -z "$REPLY_RESTS" ]
+}
+
+@test "pick_layout: a row that already fits clips nothing" {
+	reflow_pick_layout "0 0 0" "30 30 30" "10 10 10" 60 30 3 80 0 10 3 3 24 "40 20 20" 16
+	[ "$REPLY_NEEDS_MULTILINE" = 0 ]
+	[ -z "$REPLY_RESTS" ]
 }
 
 @test "pick_layout: long grid takes the fewest rows that still fit every want" {
