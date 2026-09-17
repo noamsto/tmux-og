@@ -44,7 +44,67 @@ with a nested real client. The synthetic report was
   string-body `if-shell` guard that `floatNewPaneGuard` needs for an unknown
   *flag* is therefore unnecessary here.
 
-## Design
+## Rework (implemented after the initial version below): tmux-only apply + ssh-client rule
+
+The design below (§1–§6) is the ORIGINAL accepted design and is left intact as
+the historical record. Two decisions changed after initial implementation,
+both driven by direct user feedback on the first version of this feature:
+
+1. **The handler never applies through `theme-toggle`, and never writes
+   `theme-state.json`.** §1's "Feed the file. Yes." decision is REVERSED: a
+   terminal report now converges tmux state alone (`@catppuccin_flavor`,
+   `@thm_*`) and leaves the file untouched. `theme-toggle` remains the file's
+   only writer, and is not invoked by this handler under any circumstance
+   (not "when absent falls back to tmux-only" — ALWAYS tmux-only now,
+   `theme-toggle`'s presence on PATH is irrelevant to this handler). The file
+   is read exactly once per server lifetime, as a **cold-start seed** for
+   `@catppuccin_flavor` when the option is still empty at config load (see
+   `config/tmux.conf.reference.nix`'s `pluginConfigs`) — never again while the
+   server is up.
+
+   This inverts §1's rationale directly: "Replace the file? No... Feed the
+   file. Yes." is now "Feed the file? No — only `theme-toggle` feeds it. Adapt
+   the readers instead" (see the new "Renderer consistency" bullet below,
+   which is what §1's own "Out of scope / follow-ups" bullet anticipated and
+   deferred — it is now in scope and shipped).
+
+2. **SSH-client rule (new, §2 addendum).** A report from a client that
+   attached over ssh (`#{I/e:SSH_CONNECTION}` non-empty for that client, the
+   same per-client interrogation `tmux-splash-maybe.sh`/#649 established) is
+   IGNORED while at least one other attached, non-control-mode client is NOT
+   ssh; when every attached non-control client is ssh (a headless server),
+   ssh reports ARE followed. Mechanism: the hook body stamps
+   `@og_client_theme_client` (via `set -gF`, format-expanded from
+   `#{hook_client}` — `set -g` alone does NOT expand a format value, confirmed
+   against `cmd-set-option.c`'s `args_has(args, 'F')` gate) synchronously
+   alongside `@og_client_theme_want`, in the same brace-block command list —
+   the handler's main loop reads both fresh every iteration and gates
+   authoritatively on the freshly-paired reporter. The job's own argv (also
+   `#{hook_client}`, passed as a `run-shell` argument) is only a cheap
+   pre-lock fast path, never the authority, since argv is fixed to whichever
+   report started that particular background job and can be stale by the
+   time the loop reaches a newer want.
+
+3. **Renderer consistency (new scope).** Because a terminal report can now
+   leave tmux state and `theme-state.json` disagreeing (by design — see
+   point 1), every in-repo reader was adapted to prefer the LIVE tmux flavor
+   when running under tmux, falling back to the file only outside tmux or
+   before `@catppuccin_flavor` is set. `lib-claude.sh`'s `setup_claude_colors`
+   takes an optional pre-expanded-flavor argument (threaded fork-free through
+   the hot `tmux-update-icons.sh` 1s path and the Go statusline's `--flavor`
+   CLI flag), else falls back to one `show-options` fork when `$TMUX` is set,
+   else the file. The Go `themestate.Detect()` call sites in `picker/tui.go`
+   and `picker/whichkey.go` derive theme from their already-fetched
+   `readTmuxOpts()` map (zero new forks); `picker/splash/main.go` (a separate
+   binary) does its own one-time `show-options` fork. The external
+   `themestate` module itself is unmodified — every adaptation is at the call
+   site.
+
+See `tests/client-theme.bats` and `tests/lib-claude-theme.bats` for the live
+and unit proof of all three points, and `CLAUDE.md`'s `tmux-client-theme` row
+and "Theme support" bullet for the shipped-behavior summary.
+
+## Design (original)
 
 ### 1. Precedence: the most recent explicit signal wins, and every signal converges the file and tmux
 
@@ -54,6 +114,10 @@ theme changes. After either signal, `theme-state.json`, `@catppuccin_flavor`
 and `@thm_*` must agree. The shell reader (`lib-claude.sh`) and the Go readers
 (`themestate.Detect`) read the file while tmux renders the flavor, so a
 disagreement paints dark statusline segments on a latte bar.
+
+**Superseded by the Rework section above** — a report no longer feeds the
+file at all; only `theme-toggle` does, and the readers adapt instead. Kept
+here for the historical rationale that motivated the original approach.
 
 - **Replace the file?** No. Five readers, the external `themestate` module and
   `theme-toggle` itself all depend on it. That rewrite is out of scope.
@@ -198,10 +262,20 @@ sides.
   headless mirrors too. That is a separate change.
 - `theme-toggle` could take the same lock so a manual toggle serializes with
   report applies.
-- `themestate` and `lib-claude.sh` could read `@catppuccin_flavor` instead of
-  the file, which would retire the file write. That touches the external module.
+- ~~`themestate` and `lib-claude.sh` could read `@catppuccin_flavor` instead
+  of the file, which would retire the file write. That touches the external
+  module.~~ **Shipped in the Rework above** — the file write is retired for
+  every terminal-report path (never touches it), and `lib-claude.sh` plus
+  the Go `themestate.Detect()` call sites now prefer the live flavor. The
+  external `themestate` module itself was not touched, only its call sites.
 
 ## Acceptance
+
+**Superseded by the Rework section's behavior — see `tests/client-theme.bats`
+and `tests/lib-claude-theme.bats` for the current, shipped test list. The
+bullets below are the ORIGINAL acceptance criteria and are kept for
+historical reference; the state-file assertions and the `theme-toggle`-apply
+assertion no longer hold post-rework.**
 
 - The bats test runs on a scratch server with the wrapped config. It uses a
   nested real client and a synthetic `\e[?997;2n` report, and asserts the
@@ -221,4 +295,23 @@ sides.
   (counting wrapper) and the job exits (the lock dir is gone afterwards).
 - `nix build .#default`, `nix flake check` and `nix build .#lint` all pass.
 - CLAUDE.md is updated: the Theme support convention, the `og-remote-theme` row
+
+### Acceptance (rework, current)
+
+- A report applies flavor + triggers exactly one reload, never creates or
+  modifies `theme-state.json`, and never invokes a fake `theme-toggle`
+  planted on PATH.
+- A repeat report is a no-op (reload count unchanged).
+- `@og_follow_client_theme off` suppresses the handler.
+- An ssh-client report is ignored while a local (non-ssh) client is
+  attached, and followed when only ssh clients are attached to the server.
+- `@og_theme_applied` moves (not just ends at the target) after an applied
+  report, proving `og-remote-theme`'s mirror fan-out stamp is still driven
+  by real reports.
+- Renderer consistency: a state file saying dark while the live tmux flavor
+  is latte makes `lib-claude.sh`'s `setup_claude_colors` pick latte colors
+  (and the equivalent for the Go `themestate.Detect()` call sites, via unit
+  tests on their pure mapping helpers).
+- `nix build .#default`, `nix flake check` and `nix build .#lint` all pass;
+  CI green on `x86_64-linux`, `aarch64-darwin`, and lint.
   and a `tmux-client-theme` row.

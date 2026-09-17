@@ -57,8 +57,6 @@ teardown() {
 	outer kill-server 2>/dev/null || true
 	[ -n "${INNER_TMPDIR:-}" ] && rm -rf "$INNER_TMPDIR"
 	[ -n "${OUTER_TMPDIR:-}" ] && rm -rf "$OUTER_TMPDIR"
-	# Case 7 leaves the state dir read-only; restore it so bats can clean up.
-	[ -n "${XDG_STATE_HOME:-}" ] && chmod -R u+w "$XDG_STATE_HOME" 2>/dev/null || true
 	return 0
 }
 
@@ -118,9 +116,19 @@ report() {
 
 # start_client -- prints the id of a new outer window whose command is a real
 # `attach` into the inner "main" session, giving that client a genuine pty.
+# -u SSH_CONNECTION is explicit, not relying on absence: ambient CI/test-runner
+# environment must never leak SSH_CONNECTION through and flip what should be
+# the "local" case.
 start_client() {
 	outer new-window -d -P -F '#{window_id}' -t outer: -- \
-		env -u TMUX TERM=xterm-256color TMUX_TMPDIR="$INNER_TMPDIR" "$TMUX_BIN" -L s attach -t main
+		env -u TMUX -u SSH_CONNECTION TERM=xterm-256color TMUX_TMPDIR="$INNER_TMPDIR" "$TMUX_BIN" -L s attach -t main
+}
+
+# start_client_ssh -- same as start_client, but forces SSH_CONNECTION into the
+# attach client's environment so is_ssh_client sees it as ssh-attached.
+start_client_ssh() {
+	outer new-window -d -P -F '#{window_id}' -t outer: -- \
+		env -u TMUX SSH_CONNECTION='1.2.3.4 22 5.6.7.8 22' TERM=xterm-256color TMUX_TMPDIR="$INNER_TMPDIR" "$TMUX_BIN" -L s attach -t main
 }
 
 # theme_setup -- common heavy lifting: both servers, one attached client, and
@@ -149,8 +157,12 @@ theme_setup() {
 	BASELINE="$(reload_count)"
 }
 
-@test "light report: flavor latte, thm_bg set, applied light, file light, one reload" {
+@test "light report: flavor latte, thm_bg set, applied light, one reload, state file untouched" {
 	theme_setup
+
+	local state_before applied_before
+	state_before="$(cat "$XDG_STATE_HOME/theme-state.json")"
+	applied_before="$(inner show-options -gv @og_theme_applied 2>/dev/null)"
 
 	report "$CLIENT1" light
 	wait_for 20 applied_is light
@@ -159,7 +171,15 @@ theme_setup() {
 	[ "$(($(reload_count) - BASELINE))" -eq 1 ]
 	flavor_is latte
 	thm_bg_is '#eff1f5'
-	grep -q '"theme":"light"' "$XDG_STATE_HOME/theme-state.json"
+	lock_gone
+
+	# The stamp must have moved, not merely ended up at the target -- proves
+	# this report drove the apply rather than some earlier state.
+	[ "$(inner show-options -gv @og_theme_applied 2>/dev/null)" != "$applied_before" ]
+
+	# The handler is tmux-only now: theme-state.json is theme-toggle's alone
+	# and must be byte-unchanged.
+	[ "$(cat "$XDG_STATE_HOME/theme-state.json")" = "$state_before" ]
 }
 
 @test "repeat light report: no-op, reloads still 1" {
@@ -190,7 +210,7 @@ theme_setup() {
 	flavor_is mocha
 }
 
-@test "fake theme-toggle on PATH receives apply light, no local reload" {
+@test "fake theme-toggle on PATH is never invoked, local reload still applies" {
 	local log="$BATS_TEST_TMPDIR/toggle.log"
 	cat >"$BATS_TEST_TMPDIR/bin/theme-toggle" <<-EOF
 		#!/bin/sh
@@ -201,10 +221,13 @@ theme_setup() {
 	theme_setup
 
 	report "$CLIENT1" light
+	wait_for 20 applied_is light
 	settle
 
-	grep -q '^apply light$' "$log"
-	[ "$(($(reload_count) - BASELINE))" -eq 0 ]
+	# theme-toggle sits unused on PATH: the handler never shells out to it.
+	[ ! -s "$log" ]
+	# The handler applies locally via the reload path regardless.
+	[ "$(($(reload_count) - BASELINE))" -eq 1 ]
 }
 
 @test "two nested clients: last report wins" {
@@ -219,7 +242,6 @@ theme_setup() {
 
 	wait_for 20 flavor_is latte
 	thm_bg_is '#eff1f5'
-	grep -q '"theme":"light"' "$XDG_STATE_HOME/theme-state.json"
 }
 
 @test "rejected conf still recovers: thm_bg non-empty" {
@@ -236,22 +258,50 @@ theme_setup() {
 	[ "$bg" = '#eff1f5' ]
 }
 
-@test "unwritable state dir: tmux half still applies, exactly one reload" {
-	[ "$(id -u)" -eq 0 ] && skip "state-dir chmod has no effect as root"
-
+@test "ssh report ignored while a local client is attached" {
 	theme_setup
 
-	chmod 555 "$XDG_STATE_HOME"
-	if [ -w "$XDG_STATE_HOME" ]; then
-		chmod 755 "$XDG_STATE_HOME"
-		skip "state dir still writable after chmod 555"
-	fi
+	local client_ssh
+	client_ssh="$(start_client_ssh)"
+	wait_for 20 has_client_count 2
 
-	report "$CLIENT1" light
+	# light, not dark: the baseline flavor is mocha (dark), so a dark report
+	# would be indistinguishable from "nothing happened" even with no ssh
+	# gate at all -- light is the only report that actually exercises the
+	# gate.
+	report "$client_ssh" light
 	settle
 
-	[ "$(($(reload_count) - BASELINE))" -eq 1 ]
-	lock_gone
+	# CLIENT1 (local) is still attached, so the ssh report must be ignored.
+	flavor_is mocha
+	[ "$(reload_count)" -eq "$BASELINE" ]
 
-	chmod 755 "$XDG_STATE_HOME"
+	# Regression check: a `set -g` (no -F) on @og_client_theme_client would
+	# store the literal string "#{hook_client}" instead of format-expanding
+	# it -- this is the only place that would catch that, since ssh-gating
+	# still "works" via the argv fast path alone even with that bug present.
+	local stamped
+	stamped="$(inner show-options -gv @og_client_theme_client 2>/dev/null)"
+	[ "$stamped" != '#{hook_client}' ]
+	[ -n "$stamped" ]
+}
+
+@test "ssh report followed when only ssh clients are attached (headless server)" {
+	theme_setup
+
+	local client_ssh
+	client_ssh="$(start_client_ssh)"
+	wait_for 20 has_client_count 2
+
+	# Detach the local client -- only the ssh client remains attached.
+	outer kill-window -t "$CLIENT1"
+	wait_for 20 has_client_count 1
+
+	# A fresh report issued after the detach: any earlier attach-time report
+	# from the ssh client would have been gated out while CLIENT1 was still
+	# present, so re-issuing here is what makes this observable.
+	report "$client_ssh" light
+
+	wait_for 20 flavor_is latte
+	thm_bg_is '#eff1f5'
 }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-runewidth"
+	"github.com/noamsto/themestate"
 )
 
 // Build-time constants injected via icons_generated.go:
@@ -1379,6 +1380,21 @@ func readTmuxOpts() map[string]string {
 		}
 	}
 	return m
+}
+
+// themeFromOpts derives "light"/"dark" from a global-options snapshot
+// (readTmuxOpts()'s map), preferring the live tmux flavor over the
+// themestate state file. Falls back to themestate.Detect() only when
+// @catppuccin_flavor is unset (e.g. before config load, or outside tmux).
+func themeFromOpts(opts map[string]string) string {
+	switch opts["@catppuccin_flavor"] {
+	case "":
+		return themestate.Detect()
+	case "latte":
+		return "light"
+	default:
+		return "dark"
+	}
 }
 
 // logEvent fires the og-log-event CLI (best-effort, never blocks the UI).

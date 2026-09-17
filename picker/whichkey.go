@@ -24,7 +24,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/noamsto/themestate"
 )
 
 // whichKeyRow is one bind, parsed from `tmux list-keys -a`.
@@ -94,8 +93,8 @@ func RunWhichKey() error {
 	if err != nil {
 		return err
 	}
-	theme := themestate.Detect()
 	opts := readTmuxOpts()
+	theme := themeFromOpts(opts)
 	originPane := os.Getenv("OG_PICKER_ORIGIN_PANE")
 
 	m := newWhichKeyModel(rows, opts, theme, originPane)

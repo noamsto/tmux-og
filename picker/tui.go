@@ -14,7 +14,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/noamsto/themestate"
 )
 
 // listItem is one row in the picker list.
@@ -262,8 +261,8 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 		}
 	}
 
-	theme := themestate.Detect()
 	opts := readTmuxOpts()
+	theme := themeFromOpts(opts)
 	snap := collectPanesSnapshot()
 	panes := collectAgentPanes(snap)
 	currentSession := os.Getenv("OG_PICKER_CURRENT_SESSION")

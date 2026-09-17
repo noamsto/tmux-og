@@ -6,6 +6,16 @@
 # rather than in the hook itself. A theme-toggle run slower than the stale
 # window can let a second job steal the lock; that is fine, because every
 # job re-reads the newest want before applying.
+#
+# This handler is tmux-only: it never invokes theme-toggle and never touches
+# theme-state.json — that file is theme-toggle's alone (see CLAUDE.md's
+# "Theme support" section). It also enforces an ssh-client rule: a report
+# from an ssh-attached client is ignored while any non-ssh, non-control-mode
+# client is attached to the server (a headless server's own reports ARE
+# followed). The rule is enforced authoritatively from a tmux-stamped
+# @og_client_theme_client option read fresh every loop iteration, paired
+# with @og_client_theme_want; the job's own argv is only a cheap pre-lock
+# fast path, never the authority.
 set -uo pipefail
 
 # Guarded so the RAW script still runs under bats, where @lib_log@ is not
@@ -17,11 +27,35 @@ fi
 # shellcheck source=/dev/null
 source "$lib_log"
 
-# Per-user, like the state file it guards. acquire_lock never blocks, so retry
+is_ssh_client() {
+	local v
+	v="$(tmux display-message -c "$1" -p '#{I/e:SSH_CONNECTION}' 2>/dev/null)" || return 1
+	[[ -n $v ]]
+}
+# True if some attached, non-control client OTHER than $1 is not ssh.
+# Deliberately excludes only the named reporter, not "all ssh clients" — a
+# second ssh client attached alongside the reporter must not count as
+# local, and must not suppress detection of a genuine local client either.
+any_local_client_attached_besides() {
+	local exclude=$1 ctrl name
+	while IFS='|' read -r ctrl name; do
+		[[ $ctrl == 1 || -z $name || $name == "$exclude" ]] && continue
+		is_ssh_client "$name" || return 0
+	done < <(tmux list-clients -F '#{client_control_mode}|#{client_name}' 2>/dev/null)
+	return 1
+}
+
+# Per-user, like the lock it guards. acquire_lock never blocks, so retry
 # with a short sleep, bounded by the same staleness window a crashed holder is
 # stolen after — past that, this report is dropped, and the next report or
 # toggle re-reads the newest want anyway.
 lock="${OG_CLIENT_THEME_LOCK:-${TMPDIR:-/tmp}/og-client-theme-$UID.lock}"
+
+client="${1:-}"
+if [[ -n $client ]] && is_ssh_client "$client" && any_local_client_attached_besides "$client"; then
+	exit 0
+fi
+
 locked=0
 deadline=$((SECONDS + OG_LOCK_STALE_SECONDS))
 while :; do
@@ -34,25 +68,15 @@ while :; do
 done
 ((locked)) || exit 0
 
-# apply_local WANT WANTED_FLAVOR STATE_FILE
-# The theme-toggle-absent path (headless host): write the state file in its
-# schema, clear the palette, set the flavor, then replay the one existing
-# reload path. Recovery matches when the config is missing, the source fails,
-# or the palette never actually loaded — a theme report must never leave the
-# bar colorless.
-apply_local() {
-	local want=$1 wanted_flavor=$2 state=$3
-
-	mkdir -p "$(dirname "$state")" 2>/dev/null
-	local tmp
-	if tmp=$(mktemp "$state.XXXXXX" 2>/dev/null); then
-		if printf '{"theme":"%s","timestamp":"%s","failed":[],"version":1}\n' \
-			"$want" "$(date +%Y-%m-%dT%H:%M:%S%z)" >"$tmp" && mv -f "$tmp" "$state"; then
-			:
-		else
-			rm -f "$tmp"
-		fi
-	fi
+# apply WANTED_FLAVOR
+# tmux-only apply: clear @thm_*, set @catppuccin_flavor, replay the reload
+# path. NEVER writes theme-state.json — that file is theme-toggle's alone
+# (a headless host with no theme-toggle now just never gets a state file;
+# the live tmux flavor is authoritative while the server is up). Recovery
+# matches when the config is missing, the source fails, or the palette
+# never actually loaded — a theme report must never leave the bar colorless.
+apply() {
+	local wanted_flavor=$1
 
 	# Exactly two tmux forks: one read, one batched clear. catppuccin sets
 	# @thm_* with -ogq, so a second flavor never loads over the first once
@@ -81,9 +105,9 @@ apply_local() {
 
 applied=""
 while :; do
-	follow="" want="" flavor=""
-	IFS='|' read -r follow want flavor < <(tmux display-message -p \
-		'#{@og_follow_client_theme}|#{@og_client_theme_want}|#{@catppuccin_flavor}')
+	follow="" want="" flavor="" reporter=""
+	IFS='|' read -r follow want flavor reporter < <(tmux display-message -p \
+		'#{@og_follow_client_theme}|#{@og_client_theme_want}|#{@catppuccin_flavor}|#{@og_client_theme_client}')
 
 	[[ $follow == off ]] && break
 	case $want in
@@ -91,13 +115,26 @@ while :; do
 	*) break ;;
 	esac
 
-	# Fork-free parse, same regex as lib-claude.sh's setup_claude_colors.
-	state="${XDG_STATE_HOME:-$HOME/.local/state}/theme-state.json"
-	file_theme="dark"
-	if [[ -f $state ]]; then
-		content=""
-		IFS= read -r -d '' content <"$state" 2>/dev/null || true
-		[[ $content =~ \"theme\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && file_theme="${BASH_REMATCH[1]}"
+	# Authoritative: @og_client_theme_want and @og_client_theme_client are
+	# stamped together by the hook body (same command-queue drain), so the
+	# reporter paired with THIS want is read fresh every iteration — unlike
+	# the fast-path above, which only knows the argv of the job that started
+	# this particular background process and can be stale by the time this
+	# loop reaches a newer want. A newer report landing between the hook's
+	# two `set` commands can pair one read with the wrong reporter; that
+	# affects at most one report and self-corrects on the next, same
+	# tolerance the existing last-want-wins design already has.
+	#
+	# A local report immediately followed by a gated ssh report loses the
+	# local want (the ssh hook overwrites @og_client_theme_want, so every
+	# job gates out here on its next iteration) — acceptable, since the
+	# next real report converges.
+	#
+	# Empty $reporter fails open (report proceeds), matching
+	# tmux-splash-maybe.sh's is_remote_attach direction — but "not ssh"
+	# here means "apply", the opposite of that script's "not ssh" meaning.
+	if [[ -n $reporter ]] && is_ssh_client "$reporter" && any_local_client_attached_besides "$reporter"; then
+		break
 	fi
 
 	if [[ $want == light ]]; then
@@ -106,8 +143,8 @@ while :; do
 		wanted_flavor=mocha
 	fi
 
-	# No-op guard: file and flavor already agree with the newest want.
-	[[ $file_theme == "$want" && $flavor == "$wanted_flavor" ]] && break
+	# No-op guard: flavor already agrees with the newest want.
+	[[ $flavor == "$wanted_flavor" ]] && break
 
 	# Bound: an apply that didn't converge is logged once and never retried
 	# in this loop. The next report or toggle retries it.
@@ -116,11 +153,6 @@ while :; do
 		break
 	fi
 
-	if command -v theme-toggle >/dev/null 2>&1; then
-		# Not exec: the lock stays held until the loop settles.
-		theme-toggle apply "$want" >/dev/null 2>&1
-	else
-		apply_local "$want" "$wanted_flavor" "$state"
-	fi
+	apply "$wanted_flavor"
 	applied="$want"
 done

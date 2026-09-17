@@ -190,3 +190,48 @@ A `client-theme-tests` entry in `flake.nix` beside `osc-133-dead-agent-tests`:
 ## Ordering
 
 1 ∥ 2 → 3 → 4 → 5 → 6 → 7
+
+## Rework (#673)
+
+Post-merge user feedback reworked this feature along three axes; spec amended
+at `docs/superpowers/specs/2026-09-16-client-theme-hooks-design.md`'s "Rework"
+section, which is the authoritative description of current behavior. Summary:
+
+1. **tmux-only apply.** `scripts/tmux-client-theme.sh` no longer ever invokes
+   `theme-toggle` or writes `theme-state.json` — it only sets
+   `@catppuccin_flavor`/`@thm_*` and replays the existing reload path. The
+   file is now a cold-start seed only (read once at config load when
+   `@catppuccin_flavor` is empty), never read again while the server is up.
+2. **SSH-client rule.** A report from an ssh-attached client is ignored
+   while any other attached client is local (non-ssh, non-control); an
+   all-ssh/headless server's reports are followed. Authority lives in a
+   tmux-stamped option (`@og_client_theme_client`, `set -gF` from
+   `#{hook_client}`, stamped alongside `@og_client_theme_want` in the same
+   hook brace-block) read fresh inside the handler's main loop — not in the
+   job's own argv, which is only a cheap pre-lock fast path. This matters:
+   argv is fixed to whichever report started a given background job and can
+   be stale by the time that job's loop reaches a different, newer want: it
+   must not be the authority for the current pairing between `want` and its
+   reporter.
+3. **Renderer consistency.** Every in-repo reader of the old
+   `theme-state.json` (`lib-claude.sh`'s `setup_claude_colors`, and the Go
+   `themestate.Detect()` call sites in `picker/statusline`, `picker/tui.go`,
+   `picker/whichkey.go`, `picker/splash`) now prefers the live tmux
+   `@catppuccin_flavor` when running under tmux, falling back to the file
+   only outside tmux or before the option is set — fork-free on the
+   confirmed hot 1s path (`tmux-update-icons.sh`, via a new pre-expanded `$5`
+   positional threaded from `status-format[0]`, mirroring the script's
+   existing `$2`/`$3`/`$4` pattern) and zero-new-fork on `tui.go`/
+   `whichkey.go` (they already called `readTmuxOpts()`). The external
+   `themestate` module itself was not modified — every adaptation is at the
+   call site.
+
+New/changed files beyond the original table: `tests/lib-claude-theme.bats`
+(new unit suite for `setup_claude_colors`'s precedence) plus a matching
+`lib-claude-theme-tests` flake check; `tests/client-theme.bats` rewritten
+(no state-file assertions, two new ssh-client cases, an explicit
+`@og_theme_applied`-moved assertion); `scripts/tmux-update-icons.sh` (thread
+the flavor arg); `picker/main.go`/`tui.go`/`whichkey.go`/`splash/main.go`
+(the renderer call-site adaptation, plus small table tests for the new pure
+mapping helpers in `picker/main_test.go` and
+`picker/statusline/main_test.go`).

@@ -1923,6 +1923,21 @@
               touch $out
             '';
 
+          # Pure unit coverage for setup_claude_colors' precedence (#663):
+          # explicit flavor argument > live $TMUX @catppuccin_flavor >
+          # theme-state.json fallback. No live tmux server needed.
+          lib-claude-theme-tests =
+            pkgs.runCommand "lib-claude-theme-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/lib-claude-theme.bats
+              touch $out
+            '';
+
           remote-tests =
             pkgs.runCommand "remote-tests" {
               # bash: the cold-start cases run the launcher through an explicit
