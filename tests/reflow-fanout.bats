@@ -432,3 +432,55 @@ stamp_mirror() {
 	[[ "$(tmux show -wv -t S:0 @window_label_disp)" == *… ]]
 	[[ "$(tmux show -wv -t S:0 @window_label_rest_long)" != *… ]]
 }
+
+@test "a PR badge pads only the grid column it sits in" {
+	# #688: pr_colw used to be the widest badge in the session, charged to every
+	# column through OVERHEAD and padded onto every window. One badge in column
+	# 0 must cost column 1 nothing.
+	tmux set -wq -t S:0 @branch "feat/alpha-branch"
+	local i
+	for i in 1 2 3; do
+		tmux new-window -d
+		tmux set -wq -t "S:$i" @branch "feat/branch-number-$i"
+	done
+	tmux set -wq -t S:0 @pr_number 12
+	tmux set -wq -t S:0 @pr_state open
+	tmux set -wq -t S:0 @pr_check_state success
+
+	bash "$REFLOW" S 100 --force >/dev/null 2>&1
+
+	[ "$(tmux show -v -t S @window_per)" = 2 ]
+	[ "$(tmux show -wv -t S:0 @window_pr_plain)" = " S #12" ]
+	# S:2 shares the badge's column and pads to it; S:1 and S:3 are the column
+	# that holds no PR at all.
+	[ "$(tmux show -wv -t S:2 @window_pr_pad)" = "      " ]
+	[ -z "$(tmux show -wv -t S:1 @window_pr_pad)" ]
+	[ -z "$(tmux show -wv -t S:3 @window_pr_pad)" ]
+}
+
+@test "a grid with cells to spare renders past the label cap" {
+	# #688: a want is capped at MAX_REST_WIDTH so one long name cannot stretch
+	# the grid, but the cap used to survive a row that had cells left over —
+	# titles ellipsised at 40 beside idle columns.
+	local long="feat/a-very-long-branch-name-that-runs-well-past-the-forty-cell-cap"
+	tmux set -wq -t S:0 @branch "$long-0"
+	local i
+	for i in 1 2 3 4 5; do
+		tmux new-window -d
+		tmux set -wq -t "S:$i" @branch "$long-$i"
+	done
+	tmux set -wq -t S:2 @branch "feat/short"
+
+	bash "$REFLOW" S 160 --force >/dev/null 2>&1
+
+	[ "$(tmux show -v -t S @window_per)" = 2 ]
+	# shellcheck source=/dev/null
+	source "$TDIR/lib-icons.sh"
+	measure_display_width "$(tmux show -wv -t S:0 @window_label_disp)"
+	local wide=$REPLY_DW
+	[ "$wide" -gt 40 ]
+	# S:2 shares that column with a much shorter branch: the widened column
+	# still pads down its length, so the row stays aligned.
+	measure_display_width "$(tmux show -wv -t S:2 @window_label_disp)"
+	[ "$REPLY_DW" -eq "$wide" ]
+}

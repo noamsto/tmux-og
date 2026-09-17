@@ -73,6 +73,45 @@ row_width() {
 	[ "$REPLY_FITS" = 0 ]
 }
 
+@test "fit_columns: a fitting row spends its leftover on the labels the cap held back" {
+	# Wants 100 and 20 under a cap of 40: column 0 claims 40 while the row is
+	# tight, and the 20 is already whole. budget = 103 - 3 - 2*10 - 0 = 80, so
+	# the 20 cells the cap took go to column 0 and none to column 1.
+	reflow_fit_columns 2 103 10 3 "0 0" "100 20" "" 40
+	[ "$REPLY_FITS" = 1 ]
+	[ "$REPLY_COLWS" = "60 20" ]
+}
+
+@test "fit_columns: a row wide enough for every label stretches no further" {
+	# Slack past the real wants is trailing padding, so the columns stop there.
+	reflow_fit_columns 2 200 10 3 "0 0" "30 20" "" 40
+	[ "$REPLY_FITS" = 1 ]
+	[ "$REPLY_COLWS" = "30 20" ]
+	[ "$(row_width 2 10 3)" -lt 200 ]
+}
+
+@test "fit_columns: the PR column is sized per grid column, not by the session's widest badge" {
+	# One 8-cell badge in column 0. Charged per column it costs the row 8 cells;
+	# charged to every column (pre-#688, via OVERHEAD) it cost 16 and this row
+	# did not fit.
+	reflow_fit_columns 2 75 10 3 "0 0 0 0" "20 20 20 20" "8 0 0 0" 0
+	[ "$REPLY_PR_COLWS" = "8 0" ]
+	[ "$REPLY_FITS" = 1 ]
+	[ "$REPLY_COLWS" = "20 20" ]
+}
+
+@test "fit_columns: a starved row charges the PR column once too" {
+	# Same badge, 20 cells narrower: the columns starve, and what they share is
+	# the budget left after the one PR column — not after two.
+	reflow_fit_columns 2 55 10 3 "0 0 0 0" "20 20 20 20" "8 0 0 0" 0
+	[ "$REPLY_FITS" = 0 ]
+	[ "$REPLY_PR_COLWS" = "8 0" ]
+	# 12 + 12 label, 8 PR, 2*10 overhead, one 3-cell separator: the row is spent
+	# to the cell, with the badge charged once.
+	[ "$REPLY_COLWS" = "12 12" ]
+	[ "$(($(row_width 2 10 3) + 8))" -eq 55 ]
+}
+
 # reflow_clip_rests RESTS OVERSHOOT MIN_REST
 
 @test "clip_rests: the overshoot comes off the widest label" {

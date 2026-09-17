@@ -154,7 +154,6 @@ FMT='#{window_index}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@is
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw
-pr_colw=0   # widest PR segment → shared PR column width (0 when no window has a PR)
 crew_colw=0 # widest codename → shared agent-badge column (0 when no window is tagged)
 while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wai bridge bid brest bpr bcrew wname bname wtask; do
 	indices+=("$idx")
@@ -224,8 +223,8 @@ while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate
 	fi
 
 	# Both arms fall through here, so every width input the fit math reads is
-	# filled identically on either path. An arm that skips it leaves pr_colw and
-	# crew_colw at 0, and crew_colw == 0 suppresses the badge fragment outright.
+	# filled identically on either path. An arm that skips it leaves crew_colw
+	# at 0, which suppresses the badge fragment outright.
 	# The composed label is id + rest, which is what build_window_label's REPLY
 	# is on the local path.
 	win_short[$idx]="${win_id[$idx]}${win_rest_short[$idx]}"
@@ -248,7 +247,6 @@ while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate
 	win_id_dw[$idx]=$REPLY_DW
 	measure_display_width "${win_pr[$idx]}"
 	win_pr_dw[$idx]=$REPLY_DW
-	((win_pr_dw[$idx] > pr_colw)) && pr_colw=${win_pr_dw[$idx]}
 
 	# Agent codename badge (external fan-out harness stamps @crew_name/@crew_color;
 	# a mirror carries the remote's through @bridge_crew_name). Rendered inline off
@@ -285,10 +283,9 @@ max_icon_width=$((MAX_ICONS * 3 + 2))
 # --- Layout: pick label detail (long/short) + column widths, then pack ---
 # Slot = idx_width + ": "(2) + name + pr + " "(1) + icon column.
 # The PR segment carries its own leading space, so no PR adds nothing.
-# The shared pr column (pr_colw) is only charged in the multi-line grid
-# slot; single-line entries are unpadded, so the one-row fit charges each
-# window its own PR width — otherwise one window growing a PR inflates the
-# fit test by pr_colw × window count and flips to compact despite free space.
+# The pr column is charged inside reflow_fit_columns, per grid column rather
+# than per window (#688) — single-line entries are unpadded, so the one-row fit
+# charges each window its own PR width instead.
 last_idx=${indices[$((total - 1))]}
 idx_width=${#last_idx}
 # Fixed ago column in the multi-line slot: the value ticks between reflows and
@@ -296,7 +293,7 @@ idx_width=${#last_idx}
 # live-width column would drift. 1 space + 3 right-aligned cells = 4.
 AGO_W=4
 slot_overhead=$((idx_width + 3 + max_icon_width)) # ": " + trailing space + icons
-overhead=$((slot_overhead + pr_colw + AGO_W))     # + shared pr, ago cols (crew badge is per-window, carved from the label below — not a shared column)
+overhead=$((slot_overhead + AGO_W))               # + ago col (the pr column is per grid column, the crew badge per window — carved from the label below)
 
 available=$((WIDTH - PREFIX_WIDTH))
 zoom_extra=0
@@ -321,27 +318,26 @@ LONG_TRUNC_FLOOR=24
 SINGLE_CLIP_FLOOR=16
 
 # Per-window widths driving the grid: a floor (id + badge + zoom marker, none of
-# which the renderer can shrink) and a want (floor + branch/title). The rest is
-# capped at MAX_REST_WIDTH so one very long name can't stretch the grid; floors
-# are never capped. The single-line fit totals stay uncapped and unpadded — that
-# path renders full names via the global format, so it must reserve them.
+# which the renderer can shrink) and a want (floor + the whole branch/title).
+# Wants go in uncapped, with MAX_REST_WIDTH passed alongside them —
+# reflow_fit_columns owns the cap (#688). The single-line fit totals are
+# uncapped and unpadded either way: that path renders full names via the global
+# format, so it must reserve them.
 MAX_REST_WIDTH=40
 floor_list=""
 want_long_list=""
 want_short_list=""
 rest_long_list=""
+pr_list=""
 total_long=0
 total_short=0
 for idx in "${indices[@]}"; do
 	floor=$((win_id_dw[$idx] + win_crew_dw[$idx] + win_zoom_dw[$idx]))
 	rest_long=$((win_long_dw[$idx] - win_id_dw[$idx]))
-	# Uncapped, unlike the grid want below: rung 1.5 clips what the single-line
-	# format really renders, which is the whole rest.
 	rest_long_list+="${rest_long_list:+ }$rest_long"
-	((rest_long > MAX_REST_WIDTH)) && rest_long=$MAX_REST_WIDTH
 	rest_short=$((win_short_dw[$idx] - win_id_dw[$idx]))
-	((rest_short > MAX_REST_WIDTH)) && rest_short=$MAX_REST_WIDTH
 	floor_list+="${floor_list:+ }$floor"
+	pr_list+="${pr_list:+ }${win_pr_dw[$idx]}"
 	want_long_list+="${want_long_list:+ }$((floor + rest_long))"
 	want_short_list+="${want_short_list:+ }$((floor + rest_short))"
 	((total_long += win_long_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_crew_dw[$idx]))
@@ -356,11 +352,12 @@ total_short=$((total_short + (total - 1) * SEP_WIDTH))
 reflow_pick_layout "$floor_list" "$want_long_list" "$want_short_list" \
 	"$total_long" "$total_short" "$total" "$available" "$zoom_extra" \
 	"$overhead" "$SEP_WIDTH" "$MAX_WIN_LINES" "$LONG_TRUNC_FLOOR" \
-	"$rest_long_list" "$SINGLE_CLIP_FLOOR"
+	"$rest_long_list" "$SINGLE_CLIP_FLOOR" "$pr_list" "$MAX_REST_WIDTH"
 labels_mode=$REPLY_LABELS_MODE
 needs_multiline=$REPLY_NEEDS_MULTILINE
 per=$REPLY_PER
 read -ra colws <<<"$REPLY_COLWS"
+read -ra pr_colws <<<"$REPLY_PR_COLWS"
 read -ra clipped_rests <<<"$REPLY_RESTS"
 
 # Resolved display segments per window. The name column is rendered as
@@ -437,7 +434,7 @@ for pos in "${!indices[@]}"; do
 	pad_to_width "$cur_rest" "$REPLY_DW" "$rest_avail"
 	win_disp[$idx]="$REPLY"
 
-	printf -v pad '%*s' "$((pr_colw - win_pr_dw[$idx]))" ''
+	printf -v pad '%*s' "$((pr_colws[pos % per] - win_pr_dw[$idx]))" ''
 	win_pr_pad[$idx]="$pad"
 done
 

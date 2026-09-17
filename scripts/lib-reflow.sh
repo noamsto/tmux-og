@@ -14,52 +14,97 @@
 REFLOW_MIN_COLW=6
 
 # reflow_fit_columns PER AVAILABLE OVERHEAD SEP_WIDTH FLOORS WANTS
+#                    [PRS] [MAX_REST]
 #
 # Size the PER columns of one grid row. FLOORS and WANTS are space-separated
 # per-window widths in window order; the window at position p sits in column
 # p % PER, so a column takes the max over the windows stacked in it. A floor is
 # the part the renderer cannot shrink (issue id + agent badge + zoom marker); a
-# want additionally covers the branch/title.
+# want additionally covers the whole branch/title, uncapped.
 #
 # Columns are sized independently because alignment only needs a width to match
 # *down* a column, never across — charging every column the widest window's
 # width (one uniform colw) is what overflowed the row in issue #271.
 #
-# Sets REPLY_COLWS (space-separated column widths), REPLY_FITS (1 when every
-# column reached its full want) and REPLY_MIN_STARVED (narrowest width among
-# the columns that did not, 0 when none did).
+# PRS are the per-window PR badge widths. The badge forms a column of its own
+# beside the label, sized the same way and for the same reason (#688): the
+# per-column max leaves the budget here rather than riding OVERHEAD, so a badge
+# is charged to the one column that holds it.
+#
+# MAX_REST caps how much of a want is claimed while the row is tight, so one
+# very long title cannot stretch the grid; 0 disables the cap. It is a cap on
+# the claim, not on the label: a row that fits its capped wants hands the
+# leftover out toward the real ones below.
+#
+# Sets REPLY_COLWS (space-separated column widths), REPLY_PR_COLWS (per-column
+# PR widths, same order), REPLY_FITS (1 when every column reached its capped
+# want) and REPLY_MIN_STARVED (narrowest width among the columns that did not,
+# 0 when none did).
 reflow_fit_columns() {
-	local per=$1 available=$2 overhead=$3 sep_width=$4
-	local -a floors wants
+	local per=$1 available=$2 overhead=$3 sep_width=$4 max_rest=${8:-0}
+	local -a floors wants prs
 	read -ra floors <<<"$5"
 	read -ra wants <<<"$6"
+	read -ra prs <<<"${7:-}"
 	((per < 1)) && per=1
 
-	local -a cf=() cw=() width=() demand=()
-	local i c n=${#floors[@]}
+	local -a cf=() cw=() cm=() cp=() width=() demand=()
+	local i c n=${#floors[@]} want pr
 	for ((c = 0; c < per; c++)); do
 		cf[c]=0
 		cw[c]=0
+		cm[c]=0
+		cp[c]=0
 	done
 	for ((i = 0; i < n; i++)); do
 		c=$((i % per))
 		((floors[i] > cf[c])) && cf[c]=${floors[i]}
-		((wants[i] > cw[c])) && cw[c]=${wants[i]}
+		want=${wants[i]}
+		((max_rest > 0 && want > floors[i] + max_rest)) && want=$((floors[i] + max_rest))
+		((want > cw[c])) && cw[c]=$want
+		((wants[i] > cm[c])) && cm[c]=${wants[i]}
+		pr=${prs[i]:-0}
+		((pr > cp[c])) && cp[c]=$pr
 	done
 
 	local budget=$((available - (per - 1) * sep_width - per * overhead))
-	((budget < 0)) && budget=0
-
-	local sum_f=0 sum_w=0
+	local sum_f=0 sum_w=0 sum_m=0
 	for ((c = 0; c < per; c++)); do
 		sum_f=$((sum_f + cf[c]))
 		sum_w=$((sum_w + cw[c]))
+		sum_m=$((sum_m + cm[c]))
+		budget=$((budget - cp[c]))
 	done
+	((budget < 0)) && budget=0
+	REPLY_PR_COLWS="${cp[*]}"
 
 	if ((sum_w <= budget)); then
-		REPLY_COLWS="${cw[*]}"
 		REPLY_FITS=1
 		REPLY_MIN_STARVED=0
+		if ((sum_m <= budget)); then
+			# Every label fits whole; anything past that is trailing padding.
+			REPLY_COLWS="${cm[*]}"
+			return
+		fi
+		# The cap held a column below the label it has to show, and the row has
+		# cells left over — hand them out toward the real want, in proportion to
+		# what the cap took, so a column already showing everything stays put.
+		local slack=$((budget - sum_w)) total_demand=0 handed=0 leftover
+		for ((c = 0; c < per; c++)); do
+			demand[c]=$((cm[c] - cw[c]))
+			total_demand=$((total_demand + demand[c]))
+		done
+		for ((c = 0; c < per; c++)); do
+			width[c]=$((cw[c] + slack * demand[c] / total_demand))
+			handed=$((handed + width[c] - cw[c]))
+		done
+		leftover=$((slack - handed))
+		for ((c = 0; c < per && leftover > 0; c++)); do
+			((width[c] < cm[c])) || continue
+			width[c]=$((width[c] + 1))
+			leftover=$((leftover - 1))
+		done
+		REPLY_COLWS="${width[*]}"
 		return
 	fi
 	REPLY_FITS=0
@@ -177,6 +222,10 @@ reflow_clip_rests() {
 # reflow_pick_layout FLOORS WANTS_LONG WANTS_SHORT TOTAL_LONG TOTAL_SHORT
 #                     TOTAL AVAILABLE ZOOM_EXTRA OVERHEAD SEP_WIDTH
 #                     MAX_WIN_LINES LONG_TRUNC_FLOOR [RESTS_LONG SINGLE_CLIP_FLOOR]
+#                     [PRS MAX_REST]
+#
+# WANTS_* are uncapped and PRS/MAX_REST are passed straight through to
+# reflow_fit_columns, which owns the cap and the PR column; see its header.
 #
 # Detail ladder: long on one row -> long on one row with the widest labels
 # clipped (rung 1.5) -> long grid with every column at its full want -> long
@@ -188,15 +237,16 @@ reflow_clip_rests() {
 # Each grid rung takes the fewest rows that satisfy it, since fewer rows means
 # more columns per row and therefore narrower columns.
 #
-# Sets REPLY_LABELS_MODE (long|short), REPLY_COLWS (space-separated column
-# widths, valid whenever REPLY_NEEDS_MULTILINE=1), REPLY_NEEDS_MULTILINE (0|1),
-# REPLY_PER (columns per row) and REPLY_RESTS (rung 1.5's per-window rest
-# widths, empty on every other rung).
+# Sets REPLY_LABELS_MODE (long|short), REPLY_COLWS / REPLY_PR_COLWS
+# (space-separated column widths, valid whenever REPLY_NEEDS_MULTILINE=1),
+# REPLY_NEEDS_MULTILINE (0|1), REPLY_PER (columns per row) and REPLY_RESTS
+# (rung 1.5's per-window rest widths, empty on every other rung).
 reflow_pick_layout() {
 	local floor_list=$1 want_long_list=$2 want_short_list=$3
 	local total_long=$4 total_short=$5 total=$6 available=$7 zoom_extra=$8
 	local overhead=$9 sep_width=${10} max_win_lines=${11} long_trunc_floor=${12}
 	local rests_long=${13:-} single_clip_floor=${14:-0}
+	local pr_list=${15:-} max_rest=${16:-0}
 
 	REPLY_RESTS=""
 
@@ -205,6 +255,7 @@ reflow_pick_layout() {
 		REPLY_NEEDS_MULTILINE=0
 		REPLY_PER=$total
 		REPLY_COLWS=""
+		REPLY_PR_COLWS=""
 		return
 	fi
 
@@ -220,6 +271,7 @@ reflow_pick_layout() {
 			REPLY_NEEDS_MULTILINE=0
 			REPLY_PER=$total
 			REPLY_COLWS=""
+			REPLY_PR_COLWS=""
 			return
 		fi
 		REPLY_RESTS=""
@@ -233,7 +285,7 @@ reflow_pick_layout() {
 
 	for ((rows = 1; rows <= max_win_lines; rows++)); do
 		per=$(((total + rows - 1) / rows))
-		reflow_fit_columns "$per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_long_list"
+		reflow_fit_columns "$per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_long_list" "$pr_list" "$max_rest"
 		if ((REPLY_FITS)); then
 			REPLY_LABELS_MODE=long
 			REPLY_PER=$per
@@ -244,7 +296,7 @@ reflow_pick_layout() {
 	# Rung 2.5: long labels with starved columns. Taken only while every starved
 	# column still clears LONG_TRUNC_FLOOR (id + ~12 chars of branch); below
 	# that the grid is slivers, so fall through to the short ladder.
-	reflow_fit_columns "$widest_per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_long_list"
+	reflow_fit_columns "$widest_per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_long_list" "$pr_list" "$max_rest"
 	if ((REPLY_MIN_STARVED >= long_trunc_floor)); then
 		REPLY_LABELS_MODE=long
 		REPLY_PER=$widest_per
@@ -256,12 +308,13 @@ reflow_pick_layout() {
 		REPLY_NEEDS_MULTILINE=0
 		REPLY_PER=$total
 		REPLY_COLWS=""
+		REPLY_PR_COLWS=""
 		return
 	fi
 
 	for ((rows = 1; rows <= max_win_lines; rows++)); do
 		per=$(((total + rows - 1) / rows))
-		reflow_fit_columns "$per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_short_list"
+		reflow_fit_columns "$per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_short_list" "$pr_list" "$max_rest"
 		if ((REPLY_FITS)); then
 			REPLY_PER=$per
 			return
@@ -270,6 +323,6 @@ reflow_pick_layout() {
 
 	# Deepest rung: compact ids packed into the widest columns the row cap
 	# allows, starved and clipped as needed.
-	reflow_fit_columns "$widest_per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_short_list"
+	reflow_fit_columns "$widest_per" "$available" "$overhead" "$sep_width" "$floor_list" "$want_short_list" "$pr_list" "$max_rest"
 	REPLY_PER=$widest_per
 }
