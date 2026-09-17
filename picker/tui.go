@@ -658,15 +658,12 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // printableKeyText returns the literal character a key press types, and whether
-// it types one at all — i.e. whether it extends the query rather than
-// triggering a binding.
+// it types one at all.
 //
-// Space is the one key whose name is not its character: bubbletea v2's
-// KeyPressMsg.String() falls through to Keystroke() for it ("Space is the only
-// invisible printable character"), so it arrives as "space", not " ". A
-// len(key) == 1 test therefore dropped every space typed into a query — no
-// picker filter could express "new window" — and a caller that widened the test
-// without mapping the name back would send the literal word to a pane (#689).
+// bubbletea v2 reports the space key by NAME: KeyPressMsg.String() falls
+// through to Keystroke() for the one invisible printable character, so it
+// arrives as "space", never " " (#689). Callers need the character, not the
+// name — relayKeyArgs would otherwise send the word to a pane.
 func printableKeyText(key string) (string, bool) {
 	if key == "space" {
 		return " ", true

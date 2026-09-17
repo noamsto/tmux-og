@@ -1542,10 +1542,7 @@ func TestPrintableKeyText(t *testing.T) {
 		{"Z", "Z", true},
 		{"7", "7", true},
 		{"-", "-", true},
-		// bubbletea v2 reports the space key as its name, never as " ": its
-		// String() falls through to Keystroke() for the one invisible
-		// printable character, so a len==1 test dropped every space (#689).
-		{"space", " ", true},
+		{"space", " ", true}, // by name — see printableKeyText (#689)
 		{" ", " ", true},
 		{"enter", "", false},
 		{"ctrl+a", "", false},

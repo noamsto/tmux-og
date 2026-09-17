@@ -483,23 +483,15 @@ func (m whichKeyModel) Selected() (whichKeyRow, bool) {
 
 // --- Filtering ---
 
-// whichKeySearchText is what a query is matched against: the displayed key
-// chord plus the displayed note. Both are what the row shows, so a hit is
-// always attributable — except in the note of an undescribed bind, whose
-// key_command is far wider than the column and is why describedRank exists.
-func whichKeySearchText(r whichKeyRow) string {
-	return strings.ToLower(r.key + " " + r.note)
-}
-
 // describedRank sorts a bind carrying a real -N description ahead of one whose
 // note is a raw key_command, whatever either scored.
 //
-// 298 of a stock 434-bind server have no -N, so their "note" is a command —
-// often a /nix/store path or a nested format string, none of which fits the
-// column. Scoring alone can't separate them: a subsequence buried in a store
-// path scores like any other, so "float" returned 20 rows of which 2 were the
-// floating-pane binds (#689). Ranking rather than dropping keeps a plugin bind
-// reachable by the text of its command, just below every real description.
+// 298 of a stock 434-bind server have no -N, so their "note" is a command — a
+// /nix/store path or a nested format string, neither of which fits the column.
+// Scoring cannot separate them: a subsequence buried in a store path scores
+// like any other, so "float" matched 20 binds of which 2 were the floating-pane
+// ones (#689). They rank rather than drop, so a plugin bind stays reachable by
+// its command text.
 func describedRank(r whichKeyRow) int {
 	if r.described {
 		return 0
@@ -509,21 +501,16 @@ func describedRank(r whichKeyRow) int {
 
 // rebuildVisible re-derives visible from groups + query.
 //
-// The two shapes are deliberate. With no query the list is the grouped
-// reference — every bind under its key table, in table order. With a query it
-// is a flat, score-ranked list: grouping and ranking cannot both hold, and a
-// search wants its best hit on line 1, not wherever its table happens to fall.
-// The table each row belongs to is not lost, it moves into a column
-// (renderRow's showTable).
+// With no query the list is the grouped reference — every bind under its key
+// table. With a query it is flat and score-ranked, the table moving into a
+// column (renderRow's showTable): grouping and ranking cannot both hold, and a
+// search wants its best hit on line 1.
 func (m whichKeyModel) rebuildVisible() whichKeyModel {
 	q := strings.ToLower(strings.TrimSpace(m.query))
 
 	if q == "" {
 		var visible []whichKeyItem
 		for _, g := range m.groups {
-			if len(g.rows) == 0 {
-				continue
-			}
 			visible = append(visible, whichKeyItem{isHeader: true, table: g.table})
 			for _, r := range g.rows {
 				visible = append(visible, whichKeyItem{row: r})
@@ -540,7 +527,7 @@ func (m whichKeyModel) rebuildVisible() whichKeyModel {
 	var matches []scoredRow
 	for _, g := range m.groups {
 		for _, r := range g.rows {
-			if score := fuzzyScore(whichKeySearchText(r), q); score >= 0 {
+			if score := fuzzyScore(strings.ToLower(r.key+" "+r.note), q); score >= 0 {
 				matches = append(matches, scoredRow{row: r, score: score})
 			}
 		}
@@ -848,12 +835,10 @@ func (m whichKeyModel) renderRawBody() string {
 	return strings.Join(lines, "\n")
 }
 
-// whichKeyTableGloss says in plain words when a table's binds are live. A key
-// table name is tmux's own jargon — "prefix", "root", "move" describe nothing
-// to a reader (#689) — and the prefix one has to name the actual prefix key,
-// which is a setting, so it is passed in rather than baked in.
-//
-// Unknown tables (a plugin's own) get no gloss rather than a guessed one.
+// whichKeyTableGloss says in plain words when a table's binds are live —
+// "prefix", "root" and "move" are tmux's own jargon (#689). The prefix key is
+// a setting, so it is passed in; an unknown table gets no gloss rather than a
+// guessed one.
 func whichKeyTableGloss(table, prefixKey string) string {
 	switch table {
 	case "prefix":
@@ -891,9 +876,9 @@ func (m whichKeyModel) renderTableHeader(table string, w int) string {
 	return head + rule.Render(strings.Repeat("─", fill))
 }
 
-// renderRow draws one bind row: a fixed-width key column, then the note, then —
-// only in the filtered flat list, where the section headers are gone —
-// the table the bind belongs to.
+// renderRow draws one bind row: a fixed-width key column, then the note, then
+// the bind's table when showTable — the filtered list, whose section headers
+// are gone.
 //
 // Selected rows get a background — built as one plain string styled once
 // (never a pre-styled span re-rendered inside another background), and the

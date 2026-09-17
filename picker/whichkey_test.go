@@ -374,10 +374,6 @@ func TestWhichKeyTableGloss(t *testing.T) {
 }
 
 func TestWhichKeyQueryAcceptsSpace(t *testing.T) {
-	// bubbletea hands the space key over as the NAME "space" (its String()
-	// falls through to Keystroke() for the one invisible printable character),
-	// so a query like "new window" was unexpressible until printableKeyText
-	// mapped it back (#689).
 	rows := []whichKeyRow{
 		{table: "prefix", keyString: "c", key: "C-a c", note: "New window", described: true},
 		{table: "prefix", keyString: "N", key: "C-a N", note: "Create new session", described: true},
