@@ -44,7 +44,7 @@ const (
 )
 
 // pasteAgentProcs is the gate set: remote foreground commands whose ctrl+v
-// means "attach the clipboard image". Only claude is verified (codex has no
+// means "attach the clipboard image". claude and pi are verified (codex has no
 // clipboard read at all; cursor-agent is unmeasured). A pane running anything
 // else gets the byte forwarded, preserving readline quoted-insert.
 //
@@ -54,7 +54,7 @@ const (
 // a pane it doesn't actually run claude in would need code execution in the
 // foreground of the specific pane the user is already mirroring to exfiltrate
 // anything — a stronger foothold than the exfil buys.
-var pasteAgentProcs = map[string]bool{"claude": true}
+var pasteAgentProcs = map[string]bool{"claude": true, "pi": true}
 
 // pastePathRe validates the path the remote store script prints before it is
 // interpolated anywhere. The script is ours, but the reply crosses ssh and a
@@ -187,7 +187,8 @@ func (h *pasteHandler) paste(remotePane string, kept []byte, probe clipboardProb
 		h.sendChunks(remotePane, kept)
 	}
 	// Claude Code's path-inlining regex excludes bmp, and no converter is
-	// guaranteed on either host — report rather than ship a dead path.
+	// guaranteed on either host — report rather than ship a dead path. (pi's
+	// read tool would take a bmp; the gate set shares one policy.)
 	if !pasteExtRe.MatchString(probe.ext) {
 		h.notify("tmux-og: clipboard image format not pasteable (." + probe.ext + "; copy as png)")
 		return

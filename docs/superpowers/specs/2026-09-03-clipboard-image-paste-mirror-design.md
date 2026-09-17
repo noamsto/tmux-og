@@ -57,16 +57,21 @@ it as unsupported rather than converting.
 
 ### Which agents need this
 
-- **Claude Code: yes** — the whole mechanism above, verified.
+- **Claude Code: yes** — the whole mechanism above, verified: its
+  path-inlining regex turns the injected path into an attachment at submit.
+- **pi: yes** — verified later, by a different route. pi's own `ctrl+v`
+  writes the clipboard image to a temp file and inserts *that path* (it never
+  attaches at submit), and a bare image path in a prompt is read back with its
+  `read` tool, which sends the image as an attachment. So the injected path is
+  the same shape pi itself produces, and tmux reports `pane_current_command ==
+  "pi"` for a pi pane (nix wrapper included).
 - **Codex: no** — the installed binary contains no clipboard strings at all
   (`strings | grep -iE 'clipboard|wl-paste|xclip'` is empty); it has no
   `ctrl+v` clipboard read to fix.
 - **Cursor agent: unverified** — no evidence either way.
 
-v1 gates interception on `pane_current_command == "claude"` (verified live:
-that is what tmux reports for a CC pane, nix wrapper included). The gate is a
-set, so another agent joins it once its path-inlining is verified the same
-way.
+The gate is a set: an agent joins it once the injected path is shown to reach
+its model as an image.
 
 This gate is a usability heuristic, not a security boundary: `@bridge_proc`
 is daemon-sanitized but remote-derived, trusted the same way every other

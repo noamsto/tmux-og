@@ -776,15 +776,15 @@ mechanism is in `picker/remotebridge/daemon/paste.go`; the design spec
 (`docs/superpowers/specs/2026-09-03-clipboard-image-paste-mirror-design.md`)
 carries the measured evidence.
 
-- **A paste is one byte.** Claude Code's `ctrl+v` delivers `0x16` on stdin
-  and the agent then reads the *system clipboard itself* — so in a mirror the
-  byte reaches the remote and the remote clipboard (headless: absent) is
-  read. The daemon intercepts the byte in `pumpInput`, the only component
-  that is both local (can read the local clipboard) and holding the ssh
-  `ControlMaster` (can ship the bytes).
+- **A paste is one byte.** `ctrl+v` delivers `0x16` on stdin and the agent
+  then reads the *system clipboard itself* — so in a mirror the byte reaches
+  the remote and the remote clipboard (headless: absent) is read. The daemon
+  intercepts the byte in `pumpInput`, the only component that is both local
+  (can read the local clipboard) and holding the ssh `ControlMaster` (can
+  ship the bytes).
 - **Gated and conservative, not a security boundary.** Interception fires
   only when the remote pane's `@bridge_proc` is in the agent set (`claude`
-  alone is verified; codex has no clipboard read at all) AND the local
+  and `pi` are verified; codex has no clipboard read at all) AND the local
   clipboard actually holds an image. Everything else — shells' quoted-insert,
   text clipboards, empty clipboards — forwards the byte unchanged. A `0x16`
   inside a bracketed paste is content, not the gesture, and is kept. The
@@ -803,10 +803,13 @@ carries the measured evidence.
   name — nothing to pre-create) under `/tmp/og-paste-*` on the remote,
   landing at a plain-named file inside it, and the daemon hex-`send-keys` the
   path plus a trailing space into the pane. Claude Code resolves an existing
-  image path in the prompt into an attachment at submit (verified live), so
-  the agent receives the image exactly as if the paste were local. The
-  trailing space keeps the user's next keystrokes from merging into the path
-  token, which would silently break that resolution.
+  image path in the prompt into an attachment at submit (verified live); pi
+  — whose own `ctrl+v` also just writes the clipboard image to a temp file
+  and inserts that path — reads an injected path back with its `read` tool,
+  which sends the image as an attachment (verified live). Either way the
+  agent receives the image exactly as if the paste were local. The trailing
+  space keeps the user's next keystrokes from merging into the path token,
+  which would silently break that resolution.
 - **One pane's paste is serialized against its own later input.** The
   handler's lock is acquired for every frame and, when a frame triggers a
   paste, handed off to the paste goroutine rather than released — so nothing
