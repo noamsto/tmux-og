@@ -3,15 +3,17 @@ package main
 import (
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestParseListKeysRows(t *testing.T) {
 	t.Run("multiple tables with notes and command fallback", func(t *testing.T) {
 		out := strings.Join([]string{
-			`prefix|C-a |Pick session|s`,
-			`prefix|C-a |kill-window|x`,
-			`root||Pick window|M-w`,
-			`copy-mode-vi||Copy selection|Enter`,
+			`prefix|C-a |1|Pick session|s`,
+			`prefix|C-a ||kill-window|x`,
+			`root||1|Pick window|M-w`,
+			`copy-mode-vi||1|Copy selection|Enter`,
 		}, "\n")
 		rows := parseListKeysRows(out)
 		if len(rows) != 4 {
@@ -26,9 +28,16 @@ func TestParseListKeysRows(t *testing.T) {
 			t.Errorf("rows[0].key = %q, want %q", rows[0].key, "C-a s")
 		}
 
-		// Row with no -N note falls back to key_command.
+		if !rows[0].described {
+			t.Errorf("rows[0].described = false, want true for a -N bind")
+		}
+
+		// Row with no -N note falls back to key_command, and says so.
 		if rows[1].note != "kill-window" {
 			t.Errorf("rows[1].note = %q, want fallback to command %q", rows[1].note, "kill-window")
+		}
+		if rows[1].described {
+			t.Errorf("rows[1].described = true, want false for a bind with no -N")
 		}
 
 		// Non-prefix tables render the bare key_string, no chord prepended.
@@ -44,9 +53,9 @@ func TestParseListKeysRows(t *testing.T) {
 		// The "prefix Y ... | wl-copy" case CLAUDE.md flags: the note field's
 		// own pipe must not be mistaken for a field separator. whichKeyListFormat
 		// strips pipes from the note on the tmux side, but parseListKeysRows must
-		// still not choke if one slips through, since it uses SplitN(4) with
+		// still not choke if one slips through, since it uses SplitN(5) with
 		// key_string trailing.
-		line := `prefix|C-a |copy-pipe-and-cancel -T vi-copy  wl-copy|Y`
+		line := `prefix|C-a ||copy-pipe-and-cancel -T vi-copy  wl-copy|Y`
 		rows := parseListKeysRows(line)
 		if len(rows) != 1 {
 			t.Fatalf("len(rows) = %d, want 1", len(rows))
@@ -61,9 +70,9 @@ func TestParseListKeysRows(t *testing.T) {
 
 	t.Run("malformed line is dropped without panicking", func(t *testing.T) {
 		out := strings.Join([]string{
-			`prefix|C-a |Pick session|s`,
+			`prefix|C-a |1|Pick session|s`,
 			`this-line-has-too-few-fields`,
-			`root||M-w`, // only 3 fields
+			`root||1|M-w`, // only 4 fields
 			`onlytwo|fields`,
 		}, "\n")
 		rows := parseListKeysRows(out)
@@ -77,7 +86,7 @@ func TestParseListKeysRows(t *testing.T) {
 	})
 
 	t.Run("empty key_string drops the row", func(t *testing.T) {
-		rows := parseListKeysRows(`prefix|C-a |some note|`)
+		rows := parseListKeysRows(`prefix|C-a |1|some note|`)
 		if len(rows) != 0 {
 			t.Errorf("len(rows) = %d, want 0 for empty key_string", len(rows))
 		}
@@ -298,4 +307,92 @@ func TestNextBindToken(t *testing.T) {
 			t.Errorf("second token = %q, %v, want s, true", tok2, ok2)
 		}
 	})
+}
+
+func TestRebuildVisibleRanking(t *testing.T) {
+	// The #689 shape: two described binds and one whose note is the raw
+	// key_command a /nix/store path lives in — the command subsequence-matches
+	// "float" (…f…l…o…a…t…) with nothing on screen to explain why.
+	rows := []whichKeyRow{
+		{table: "prefix", keyString: "*", key: "C-a *", note: "New floating pane", described: true},
+		{table: "prefix", keyString: "@", key: "C-a @", note: "Toggle pane between floating and tiled", described: true},
+		{table: "fingers", keyString: "f", key: "f", note: `run-shell -b "/nix/store/abc-fingers/bin/tmux-fingers start"`},
+	}
+	m := newWhichKeyModel(rows, map[string]string{}, "mocha", "%0")
+	m.query = "float"
+	m = m.rebuildVisible()
+
+	if len(m.visible) != 3 {
+		t.Fatalf("len(visible) = %d, want 3 flat rows: %+v", len(m.visible), m.visible)
+	}
+	for i, item := range m.visible {
+		if item.isHeader {
+			t.Fatalf("visible[%d] is a header — a filtered list is flat, not grouped", i)
+		}
+	}
+	if m.visible[0].row.keyString != "*" {
+		t.Errorf("visible[0] = %q, want the best-scoring described bind (*)", m.visible[0].row.keyString)
+	}
+	if m.visible[2].row.described || m.visible[2].row.keyString != "f" {
+		t.Errorf("visible[2] = %+v, want the undescribed command row ranked last", m.visible[2].row)
+	}
+}
+
+func TestRebuildVisibleUnfilteredStaysGrouped(t *testing.T) {
+	rows := []whichKeyRow{
+		{table: "prefix", keyString: "s", key: "C-a s", note: "Pick session", described: true},
+		{table: "root", keyString: "M-l", key: "M-l", note: "Move right", described: true},
+	}
+	m := newWhichKeyModel(rows, map[string]string{}, "mocha", "%0")
+
+	if len(m.visible) != 4 {
+		t.Fatalf("len(visible) = %d, want 2 headers + 2 rows: %+v", len(m.visible), m.visible)
+	}
+	if !m.visible[0].isHeader || m.visible[0].table != "prefix" {
+		t.Errorf("visible[0] = %+v, want the prefix header", m.visible[0])
+	}
+	if !m.visible[2].isHeader || m.visible[2].table != "root" {
+		t.Errorf("visible[2] = %+v, want the root header", m.visible[2])
+	}
+}
+
+func TestWhichKeyTableGloss(t *testing.T) {
+	cases := []struct {
+		table, prefixKey, want string
+	}{
+		{"prefix", "`", "after `"},
+		{"prefix", "", "after the prefix key"},
+		{"root", "`", "no prefix"},
+		{"copy-mode-vi", "`", "in copy mode"},
+		{"some-plugin-table", "`", ""},
+	}
+	for _, c := range cases {
+		if got := whichKeyTableGloss(c.table, c.prefixKey); got != c.want {
+			t.Errorf("whichKeyTableGloss(%q, %q) = %q, want %q", c.table, c.prefixKey, got, c.want)
+		}
+	}
+}
+
+func TestWhichKeyQueryAcceptsSpace(t *testing.T) {
+	// bubbletea hands the space key over as the NAME "space" (its String()
+	// falls through to Keystroke() for the one invisible printable character),
+	// so a query like "new window" was unexpressible until printableKeyText
+	// mapped it back (#689).
+	rows := []whichKeyRow{
+		{table: "prefix", keyString: "c", key: "C-a c", note: "New window", described: true},
+		{table: "prefix", keyString: "N", key: "C-a N", note: "Create new session", described: true},
+	}
+	m := newWhichKeyModel(rows, map[string]string{}, "mocha", "%0")
+
+	for _, code := range []rune{'n', 'e', 'w', tea.KeySpace, 'w'} {
+		next, _ := m.handleKey(tea.KeyPressMsg{Code: code})
+		m = next.(whichKeyModel)
+	}
+
+	if m.query != "new w" {
+		t.Fatalf("query = %q, want %q", m.query, "new w")
+	}
+	if len(m.visible) != 1 || m.visible[0].row.keyString != "c" {
+		t.Errorf("visible = %+v, want only the New window bind", m.visible)
+	}
 }

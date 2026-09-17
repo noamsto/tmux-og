@@ -32,6 +32,7 @@ type whichKeyRow struct {
 	keyString string // key_string alone — the token `list-keys -T <table> <key>` takes
 	key       string // display form: the prefix chord for a prefix bind, "M-J" for a root one
 	note      string // key_note, falling back to key_command when the bind has no -N
+	described bool   // the note is a real -N description, not a key_command standing in
 }
 
 // whichKeyGroup is one key_table's rows, already sorted for display.
@@ -54,6 +55,7 @@ type whichKeyModel struct {
 	visible     []whichKeyItem  // groups + rows surviving the current query
 	cursor      int
 	keyColWidth int // fixed key column width, from the unfiltered rows — doesn't jitter while filtering
+	tblColWidth int // ditto for the table column, which only the filtered (flat) list renders
 
 	query string
 
@@ -129,7 +131,7 @@ func RunWhichKey() error {
 // `list-keys -T <table> <key>`, which is authoritative and immune to the same
 // shift (an undescribed bind whose command holds a pipe — `prefix Y`'s
 // `… | wl-copy` — would otherwise arrive truncated and be replayed truncated).
-const whichKeyListFormat = "#{key_table}|#{key_prefix}|#{s/[|]/ /:#{?key_note,#{key_note},#{key_command}}}|#{key_string}"
+const whichKeyListFormat = "#{key_table}|#{key_prefix}|#{?key_note,1,}|#{s/[|]/ /:#{?key_note,#{key_note},#{key_command}}}|#{key_string}"
 
 // listKeysRows shells out to tmux for every bind's table, key and note.
 //
@@ -155,23 +157,24 @@ func parseListKeysRows(out string) []whichKeyRow {
 	}
 	var rows []whichKeyRow
 	for _, line := range strings.Split(trimmed, "\n") {
-		// SplitN(4): key_string is the trailing field and may itself be "|".
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) != 4 || parts[3] == "" {
+		// SplitN(5): key_string is the trailing field and may itself be "|".
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 || parts[4] == "" {
 			continue
 		}
 		// #{key_prefix} renders the prefix key for every table, not just the
 		// prefix one (measured: a root-table F12 reports "`"), so a root bind
 		// would otherwise display — and be named in an error — as "`F12".
-		display := parts[3]
+		display := parts[4]
 		if parts[0] == "prefix" {
-			display = parts[1] + parts[3]
+			display = parts[1] + parts[4]
 		}
 		rows = append(rows, whichKeyRow{
 			table:     parts[0],
-			keyString: parts[3],
+			keyString: parts[4],
 			key:       display,
-			note:      parts[2],
+			note:      parts[3],
+			described: parts[2] == "1",
 		})
 	}
 	return rows
@@ -429,6 +432,19 @@ func groupWhichKeyRows(rows []whichKeyRow) []whichKeyGroup {
 // (e.g. a multi-key sequence) can't shove every note off-screen.
 const whichKeyKeyColMax = 24
 
+// whichKeyTableColWidth sizes the table column the filtered list renders.
+// Unbounded: a key table name is short and is the whole reason a flat list
+// stays readable once the "── prefix ──" headers are gone.
+func whichKeyTableColWidth(groups []whichKeyGroup) int {
+	w := 0
+	for _, g := range groups {
+		if gw := visibleWidth(g.table); gw > w {
+			w = gw
+		}
+	}
+	return w
+}
+
 func whichKeyColWidth(groups []whichKeyGroup) int {
 	w := 0
 	for _, g := range groups {
@@ -449,6 +465,7 @@ func newWhichKeyModel(rows []whichKeyRow, opts map[string]string, theme, originP
 	m := whichKeyModel{
 		groups:      groups,
 		keyColWidth: whichKeyColWidth(groups),
+		tblColWidth: whichKeyTableColWidth(groups),
 		theme:       theme,
 		tmuxOpts:    opts,
 		originPane:  originPane,
@@ -466,31 +483,81 @@ func (m whichKeyModel) Selected() (whichKeyRow, bool) {
 
 // --- Filtering ---
 
-// rebuildVisible re-derives visible from groups + query. fuzzyScore matches
-// over "key note" so either field can drive a hit; a table with no surviving
-// row is dropped, not shown with an empty body.
+// whichKeySearchText is what a query is matched against: the displayed key
+// chord plus the displayed note. Both are what the row shows, so a hit is
+// always attributable — except in the note of an undescribed bind, whose
+// key_command is far wider than the column and is why describedRank exists.
+func whichKeySearchText(r whichKeyRow) string {
+	return strings.ToLower(r.key + " " + r.note)
+}
+
+// describedRank sorts a bind carrying a real -N description ahead of one whose
+// note is a raw key_command, whatever either scored.
+//
+// 298 of a stock 434-bind server have no -N, so their "note" is a command —
+// often a /nix/store path or a nested format string, none of which fits the
+// column. Scoring alone can't separate them: a subsequence buried in a store
+// path scores like any other, so "float" returned 20 rows of which 2 were the
+// floating-pane binds (#689). Ranking rather than dropping keeps a plugin bind
+// reachable by the text of its command, just below every real description.
+func describedRank(r whichKeyRow) int {
+	if r.described {
+		return 0
+	}
+	return 1
+}
+
+// rebuildVisible re-derives visible from groups + query.
+//
+// The two shapes are deliberate. With no query the list is the grouped
+// reference — every bind under its key table, in table order. With a query it
+// is a flat, score-ranked list: grouping and ranking cannot both hold, and a
+// search wants its best hit on line 1, not wherever its table happens to fall.
+// The table each row belongs to is not lost, it moves into a column
+// (renderRow's showTable).
 func (m whichKeyModel) rebuildVisible() whichKeyModel {
 	q := strings.ToLower(strings.TrimSpace(m.query))
 
-	var visible []whichKeyItem
-	for _, g := range m.groups {
-		rows := g.rows
-		if q != "" {
-			rows = nil
+	if q == "" {
+		var visible []whichKeyItem
+		for _, g := range m.groups {
+			if len(g.rows) == 0 {
+				continue
+			}
+			visible = append(visible, whichKeyItem{isHeader: true, table: g.table})
 			for _, r := range g.rows {
-				text := strings.ToLower(r.key + " " + r.note)
-				if fuzzyScore(text, q) >= 0 {
-					rows = append(rows, r)
-				}
+				visible = append(visible, whichKeyItem{row: r})
 			}
 		}
-		if len(rows) == 0 {
-			continue
+		m.visible = visible
+		return m
+	}
+
+	type scoredRow struct {
+		row   whichKeyRow
+		score int
+	}
+	var matches []scoredRow
+	for _, g := range m.groups {
+		for _, r := range g.rows {
+			if score := fuzzyScore(whichKeySearchText(r), q); score >= 0 {
+				matches = append(matches, scoredRow{row: r, score: score})
+			}
 		}
-		visible = append(visible, whichKeyItem{isHeader: true, table: g.table})
-		for _, r := range rows {
-			visible = append(visible, whichKeyItem{row: r})
+	}
+
+	// Stable keeps groupWhichKeyRows' table-then-key order for ties.
+	sort.SliceStable(matches, func(i, j int) bool {
+		ri, rj := describedRank(matches[i].row), describedRank(matches[j].row)
+		if ri != rj {
+			return ri < rj
 		}
+		return matches[i].score > matches[j].score
+	})
+
+	visible := make([]whichKeyItem, 0, len(matches))
+	for _, match := range matches {
+		visible = append(visible, whichKeyItem{row: match.row})
 	}
 	m.visible = visible
 	return m
@@ -585,8 +652,8 @@ func (m whichKeyModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
-		if printableKey(key) {
-			m.query += key
+		if text, ok := printableKeyText(key); ok {
+			m.query += text
 			m = m.rebuildVisible()
 			m.cursor = m.firstSelectable(0)
 		}
@@ -745,7 +812,7 @@ func (m whichKeyModel) renderBody() string {
 			lines = append(lines, fitVisibleWidth(m.renderTableHeader(item.table, w), w))
 			continue
 		}
-		lines = append(lines, m.renderRow(item.row, w, i == m.cursor))
+		lines = append(lines, m.renderRow(item.row, w, i == m.cursor, m.query != ""))
 	}
 	empty := strings.Repeat(" ", w)
 	for len(lines) < h {
@@ -781,6 +848,32 @@ func (m whichKeyModel) renderRawBody() string {
 	return strings.Join(lines, "\n")
 }
 
+// whichKeyTableGloss says in plain words when a table's binds are live. A key
+// table name is tmux's own jargon — "prefix", "root", "move" describe nothing
+// to a reader (#689) — and the prefix one has to name the actual prefix key,
+// which is a setting, so it is passed in rather than baked in.
+//
+// Unknown tables (a plugin's own) get no gloss rather than a guessed one.
+func whichKeyTableGloss(table, prefixKey string) string {
+	switch table {
+	case "prefix":
+		if prefixKey == "" {
+			return "after the prefix key"
+		}
+		return "after " + prefixKey
+	case "root":
+		return "no prefix"
+	case "copy-mode", "copy-mode-vi":
+		return "in copy mode"
+	case "move":
+		return "in pane move mode"
+	case "fingers":
+		return "while tmux-fingers is open"
+	default:
+		return ""
+	}
+}
+
 // renderTableHeader draws a table's section divider at the real popup width —
 // mirrors renderHeaderItem's shape (picker/render_list.go).
 func (m whichKeyModel) renderTableHeader(table string, w int) string {
@@ -788,6 +881,9 @@ func (m whichKeyModel) renderTableHeader(table string, w int) string {
 	rule := lipgloss.NewStyle().Foreground(m.color("@thm_surface_1", "#45475a", "#9ca0b0"))
 
 	head := rule.Render("── ") + accent.Render(table) + " "
+	if gloss := whichKeyTableGloss(table, m.tmuxOpts["prefix"]); gloss != "" {
+		head += rule.Render("— "+gloss) + " "
+	}
 	fill := w - visibleWidth(head)
 	if fill < 1 {
 		return head
@@ -795,22 +891,34 @@ func (m whichKeyModel) renderTableHeader(table string, w int) string {
 	return head + rule.Render(strings.Repeat("─", fill))
 }
 
-// renderRow draws one bind row: a fixed-width key column, then the note.
+// renderRow draws one bind row: a fixed-width key column, then the note, then —
+// only in the filtered flat list, where the section headers are gone —
+// the table the bind belongs to.
+//
 // Selected rows get a background — built as one plain string styled once
 // (never a pre-styled span re-rendered inside another background), and the
 // key's own foreground reset is patched to re-assert the background after it
 // (same trick as renderList's selResetKeepBg).
-func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected bool) string {
+func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected, showTable bool) string {
 	keyStyle := lipgloss.NewStyle().Foreground(m.color("@thm_lavender", "#b4befe", "#7287fd"))
 	dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
+	table := lipgloss.NewStyle().Foreground(m.color("@thm_overlay_0", "#6c7086", "#9ca0b0"))
 
+	tableW := 0
+	if showTable {
+		tableW = m.tblColWidth + 2
+	}
 	key := fitVisibleWidth(r.key, m.keyColWidth)
-	noteW := w - m.keyColWidth - 4
+	noteW := w - m.keyColWidth - 4 - tableW
 	if noteW < 0 {
 		noteW = 0
 	}
-	note := truncateVisibleWidth(r.note, noteW)
-	line := keyStyle.Render(key) + "  " + dim.Render(note)
+	line := keyStyle.Render(key) + "  "
+	if showTable {
+		line += dim.Render(fitVisibleWidth(r.note, noteW)) + "  " + table.Render(r.table)
+	} else {
+		line += dim.Render(truncateVisibleWidth(r.note, noteW))
+	}
 
 	if !selected {
 		return fitVisibleWidth("  "+line, w)
@@ -831,7 +939,7 @@ func (m whichKeyModel) renderSearch() string {
 	if m.query != "" {
 		queryStr = m.query + "█"
 	} else {
-		queryStr = dim.Render("type to filter...") + " "
+		queryStr = dim.Render("filter by key or description...") + " "
 	}
 
 	return lipgloss.NewStyle().

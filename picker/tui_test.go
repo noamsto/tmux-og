@@ -1531,3 +1531,33 @@ func TestRestoreCursorLeavesHeaderWhenRemoteRowsArriveLate(t *testing.T) {
 		t.Errorf("cursor landed on %q, want the matching remote row %q", got, "other")
 	}
 }
+
+func TestPrintableKeyText(t *testing.T) {
+	cases := []struct {
+		key      string
+		wantText string
+		wantOK   bool
+	}{
+		{"a", "a", true},
+		{"Z", "Z", true},
+		{"7", "7", true},
+		{"-", "-", true},
+		// bubbletea v2 reports the space key as its name, never as " ": its
+		// String() falls through to Keystroke() for the one invisible
+		// printable character, so a len==1 test dropped every space (#689).
+		{"space", " ", true},
+		{" ", " ", true},
+		{"enter", "", false},
+		{"ctrl+a", "", false},
+		{"left", "", false},
+		{"f1", "", false},
+		{"tab", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		text, ok := printableKeyText(c.key)
+		if ok != c.wantOK || text != c.wantText {
+			t.Errorf("printableKeyText(%q) = (%q, %v), want (%q, %v)", c.key, text, ok, c.wantText, c.wantOK)
+		}
+	}
+}

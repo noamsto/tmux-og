@@ -321,6 +321,9 @@ func TestRelayKeyArgs(t *testing.T) {
 		{"lowercase letter", "a", []string{"-l", "--", "a"}, true},
 		{"digit", "5", []string{"-l", "--", "5"}, true},
 		{"space", " ", []string{"-l", "--", " "}, true},
+		// bubbletea delivers the space key by NAME; relaying the name verbatim
+		// would type the word "space" into the pane (#689).
+		{"space by key name", "space", []string{"-l", "--", " "}, true},
 		{"punctuation", ";", []string{"-l", "--", ";"}, true},
 		{"enter", "enter", []string{"Enter"}, true},
 		{"escape", "esc", []string{"Escape"}, true},

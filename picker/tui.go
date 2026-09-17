@@ -647,8 +647,8 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	default:
-		if printableKey(key) {
-			m.query += key
+		if text, ok := printableKeyText(key); ok {
+			m.query += text
 			m = m.withFilter()
 			m.cursor = m.firstSelectable(0)
 			return m, m.loadPreviewCmd()
@@ -657,10 +657,24 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// printableKey reports whether a key press is a single printable character, i.e.
-// one that extends the query rather than triggering a binding.
-func printableKey(key string) bool {
-	return len(key) == 1 && key[0] >= 0x20 && key[0] < 0x7f
+// printableKeyText returns the literal character a key press types, and whether
+// it types one at all — i.e. whether it extends the query rather than
+// triggering a binding.
+//
+// Space is the one key whose name is not its character: bubbletea v2's
+// KeyPressMsg.String() falls through to Keystroke() for it ("Space is the only
+// invisible printable character"), so it arrives as "space", not " ". A
+// len(key) == 1 test therefore dropped every space typed into a query — no
+// picker filter could express "new window" — and a caller that widened the test
+// without mapping the name back would send the literal word to a pane (#689).
+func printableKeyText(key string) (string, bool) {
+	if key == "space" {
+		return " ", true
+	}
+	if len(key) == 1 && key[0] >= 0x20 && key[0] < 0x7f {
+		return key, true
+	}
+	return "", false
 }
 
 func (m tuiModel) toggleAgentOnly() tuiModel {
@@ -754,7 +768,8 @@ func (m tuiModel) handleWallKey(key string) (tuiModel, tea.Cmd, bool) {
 	// A half-modal wall where 4 letters move and the other 22 filter cannot
 	// express a query like "tmux-og", so no printable falls through to the
 	// shared query branch — / opens the prompt instead.
-	return m, nil, printableKey(key) || key == "backspace"
+	_, typed := printableKeyText(key)
+	return m, nil, typed || key == "backspace"
 }
 
 // handleWallQueryKey runs the wall's filter prompt. Every key belongs to the
@@ -773,10 +788,12 @@ func (m tuiModel) handleWallQueryKey(key string) (tea.Model, tea.Cmd) {
 		}
 		runes := []rune(m.query)
 		m.query = string(runes[:len(runes)-1])
-	case printableKey(key):
-		m.query += key
 	default:
-		return m, nil
+		text, ok := printableKeyText(key)
+		if !ok {
+			return m, nil
+		}
+		m.query += text
 	}
 	m = m.withFilter().snapWall()
 	return m, m.captureWallCmd()
