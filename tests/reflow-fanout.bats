@@ -349,3 +349,38 @@ stamp_mirror() {
 	local below=$REPLY_DW
 	[ "$first" -eq "$below" ]
 }
+
+@test "an unset @issue_branch does not suppress the stamp" {
+	tmux new-window -d
+	tmux set -wq -t S:1 @branch feat/123-a-thing
+	tmux set -wq -t S:1 @issue_id "#123"
+	tmux set -wq -t S:1 @issue_title "A thing"
+	tmux set -wq -t S:1 @pr_number 5
+	tmux set -wq -t S:1 @pr_state open
+	tmux set -wq -t S:1 @pr_check_state pending
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	# No recorded branch is not evidence of a move, so the stamp — and the PR
+	# segment that rode it — still renders.
+	[ "$(tmux show -wv -t S:1 @window_label_id)" = "G #123" ]
+	[ "$(tmux show -wv -t S:1 @window_pr_num)" = "#5" ]
+}
+
+@test "a stamp naming a different branch is still suppressed" {
+	tmux new-window -d
+	tmux set -wq -t S:1 @branch feat/123-a-thing
+	tmux set -wq -t S:1 @issue_id "#123"
+	tmux set -wq -t S:1 @issue_title "A thing"
+	tmux set -wq -t S:1 @pr_number 5
+	tmux set -wq -t S:1 @pr_state open
+	tmux set -wq -t S:1 @pr_check_state pending
+	tmux set -wq -t S:1 @issue_branch feat/999-left-behind
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	# The stamp belonged to the branch the pane left: the label falls back to the
+	# window's own branch (bare number, no '#') and the PR goes with it.
+	[ "$(tmux show -wv -t S:1 @window_label_id)" = "G 123" ]
+	[ -z "$(tmux show -wv -t S:1 @window_pr_num)" ]
+}

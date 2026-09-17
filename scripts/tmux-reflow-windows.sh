@@ -195,8 +195,12 @@ while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate
 	else
 		# Stamp belongs to the branch it was written for. If the pane has since
 		# cd'd to a different branch, build the label from the current branch
-		# instead — the stamp stays on the window and reappears on cd back.
-		if [[ -n $iid && $ibranch != "$branch" ]]; then
+		# instead — the stamp stays on the window and reappears on cd back. An
+		# unset @issue_branch is no such evidence: tmux-issue-stamp always writes
+		# the two together, so an id without one is hand-set or predates the
+		# field, and dropping it would be permanent (the backfill needs a branch
+		# to even consider a window).
+		if [[ -n $iid && -n $ibranch && $ibranch != "$branch" ]]; then
 			iprov="" iid="" ititle=""
 			prnum="" prstate="" prcheck="" prmerge="" prdraft="" prprog=""
 		fi
