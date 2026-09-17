@@ -21,6 +21,12 @@ setup() {
 	# reaps state files. Pin it like the other update-icons suites (#373).
 	export CLAUDE_NOW=$(($(date +%s) / 5 * 5))
 
+	# #671's backstop matches pane_current_command against $AGENT_COMMANDS
+	# (env-var test seam, same as AGENT_DETECT_BIN); the sed pipeline below
+	# doesn't substitute @AGENT_COMMANDS@, so without this it stays the
+	# literal, never-matching placeholder and @window_has_agent never flips.
+	export AGENT_COMMANDS="claude"
+
 	FAKE_REFLOW="$TDIR/fake-reflow"
 	cat >"$FAKE_REFLOW" <<-EOF
 		#!/bin/sh
@@ -81,6 +87,10 @@ padded_of() {
 
 display_of() {
 	tmux show -wv -t "$1" @window_icon_display 2>/dev/null || true
+}
+
+opt_of() {
+	tmux show -wv -t "$1" "$2" 2>/dev/null || true
 }
 
 @test "one pass on A stamps @window_icon_padded on every window including unattached B" {
@@ -152,4 +162,47 @@ display_of() {
 	padded=$(padded_of "$sid:0")
 	[ "$padded" = "$(printf '%*s' "$PAD_LEN" '')" ] ||
 		{ echo "$sid:0 padded [$padded] want $PAD_LEN spaces" && false; }
+}
+
+# #671 backstop: a shell with no OSC 133 support never fires
+# tmux-shell-prompt's event trigger, so tmux-update-icons' own per-window
+# has_agent transition compare is the only path that can ever clear a window's
+# naming/crew display once its last agent exits.
+@test "backstop clears naming/crew display once B:1's foreground command is no longer an agent" {
+	local pane bare
+	pane="$(tmux list-panes -t B:1 -F '#{pane_id}')"
+	bare="${pane#%}"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks,issues}
+
+	tmux set -w -t B:1 @window_ai_name "Old AI Name"
+	tmux set -w -t B:1 @window_task "old task"
+	tmux set -w -t B:1 @crew_name coral
+	printf 'Old AI Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'old task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
+
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ "$(opt_of B:1 @window_has_agent)" = 1 ]
+
+	# Agent exits to a shell with no OSC 133 support: swap the pane's
+	# foreground command from the fixture `claude` binary to a plain shell —
+	# no hook fires on this, so only a later backstop pass can notice.
+	tmux respawn-pane -k -t B:1 -- "$(command -v bash)"
+	local tries=20
+	while ((tries-- > 0)); do
+		[ "$(tmux display-message -p -t B:1 '#{pane_current_command}')" != claude ] && break
+		sleep 0.1
+	done
+
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ -z "$(opt_of B:1 @window_has_agent)" ]
+	[ -z "$(opt_of B:1 @window_ai_name)" ]
+	[ -z "$(opt_of B:1 @window_task)" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
+	# Hard constraint: @crew_name is dispatcher-owned and never touched.
+	[ "$(opt_of B:1 @crew_name)" = coral ]
 }

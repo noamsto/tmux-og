@@ -24,7 +24,22 @@ setup() {
 	export OG_ENRICH_CACHE_DIR="$BATS_TEST_TMPDIR/og-pr"
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/og-enrich-lock"
-	mkdir -p "$CLAUDE_STATUS_DIR"/{panes,screen,interrupt,tasks,issues,watchers}
+	mkdir -p "$CLAUDE_STATUS_DIR"/{panes,screen,interrupt,tasks,issues,watchers,names}
+
+	# #671's cases drive tmux-reflow-windows/tmux-update-icons directly (a
+	# synchronous pass, since a `new-session -d` server has no attached client
+	# to tick status-format[0]/the reflow hooks on its own) — both are real,
+	# substituted packages on PATH via this check's nativeBuildInputs
+	# (flake.nix). SHIM_DIR is a `tmux` wrapper routing their own bare `tmux`
+	# calls at this test's -L socket, the same trick tests/test-display.sh
+	# uses for its own direct reflow invocation.
+	SHIM_DIR="$BATS_TEST_TMPDIR/shim"
+	mkdir -p "$SHIM_DIR"
+	cat >"$SHIM_DIR/tmux" <<-SHIMEOF
+		#!$(command -v bash)
+		exec "$TMUX_BIN" -L "$SOCKET" "\$@"
+	SHIMEOF
+	chmod +x "$SHIM_DIR/tmux"
 }
 
 teardown() {
@@ -59,6 +74,50 @@ wait_for() {
 		sleep 1
 	done
 	return 1
+}
+
+# wopt TARGET OPTION — window option value, "" if unset. -qv suppresses the
+# "unknown option" error a not-yet-stamped @window_* option would otherwise
+# raise, and prints the raw value with no quote-escaping.
+wopt() {
+	t show-options -w -t "$1" -qv "$2" 2>/dev/null || true
+}
+
+# window_naming_cleared TARGET BARE_PANE_ID — #671's window-wide reset done:
+# @window_has_agent/@window_ai_name/@window_task empty and their
+# names/tasks/issues files gone for BARE_PANE_ID.
+window_naming_cleared() {
+	local target="$1" bare="$2"
+	[ -z "$(wopt "$target" @window_has_agent)" ] || return 1
+	[ -z "$(wopt "$target" @window_ai_name)" ] || return 1
+	[ -z "$(wopt "$target" @window_task)" ] || return 1
+	[ ! -e "$CLAUDE_STATUS_DIR/names/$bare" ] || return 1
+	[ ! -e "$CLAUDE_STATUS_DIR/tasks/$bare" ] || return 1
+	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ] || return 1
+}
+
+# window_agent_gone_only TARGET BARE_PANE_ID — the manual-name arm of
+# claude_clear_window_naming: @window_has_agent empty and issues/<pane> gone,
+# but naming (ai_name/task/their files) untouched — asserted by the caller.
+window_agent_gone_only() {
+	local target="$1" bare="$2"
+	[ -z "$(wopt "$target" @window_has_agent)" ] || return 1
+	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ] || return 1
+}
+
+# reflow SESSION — direct tmux-reflow-windows pass. A numeric WIDTH arg
+# bypasses the script's own #{client_width} lookup (empty/non-numeric for an
+# unattached session, tests/test-display.sh's own precedent), so this works
+# with no client ever attached to SESSION.
+reflow() {
+	PATH="$SHIM_DIR:$PATH" tmux-reflow-windows "$1" 200 --force >/dev/null 2>&1
+}
+
+# update_icons_tick SESSION — one direct tmux-update-icons pass (the
+# backstop), standing in for the status-format[0] `#()` poller an unattached
+# test session never ticks on its own (#580).
+update_icons_tick() {
+	PATH="$SHIM_DIR:$PATH" tmux-update-icons "$1" >/dev/null 2>&1
 }
 
 # seed_shell_state PANE_ID SESSION — state + screen + interrupt + the two
@@ -205,6 +264,215 @@ EOF
 	tb send-keys -t "$b_id" 'printf "\033]133;A\033\\"' Enter
 	sleep 2
 	[ -e "$CLAUDE_STATUS_DIR/panes/$(bare_id "$a_id")" ]
+}
+
+# #671: reset window naming/crew display when a window's last agent exits.
+# claude_clear_agent_state's own pane-scoped state (exercised above) and
+# claude_clear_window_naming's window-scoped naming/crew reset are two
+# different clears fired by the same pane-shell-prompt hook invocation — these
+# cases are additive to the ones above, not a replacement for them.
+
+@test "window's last agent exits: naming/crew cleared, @crew_name kept, grid badge hidden" {
+	t new-session -d -s naming1 -x 80 -y 24 -c "$PWD" -- bash
+	local id bare
+	id="$(t list-panes -t naming1 -F '#{pane_id}')"
+	bare="$(bare_id "$id")"
+	[ -n "$id" ]
+
+	t set-option -w -t naming1 @window_has_agent 1
+	t set-option -w -t naming1 @crew_name coral
+	t set-option -w -t naming1 @crew_color colour210
+	t set-option -w -t naming1 @window_ai_name "Old AI Name"
+	t set-option -w -t naming1 @window_task "old task"
+	printf 'Old AI Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'old task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
+
+	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
+	wait_for 5 window_naming_cleared naming1 "$bare"
+
+	# Hard constraint: @crew_name/@crew_color are dispatcher-owned and this
+	# feature must never touch them.
+	[ "$(wopt naming1 @crew_name)" = coral ]
+	[ "$(wopt naming1 @crew_color)" = colour210 ]
+
+	# The multi-line grid badge is reflow-computed into @window_crew_disp; an
+	# empty @window_has_agent must blank it even though @crew_name lives on.
+	reflow naming1
+	[ -z "$(wopt naming1 @window_crew_disp)" ]
+}
+
+@test "second pane still runs a live agent: window-wide reset is skipped" {
+	mkdir -p "$TEST_HOME/bin"
+	cp "$(command -v bash)" "$TEST_HOME/bin/pi"
+	chmod +x "$TEST_HOME/bin/pi"
+	cat >"$TEST_HOME/pi-sleep.sh" <<-'EOF'
+		sleep 5
+	EOF
+
+	t new-session -d -s naming2 -x 80 -y 24 -c "$PWD" -- bash
+	t split-window -t naming2 -c "$PWD" -- bash
+	local id_a id_b bare_a
+	id_a="$(t list-panes -t naming2 -F '#{pane_id}' | sed -n 1p)"
+	id_b="$(t list-panes -t naming2 -F '#{pane_id}' | sed -n 2p)"
+	bare_a="$(bare_id "$id_a")"
+	[ -n "$id_a" ] && [ -n "$id_b" ] && [ "$id_a" != "$id_b" ]
+
+	# Pane B keeps a live agent running for the whole window.
+	t send-keys -t "$id_b" "$TEST_HOME/bin/pi $TEST_HOME/pi-sleep.sh" Enter
+	sleep 1
+
+	t set-option -w -t naming2 @window_has_agent 1
+	t set-option -w -t naming2 @crew_name coral
+	t set-option -w -t naming2 @window_ai_name "Old AI Name"
+	printf 'Old AI Name\n' >"$CLAUDE_STATUS_DIR/names/$bare_a"
+
+	# Only pane A's prompt fires — the hook's own list-panes scan (step 2)
+	# must still see pane B's live agent and skip the clear entirely.
+	t send-keys -t "$id_a" 'printf "\033]133;A\033\\"' Enter
+	sleep 2
+
+	[ "$(wopt naming2 @window_has_agent)" = 1 ]
+	[ "$(wopt naming2 @window_ai_name)" = "Old AI Name" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare_a" ]
+
+	reflow naming2
+	case "$(wopt naming2 @window_crew_disp)" in
+	*coral*) : ;;
+	*) echo "badge should still render, @window_crew_disp=[$(wopt naming2 @window_crew_disp)]" && false ;;
+	esac
+
+	sleep 4 # let the fake agent drain before teardown
+}
+
+@test "agent relaunches: backstop restores @window_has_agent with no crew re-stamp" {
+	mkdir -p "$TEST_HOME/bin"
+	cp "$(command -v bash)" "$TEST_HOME/bin/pi"
+	chmod +x "$TEST_HOME/bin/pi"
+	cat >"$TEST_HOME/pi-sleep.sh" <<-'EOF'
+		sleep 5
+	EOF
+
+	t new-session -d -s naming3 -x 80 -y 24 -c "$PWD" -- bash
+	local id
+	id="$(t list-panes -t naming3 -F '#{pane_id}')"
+	[ -n "$id" ]
+
+	# A stale crew stamp from a prior agent occupancy, and no @window_has_agent
+	# yet (as if the window had already been cleared once).
+	t set-option -w -t naming3 @crew_name coral
+	t set-option -w -t naming3 @crew_color colour99
+
+	t send-keys -t "$id" "$TEST_HOME/bin/pi $TEST_HOME/pi-sleep.sh" Enter
+	sleep 1
+
+	update_icons_tick naming3
+	[ "$(wopt naming3 @window_has_agent)" = 1 ]
+	# No re-stamp: the backstop's has_agent=1 branch only ever sets
+	# @window_has_agent, never @crew_name/@crew_color.
+	[ "$(wopt naming3 @crew_name)" = coral ]
+	[ "$(wopt naming3 @crew_color)" = colour99 ]
+
+	reflow naming3
+	case "$(wopt naming3 @window_crew_disp)" in
+	*coral*) : ;;
+	*) echo "badge should reappear, @window_crew_disp=[$(wopt naming3 @window_crew_disp)]" && false ;;
+	esac
+
+	sleep 4 # let the fake agent drain before teardown
+}
+
+@test "manual rename survives the agent-exit clear and a later automatic-rename tick" {
+	t new-session -d -s naming5 -x 80 -y 24 -c "$PWD" -- bash
+	local id bare
+	id="$(t list-panes -t naming5 -F '#{pane_id}')"
+	bare="$(bare_id "$id")"
+	[ -n "$id" ]
+
+	t set-option -w -t naming5 @window_has_agent 1
+	t set-option -w -t naming5 @crew_name coral
+	t set-option -w -t naming5 @window_ai_name "Old AI Name"
+	t set-option -w -t naming5 @window_task "old task"
+	printf 'Old AI Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'old task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
+
+	# The prefix + , bind's underlying commands (config/tmux.conf.tmpl /
+	# .reference.nix): rename-window (which turns automatic-rename off on its
+	# own) then the new durable @window_manual_name marker.
+	t rename-window -t naming5 -- MyName
+	t set-window-option -t naming5 @window_manual_name 1
+	# show-options -qv renders a boolean option as "on"/"off" (unlike the
+	# "1"/"0" a format string like #{automatic-rename} would expand to).
+	[ "$(wopt naming5 automatic-rename)" = off ]
+
+	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
+	wait_for 5 window_agent_gone_only naming5 "$bare"
+
+	# Naming state is left untouched for a manually-renamed window.
+	[ "$(wopt naming5 @window_ai_name)" = "Old AI Name" ]
+	[ "$(wopt naming5 @window_task)" = "old task" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+
+	# The actual regression this closes: a later tick must not flip
+	# automatic-rename back on for a manually-renamed window (#671) — before
+	# this fix, tmux-update-icons' reassert-on-tick logic couldn't tell a
+	# genuine user rename from tmux-remux's restore-induced automatic-rename
+	# off, and reverted it within ~1s regardless.
+	update_icons_tick naming5
+	[ "$(wopt naming5 automatic-rename)" = off ]
+	[ "$(t list-windows -t naming5 -F '#{window_name}')" = MyName ]
+}
+
+@test "bridge window: untouched by both the event hook and the backstop" {
+	mkdir -p "$TEST_HOME/bin"
+	cp "$(command -v bash)" "$TEST_HOME/bin/pi"
+	chmod +x "$TEST_HOME/bin/pi"
+	cat >"$TEST_HOME/pi-sleep.sh" <<-'EOF'
+		sleep 5
+	EOF
+
+	t new-session -d -s naming6 -x 80 -y 24 -c "$PWD" -- bash
+	local id bare
+	id="$(t list-panes -t naming6 -F '#{pane_id}')"
+	bare="$(bare_id "$id")"
+	[ -n "$id" ]
+
+	t set-option -w -t naming6 @bridge_win 1
+	t set-option -w -t naming6 @window_has_agent 1
+	t set-option -w -t naming6 @window_ai_name "Bridge Name"
+	t set-option -w -t naming6 @window_task "bridge task"
+	printf 'Bridge Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'bridge task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
+
+	# Event hook: gets past step 0 (@window_has_agent was 1 at fire time) but
+	# must bail at the @bridge_win check before touching anything.
+	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
+	sleep 2
+
+	[ "$(wopt naming6 @window_has_agent)" = 1 ]
+	[ "$(wopt naming6 @window_ai_name)" = "Bridge Name" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
+
+	# Backstop: restore the realistic invariant first — @window_has_agent is
+	# never written for a bridge window by anything, so it never actually
+	# starts stamped "1" in real operation (its only writer, this same
+	# backstop, unconditionally skips bridge windows before scanning). Then
+	# prove an agent-shaped foreground command in the mirror's local pane
+	# still doesn't matter: win_cur_bridge alone gates the scan.
+	t set-option -w -t naming6 @window_has_agent ""
+	t send-keys -t "$id" "$TEST_HOME/bin/pi $TEST_HOME/pi-sleep.sh" Enter
+	sleep 1
+
+	update_icons_tick naming6
+	[ -z "$(wopt naming6 @window_has_agent)" ]
+	[ "$(wopt naming6 @window_ai_name)" = "Bridge Name" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+
+	sleep 4 # let the fake agent drain before teardown
 }
 
 # Unit-level: claude_clear_agent_state's ownership guard, exercised by sourcing

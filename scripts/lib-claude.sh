@@ -219,6 +219,38 @@ claude_clear_agent_state() {
 	tmux set -pq -t "%${id}" @claude_status "" \; set -pq -t "%${id}" @agent_screen "" 2>/dev/null || true
 }
 
+# claude_clear_window_naming WINDOW_TARGET MANUAL_NAME PANE_ID...
+# Called once a window has no live agent left in any pane (#671):
+# tmux-shell-prompt.sh's event trigger and tmux-update-icons.sh's backstop are
+# the two callers. Always clears @window_has_agent on the window and removes
+# issues/<pane> for every PANE_ID — issue self-reports "die with the pane or
+# CC session" per the CLAUDE.md "Issue self-report" bullet, and losing the
+# window's last agent is exactly that death, independent of naming/display
+# mode. When MANUAL_NAME != 1 (the window has never had @window_manual_name
+# stamped by the user's own prefix + , rename), also clears
+# @window_ai_name/@window_task and removes names/<pane>/tasks/<pane> for every
+# PANE_ID — a manually-named window's name is left untouched, since nothing in
+# the naming pipeline drives it and there is nothing to fight the user over.
+claude_clear_window_naming() {
+	local target="$1" manual="$2"
+	shift 2
+	local id
+
+	tmux set -qw -t "$target" @window_has_agent ""
+	for id in "$@"; do
+		id="${id#%}"
+		rm -f "$CLAUDE_ISSUES_DIR/$id"
+	done
+
+	[[ $manual == 1 ]] && return 0
+
+	tmux set -qw -t "$target" @window_ai_name "" \; set -qw -t "$target" @window_task ""
+	for id in "$@"; do
+		id="${id#%}"
+		rm -f "$CLAUDE_NAMES_DIR/$id" "$CLAUDE_TASKS_DIR/$id"
+	done
+}
+
 # claude_reap_dead_panes ROWS
 # BACKSTOP for death paths no pane hook fires on: kill-pane, kill-window,
 # kill-session, respawn-pane -k, and a server crash (measured matrix in

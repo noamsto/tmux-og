@@ -427,7 +427,7 @@
     #     opening quote close the outer one and defeat the escaping. The
     #     conf-shell-quoting scanner tracks no sub-quoting context and cannot
     #     catch that.
-    bind-key -N 'Rename current window' , if-shell -F '${bridgeGate}' { command-prompt -I'#{@window_bridge_name}' { run-shell "${bridgeCtl} rename #{q:@bridge_pane} #{qs:1}" %1 } } { command-prompt -I'#W' { rename-window -- '%%' } }
+    bind-key -N 'Rename current window' , if-shell -F '${bridgeGate}' { command-prompt -I'#{@window_bridge_name}' { run-shell "${bridgeCtl} rename #{q:@bridge_pane} #{qs:1}" %1 } } { command-prompt -I'#W' { rename-window -- '%%' ; set-window-option @window_manual_name 1 } }
     bind-key -N 'Swap the active pane with the pane above' '{' if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} swap #{q:@bridge_pane} U" } { swap-pane -U }
     bind-key -N 'Swap the active pane with the pane below' '}' if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} swap #{q:@bridge_pane} D" } { swap-pane -D }
 
@@ -655,7 +655,7 @@
     # last so its color only runs into the separator, which sets its own color.
     # tmux-reflow-windows mirrors this layout for the multi-line variants with
     # column-padded segments.
-    set -g status-format[1] "#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ╰─ #{W:#[range=window|#{window_index}]#[nobold]#{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]}#{window_index}: #{?${bridgeOpt "crew_name"},#{?${bridgeOpt "crew_color"},#[fg=${bridgeOpt "crew_color"}#,bg=#{@thm_bg}],}${bridgeOpt "crew_name"} #{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]},}#[bold]#{@window_label_id}#{?window_active,,#[nobold]}#{?#{==:#{@labels_mode},long},#{@window_label_rest_long},#{@window_label_rest_short}}#{?window_active,#[fg=#{@thm_fg}#,bg=#{@thm_bg}#,nobold],} #{@window_icon_display}#{?window_zoomed_flag, 󰁌,}#{?#{&&:${bridgeOpt "pr_number"},#{!=:${bridgeOpt "pr_number"},none}},#{?#{==:${bridgeOpt "pr_state"},merged},#[fg=#{@thm_mauve}],#{?#{==:${bridgeOpt "pr_state"},closed},#[fg=#{@thm_overlay_0}],#{?#{||:#{==:${bridgeOpt "pr_check_state"},failure},#{==:${bridgeOpt "pr_mergeable"},conflicting}},#[fg=#{@thm_red}],#{?#{==:${bridgeOpt "pr_check_state"},pending},#[fg=#{@thm_peach}],#[fg=#{@thm_green}]}}}},}#{@window_pr_glyph}#{?#{==:${bridgeOpt "pr_state"},open},#{?#{==:${bridgeOpt "pr_review"},approved},#[fg=#{@thm_green}],#{?#{==:${bridgeOpt "pr_review"},changes_requested},#[fg=#{@thm_red}],#{?#{==:${bridgeOpt "pr_review"},review_required},#[fg=#{@thm_overlay_0}],}}}#{?${bridgeOpt "pr_auto_merge"},#[underscore],},}#{@window_pr_num}#[nounderscore]#{?#{@window_claude_ago}, #[fg=#{@thm_overlay_1}]#{@window_claude_ago},}#[bg=#{@thm_bg}]#[norange]#{?next_window_index, #[fg=#{@thm_subtext_0}#,nobold]│ ,}}"
+    set -g status-format[1] "#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ╰─ #{W:#[range=window|#{window_index}]#[nobold]#{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]}#{window_index}: #{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},${bridgeOpt "crew_name"}},#{?${bridgeOpt "crew_color"},#[fg=${bridgeOpt "crew_color"}#,bg=#{@thm_bg}],}${bridgeOpt "crew_name"} #{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]},}#[bold]#{@window_label_id}#{?window_active,,#[nobold]}#{?#{==:#{@labels_mode},long},#{@window_label_rest_long},#{@window_label_rest_short}}#{?window_active,#[fg=#{@thm_fg}#,bg=#{@thm_bg}#,nobold],} #{@window_icon_display}#{?window_zoomed_flag, 󰁌,}#{?#{&&:${bridgeOpt "pr_number"},#{!=:${bridgeOpt "pr_number"},none}},#{?#{==:${bridgeOpt "pr_state"},merged},#[fg=#{@thm_mauve}],#{?#{==:${bridgeOpt "pr_state"},closed},#[fg=#{@thm_overlay_0}],#{?#{||:#{==:${bridgeOpt "pr_check_state"},failure},#{==:${bridgeOpt "pr_mergeable"},conflicting}},#[fg=#{@thm_red}],#{?#{==:${bridgeOpt "pr_check_state"},pending},#[fg=#{@thm_peach}],#[fg=#{@thm_green}]}}}},}#{@window_pr_glyph}#{?#{==:${bridgeOpt "pr_state"},open},#{?#{==:${bridgeOpt "pr_review"},approved},#[fg=#{@thm_green}],#{?#{==:${bridgeOpt "pr_review"},changes_requested},#[fg=#{@thm_red}],#{?#{==:${bridgeOpt "pr_review"},review_required},#[fg=#{@thm_overlay_0}],}}}#{?${bridgeOpt "pr_auto_merge"},#[underscore],},}#{@window_pr_num}#[nounderscore]#{?#{@window_claude_ago}, #[fg=#{@thm_overlay_1}]#{@window_claude_ago},}#[bg=#{@thm_bg}]#[norange]#{?next_window_index, #[fg=#{@thm_subtext_0}#,nobold]│ ,}}"
     set -g status-format[2] ""
     set -g status-format[3] ""
     set -g status-format[4] ""
@@ -855,8 +855,11 @@
     # off the command queue. pane_current_command and session_name are wrap-required
     # formats so they take bare #{qs:} (never #{q:}, which loses a leading ~/word);
     # #{q:hook_pane} is a %N id. session_name (never session_id — its $N re-expands
-    # in run-shell) carries the ownership guard.
-    set-hook -g pane-shell-prompt 'run-shell -b "${script.tmux-shell-prompt}/bin/tmux-shell-prompt #{q:hook_pane} #{qs:pane_current_command} #{qs:session_name}"'
+    # in run-shell) carries the ownership guard. window_id and @window_has_agent
+    # (#671) are the event trigger's window-wide naming/crew reset args — the
+    # latter is the hook-fire-time value, read for free in this same
+    # hook-context substitution, no extra fork to fetch it.
+    set-hook -g pane-shell-prompt 'run-shell -b "${script.tmux-shell-prompt}/bin/tmux-shell-prompt #{q:hook_pane} #{qs:pane_current_command} #{qs:session_name} #{q:window_id} #{q:@window_has_agent}"'
 
     # A scratchpad dies with its parent session ([99] is tmux-remux's capture-event)
     set-hook -g session-closed[98] 'run-shell -b "tmux kill-session -t =scratch-#{qs:hook_session_name} 2>/dev/null || true"'

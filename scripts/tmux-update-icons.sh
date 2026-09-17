@@ -188,6 +188,7 @@ main() {
 	# never set).
 	declare -A pane_to_win win_procs win_pane_path win_cur_branch win_active_pane win_cur_task win_cur_name pane_cur_relaunch pane_img_src pane_idx
 	declare -A win_cur_display win_cur_padded win_cur_ago win_cur_rename win_cur_crew win_cur_crew_seen win_cur_bridge
+	declare -A win_panes win_cur_has_agent win_cur_manual
 	declare -A all_sess sess_cur_active_icon sess_cur_session_fg sess_active_proc sess_active_win
 	# cwd-move re-stamp (#596): win_cwd/win_cwd_pane/win_worktree/win_cwd_seen are
 	# captured on the window's first NON-floating pane — a separate authority from
@@ -211,6 +212,8 @@ main() {
 	# "1" or empty and @bridge_proc is a command name, so both do too.
 	# @claude_img_src is aeye's own pane option (a "<server pid>-<pane>" key, or
 	# empty) — no '|', so it too stays a fixed middle field before the task.
+	# @window_has_agent and @window_manual_name (#671) are both closed "1"/""
+	# tokens, same shape as @crew_name, so both sit safely before the task too.
 	# pane_floating_flag and pane_active are both closed sets ("0"/"1"), so —
 	# like session_id — they're safe as fixed middle fields no matter what's in
 	# neighboring paths; win_poison below fails a window closed when either reads
@@ -219,7 +222,7 @@ main() {
 	# '|' exposure pane_current_path already does, so both sit ahead of
 	# pane_active/window_active — a '|' in either then cannot shift the flags the
 	# rest of this script trusts as fixed-format.
-	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_task; do
+	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_task; do
 		[[ -n $pane_id ]] || continue
 		# A mirror pane runs the bridge renderer; @bridge_proc carries what the
 		# remote pane is actually running, which is what the icons should show.
@@ -231,6 +234,10 @@ main() {
 		# settle, which would be a reconcile fork every tick forever.
 		[[ $pane_active == 0 || $pane_active == 1 ]] || win_poison[$wkey]=1
 		pane_to_win["${pane_id#%}"]="$wkey"
+		# Space-joined bare pane ids for claude_clear_window_naming (#671) — same
+		# shape as win_procs below, accumulated ahead of that block's `continue` so
+		# a remain-on-exit corpse (empty pane_current_command) still lands here.
+		win_panes[$wkey]="${win_panes[$wkey]:+${win_panes[$wkey]} }${pane_id#%}"
 		pane_cur_relaunch["${pane_id#%}"]="$cur_relaunch"
 		pane_img_src["${pane_id#%}"]="$cur_img_src"
 		pane_idx["${pane_id#%}"]="$pidx"
@@ -253,6 +260,8 @@ main() {
 			win_cur_crew[$wkey]="$cur_crew"
 			win_cur_crew_seen[$wkey]="$cur_crew_seen"
 			win_cur_bridge[$wkey]="$cur_bridge"
+			win_cur_has_agent[$wkey]="$cur_has_agent"
+			win_cur_manual[$wkey]="$cur_manual"
 		fi
 		# cwd authority (#596): the FIRST NON-FLOATING pane, not the first pane full
 		# stop and not the active pane — a floating scratch pane commonly sits in a
@@ -280,7 +289,7 @@ main() {
 		*" $proc "*) ;;
 		*) win_procs[$wkey]="${existing:+$existing }$proc" ;;
 		esac
-	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_task}')
+	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_task}')
 
 	arm_agent_detect
 
@@ -466,6 +475,38 @@ main() {
 			sess_need_reflow[$s]=1
 		fi
 
+		# Agent occupancy (#671): @window_has_agent tracks whether any pane in the
+		# window currently runs a manifest agent command. On a genuine transition,
+		# clear naming/crew display state via claude_clear_window_naming (never
+		# @crew_name/@crew_color themselves — dispatcher-owned, CLAUDE.md hard
+		# constraint). Mirror windows are excluded outright (daemon-owned).
+		has_agent=""
+		if [[ ${win_cur_bridge[$wkey]:-} != 1 ]]; then
+			# shellcheck disable=SC2086  # win_procs is a space-joined string; word-split intentionally
+			for p in ${win_procs[$wkey]:-}; do
+				normalize_wrapped_cmd "$p"
+				case " $AGENT_COMMANDS " in *" $REPLY "*)
+					has_agent=1
+					break
+					;;
+				esac
+			done
+		fi
+		if [[ -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 && $has_agent != "${win_cur_has_agent[$wkey]:-}" ]]; then
+			if [[ -n $has_agent ]]; then
+				tmux set -qw -t "$target" @window_has_agent 1
+			else
+				# Target by pane id, not "$sess:$idx" — renumber-windows can slide
+				# an index onto a different window between this batched read and
+				# this write, and unlike the @window_has_agent set above, this call
+				# is destructive (deletes names/tasks/issues files), so it must not
+				# risk landing on the wrong window.
+				# shellcheck disable=SC2086  # win_panes is a space-joined string of bare pane ids; word-split intentionally into positional args
+				claude_clear_window_naming "%${win_panes[$wkey]%% *}" "${win_cur_manual[$wkey]:-}" ${win_panes[$wkey]:-}
+			fi
+			sess_need_reflow[$s]=1
+		fi
+
 		# cwd-move re-stamp (#596): a window whose first non-floating pane cd'd into
 		# a different worktree keeps the old repo's @worktree/@branch/@git_root
 		# forever — no tmux hook fires on a plain `cd`. Ride this batched read and
@@ -620,11 +661,16 @@ main() {
 		# rename-window, and tmux only re-derives a name when the active pane
 		# produces output — an idle renderer never does, so the name freezes on
 		# whatever the format yielded at that instant (the launcher's cwd).
+		#
+		# Also except a window carrying @window_manual_name (#671): this same
+		# reassert doesn't distinguish a genuine user `prefix + ,` rename from
+		# tmux-remux's restore-induced automatic-rename off, so without this a
+		# manual rename reverted within ~1s regardless of who set it.
 		if [[ ${win_cur_bridge[$wkey]:-} == 1 ]]; then
 			if [[ ${win_cur_rename[$wkey]:-} == 1 ]]; then
 				tmux_cmds+="set -qw -t '$target' automatic-rename off"$'\n'
 			fi
-		elif [[ ${win_cur_rename[$wkey]:-} != 1 ]]; then
+		elif [[ ${win_cur_rename[$wkey]:-} != 1 && ${win_cur_manual[$wkey]:-} != 1 ]]; then
 			tmux_cmds+="set -qw -t '$target' automatic-rename on"$'\n'
 		fi
 

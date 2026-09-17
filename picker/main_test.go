@@ -251,7 +251,7 @@ func TestParseShowOptionsLine(t *testing.T) {
 // windowPaneRow builds one list-panes -a row in parseWindowPaneRows' field
 // order (see collectWindows' -F string), for tests below.
 func windowPaneRow(fields ...string) string {
-	const n = 34
+	const n = 35
 	row := make([]string, n)
 	copy(row, fields)
 	return strings.Join(row, "|")
@@ -316,6 +316,7 @@ func TestParseWindowPaneRowsLocalUnchanged(t *testing.T) {
 		"local-crew", "colour0", "", "", "",
 		"", "garbage-crew", "garbage-color", "GARBAGE-1", " garbage title",
 		" garbage-pr", "garbage", "garbage", "garbage",
+		"", "", "", "", "", "", "1",
 	)
 	order, m := parseWindowPaneRows([]string{row})
 	wi := m[order[0]]
@@ -327,6 +328,28 @@ func TestParseWindowPaneRowsLocalUnchanged(t *testing.T) {
 	}
 	if wi.labelID != "LIN-1" || wi.crewName != "local-crew" {
 		t.Errorf("label/crew = %q/%q, want local's own values, not the bridge fields", wi.labelID, wi.crewName)
+	}
+}
+
+func TestParseWindowPaneRowsLocalNoAgentBlanksCrew(t *testing.T) {
+	// A non-bridge window with no live agent (@window_has_agent empty, the
+	// trailing field left unset) must blank the crew codename badge while
+	// leaving its label/branch identity untouched (#671).
+	row := windowPaneRow(
+		"sess", "0", "winname", "0", "fish", "1", "feature/x", "/some/path",
+		"LIN-1", " local title", " pr-local", "open", "pending", "mergeable",
+		"local-crew", "colour0", "", "", "",
+	)
+	order, m := parseWindowPaneRows([]string{row})
+	wi := m[order[0]]
+	if wi.bridgeWin {
+		t.Fatal("bridgeWin = true, want false")
+	}
+	if wi.crewName != "" || wi.crewColor != "" {
+		t.Errorf("crew = %q/%q, want blanked (no live agent)", wi.crewName, wi.crewColor)
+	}
+	if wi.labelID != "LIN-1" || wi.branch != "feature/x" {
+		t.Errorf("label/branch = %q/%q, want unaffected", wi.labelID, wi.branch)
 	}
 }
 
