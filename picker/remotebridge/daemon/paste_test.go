@@ -175,6 +175,20 @@ func TestHandleForwardsOnNonAgentPane(t *testing.T) {
 	}
 }
 
+// pi reads the system clipboard on ctrl+v exactly as claude does, so a pi
+// pane takes the path mechanism too: the mirrored pane's clipboard is
+// headless, and the byte reaching it would otherwise no-op.
+func TestHandleSwallowsOnPiPane(t *testing.T) {
+	f := newPasteFixture()
+	f.h.procFor = func(string) string { return "pi" }
+	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
+		t.Fatalf("pi pane: handle forwarded the byte instead of pasting: %q", got)
+	}
+	if _, notified := f.awaitOutcome(t); notified != "" {
+		t.Fatalf("unexpected notify: %q", notified)
+	}
+}
+
 func TestHandleForwardsWhenNoImage(t *testing.T) {
 	f := newPasteFixture()
 	f.h.probeClipboard = func() (clipboardProbe, bool, error) { return clipboardProbe{}, false, nil }
