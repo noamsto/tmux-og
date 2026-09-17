@@ -3561,3 +3561,56 @@ attach_pty_client() {
 	[ "$src_dims" = "$dst_dims" ]
 	[ "$still_there" -eq 1 ]
 }
+
+# A pane the daemon never created — a local split, or the corpse remain-on-exit
+# leaves behind when a renderer dies (#547) — makes the mirror window hold more
+# tiled panes than the remote layout names, and tmux refuses the whole
+# select-layout for it ("have 3 panes but need 2"; floats are NOT counted, dead
+# panes are). Nothing on the pure-reshape path notices: no pane joined or left
+# the REMOTE, so applyPaneOps never runs and errLocalPanesDesynced's own check
+# never gets a chance. Before #672 the mirror kept its stale geometry for the
+# life of the window while its renderers went on painting the remote's current
+# screen into it — the garbled window this asserts is gone.
+@test "daemon rebuilds a mirror holding a pane the remote layout does not name" {
+	$SRC new-session -d -s rem -x 200 -y 50
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 200 -y 50
+
+	"$DAEMON" --test-local \
+		--src-socket m2src --dst-socket m2dst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/d9.sock" \
+		>"$BATS_TEST_TMPDIR/d9.log" 2>&1 &
+	daemon_pid=$!
+
+	for _ in $(seq 1 40); do
+		[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 2 ] && break
+		sleep 0.1
+	done
+
+	# The extra pane carries no @bridge_pane, so healDeadRenderers is blind to
+	# it whether it lives or dies — this is the count desync on its own, not
+	# the dead-renderer path wearing its clothes.
+	$DST split-window -h -t host-sess:1
+	[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 3 ]
+
+	# Reshape the REMOTE without changing its pane set: a pure geometry change,
+	# which is the path that had no recovery.
+	$SRC resize-pane -t rem.1 -x 60
+
+	for _ in $(seq 1 60); do
+		[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 2 ] && break
+		sleep 0.1
+	done
+
+	src_dims="$(sorted_tiled_dims "$SRC" rem)"
+	dst_dims="$(sorted_tiled_dims "$DST" host-sess:1)"
+	dst_panes="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$dst_panes" -eq 2 ]
+	[ -n "$src_dims" ]
+	[ "$src_dims" = "$dst_dims" ]
+}
