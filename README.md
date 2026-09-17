@@ -20,6 +20,8 @@ Provides a fully configured tmux binary via a Nix flake — no dotfile managemen
 
 ![tmux-og: agent status in the status bar, window switching and the session picker](docs/media/hero.gif)
 
+**Contents** — [Quick start](#quick-start) · [Install](#installation) · [Binary cache](#binary-cache) · [Features](#features) · [Screenshots](#screenshots) · [The window grid](#the-window-grid) · [Keybindings](#keybindings) · [Worktrees](#git-worktree-integration) · [Remote bridge](#remote-tmux-bridge) · [Agent status](#ai-agent-status-integration) · [Claude Code plugin](#claude-code-plugin)
+
 ## Quick Start
 
 ```bash
@@ -31,8 +33,10 @@ tmux kill-server && nix run github:noamsto/tmux-og
 ```
 
 > **First run:** Nix needs to fetch and evaluate nixpkgs on first use, which can
-> download a few hundred MB. The actual package closure is only ~67 MiB
-> (44 store paths). Subsequent runs use the local cache and start instantly.
+> download a few hundred MB. The tmux-og closure itself is roughly 770 MiB on
+> x86_64-linux — most of it the optional tools on its `PATH` (yazi, and
+> ffmpeg/imagemagick for the image carousel). Subsequent runs use the local
+> cache and start instantly.
 
 ## Installation
 
@@ -81,12 +85,14 @@ cachix use lazytmux
 | Feature | Description |
 |---------|-------------|
 | **Catppuccin theme** | Consistent Mocha/Latte colors across status bar and pane borders, following your light/dark theme |
-| **Multi-line status bar** | Windows auto-reflow across multiple lines when the terminal is narrow |
+| **Window grid** | Windows live in a multi-column, multi-row grid on status lines 1–4, with per-window issue/agent/PR labels that reflow as the terminal narrows |
 | **Nerd font window icons** | Per-process icons (fish, nvim, nix, Claude Code, Pi, OpenCode, etc.) |
 | **AI agent status** | Real-time spinner/icon in status bar for Claude Code, Codex, Cursor, Pi, and OpenCode |
 | **Agent usage limits** | Claude, Codex and Cursor rate-limit utilization in the status line while an agent is running |
 | **Remote tmux bridge** | Open a session on another host as native local windows over SSH, with agent status, labels, zoom, floats, image paste and auto-reconnect carried across |
 | **Bubbletea pickers** | Go session/window pickers with AI status per entry, zoxide suggestions, remote-bridge hosts, issue/PR badges, and a live window wall (`prefix + W`) |
+| **Which-key popup** | `prefix + ?` lists every binding, grouped by key table and filterable as you type |
+| **Notifications** | Agent `waiting`/`denied`/`error` transitions and PR changes toast on the status line when they happen in the current, attached window; everything lands in a history popup (`prefix + n`) |
 | **Issue / PR enrichment** | Per-worktree Linear/GitHub issue identity and PR check-state in the status line (`prefix + i`) |
 | **Git branch display** | Current branch shown in the top status line |
 | **Smart pane navigation** | Seamless `Ctrl-h/j/k/l` between vim splits and tmux panes (zoom-aware) |
@@ -101,9 +107,10 @@ cachix use lazytmux
 Rendered from `docs/media/tapes/` with [vhs](https://github.com/charmbracelet/vhs);
 `nix run .#demo` from the repo root regenerates them.
 
-**Multi-line status bar** — the window list reflows as the terminal narrows.
+**The window grid** — every window in a multi-column, multi-row list; labels
+truncate as the client narrows and return when it widens.
 
-![Status bar reflowing onto more lines as the terminal narrows](docs/media/reflow.gif)
+![The window grid reflowing as the terminal narrows and widens](docs/media/grid.gif)
 
 **AI agent status** — processing, waiting on a permission, and done, per window.
 
@@ -116,6 +123,20 @@ Rendered from `docs/media/tapes/` with [vhs](https://github.com/charmbracelet/vh
 **Window wall** — live previews of every window (`prefix + W`).
 
 ![Window wall](docs/media/wall.gif)
+
+## The window grid
+
+The window list is a grid on status lines 1–4, not a single scrolling row. Every
+cell carries the window's identity — issue id, agent badge, PR badge, branch or
+title — with the active window highlighted and continuation rows prefixed
+`├─`/`╰─`. Each column is sized to the windows actually stacked in it, so one
+long branch name can't squeeze the others out; as the client narrows the labels
+give way (the agent badge first, the issue id only as a last resort) and come
+back when there is room.
+
+<kbd>M-H</kbd>/<kbd>M-L</kbd> step through windows in order, and
+<kbd>M-J</kbd>/<kbd>M-K</kbd> move down/up a row — in a three-column layout,
+1 → 4 → 7 walks the first column.
 
 ## Requirements
 
@@ -144,13 +165,17 @@ Press <kbd>prefix</kbd> then <kbd>C-Space</kbd> for the in-terminal cheatsheet.
 | <kbd>w</kbd> | Window picker |
 | <kbd>W</kbd> | Window wall — tiled live-preview grid of the same window list |
 | <kbd>a</kbd> | Claude-window picker (only windows with a running agent) |
+| <kbd>?</kbd> | Which-key popup — every binding, grouped and filterable |
+| <kbd>n</kbd> | Notification history |
 | <kbd>i</kbd> | Issue / PR enrich card (Linear/GitHub + PR state) |
+| <kbd>p</kbd> | PR dashboard (prdash) |
 | <kbd>g</kbd> | LazyGit popup |
 | <kbd>b</kbd> | btop popup |
-| <kbd>y</kbd> | yazi (new window) |
-| <kbd>p</kbd> | Scratchpad |
+| <kbd>y</kbd> | yazi file manager (floating pane) |
+| <kbd>S</kbd> | Scratchpad session |
 | <kbd>Y</kbd> | Yank pane's cwd to clipboard |
 | <kbd>I</kbd> | Toggle the image/diagram carousel |
+| <kbd>z</kbd> | Toggle pane zoom |
 | <kbd>C-Space</kbd> | Welcome splash + cheatsheet |
 | <kbd>u</kbd> / <kbd>U</kbd> | Undo close / close-event picker |
 | <kbd>R</kbd> | Snapshot picker |

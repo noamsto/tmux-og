@@ -59,8 +59,9 @@ cat "$work/transcripts/\$1"
 exec claude -c 'while :; do sleep 86400; done'
 EOF
 
-# Attaches through an outer, config-less tmux whose pane the driver narrows, so
-# the demo client's width shrinks mid-clip — vhs cannot resize its terminal.
+# Attaches through an outer, config-less tmux whose pane the driver resizes, so
+# the demo client's width changes mid-clip — vhs cannot resize its terminal.
+# OG_DEMO_WIDTHS overrides the width sequence a tape walks through.
 cat >"$work/bin/og-demo-reflow" <<EOF
 #!$OG_DEMO_SHELL
 outer() { "$OG_DEMO_TMUX_RAW" -L ogd-outer -f /dev/null "\$@"; }
@@ -72,7 +73,7 @@ outer set -g pane-active-border-style 'fg=#1e1e2e'
 outer split-window -h -d -t o -l 1 'exec sleep 86400'
 (
 	sleep 3
-	for w in 110 88 68; do
+	for w in \${OG_DEMO_WIDTHS:-110 88 68}; do
 		outer resize-pane -t o:0.0 -x "\$w"
 		sleep 2.5
 	done
