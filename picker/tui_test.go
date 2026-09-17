@@ -1531,3 +1531,30 @@ func TestRestoreCursorLeavesHeaderWhenRemoteRowsArriveLate(t *testing.T) {
 		t.Errorf("cursor landed on %q, want the matching remote row %q", got, "other")
 	}
 }
+
+func TestPrintableKeyText(t *testing.T) {
+	cases := []struct {
+		key      string
+		wantText string
+		wantOK   bool
+	}{
+		{"a", "a", true},
+		{"Z", "Z", true},
+		{"7", "7", true},
+		{"-", "-", true},
+		{"space", " ", true}, // by name — see printableKeyText (#689)
+		{" ", " ", true},
+		{"enter", "", false},
+		{"ctrl+a", "", false},
+		{"left", "", false},
+		{"f1", "", false},
+		{"tab", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		text, ok := printableKeyText(c.key)
+		if ok != c.wantOK || text != c.wantText {
+			t.Errorf("printableKeyText(%q) = (%q, %v), want (%q, %v)", c.key, text, ok, c.wantText, c.wantOK)
+		}
+	}
+}

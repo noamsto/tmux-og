@@ -216,10 +216,10 @@ func relayKeyArgs(key string) (args []string, ok bool) {
 	case "backspace":
 		return []string{"BSpace"}, true
 	}
-	if printableKey(key) {
+	if text, ok := printableKeyText(key); ok {
 		// -l -- sends the byte literally; without it a single-character key like
 		// "0" or ";" would be read as a key name instead of typed text.
-		return []string{"-l", "--", key}, true
+		return []string{"-l", "--", text}, true
 	}
 	return nil, false
 }
