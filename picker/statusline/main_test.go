@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -468,4 +469,30 @@ func TestPaneCmdDisplayPrefersBridgeProc(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThemeFromFlavor(t *testing.T) {
+	for _, tc := range []struct{ flavor, want string }{
+		{"latte", "light"},
+		{"mocha", "dark"},
+		{"frappe", "dark"},
+	} {
+		if got := themeFromFlavor(tc.flavor); got != tc.want {
+			t.Errorf("themeFromFlavor(%q) = %q, want %q", tc.flavor, got, tc.want)
+		}
+	}
+
+	t.Run("empty flavor falls back to the themestate file", func(t *testing.T) {
+		// "light" here is distinct from themestate.Detect()'s no-file
+		// default of "dark", so this catches the fallback branch being
+		// dropped, not just matching the default it would also return.
+		dir := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", dir)
+		if err := os.WriteFile(filepath.Join(dir, "theme-state.json"), []byte(`{"theme":"light"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := themeFromFlavor(""); got != "light" {
+			t.Errorf("themeFromFlavor(\"\") = %q, want %q (from the pinned state file)", got, "light")
+		}
+	})
 }

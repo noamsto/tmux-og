@@ -154,9 +154,13 @@ main() {
 	# (not a bare shell) on restore. ${4:-} so the run-shell hook invocation
 	# (config/tmux.conf.nix), which passes only $1, means "off".
 	RESUME_CAROUSEL=${4:-}
+	# $5 is #{@catppuccin_flavor}, expanded by the status format like $2 —
+	# avoids a show-option fork per tick; direct invocations (hooks) fall back
+	# to one via setup_claude_colors's own $TMUX-gated fork.
+	CATPPUCCIN_FLAVOR=${5:-}
 	MAX_ICONS=@MAX_ICONS@
 
-	setup_claude_colors
+	setup_claude_colors "$CATPPUCCIN_FLAVOR"
 
 	# Purge pane-keyed status left by a previous tmux server before deriving any
 	# label, so a restored pane that reused a dead pane's id doesn't inherit its

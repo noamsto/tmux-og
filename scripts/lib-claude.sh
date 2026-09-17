@@ -565,19 +565,37 @@ claude_state_icon() {
 	esac
 }
 
-# setup_claude_colors
+# setup_claude_colors [FLAVOR]
 # Detects light/dark theme and sets per-state raw hex (H_*) plus the formatted
 # C_* tmux color strings built from them. Must be called before any of the
 # color/icon helpers below.
+#
+# Precedence: an explicit FLAVOR argument (a pre-expanded @catppuccin_flavor
+# value, e.g. "latte"/"mocha" — not "light"/"dark") wins outright, fork-free.
+# Otherwise, when $TMUX is set, one show-options fork reads the live
+# @catppuccin_flavor. Only when neither yields a flavor does this fall back to
+# parsing $XDG_STATE_HOME/theme-state.json (written by the external
+# theme-toggle tool), defaulting to dark.
 setup_claude_colors() {
-	local theme_file="${XDG_STATE_HOME:-$HOME/.local/state}/theme-state.json"
-	local theme="dark"
-	if [[ -f $theme_file ]]; then
-		# Fork-free parse: slurp the small file and regex out the theme value
-		# (grep|cut here forked twice on every colored status render).
-		local content=""
-		IFS= read -r -d '' content <"$theme_file" 2>/dev/null || true
-		[[ $content =~ \"theme\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && theme="${BASH_REMATCH[1]}"
+	local flavor=${1:-}
+	if [[ -z $flavor && -n ${TMUX:-} ]]; then
+		flavor="$(tmux show-options -gv @catppuccin_flavor 2>/dev/null)"
+	fi
+
+	local theme
+	if [[ -n $flavor ]]; then
+		theme="dark"
+		[[ $flavor == latte ]] && theme="light"
+	else
+		local theme_file="${XDG_STATE_HOME:-$HOME/.local/state}/theme-state.json"
+		theme="dark"
+		if [[ -f $theme_file ]]; then
+			# Fork-free parse: slurp the small file and regex out the theme value
+			# (grep|cut here forked twice on every colored status render).
+			local content=""
+			IFS= read -r -d '' content <"$theme_file" 2>/dev/null || true
+			[[ $content =~ \"theme\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && theme="${BASH_REMATCH[1]}"
+		fi
 	fi
 
 	if [[ $theme == "light" ]]; then

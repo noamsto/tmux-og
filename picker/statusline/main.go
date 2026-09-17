@@ -132,6 +132,7 @@ type args struct {
 	// theme palette (passed pre-expanded from tmux @thm_* options)
 	thmBg, thmRed, thmMauve, thmBlue, thmText, thmSubtext0 string
 	thmOverlay1, thmPeach, thmGreen                        string
+	flavor                                                 string
 
 	// glyphs (tmux @icon_* options + Nix enrich icon set for issue provider)
 	iconSession, iconBranch, iconDir string
@@ -334,6 +335,21 @@ func paneSlot(icon, cmd string, adjacentToUsage bool) string {
 		paneSlotPad, paneSlotKeep, slotSafe(icon), slotSafe(cmd))
 }
 
+// themeFromFlavor maps a pre-expanded @catppuccin_flavor value to
+// "light"/"dark" for claudePalette. Falls back to themestate.Detect()
+// when the flavor wasn't passed (shouldn't happen under tmux once
+// config-loaded, but defensive for direct/out-of-tmux invocations).
+func themeFromFlavor(flavor string) string {
+	switch flavor {
+	case "":
+		return themestate.Detect()
+	case "latte":
+		return "light"
+	default:
+		return "dark"
+	}
+}
+
 func renderLine(a args, claudeDir, theme string, prefixActive bool, now int64, usage string) string {
 	var b strings.Builder
 	b.WriteString("#[align=left,bg=" + a.thmBg + "]")
@@ -365,6 +381,7 @@ func main() {
 	flag.StringVar(&a.thmOverlay1, "thm-overlay1", "", "")
 	flag.StringVar(&a.thmPeach, "thm-peach", "", "")
 	flag.StringVar(&a.thmGreen, "thm-green", "", "")
+	flag.StringVar(&a.flavor, "flavor", "", "")
 	flag.StringVar(&a.iconSession, "icon-session", "", "")
 	flag.StringVar(&a.iconBranch, "icon-branch", "", "")
 	flag.StringVar(&a.iconDir, "icon-dir", "", "")
@@ -425,7 +442,7 @@ func main() {
 	// would leave just the fragment after it on line 0. Collapse before this
 	// escapes to stdout or the cache.
 	line := strings.ReplaceAll(
-		renderLine(a, claudeDir, themestate.Detect(), prefixActive, time.Now().Unix(), usage), "\n", " ")
+		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage), "\n", " ")
 	if ok {
 		writeLastGood(statuslineCacheDir, a.session, line)
 	}

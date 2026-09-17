@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -246,6 +248,40 @@ func TestParseShowOptionsLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestThemeFromOpts(t *testing.T) {
+	cases := []struct {
+		name   string
+		flavor string
+		want   string
+	}{
+		{"latte", "latte", "light"},
+		{"mocha", "mocha", "dark"},
+		{"non-latte dark flavor falls to dark default", "frappe", "dark"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := themeFromOpts(map[string]string{"@catppuccin_flavor": c.flavor})
+			if got != c.want {
+				t.Errorf("themeFromOpts(%q) = %q, want %q", c.flavor, got, c.want)
+			}
+		})
+	}
+
+	t.Run("unset falls back to the themestate file", func(t *testing.T) {
+		// "light" here is distinct from themestate.Detect()'s no-file
+		// default of "dark", so this catches the fallback branch being
+		// dropped, not just matching the default it would also return.
+		dir := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", dir)
+		if err := os.WriteFile(filepath.Join(dir, "theme-state.json"), []byte(`{"theme":"light"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := themeFromOpts(map[string]string{}); got != "light" {
+			t.Errorf("themeFromOpts(unset) = %q, want %q (from the pinned state file)", got, "light")
+		}
+	})
 }
 
 // windowPaneRow builds one list-panes -a row in parseWindowPaneRows' field
