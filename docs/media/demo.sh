@@ -171,6 +171,9 @@ seed_enrich() {
 	t set -w -t "$w" @issue_id ENG-412
 	t set -w -t "$w" @issue_title "Rate limiter retries without jitter"
 	t set -w -t "$w" @issue_url https://linear.app/acme/issue/ENG-412
+	# reflow discards a stamp whose @issue_branch does not match the window's
+	# @branch, so the seed has to carry it like tmux-issue-stamp does.
+	t set -w -t "$w" @issue_branch "$(t show-options -t "$w" -wqv @branch)"
 	t set -w -t "$w" @pr_number 631
 	t set -w -t "$w" @pr_title "feat(ratelimit): jittered retries"
 	t set -w -t "$w" @pr_state open
@@ -182,6 +185,7 @@ seed_enrich() {
 	t set -w -t "$w" @issue_id "#218"
 	t set -w -t "$w" @issue_title "Dark mode toggle in settings"
 	t set -w -t "$w" @issue_url https://github.com/acme/web/issues/218
+	t set -w -t "$w" @issue_branch "$(t show-options -t "$w" -wqv @branch)"
 	t set -w -t "$w" @pr_number 224
 	t set -w -t "$w" @pr_title "feat(settings): dark mode toggle"
 	t set -w -t "$w" @pr_state open
