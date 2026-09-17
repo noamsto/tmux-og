@@ -1431,9 +1431,11 @@ in {
             tmux = """
             [ -z "$TMUX" ] && exit 0
             # Agents drive their own windows (dispatch / in-session wt). Skip
-            # so we don't stack a bare sibling (Claude: $CLAUDECODE; Cursor: $CURSOR_AGENT).
+            # so we don't stack a bare sibling (Claude: $CLAUDECODE; Cursor:
+            # $CURSOR_AGENT; Pi: $PI_CODING_AGENT).
             [ -n "$CLAUDECODE" ] && exit 0
             [ -n "$CURSOR_AGENT" ] && exit 0
+            [ -n "$PI_CODING_AGENT" ] && exit 0
             # display-message resolves against the attached client's ACTIVE
             # window unless pinned to the invoking pane — and wt's pane often
             # isn't the active one at hook time (long checkout, multi-client,
@@ -1530,6 +1532,7 @@ in {
             [ -z "$TMUX" ] && exit 0
             [ -n "$CLAUDECODE" ] && exit 0
             [ -n "$CURSOR_AGENT" ] && exit 0
+            [ -n "$PI_CODING_AGENT" ] && exit 0
             SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}')
             WIN=$(tmux list-windows -t "$SESSION" -F '#{window_index}|#{@worktree}|#{pane_current_path}' \
               | awk -F'|' 'NF != 3 { next } $2 == "{{ worktree_path }}" || $3 == "{{ worktree_path }}" { print $1; exit }')
