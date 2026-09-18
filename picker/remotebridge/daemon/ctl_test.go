@@ -738,10 +738,15 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 			if strings.Contains(script, "'") {
 				t.Fatalf("resolve script must have zero single quotes: %q", script)
 			}
-			wantCmd := fmt.Sprintf("new-pane -t %%5 -c '#{pane_current_path}' %s %s",
-				tc.flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)))
-			if cmds[0] != wantCmd {
-				t.Fatalf("command\n got %q\nwant %q", cmds[0], wantCmd)
+			// The create branch keeps the geometry byte for byte; the reuse gate
+			// wraps it, so it is asserted inside its own quoting.
+			wantCreate := fmt.Sprintf("new-pane -t %%5 -c '#{pane_current_path}' %s %s ; set -p -t @2 @pane_label %s",
+				tc.flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), tc.tool)
+			if !strings.Contains(cmds[0], tmuxQuote(wantCreate)) {
+				t.Fatalf("command\n got %q\nwant create branch %q", cmds[0], wantCreate)
+			}
+			if !strings.Contains(cmds[0], tmuxQuote(floatLookup(tc.tool))) {
+				t.Fatalf("command %q does not gate on %q", cmds[0], floatLookup(tc.tool))
 			}
 			if strings.Contains(cmds[0], "@float_geom") {
 				t.Fatalf("command %q must not stamp @float_geom: the remote's own tmux-float-refit would fight the mirror for authority over it", cmds[0])
@@ -755,7 +760,7 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"-c '#{pane_current_path}'", "show-environment -g PATH", "command -v prdash", "exec prdash"} {
+	for _, want := range []string{nestedQuote("-c '#{pane_current_path}'"), "show-environment -g PATH", "command -v prdash", "exec prdash"} {
 		if !strings.Contains(cmds[0], want) {
 			t.Fatalf("command %q missing %q", cmds[0], want)
 		}
@@ -765,6 +770,112 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 	}
 	if !v.moves || !v.layout {
 		t.Fatal("the verb opens a float that takes focus: needs moves+layout")
+	}
+}
+
+// A tool press must reuse the float its window already holds for that tool
+// instead of stacking another one. new-pane -A is a z-order flag (the float
+// stays visible above a zoomed pane), not attach-if-exists, so the reuse has to
+// be an explicit lookup — and the lookup key, @pane_label, has to be stamped on
+// the float the verb creates or the second press could not find the first.
+//
+// The current window is deliberately NOT the target window: if-shell -t pins
+// the condition's context but not the branch's, so this is what makes a missing
+// -t on `set -wF` or on `run-shell` fail rather than pass by accident.
+func TestToolVerbDoesNotStackFloats(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	v, ok := verbs["tool"]
+	if !ok {
+		t.Fatal("no tool verb")
+	}
+
+	dir := t.TempDir()
+	stubDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The stub has to outlive the press: the bind pins remain-on-exit off, so a
+	// command that exits closes its own pane and the assertion would read zero
+	// floats on the fixed tree as well as on the broken one.
+	writeStub(t, filepath.Join(stubDir, "prdash"), "#!/bin/sh\nsleep 600\n")
+
+	tmux := startIsolatedTmux(t, "PATH="+stubDir+":"+os.Getenv("PATH"))
+
+	baseOut, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatalf("display-message: %v", err)
+	}
+	base := strings.TrimSpace(string(baseOut))
+
+	// A second window becomes the session's current one, so the target window
+	// (window 0, holding the base pane) is not the current window.
+	if out, err := tmux("new-window", "-t", "w:").CombinedOutput(); err != nil {
+		t.Fatalf("new-window: %v\n%s", err, out)
+	}
+
+	cmds, err := v.build(base, "@0", "w", []string{"prdash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("want one command, got %v", cmds)
+	}
+	conf := filepath.Join(dir, "cmd.conf")
+	if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	press := func() {
+		t.Helper()
+		if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+			t.Fatalf("source-file: %v\n%s", err, out)
+		}
+	}
+	// Every floating pane in the window, as (pane id, @pane_label, active).
+	floats := func() [][3]string {
+		t.Helper()
+		// -a, not -t w: a session target resolves to its CURRENT window, and the
+		// press happens in the window that is not current. '|' rather than
+		// whitespace, so an unset @pane_label does not collapse the field list.
+		out, err := tmux("list-panes", "-a", "-F",
+			"#{pane_id}|#{pane_floating_flag}|#{@pane_label}|#{pane_active}").Output()
+		if err != nil {
+			t.Fatalf("list-panes: %v", err)
+		}
+		var got [][3]string
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			f := strings.Split(line, "|")
+			if len(f) == 4 && f[1] == "1" {
+				got = append(got, [3]string{f[0], f[2], f[3]})
+			}
+		}
+		return got
+	}
+
+	press()
+	first := floats()
+	if len(first) != 1 {
+		t.Fatalf("first press: %d floats %v, want 1", len(first), first)
+	}
+
+	// Un-focus the float, so the second press has to focus it rather than merely
+	// inheriting the focus new-pane left behind.
+	if out, err := tmux("select-pane", "-t", base).CombinedOutput(); err != nil {
+		t.Fatalf("select-pane: %v\n%s", err, out)
+	}
+	press()
+	second := floats()
+	if len(second) != 1 {
+		t.Fatalf("second press stacked another float: %d %v, want 1", len(second), second)
+	}
+	// The reuse has to have been keyed on @pane_label: the float the window now
+	// holds is the one the create branch stamped.
+	if second[0][1] != "prdash" {
+		t.Fatalf("reused float carries label %q, want prdash", second[0][1])
+	}
+	if second[0][0] != first[0][0] || second[0][2] != "1" {
+		t.Fatalf("second press did not focus the existing float: %v (first press was %v)", second, first)
 	}
 }
 
@@ -822,6 +933,15 @@ func TestToolResolveScriptSurvivesFormatExpansion(t *testing.T) {
 	}
 }
 
+// nestedQuote is tmuxQuote's transformation without its outer quotes: how a
+// string comes out once it is embedded inside another single-quoted tmux
+// argument. The tool verb's create branch is exactly that — a nested command
+// string inside the reuse gate's own quoting.
+func nestedQuote(s string) string {
+	q := tmuxQuote(s)
+	return q[1 : len(q)-1]
+}
+
 // The cwd the bind reads off @bridge_dir is what makes the float open in the
 // window it was pressed in: tmux expands a -c format against the client's
 // current pane rather than the -t target, so the remote leg cannot resolve it
@@ -843,8 +963,10 @@ func TestToolVerbUsesSuppliedCwd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dir %q: %v", dir, err)
 		}
-		want := "new-pane -t %5 -c " + tmuxQuote(dir) + " "
-		if !strings.HasPrefix(cmds[0], want) {
+		// Inside the reuse gate's own quoting: the create branch is a nested
+		// command string now, so its quotes are re-escaped one level deeper.
+		want := nestedQuote("new-pane -t %5 -c " + tmuxQuote(dir) + " ")
+		if !strings.Contains(cmds[0], want) {
 			t.Fatalf("dir %q\n got %q\nwant prefix %q", dir, cmds[0], want)
 		}
 	}
@@ -864,7 +986,7 @@ func TestToolVerbUsesSuppliedCwd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dir %q: %v", dir, err)
 		}
-		if !strings.Contains(cmds[0], "-c '#{pane_current_path}'") {
+		if !strings.Contains(cmds[0], nestedQuote("-c '#{pane_current_path}'")) {
 			t.Fatalf("dir %q was not dropped back to the format: %q", dir, cmds[0])
 		}
 		if strings.Contains(cmds[0], dir) && dir != "" {

@@ -2061,6 +2061,37 @@
               touch $out
             '';
 
+          # Behavioural coverage for the tool binds (#679): a second press must
+          # focus the float the window already holds for that tool instead of
+          # stacking another at the same geometry. Same attached-client harness
+          # and same reason as rename-bind-integration-tests above — a key
+          # binding fires only for a real client, so `send-keys` cannot drive
+          # it. enrich/agentUsage off is that check's noise cut; neither is
+          # under test here. gawk, for the pane-list filter.
+          float-tool-focus-tests = let
+            floatToolTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "float-tool-focus-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+              TMUX_BIN = "${floatToolTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/float-tool-focus.bats
+              touch $out
+            '';
+
           # `qs:` silently degrades to a raw expansion on tmux 3.7, so the
           # shell-word mechanism is exercised only through the pinned wrapper.
           conf-shell-quoting-integration-tests =
@@ -2098,9 +2129,13 @@
           # is exactly the edit that silently drops the trailing commands.
           bridge-tool-bind-assertions =
             pkgs.runCommand "bridge-tool-bind-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
+              nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
               CONF = tmuxConfig.tmuxConf;
             } ''
+              # Join backslash-continued lines, so a bind is one line to assert
+              # against (same technique as float-conf-assertions).
+              sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
+
               for k in p g y; do
                 grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*@bridge_win" "$CONF"
                 grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*bridge-ctl .*tool #\{q:@bridge_pane\} [a-z]+ #\{qs:@bridge_dir\}" "$CONF"
@@ -2108,6 +2143,21 @@
               grep -qE "new-pane -c '#\{pane_current_path\}'.*prdash" "$CONF"
               for label in prdash lazygit yazi; do
                 grep -qE "set -p @pane_label $label" "$CONF"
+              done
+
+              # #679: the reuse gate. Without a lookup every press stacked
+              # another float at the same geometry, so each tool bind must gate
+              # on the @pane_label its own create branch stamps AND hand that
+              # pane id to its focus branch through its own register. Asserted
+              # on the bind's whole (joined) line, not on the file: a gate whose
+              # label disagreed with the stamp would look right and never match,
+              # which is the failure this is here to catch.
+              for k in p g y; do
+                case $k in p) t=prdash ;; g) t=lazygit ;; y) t=yazi ;; esac
+                line=$(grep -E "^bind-key( -N '[^']*')? $k " joined)
+                printf '%s' "$line" | grep -qF "if-shell -F \"#{P:#{?#{&&:#{==:#{@pane_label},$t},#{pane_floating_flag}},#{pane_id},}}\""
+                printf '%s' "$line" | grep -qF "set -wF @og_float_target_$t"
+                printf '%s' "$line" | grep -qF "run-shell \"tmux select-pane -t #{q:@og_float_target_$t}\""
               done
               touch $out
             '';

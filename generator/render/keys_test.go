@@ -36,6 +36,37 @@ func TestFloatNewPaneGuardEscapesInnerCommandOnly(t *testing.T) {
 	}
 }
 
+// Every bridged tool bind must gate on the same @pane_label value its own
+// create branch stamps, and hand it to the shell through that tool's register:
+// if either drifts, the press silently stacks another float instead of focusing
+// the one that is open (#679). The label appears in three places, so this is the
+// cross-check rather than an eyeball.
+func TestBridgedFloatToolsReuseTheirOwnLabel(t *testing.T) {
+	prdash := "/store/prdash"
+	p := keysPaths()
+	p.Prdash = &prdash
+	for _, tc := range []struct {
+		name string
+		bind string
+		tool string
+	}{
+		{"prdash", prdashBind(p), "prdash"},
+		{"lazygit", lazygitBind(p), "lazygit"},
+		{"yazi", yaziBind(p), "yazi"},
+	} {
+		if !strings.Contains(tc.bind, "set -p @pane_label "+tc.tool) {
+			t.Fatalf("%s: bind does not stamp @pane_label %s: %q", tc.name, tc.tool, tc.bind)
+		}
+		if !strings.Contains(tc.bind, floatLookup(tc.tool)) {
+			t.Fatalf("%s: bind does not gate on %s: %q", tc.name, floatLookup(tc.tool), tc.bind)
+		}
+		want := `run-shell "tmux select-pane -t #{q:` + floatRegister(tc.tool) + `}"`
+		if !strings.Contains(tc.bind, want) {
+			t.Fatalf("%s: bind has no focus branch %q: %q", tc.name, want, tc.bind)
+		}
+	}
+}
+
 // An absent optional tool must leave the template line's newline alone, so the
 // output keeps exactly one empty line where the bind would have been.
 func TestOptionalBindsCarryNoTrailingNewline(t *testing.T) {

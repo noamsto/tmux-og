@@ -185,10 +185,37 @@ var (
 // version-guarded flagsNoA fallback exists only for a tmux old enough to lack
 // new-pane -A, and every remote this daemon opens a ctl connection to is on
 // this revision.
+//
+// -A is a z-order flag — "the floating pane remains visible above a zoomed
+// pane" — and NOT attach-if-exists: new-pane has no such mode, so nothing here
+// dedupes by itself. The reuse is explicit and keyed on @pane_label (#679).
 const (
 	remoteFloatShort = "-x 90% -y 85% -X 5% -Y 8% -B heavy -A"
 	remoteFloatFull  = "-x 90% -y 90% -X 5% -Y 5% -B heavy -A"
 )
+
+// floatRegister is the window option a tool press hands the float's pane id to
+// its own focus branch through. It is not a second lookup key: the value is
+// written by the branch that reads it, in the same command list, and the branch
+// is only reached once floatLookup has already matched — so it is never
+// consulted across a press and can never be stale. It exists because a pane
+// loop nested inside a run-shell argument is a shell-injection shape this repo
+// guards against (tests/conf-shell-quoting.bats); `#{q:<option>}` is the one
+// legal way to pass an id to a shell. Per tool, so a read can never name
+// another tool's float even in principle.
+func floatRegister(tool string) string { return "@og_float_target_" + tool }
+
+// floatLookup is the pane loop behind one tool press: it expands to the pane id
+// of the window's float carrying that tool's @pane_label, or to nothing when
+// there is none (which is falsey in if-shell -F, so no #{?:} wrapper is
+// needed). pane_floating_flag keeps the predicate honest — @pane_label is a
+// border title, and a tiled pane wearing it is not the float to reuse.
+//
+// generator/render/keys.go builds the same expression for the local bind, kept
+// in step by hand like the float geometry above: the two modules share no code.
+func floatLookup(tool string) string {
+	return fmt.Sprintf("#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}", tool)
+}
 
 var verbs = map[string]verb{
 	// Splits carry the pane's cwd, matching the local bindings they replace.
@@ -307,11 +334,29 @@ var verbs = map[string]verb{
 	// Never stamps @float_geom on the remote pane: that option is read by the
 	// remote's own tmux-float-refit, which would then fight the mirror for
 	// authority over this float's geometry on the remote's next resize.
-	"tool": {args: 1, optArgs: 1, layout: true, moves: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+	//
+	// The press is a reuse gate, not a bare new-pane (#679): a second press for
+	// a tool whose float is already open focuses that float instead of stacking
+	// another one at the same geometry. The create branch's @pane_label stamp is
+	// what makes the next press's floatLookup find it — this verb used to leave
+	// the remote float unlabelled, so there was nothing to look up.
+	//
+	// Every command in the branch carries its own -t. if-shell -t pins the
+	// CONDITION's context but not the branch's (measured: with the current
+	// window short-circuited to one holding no float, a bare run-shell in the
+	// branch expanded the loop against that window), and the remote's current
+	// window is not the window the press came from.
+	//
+	// `;`, never `\;`, separates the branch's two commands. This string reaches
+	// tmux as a command LINE (cmd_parse_from_string, the same parser a config
+	// file goes through), where `\;` is a literal semicolon argument that leaves
+	// the pane uncreated — measured against a real control-mode client.
+	"tool": {args: 1, optArgs: 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])
 		}
-		flags, ok := remoteToolFloat[a[0]]
+		tool := a[0]
+		flags, ok := remoteToolFloat[tool]
 		if !ok {
 			flags = remoteFloatFull
 		}
@@ -321,9 +366,17 @@ var verbs = map[string]verb{
 				cwd = tmuxQuote(dir)
 			}
 		}
-		script := toolResolveScript(a[0])
-		cmd := fmt.Sprintf("new-pane -t %s -c %s %s %s",
-			pane, cwd, flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)))
+		script := toolResolveScript(tool)
+		// -t <win>, not a bare set -p: the new pane is the window's active one,
+		// and this must not depend on which window the control client is on.
+		create := fmt.Sprintf("new-pane -t %s -c %s %s %s ; set -p -t %s @pane_label %s",
+			pane, cwd, flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, tool)
+		loop := floatLookup(tool)
+		focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
+			pane, floatRegister(tool), tmuxQuote(loop),
+			pane, tmuxQuote(fmt.Sprintf("tmux select-pane -t #{q:%s}", floatRegister(tool))))
+		cmd := fmt.Sprintf("if-shell -t %s -F %s %s %s",
+			pane, tmuxQuote(loop), tmuxQuote(focus), tmuxQuote(create))
 		return []string{cmd}, nil
 	}},
 	// A mirror's pane content is bytes the remote's programs coloured from the
