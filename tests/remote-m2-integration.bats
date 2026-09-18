@@ -3614,3 +3614,70 @@ attach_pty_client() {
 	[ -n "$src_dims" ]
 	[ "$src_dims" = "$dst_dims" ]
 }
+
+# #680: a daemon whose LOCAL mirror session is gone is none of Run's other
+# terminal endings — the registry holds *remote* window ids that are all still
+# there, and the control connection stays healthy — so it ran for days, kept its
+# control client attached, and held the per-window size clamp it asserted
+# (`refresh-client -C`, released only when the client goes, #201) in force on
+# the remote. The daemon now asks has-session about its own cfg.LocalSess on the
+# coarse tick and ends after two consecutive definite negatives.
+@test "daemon exits when its local mirror session is gone" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	"$DAEMON" --test-local \
+		--src-socket m2src --dst-socket m2dst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/dgone.sock" \
+		>"$BATS_TEST_TMPDIR/dgone.log" 2>&1 &
+	daemon_pid=$!
+
+	# Gate: the daemon reached its main loop with a renderer in the pane, so the
+	# session it is about to lose is the live one it mirrored into.
+	for _ in $(seq 1 40); do
+		cmd="$($DST list-panes -t host-sess:1 -F '#{pane_current_command}' 2>/dev/null)"
+		[[ $cmd == *"$RENDERER_PROBE"* ]] && break
+		sleep 0.1
+	done
+
+	# The control client is what carries `refresh-client -C @N:WxH`, so its
+	# presence is the clamp (#201) and its absence after teardown is the release.
+	[ -n "$($SRC list-clients -F '#{client_flags}' | grep control-mode || true)" ]
+
+	# The local mirror session vanishes. The remote (m2src) is untouched, so
+	# nothing else is available to end the daemon.
+	$DST kill-session -t host-sess
+
+	# Two coarse ticks (mainLoopTickInterval, 5s) is the ceiling; 40s leaves room
+	# for CI contention without admitting the old run-forever behavior.
+	gone=no
+	for _ in $(seq 1 200); do
+		if ! kill -0 "$daemon_pid" 2>/dev/null; then
+			gone=yes
+			break
+		fi
+		sleep 0.2
+	done
+	if [ "$gone" != yes ]; then
+		echo "--- daemon still alive ${SECONDS}s after its local session died" >&3
+		sed -n '1,40p' "$BATS_TEST_TMPDIR/dgone.log" >&3 2>&1 || true
+		kill "$daemon_pid" 2>/dev/null || true
+		wait "$daemon_pid" 2>/dev/null || true
+		return 1
+	fi
+
+	# Run() returns nil on the connEnd path, so the exit is clean.
+	status=0
+	wait "$daemon_pid" || status=$?
+
+	clients=""
+	for _ in $(seq 1 50); do
+		clients="$($SRC list-clients -F '#{client_flags}' | grep control-mode || true)"
+		[ -z "$clients" ] && break
+		sleep 0.1
+	done
+
+	[ "$status" -eq 0 ]
+	[ -z "$clients" ]
+}

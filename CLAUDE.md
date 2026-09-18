@@ -899,6 +899,21 @@ path, which every caller already handles.
   bare EOF. That is why the offline reconnect tests SIGKILL the transport child
   rather than detaching it — a test built on `detach-client` asserts teardown
   and fails a correct daemon.
+- **The local mirror session is a fifth ending** (#680). A session that is gone
+  is none of the four above — the registry's window ids are remote and all still
+  there, and the control connection is healthy — so the orphan kept its control
+  client, and with it the per-window size clamp it had asserted
+  (`refresh-client -C`, released only when the client goes, #201), in force on
+  the remote for days. `runConn`'s coarse tick now asks `has-session` about
+  `cfg.LocalSess` (`localSessionGone`): only tmux's own exit status 1 counts —
+  any other failure is a question that could not be asked, so a transient blip
+  cannot tear a healthy mirror down — and two consecutive definite negatives are
+  required, one affirmative answer clearing the count. The verdict is the
+  existing `connEnd`, so `teardown` drops the control client and releases the
+  clamp; on this path it also skips its own `kill-session`, since the name no
+  longer belongs to this daemon. Renaming the mirror session counts as gone.
+  `og-remote-open` already reaps a same-sock daemon whose session is gone when
+  the host is reopened, so no launcher change accompanies this.
 - **SIGTERM must be told apart from a link failure**, since it works by dropping
   the transport. `cmd/daemon/main.go` raises `Shutdown` *before* it touches the
   transport, and `reattach` consults it before scheduling any retry.
