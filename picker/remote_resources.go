@@ -206,6 +206,7 @@ func mergeRemoteResources(sessions []sessionData) {
 		sessions[i].cpuPct = r.cpuPct
 		sessions[i].memMB = r.memMB
 		sessions[i].cores = float64(res.cores)
+		mergeAgentCmds(&sessions[i], r.agentCmds)
 	}
 }
 

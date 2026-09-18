@@ -1,10 +1,58 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestAggregateResourcesAgentCommandsFromTree(t *testing.T) {
+	// 100 is a pane whose foreground command is a shell — the tmux-remux restore
+	// shape, where the agent is a child of a non-interactive shell, shares its
+	// process group, and so is invisible to pane_current_command.
+	ps := strings.Join([]string{
+		"  PID  PPID %CPU   RSS COMMAND",
+		"  100     1  0.0   512 fish",
+		"  200   100  1.0 65536 claude",
+		"  300   200  0.0  1024 node",
+		"  400     1  0.0   512 /nix/store/x/.claude-wrapped",
+		"  500     1  0.0   512 /usr/bin/python3",
+	}, "\n")
+
+	got := aggregateResources(map[string][]int{"restored": {100}, "wrapped": {400}, "plain": {500}}, ps)
+	for _, tc := range []struct {
+		sess string
+		want []string
+	}{
+		{"restored", []string{"claude"}},
+		{"wrapped", []string{"claude"}},
+		{"plain", nil},
+	} {
+		if !slices.Equal(got[tc.sess].agentCmds, tc.want) {
+			t.Errorf("%s agentCmds = %v, want %v", tc.sess, got[tc.sess].agentCmds, tc.want)
+		}
+	}
+	if got["restored"].cpuPct != 1.0 || got["restored"].memMB != 65.5 {
+		t.Errorf("restored = %v%% / %v MiB, want the whole tree's 1.0 / 65.5",
+			got["restored"].cpuPct, got["restored"].memMB)
+	}
+}
+
+func TestMergeAgentCmdsKeepsPaneCommandsFirst(t *testing.T) {
+	sessions := []sessionData{{name: "prdash", procs: []string{"fish"}}}
+	mergeResources(sessions, map[string]sessionResources{
+		"prdash": {cpuPct: 1, memMB: 2, agentCmds: []string{"claude"}},
+	})
+	if want := []string{"fish", "claude"}; !slices.Equal(sessions[0].procs, want) {
+		t.Errorf("procs = %v, want %v", sessions[0].procs, want)
+	}
+	// Idempotent: a pane command that already named the agent is not doubled.
+	mergeResources(sessions, map[string]sessionResources{"prdash": {agentCmds: []string{"claude"}}})
+	if want := []string{"fish", "claude"}; !slices.Equal(sessions[0].procs, want) {
+		t.Errorf("procs after a re-merge = %v, want %v", sessions[0].procs, want)
+	}
+}
 
 func TestAggregateResources(t *testing.T) {
 	// 100 is the pane's shell; 200 and 300 are its descendants. 999 belongs to
