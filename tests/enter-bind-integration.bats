@@ -92,6 +92,14 @@ probe_window() { # cmd -> prints "window_id pane_id"
 	inner new-window -d -t s: -P -F '#{window_id} #{pane_id}' "$1"
 }
 
+# Launch `$1` by BARE NAME with $BIN on PATH. The binding matches the pane's
+# `ps -o comm=` against an exact name, and macOS reports the path AS INVOKED —
+# an absolute $BIN/<name> reads back as an absolute path and misses it, where
+# Linux's basename-only comm happens to tolerate the absolute form.
+probe_cmd() { # name outfile -> cmd string
+	printf 'PATH=%s:%s %s %s %s' "$BIN" "$PATH" "$1" "$PROBE" "$2"
+}
+
 arm_probe() { # target outfile expected-process-name
 	local target="$1" out="$2" expect="$3" deadline=$((SECONDS + 10)) tty
 	inner select-window -t "${target%% *}"
@@ -129,21 +137,21 @@ wait_bytes() { # outfile expected-hex
 
 @test "Shift+Enter reaches a pi pane as the raw CSI-u sequence" {
 	out="$BATS_TEST_TMPDIR/pi.out"
-	arm_probe "$(probe_window "$BIN/pi $PROBE $out")" "$out" pi
+	arm_probe "$(probe_window "$(probe_cmd pi "$out")")" "$out" pi
 	shift_enter
 	wait_bytes "$out" 1b5b31333b3275
 }
 
 @test "Shift+Enter still reaches an amp pane as backslash + Enter" {
 	out="$BATS_TEST_TMPDIR/amp.out"
-	arm_probe "$(probe_window "$BIN/amp $PROBE $out")" "$out" amp
+	arm_probe "$(probe_window "$(probe_cmd amp "$out")")" "$out" amp
 	shift_enter
 	wait_bytes "$out" 5c0d
 }
 
 @test "Shift+Enter still reaches any other pane as Alt+Enter" {
 	out="$BATS_TEST_TMPDIR/other.out"
-	arm_probe "$(probe_window "$SHELL $PROBE $out")" "$out" bash
+	arm_probe "$(probe_window "$(probe_cmd bash "$out")")" "$out" bash
 	shift_enter
 	wait_bytes "$out" 1b0d
 }
