@@ -537,8 +537,9 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 }
 
 // Run mirrors every window of the bridged remote session, each into its own
-// local window, over a -CC connection, until %exit, an emptied mirror, or a
-// drop the reconnect budget cannot outlast.
+// local window, over a -CC connection, until %exit, an emptied mirror, the
+// local mirror session going away, or a drop the reconnect budget cannot
+// outlast.
 //
 // Two lifetimes live here and they only look like one (#482). The session
 // lifetime — listener, pidfile, registry, renderer panes and their sinks, the
@@ -747,6 +748,15 @@ func Run(cfg Config) error {
 	// Declared here so teardown can close it; teardown runs exactly once per
 	// Run return path, so a plain close is safe.
 	stopWatch := make(chan struct{})
+	// sessionGone counts consecutive definite negatives from the local-session
+	// probe the coarse tick runs. Session-lifetime, like the registry: a
+	// reconnect does not bring a gone session back, so the count survives one.
+	var sessionGone sessionGoneTracker
+	// localSessionVanished records that this run is ending because the local
+	// mirror session is gone. teardown then leaves the session name alone — it
+	// belongs to nobody now, and a reopen that recreated it in the gap must not
+	// have the fresh session killed out from under it.
+	var localSessionVanished bool
 	// Assigned once the mirror is up; teardown must drop the status files it
 	// wrote, so it is declared ahead of the closure that captures it.
 	var agents *agentShipper
@@ -804,7 +814,7 @@ func Run(cfg Config) error {
 		// Whichever connection is current, which after a reconnect is no longer
 		// the one cfg.Ctl named.
 		hold.close()
-		if cfg.LocalSess != "" {
+		if cfg.LocalSess != "" && !localSessionVanished {
 			cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
 		}
 	}
@@ -1072,6 +1082,21 @@ func Run(cfg Config) error {
 			case <-loopTick.C:
 				// A remote window-option change produces no stream traffic at all,
 				// so falling through to the top is the only thing that polls it.
+				//
+				// The same tick asks the one liveness question none of the other
+				// endings covers: is the LOCAL mirror session still there? The
+				// registry's window ids are remote and all still present, and the
+				// control connection is healthy, so a session that has permanently
+				// gone reads identically to a transient blip and the daemon runs
+				// (keeping its control client, and so the remote's per-window size
+				// clamp, in force) forever (#680). Two consecutive definite
+				// negatives, so a single spurious one cannot take a healthy mirror
+				// down; localSessionGone already refuses a question that could not
+				// be asked.
+				if sessionGone.observe(localSessionGone(cfg)) {
+					localSessionVanished = true
+					return connEnd
+				}
 			case <-replacer.C():
 				// The gesture that raised this deliberately sends no command of
 				// its own (R6), so nothing else would bring the loop back here
@@ -1222,9 +1247,9 @@ attach:
 				break attach
 			}
 		default:
-			// connEnd: the remote ended this control client, or the mirror was
-			// left with no windows — either way there is nothing to re-dial
-			// into.
+			// connEnd: the remote ended this control client, the local mirror
+			// session is gone, or the mirror was left with no windows — either way
+			// there is nothing to re-dial into.
 			break attach
 		}
 	}

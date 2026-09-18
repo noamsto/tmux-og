@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 )
 
@@ -90,4 +92,59 @@ func localWindowSet(cfg Config) (map[string]bool, bool) {
 		live[strings.TrimSpace(line)] = true
 	}
 	return live, true
+}
+
+// localSessionGone reports that cfg.LocalSess is affirmatively gone.
+//
+// The local session vanishing is none of Run's other terminal endings: the
+// registry holds *remote* window ids and they are all still there, the control
+// connection stays healthy, and every local command failing is individually
+// survivable — localWindowSet is positive-evidence-only precisely so a transient
+// read cannot tear down a healthy mirror. A session that is permanently gone
+// therefore reads like a blip forever (#680).
+//
+// has-session answers what list-windows cannot. A listing error is
+// indistinguishable from a transient one; has-session's own exit status is
+// tmux's answer — status 1 is its "can't find session" (or "no server running",
+// which means the same thing for a session that lived on that server). Only
+// that definite negative is evidence: tmux failing to start at all, or exiting
+// with any other status, is a question that could not be asked, and nothing may
+// be torn down on it. Positive evidence only, the same rule as localWindowGone.
+//
+// -t "=<name>" is the exact match og-remote-open.sh's own liveness check uses,
+// so a sibling session whose name has ours as a prefix cannot read here as
+// alive.
+func localSessionGone(cfg Config) bool {
+	if cfg.LocalTmuxOut == nil || cfg.LocalSess == "" {
+		return false
+	}
+	_, err := cfg.LocalTmuxOut("has-session", "-t", "="+cfg.LocalSess)
+	if err == nil {
+		return false
+	}
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == 1
+}
+
+// sessionGoneStrikes is how many consecutive definite negatives localSessionGone
+// must return before the daemon treats the mirror session as gone. The probe
+// already filters a question that could not be asked, so this is the second
+// line of defence: one spurious negative must not tear a healthy mirror down,
+// and a single affirmative answer clears the count.
+const sessionGoneStrikes = 2
+
+// sessionGoneTracker carries that count across the coarse tick's passes. It is
+// session-lifetime state, like the registry: a reconnect does not make a gone
+// session come back, so a strike survives one.
+type sessionGoneTracker struct{ strikes int }
+
+// observe records one probe result and reports whether the session is to be
+// treated as gone.
+func (t *sessionGoneTracker) observe(gone bool) bool {
+	if !gone {
+		t.strikes = 0
+		return false
+	}
+	t.strikes++
+	return t.strikes >= sessionGoneStrikes
 }
