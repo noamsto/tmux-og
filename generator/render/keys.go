@@ -23,6 +23,11 @@ func bridgeCtl(p *paths.Paths) string {
 // resolves the percentages into absolute cells at creation and never revisits
 // them, so stamp carries them forward for tmux-float-refit; both come from one
 // place here so they cannot drift.
+//
+// flags carries -A, which is a Z-ORDER flag — the floating pane stays visible
+// above a zoomed pane — and not attach-if-exists: new-pane has no such mode and
+// every press creates a pane. The reuse of an already-open float is explicit,
+// in floatReuse (#679).
 type floatShape struct {
 	flags    string
 	flagsNoA string
@@ -67,6 +72,47 @@ func floatBind(key, note string, f floatShape, prefix, suffix string) string {
 	return "bind-key -N '" + note + "' " + key + " " + floatNewPaneGuard(f, prefix, suffix)
 }
 
+// floatRegister is the window option a bridged tool press hands the float's pane
+// id to its own focus branch through. It is not a second lookup key: the value
+// is written by the branch that reads it, in the same command list, and that
+// branch is only reached once floatLookup has already matched — so it is never
+// consulted across a press and can never be stale. It exists because a pane loop
+// nested inside a run-shell argument is a shell-injection shape this repo guards
+// against (tests/conf-shell-quoting.bats): every #{...} in a shell string must be
+// #{q:NAME} or #{qs:NAME} with a plain body, and `#{q:<option>}` is the one
+// legal way to hand an id over. Per tool, so a read can never name another
+// tool's float even in principle.
+//
+// picker/remotebridge/daemon/ctl.go builds the same expression for the remote
+// leg, kept in step by hand like the float geometry above: the two modules share
+// no code.
+func floatRegister(tool string) string { return "@og_float_target_" + tool }
+
+// floatLookup is the pane loop behind one tool press: it expands to the pane id
+// of the window's float carrying that tool's @pane_label, or to nothing when
+// there is none (which is falsey in if-shell -F, so no #{?:} wrapper is needed).
+// pane_floating_flag keeps the predicate honest — @pane_label is a border title,
+// and a tiled pane wearing it is not the float to reuse.
+func floatLookup(tool string) string {
+	return fmt.Sprintf("#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}", tool)
+}
+
+// floatReuse wraps the version-guarded new-pane so a press for a tool whose
+// float is already open in the window focuses that float instead of stacking
+// another one at the same geometry (#679). The lookup key is @pane_label, which
+// the create branch already stamps, so there is no new state to keep in sync.
+//
+// Brace blocks for the branches, unlike floatNewPaneGuard's string form: nothing
+// in them is version-gated, so parsing them at source time is safe, and a brace
+// block needs no further escaping around the guard's own quoted bodies. The
+// guard keeps its string-form if-shell so an older server never sees -A at
+// source (#407).
+func floatReuse(tool, guard string) string {
+	loop, reg := floatLookup(tool), floatRegister(tool)
+	return fmt.Sprintf(`if-shell -F "%s" { set -wF %s "%s" ; run-shell "tmux select-pane -t #{q:%s}" } { %s }`,
+		loop, reg, loop, reg, guard)
+}
+
 // bridgedFloatTool hands the tool to the ctl `tool` verb in a mirror window:
 // #{pane_current_path} there expands on the renderer pane, which is the
 // daemon's cwd rather than the remote worktree on screen.
@@ -79,7 +125,7 @@ func floatBind(key, note string, f floatShape, prefix, suffix string) string {
 // as an empty argument, which the verb reads as "no cwd".
 func bridgedFloatTool(p *paths.Paths, key, note, tool string, f floatShape, prefix, suffix string) string {
 	return fmt.Sprintf("bind-key -N '%s' %s if-shell -F '%s' { run-shell \"%s tool #{q:@bridge_pane} %s #{qs:@bridge_dir}\" } { %s }",
-		note, key, bridgeGate, bridgeCtl(p), tool, floatNewPaneGuard(f, prefix, suffix))
+		note, key, bridgeGate, bridgeCtl(p), tool, floatReuse(tool, floatNewPaneGuard(f, prefix, suffix)))
 }
 
 // carouselBind is empty when the toggle package is not wired in. It carries no

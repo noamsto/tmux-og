@@ -166,8 +166,11 @@
   # floating cells), so a float outlives the client size it was made for —
   # @float_geom carries the percentages forward for tmux-float-refit to reassert
   # on window-resized. Both come from one source here so they cannot drift.
-  # -A keeps a float visible above a zoomed pane. String-form if-shell defers
-  # parsing so an older server never sees the unknown flag at source (#407).
+  # -A is a Z-ORDER flag — it keeps a float visible above a zoomed pane — and
+  # not attach-if-exists: new-pane has no such mode, so every press creates a
+  # pane and the reuse of an already-open float is explicit, in floatReuse
+  # (#679). String-form if-shell defers parsing so an older server never sees
+  # the unknown flag at source (#407).
   #
   # remain-on-exit is pinned off on the pane because a mirror window sets it on
   # (#547) and pane options inherit from the window's, so a float inside a
@@ -186,6 +189,20 @@
     mk = flags: esc "new-pane ${prefix}${flags} ${suffix} \\; ${float.stamp}";
   in "if-shell \"tmux list-commands new-pane | grep -q -- -A\" \"${mk float.flags}\" \"${mk float.flagsNoA}\"";
   floatBind = key: note: float: prefix: suffix: "bind-key -N '${note}' ${key} ${floatNewPaneGuard float prefix suffix}";
+
+  # floatRegister/floatLookup/floatReuse mirror generator/render/keys.go byte for
+  # byte — this file is the extraction oracle, so the two are edited together.
+  #
+  # floatRegister is the window option a bridged tool press hands the float's
+  # pane id to its own focus branch through. Not a second lookup key: the value
+  # is written by the branch that reads it, in the same command list, and that
+  # branch is only reached once floatLookup has matched. It exists because a pane
+  # loop nested inside a run-shell argument is a shell-injection shape
+  # tests/conf-shell-quoting.bats rejects — `#{q:<option>}` is the one legal way
+  # to hand an id to a shell.
+  floatRegister = tool: "@og_float_target_${tool}";
+  floatLookup = tool: "#{P:#{?#{&&:#{==:#{@pane_label},${tool}},#{pane_floating_flag}},#{pane_id},}}";
+  floatReuse = tool: guard: "if-shell -F \"${floatLookup tool}\" { set -wF ${floatRegister tool} \"${floatLookup tool}\" ; run-shell \"tmux select-pane -t #{q:${floatRegister tool}}\" } { ${guard} }";
   floatFull = mkFloat "90%" "90%" "5%" "5%";
   floatShort = mkFloat "90%" "85%" "5%" "8%";
   # The enrich card sizes to its contents, not to the client; only its offsets
@@ -202,7 +219,7 @@
   # (#643). It is #{qs:}, not #{q:} — the value is a path, and run-shell hands it
   # to a shell that would otherwise split it on a space. An unset option quotes
   # as an empty argument, which the verb reads as "no cwd".
-  bridgedFloatTool = key: note: tool: float: prefix: suffix: "bind-key -N '${note}' ${key} if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} tool #{q:@bridge_pane} ${tool} #{qs:@bridge_dir}\" } { ${floatNewPaneGuard float prefix suffix} }";
+  bridgedFloatTool = key: note: tool: float: prefix: suffix: "bind-key -N '${note}' ${key} if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} tool #{q:@bridge_pane} ${tool} #{qs:@bridge_dir}\" } { ${floatReuse tool (floatNewPaneGuard float prefix suffix)} }";
 
   # prdash PR dashboard (prefix+p), scoped to the pane's repo. `enter` opens a git
   # worktree: prdash execs `wt switch` itself as it exits, so the tmux window
