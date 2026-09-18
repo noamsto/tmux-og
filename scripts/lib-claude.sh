@@ -303,36 +303,53 @@ claude_clear_agent_state() {
 	tmux set -pq -t "%${id}" @claude_status "" \; set -pq -t "%${id}" @agent_screen "" 2>/dev/null || true
 }
 
+# claude_clear_window_display WINDOW_TARGET MANUAL_NAME
+# The option half of the #671 reset, safe on a client-independent timer: no
+# file deletions. CLAUDE_STATUS_DIR is a bare /tmp path shared by every tmux
+# server on the machine, and the sweep that calls this (tmux-update-icons.sh's
+# arm_agent_detect, #692) runs on every server, so a deletion there would let a
+# scratch server wipe the real server's live naming state. Always clears
+# @window_has_agent; clears @window_ai_name/@window_task only when MANUAL_NAME
+# != 1, the same rule claude_clear_window_naming applies to its file half.
+# @crew_name/@crew_color are dispatcher-owned and never touched.
+claude_clear_window_display() {
+	local target="$1" manual="$2"
+
+	tmux set -qw -t "$target" @window_has_agent ""
+	[[ $manual == 1 ]] && return 0
+	tmux set -qw -t "$target" @window_ai_name "" \; set -qw -t "$target" @window_task ""
+}
+
 # claude_clear_window_naming WINDOW_TARGET MANUAL_NAME PANE_ID...
 # Called once a window has no live agent left in any pane (#671):
 # tmux-shell-prompt.sh's event trigger and tmux-update-icons.sh's backstop are
-# the two callers. Always clears @window_has_agent on the window and removes
-# issues/<pane> for every PANE_ID — issue self-reports "die with the pane or
-# CC session" per the CLAUDE.md "Issue self-report" bullet, and losing the
-# window's last agent is exactly that death, independent of naming/display
-# mode. When MANUAL_NAME != 1 (the window has never had @window_manual_name
-# stamped by the user's own prefix + , rename), also clears
-# @window_ai_name/@window_task and removes names/<pane>/tasks/<pane> for every
-# PANE_ID — a manually-named window's name is left untouched, since nothing in
-# the naming pipeline drives it and there is nothing to fight the user over.
+# the two callers. Always removes issues/<pane> for every PANE_ID — issue
+# self-reports "die with the pane or CC session" per the CLAUDE.md "Issue
+# self-report" bullet, and losing the window's last agent is exactly that
+# death, independent of naming/display mode. When MANUAL_NAME != 1 (the window
+# has never had @window_manual_name stamped by the user's own prefix + ,
+# rename), also removes names/<pane>/tasks/<pane>. Deletes the option writes to
+# claude_clear_window_display, and consumes the @window_naming_dirty mark the
+# client-independent sweep leaves (it may clear the options but must not delete
+# from the shared dir) — last, after the files are gone, so a failed delete
+# leaves the deletion still owed.
 claude_clear_window_naming() {
 	local target="$1" manual="$2"
 	shift 2
 	local id
 
-	tmux set -qw -t "$target" @window_has_agent ""
 	for id in "$@"; do
 		id="${id#%}"
 		rm -f "$CLAUDE_ISSUES_DIR/$id"
 	done
-
-	[[ $manual == 1 ]] && return 0
-
-	tmux set -qw -t "$target" @window_ai_name "" \; set -qw -t "$target" @window_task ""
-	for id in "$@"; do
-		id="${id#%}"
-		rm -f "$CLAUDE_NAMES_DIR/$id" "$CLAUDE_TASKS_DIR/$id"
-	done
+	claude_clear_window_display "$target" "$manual"
+	if [[ $manual != 1 ]]; then
+		for id in "$@"; do
+			id="${id#%}"
+			rm -f "$CLAUDE_NAMES_DIR/$id" "$CLAUDE_TASKS_DIR/$id"
+		done
+	fi
+	tmux set -qw -t "$target" @window_naming_dirty ""
 }
 
 # claude_reap_dead_panes ROWS

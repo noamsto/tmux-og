@@ -64,6 +64,10 @@ setup() {
 	mkdir -p "$TDIR/bin"
 	cp -L "$(command -v bash)" "$TDIR/bin/claude"
 	chmod +x "$TDIR/bin/claude"
+	# A second manifest command (pi) for the coexisting-agent case: same trick,
+	# so pane_current_command is the literal `pi`.
+	cp -L "$(command -v bash)" "$TDIR/bin/pi"
+	chmod +x "$TDIR/bin/pi"
 
 	tmux -f /dev/null new-session -d -s A -c "$REPO" -x 200 -y 50
 	tmux new-session -d -s B -c "$REPO" -x 200 -y 50
@@ -91,6 +95,18 @@ display_of() {
 
 opt_of() {
 	tmux show -wv -t "$1" "$2" 2>/dev/null || true
+}
+
+# sweep_tick — one client-independent pass (the @og-sweep-tick monitor hook's
+# shape), which reconciles occupancy and the option half of the #671 reset.
+sweep_tick() {
+	OG_TICK_SWEEP=1 bash "$UPDATE_ICONS"
+}
+
+# bare_id PANE — a pane id without its '%'.
+bare_id() {
+	local id="$1"
+	printf '%s' "${id#%}"
 }
 
 @test "one pass on A stamps @window_icon_padded on every window including unattached B" {
@@ -205,4 +221,195 @@ opt_of() {
 	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
 	# Hard constraint: @crew_name is dispatcher-owned and never touched.
 	[ "$(opt_of B:1 @crew_name)" = coral ]
+}
+
+# claude_win — the B window whose pane runs the fixture `claude` binary, as
+# "B:<index>". The suite's other cases hard-code B:1 (a session created before
+# default-shell is repointed); discovering it keeps these #692 cases correct
+# regardless of the server's base-index.
+claude_win() {
+	local idx cmd
+	while IFS='|' read -r idx cmd; do
+		if [ "$cmd" = claude ]; then
+			printf 'B:%s' "$idx"
+			return 0
+		fi
+	done < <(tmux list-panes -s -t B -F '#{window_index}|#{pane_current_command}')
+	return 1
+}
+
+# #692: the client-independent sweep owns the option half of the #671 reset on
+# a host whose only clients are remote-bridge transports (no status line, so
+# the per-tick loop never runs). It must clear naming for a window whose
+# @window_has_agent was NEVER stamped — the reported host's exact state, where
+# an option-transition-gated clear would skip it — and must not delete from the
+# shared CLAUDE_STATUS_DIR; the deletion is owed to the client-gated per-tick
+# pass via @window_naming_dirty.
+@test "sweep clears a never-stamped window's stale naming and owes the file deletion" {
+	local bare
+	bare="$(bare_id "$(tmux list-panes -t A -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks,issues}
+	tmux set -w -t A @window_ai_name "stale ai"
+	tmux set -w -t A @window_task "stale task"
+	tmux set -w -t A @crew_name coral
+	printf 'stale ai\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'stale task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
+	# The bug's precondition: the option is unset because this host never ran
+	# the per-tick loop.
+	[ -z "$(opt_of A @window_has_agent)" ]
+
+	run sweep_tick
+	[ "$status" -eq 0 ] || { echo "sweep exited $status: $output" && false; }
+	[ -z "$(opt_of A @window_ai_name)" ]
+	[ -z "$(opt_of A @window_task)" ]
+	[ "$(opt_of A @window_naming_dirty)" = 1 ]
+	# Hard constraint: @crew_name is dispatcher-owned and never touched.
+	[ "$(opt_of A @crew_name)" = coral ]
+	# No deletion on the client-independent path (shared /tmp dir).
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
+
+	# The per-tick pass is the client-gated one: it discharges the owed
+	# deletion and clears the mark.
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ -z "$(opt_of A @window_ai_name)" ]
+	[ -z "$(opt_of A @window_task)" ]
+	[ -z "$(opt_of A @window_naming_dirty)" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
+}
+
+@test "sweep clears naming on an agent exit, then the per-tick pass deletes the files" {
+	local cwin bare
+	cwin="$(claude_win)"
+	bare="$(bare_id "$(tmux list-panes -t "$cwin" -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks,issues}
+	tmux set -w -t "$cwin" @window_ai_name "Old AI Name"
+	tmux set -w -t "$cwin" @window_task "old task"
+	tmux set -w -t "$cwin" @crew_name coral
+	printf 'Old AI Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'old task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
+
+	# Live agent: the sweep stamps occupancy and leaves the naming alone.
+	run sweep_tick
+	[ "$status" -eq 0 ]
+	[ "$(opt_of "$cwin" @window_has_agent)" = 1 ]
+	[ "$(opt_of "$cwin" @window_ai_name)" = "Old AI Name" ]
+
+	# Agent exits with no client attached (the reported class): swap the
+	# foreground command to a plain shell — no hook fires on this.
+	tmux respawn-pane -k -t "$cwin" -- "$(command -v bash)"
+	local tries=20
+	while ((tries-- > 0)); do
+		[ "$(tmux display-message -p -t "$cwin" '#{pane_current_command}')" != claude ] && break
+		sleep 0.1
+	done
+
+	run sweep_tick
+	[ "$status" -eq 0 ]
+	[ -z "$(opt_of "$cwin" @window_has_agent)" ]
+	[ -z "$(opt_of "$cwin" @window_ai_name)" ]
+	[ -z "$(opt_of "$cwin" @window_task)" ]
+	[ "$(opt_of "$cwin" @window_naming_dirty)" = 1 ]
+	[ "$(opt_of "$cwin" @crew_name)" = coral ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
+
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ -z "$(opt_of "$cwin" @window_naming_dirty)" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ]
+}
+
+@test "sweep leaves a bridge window's naming and options untouched" {
+	local cwin bare
+	cwin="$(claude_win)"
+	bare="$(bare_id "$(tmux list-panes -t "$cwin" -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks,issues}
+	tmux set -w -t "$cwin" @bridge_win 1
+	tmux set -w -t "$cwin" @window_has_agent 1
+	tmux set -w -t "$cwin" @window_ai_name "Bridge Name"
+	tmux set -w -t "$cwin" @window_task "bridge task"
+	printf 'Bridge Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+
+	run sweep_tick
+	[ "$status" -eq 0 ]
+	# A mirror is daemon-owned: the sweep never writes these, even though the
+	# pane runs the fixture claude and has_agent is stamped.
+	[ "$(opt_of "$cwin" @window_has_agent)" = 1 ]
+	[ -z "$(opt_of "$cwin" @window_naming_dirty)" ]
+	[ "$(opt_of "$cwin" @window_ai_name)" = "Bridge Name" ]
+	[ "$(opt_of "$cwin" @window_task)" = "bridge task" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+}
+
+@test "per-tick ignores a lingering self-report file on an agent-free window" {
+	local bare
+	bare="$(bare_id "$(tmux list-panes -t A -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks}
+	printf 'stale ai\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'stale task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+
+	# Options empty, no dirty mark: exactly the state the sweep leaves before
+	# the per-tick pass runs. A's window is a shell, so there is no live agent —
+	# the read must be skipped rather than re-stamp the file's contents.
+	[ -z "$(opt_of A @window_ai_name)" ]
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ -z "$(opt_of A @window_ai_name)" ]
+	[ -z "$(opt_of A @window_task)" ]
+}
+
+@test "sweep leaves a manually-named window's naming alone (no churn)" {
+	local bare
+	bare="$(bare_id "$(tmux list-panes -t A -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks}
+	tmux set -w -t A @window_manual_name 1
+	tmux set -w -t A @window_ai_name "My Name"
+	tmux set -w -t A @window_task "my task"
+	printf 'My Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'my task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+
+	run sweep_tick
+	[ "$status" -eq 0 ]
+	[ "$(opt_of A @window_ai_name)" = "My Name" ]
+	[ "$(opt_of A @window_task)" = "my task" ]
+	# Never cleared, so no deletion is owed.
+	[ -z "$(opt_of A @window_naming_dirty)" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+}
+
+@test "sweep pins #671's generic occupancy: a coexisting different agent keeps the name" {
+	local cwin bare
+	cwin="$(claude_win)"
+	bare="$(bare_id "$(tmux list-panes -t "$cwin" -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks}
+	tmux set -w -t "$cwin" @window_ai_name "Old Claude Name"
+	printf 'Old Claude Name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+
+	# Swap the fixture claude for pi, a different manifest agent.
+	tmux respawn-pane -k -t "$cwin" -- "$TDIR/bin/pi"
+	local tries=20
+	while ((tries-- > 0)); do
+		[ "$(tmux display-message -p -t "$cwin" '#{pane_current_command}')" = pi ] && break
+		sleep 0.1
+	done
+	export AGENT_COMMANDS="claude pi"
+
+	run sweep_tick
+	[ "$status" -eq 0 ]
+	# Generic occupancy: pi is a live agent, so this is not a 1->0 transition
+	# and the stale Claude name is deliberately kept (#671's Definition). The
+	# name clears on the window's next agent exit — the documented residual.
+	[ "$(opt_of "$cwin" @window_has_agent)" = 1 ]
+	[ "$(opt_of "$cwin" @window_ai_name)" = "Old Claude Name" ]
+	[ -z "$(opt_of "$cwin" @window_naming_dirty)" ]
 }
