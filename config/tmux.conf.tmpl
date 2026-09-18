@@ -88,8 +88,10 @@ set -g copy-mode-line-numbers {{.Config.Tmux.CopyModeLineNumbers}}
 
 bind -N 'Clear screen' -n M-l send-keys C-l
 
-# Shift+Enter: process-aware newline for Claude Code / Amp / OpenCode
-bind -N 'Insert newline in agent CLI' -n S-Enter if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^(amp|bun|opencode)$'" "send-keys \\\\ Enter" "send-keys M-Enter"
+# Shift+Enter: process-aware newline for pi / Claude Code / Amp / OpenCode.
+# pi binds alt+enter to follow-up queueing, so it wants the raw CSI-u sequence
+# its own newline binding reads; every other CLI gets its own newline key.
+bind -N 'Insert newline in agent CLI' -n S-Enter if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^pi$'" { send-keys -H 1b 5b 31 33 3b 32 75 } { if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^(amp|bun|opencode)$'" { send-keys \\ Enter } { send-keys M-Enter } }
 
 # Pane splitting (| and _)
 unbind %
