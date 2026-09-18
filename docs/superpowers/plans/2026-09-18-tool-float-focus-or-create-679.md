@@ -135,7 +135,9 @@ is not, because remote floats created before this fix carry no label at all and
 so never match. `#{s/.../}`-style "take the first match" was tried and rejected:
 its behaviour differs between the pinned next-3.9 and 3.7c, and a silent
 degradation on older servers is worse than a visible error. Closing the extras
-with `prefix + x` clears it.
+with `prefix + x` clears it. The remote leg's pre-fix floats carry no label at
+all, so there the first press after the update adds one more labelled float
+and every press after that reuses it.
 
 ## Steps
 

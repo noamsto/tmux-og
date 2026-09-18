@@ -2159,6 +2159,16 @@
                 printf '%s' "$line" | grep -qF "set -wF @og_float_target_$t"
                 printf '%s' "$line" | grep -qF "run-shell \"tmux select-pane -t #{q:@og_float_target_$t}\""
               done
+
+              # The two Go modules are separate go.mod roots, so the reuse loop
+              # is written twice: generator/render/keys.go for the local bind and
+              # picker/remotebridge/daemon/ctl.go for the ctl tool verb. Nothing
+              # else compares them — the conf assertion above pins only the local
+              # copy — and a divergent loop would silently re-break #679 on one
+              # leg only. Pin the same format literal in both sources.
+              loop='#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}'
+              grep -qF "$loop" ${./generator/render/keys.go}
+              grep -qF "$loop" ${./picker/remotebridge/daemon/ctl.go}
               touch $out
             '';
         };
