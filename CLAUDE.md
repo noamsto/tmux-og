@@ -168,6 +168,18 @@ session, not the local renderers its panes actually run (`picker/remote_resource
 - **One aggregator, two sources.** `aggregateResources` (pure) walks the process
   tree from a set of root PIDs over one `ps psArgs` table. The local leg forks
   `ps`; the remote leg fetches the same table over ssh. Neither owns the walk.
+- **The same walk reports which agent runs in a session.** `psArgs` carries a
+  trailing `comm` (BSD ps prints a full path, so it is basenamed and
+  `.foo-wrapped`-normalised), and `aggregateResources` collects any agent
+  manifest command found anywhere in a session's tree. `pane_current_command`
+  names a pane's process-group leader, so an agent tmux-remux relaunched —
+  `cat-scrollback …; <agent>; exec <shell>` under one non-interactive shell,
+  which has no job control, so the agent shares that shell's group — is
+  invisible there while its state file, and so its agent icon, is live. The
+  tree-found name joins `sessionData.procs`, restoring the program icon in the
+  Procs column; both legs get it from the one table, and the command list is
+  the manifests' own `match_commands`, the same list `@AGENT_COMMANDS` and
+  agent-detect read.
 - **The payload is one ssh round-trip** per host — core count, then
   `<session>|<pane_pid>` lines, then a `PSTABLE` separator, then the process
   table. The separator **must start with a letter**: the remote's login shell is

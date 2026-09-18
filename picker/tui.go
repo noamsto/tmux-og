@@ -1792,6 +1792,12 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		resCh = make(chan map[string]sessionResources, 1)
 		go func() { resCh <- collectSessionResources(sessions) }()
 	}
+	// Merged before the rows are built: the walk's agent commands join a
+	// session's proc list, and the icon column is built from that list.
+	if withResources {
+		mergeResources(sessions, <-resCh)
+		mergeRemoteResources(sessions)
+	}
 
 	thmMauve := envOrMap("THM_MAUVE", tmuxOpts, "@thm_mauve", "#cba6f7")
 	thmBlue := envOrMap("THM_BLUE", tmuxOpts, "@thm_blue", "#89b4fa")
@@ -1872,11 +1878,6 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 			return host + tail
 		}
 		return color + host + reset + tail
-	}
-
-	if withResources {
-		mergeResources(sessions, <-resCh)
-		mergeRemoteResources(sessions)
 	}
 
 	// Pre-compute CPU and MEM strings separately so the "/" aligns
