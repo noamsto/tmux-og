@@ -2077,6 +2077,34 @@
               touch $out
             '';
 
+          # A keypress test, so it takes rename-bind-integration's reduced conf
+          # for the same reason: the enrich/agent-usage pollers add run-shell
+          # contention between the signed key and the poll that observes it.
+          enter-bind-integration-tests = let
+            enterBindTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "enter-bind-integration-tests" {
+              # procps: the binding branches on `ps -o comm= -t <pane tty>`.
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.procps];
+              TMUX_BIN = "${enterBindTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/enter-bind-integration.bats
+              touch $out
+            '';
+
           # The gate itself, not a keypress: remote-m2-integration-tests above
           # drives vanilla -L servers with no tmux-og keybindings for a gate to
           # intercept (comment on that check), so it can only exercise the
