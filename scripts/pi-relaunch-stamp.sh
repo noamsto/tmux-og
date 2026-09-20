@@ -24,11 +24,14 @@ set -euo pipefail
 # extraction below: jq decodes JSON's \u0000 escape into a real byte.
 payload="$(</dev/stdin)"
 JQ="@jq@"
+# shellcheck disable=SC2016 # jq owns its `$native` variable expansion.
 if ! "$JQ" -e '
-  type == "object"
-  and (.native | type == "object")
-  and (.native.session_file | (type == "string" and length > 0 and (index("\u0000") | not)))
-  and (.native.argv | type == "array" and all(.[]; type == "string" and (index("\u0000") | not)))
+  if type != "object" or (.native | type) != "object" then false
+  else .native as $native |
+    ($native.session_file | (type == "string" and length > 0 and (index("\u0000") | not)))
+    and ($native.argv | type == "array" and all(.[]; type == "string" and (index("\u0000") | not)))
+    and ((($native | has("user_argv")) | not) or ($native.user_argv | type == "array" and all(.[]; type == "string" and (index("\u0000") | not))))
+  end
 ' <<<"$payload" >/dev/null 2>&1; then
 	exit 0
 fi
@@ -38,6 +41,14 @@ argv=()
 while IFS= read -r -d '' arg; do
 	argv+=("$arg")
 done < <("$JQ" -jr '(.native.argv[] | ., "\u0000")' <<<"$payload")
+user_argv=()
+has_user_argv=0
+if "$JQ" -e '.native | has("user_argv")' <<<"$payload" >/dev/null; then
+	has_user_argv=1
+	while IFS= read -r -d '' arg; do
+		user_argv+=("$arg")
+	done < <("$JQ" -jr '(.native.user_argv[] | ., "\u0000")' <<<"$payload")
+fi
 
 [[ -n ${TMUX_PANE:-} ]] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
@@ -72,22 +83,26 @@ role:*) exit 0 ;;
 esac
 
 if [[ -z $cmd ]]; then
-	set -- "${argv[@]}"
+	if ((has_user_argv)); then
+		set -- "${user_argv[@]}"
+	else
+		set -- "${argv[@]}"
 
-	# PI_USER_ARGC (set by the nix-config pi wrapper as $# before its `exec`,
-	# the count of trailing argv entries that are the caller's own) drops the
-	# wrapper-injected prefix (-e hook-bridge.ts --skill … --prompt-template
-	# …) from the replay: those are store paths that go stale after a rebuild
-	# once garbage-collected, and replaying them re-injects the CURRENT
-	# wrapper's flags a second time on top. Keep only the last PI_USER_ARGC
-	# entries of the argv the extension forwarded. Unset (no wrapper, or an
-	# older one) or malformed (non-integer, a leading zero other than the
-	# literal "0" — bash's own $# is never zero-padded, and a zero-padded
-	# value would be misread as octal by the arithmetic below, silently
-	# dropping real args — or larger than the available args) falls back to
-	# today's replay-all — never crash, never stamp garbage.
-	if [[ -n ${PI_USER_ARGC:-} && $PI_USER_ARGC =~ ^(0|[1-9][0-9]*)$ ]] && ((PI_USER_ARGC <= $#)); then
-		((PI_USER_ARGC < $#)) && shift $(($# - PI_USER_ARGC))
+		# PI_USER_ARGC (set by the nix-config pi wrapper as $# before its `exec`,
+		# the count of trailing argv entries that are the caller's own) drops the
+		# wrapper-injected prefix (-e hook-bridge.ts --skill … --prompt-template
+		# …) from the replay: those are store paths that go stale after a rebuild
+		# once garbage-collected, and replaying them re-injects the CURRENT
+		# wrapper's flags a second time on top. Keep only the last PI_USER_ARGC
+		# entries of the argv the extension forwarded. Otherwise unset (no wrapper, or an
+		# older one) or malformed (non-integer, a leading zero other than the
+		# literal "0" — bash's own $# is never zero-padded, and a zero-padded
+		# value would be misread as octal by the arithmetic below, silently
+		# dropping real args — or larger than the available args) falls back to
+		# today's replay-all — never crash, never stamp garbage.
+		if [[ -n ${PI_USER_ARGC:-} && $PI_USER_ARGC =~ ^(0|[1-9][0-9]*)$ ]] && ((PI_USER_ARGC <= $#)); then
+			((PI_USER_ARGC < $#)) && shift $(($# - PI_USER_ARGC))
+		fi
 	fi
 
 	# Replay pi's argv: keep every non-positional flag, dropping the launch

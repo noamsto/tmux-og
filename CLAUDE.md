@@ -420,7 +420,10 @@ layer (replaces tmux-resurrect/tmux-continuum). Enabled by default via
 - `restoreMode` defaults to `"off"` (manual `prefix + R` only). Set to `"auto"`
   to apply the smart filter on tmux server start.
 - Pi sessions resume like the other agents via `persist.resumePi` (default false):
-  install the `pi-hookyard-plugin` package with Pi. Its hookyard-built bridge
+  the flake Home Manager module symlinks `pi-hookyard-plugin` under
+  `~/.local/share/pi/extensions/tmux-og` and idempotently adds its bridge to
+  `~/.pi/agent/settings.json`. Restart pi after a switch; its extension set is
+  loaded only at process start. Its hookyard-built bridge
   routes `session_start` and `turn_end` envelopes to `pi-relaunch-stamp`, which
   stamps the pane's `@remux_relaunch` with `pi <original flags> --session
   <file>` — every flag replayed with per-arg single quotes, the positional

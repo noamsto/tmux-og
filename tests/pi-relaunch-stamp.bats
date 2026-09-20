@@ -97,9 +97,9 @@ stamp_json() {
 		'{}' \
 		'{"native":{}}' \
 		'{"native":{"session_file":null,"argv":[]}}' \
-		'{"native":{"session_file":"","argv":[]}}' \
 		'{"native":{"session_file":"session","argv":null}}' \
 		'{"native":{"session_file":"session","argv":[null]}}' \
+		'{"native":{"session_file":"session","argv":[],"user_argv":null}}' \
 		'{"native":{"session_file":"\u0000","argv":[]}}' \
 		'{"native":{"session_file":"session","argv":["\u0000"]}}'; do
 		run stamp_json "$payload"
@@ -250,6 +250,14 @@ stamp_json() {
 	run ! grep -qF '/nix/store/abc-hook-bridge.ts' "$TMUX_LOG"
 	run ! grep -qF -- '--skill' "$TMUX_LOG"
 	[ "$stamped" = "pi '--name' 'reef' '--model' 'y' --session '$SESS'" ]
+}
+
+@test "sanitized user argv preserves the wrapper boundary after a secret pair is stripped" {
+	PI_USER_ARGC=4 run stamp_json '{"native":{"session_file":"session","argv":["-e","/nix/store/bridge.ts","--name","reef"],"user_argv":["--name","reef"]}}'
+
+	[ "$status" -eq 0 ]
+	[ "$(set_lines)" = "pi '--name' 'reef' --session 'session'" ]
+	run ! grep -qF '/nix/store/bridge.ts' "$TMUX_LOG"
 }
 
 @test "PI_USER_ARGC=0 drops every argv entry, stamping only --session" {

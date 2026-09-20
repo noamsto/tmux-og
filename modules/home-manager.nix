@@ -7,6 +7,7 @@
   carousel-toggle ? null,
   carousel-aeye ? null,
   carouselPluginSkills ? null,
+  piHookyardPlugin ? null,
   prdash ? null,
   ...
 }: let
@@ -163,6 +164,8 @@
   # Only provision the cursor resume hooks when tmux-remux is actually
   # installed to act on @remux_relaunch, mirroring resumeCodexEnable above.
   resumeCursorEnable = cfg.persist.enable && cfg.persist.package != null && cfg.persist.resumeCursor;
+
+  resumePiEnable = cfg.persist.enable && cfg.persist.package != null && cfg.persist.resumePi;
 
   # Only stamp the carousel pane's @remux_relaunch when tmux-remux is actually
   # installed to read it, mirroring resumeCursorEnable above.
@@ -492,17 +495,17 @@ in {
         type = lib.types.bool;
         default = false;
         description = ''
-          Resume pi sessions when a window is restored. Install tmux-og's
-          `pi-hookyard-plugin` package with Pi; hookyard's generated bridge
+          Resume pi sessions when a window is restored. Home Manager installs
+          tmux-og's generated `pi-hookyard-plugin` and registers its hookyard bridge in
+          `~/.pi/agent/settings.json`; the bridge
           invokes its relaunch-stamp handler on session start and every turn,
           stamping each pi pane's `@remux_relaunch` with `pi <original flags>
           --session <file>`, so
           tmux-remux relaunches the resumed pi session on restore instead of a
           bare shell.
 
-          Caveats, like `resumeCursor`'s: an extension only loads into pi
-          processes started after the install (no settings hook exists to
-          retrofit a running one), a launch carrying `--no-extensions` or
+          Caveats, like `resumeCursor`'s: restart pi after a Home Manager switch
+          (extensions load only at process start), a launch carrying `--no-extensions` or
           `--no-session` never stamps (bare-shell restore), hookyard removes
           secret-looking flags before the handler sees them, and a future pi
           bump that adds a new value-taking flag degrades to a possibly-broken
@@ -1090,6 +1093,10 @@ in {
             the Cursor hooks call cursor-status-hook (sibling of claude-status-update)
             on the rebuild-stable profile path, which agentIntegration installs.
           '';
+        }
+        ++ lib.optional (resumePiEnable && piHookyardPlugin == null) {
+          assertion = false;
+          message = "programs.tmux-og.persist.resumePi requires the tmux-og flake module, which supplies pi-hookyard-plugin.";
         };
 
       home = {
@@ -1137,6 +1144,9 @@ in {
           )
           // lib.optionalAttrs cfg.opencode.enable {
             ".config/opencode/plugin/opencode-status.ts".source = ../plugins/opencode-status.ts;
+          }
+          // lib.optionalAttrs resumePiEnable {
+            ".local/share/pi/extensions/tmux-og".source = piHookyardPlugin;
           };
 
         # Reload tmux config + reflow all sessions after profile switch.
@@ -1146,6 +1156,20 @@ in {
         # Run after restoreTheme (which sources the config and sets theme vars).
         # We only need to: ensure config is loaded, then reflow all sessions.
         activation = {
+          provisionPiHookyardPlugin = lib.mkIf resumePiEnable (lib.hm.dag.entryAfter ["writeBoundary"] ''
+            SETTINGS="$HOME/.pi/agent/settings.json"
+            EXTENSION="$HOME/.local/share/pi/extensions/tmux-og/extensions/hookyard.ts"
+            mkdir -p "$(dirname "$SETTINGS")"
+            if [ -e "$SETTINGS" ]; then
+              ${pkgs.jq}/bin/jq --arg extension "$EXTENSION" '
+                .extensions = ((.extensions // []) | if index($extension) then . else . + [$extension] end)
+              ' "$SETTINGS" >"$SETTINGS.tmp"
+            else
+              ${pkgs.jq}/bin/jq -n --arg extension "$EXTENSION" '{extensions: [$extension]}' >"$SETTINGS.tmp"
+            fi
+            mv "$SETTINGS.tmp" "$SETTINGS"
+          '');
+
           # Lingering keeps the startup server alive past logout (see the
           # startupSession.linger option). enable-linger is idempotent and needs
           # no privilege for self-linger; a failure only warns. Never disables —

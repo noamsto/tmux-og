@@ -2211,10 +2211,20 @@
             pkgs.runCommand "tmux-og-pi-hookyard-plugin" {
               nativeBuildInputs = [inputs.hookyard.packages.${pkgs.system}.hookyard];
             } ''
-              install -Dm755 ${./scripts/pi-relaunch-stamp.sh} $out/scripts/pi-relaunch-stamp.sh
-              substituteInPlace $out/scripts/pi-relaunch-stamp.sh \
-                --replace-fail '@jq@' '${pkgs.jq}/bin/jq'
+                install -Dm755 ${./scripts/pi-relaunch-stamp.sh} $out/scripts/pi-relaunch-stamp.sh
+                substituteInPlace $out/scripts/pi-relaunch-stamp.sh \
+                  --replace-fail '@jq@' '${pkgs.jq}/bin/jq'
               hookyard build --engine pi --manifest ${./hookyard.json} --out $out --name tmux-og
+              substituteInPlace $out/extensions/hookyard.ts \
+                --replace-fail 'function payload(name, event, ctx) {' 'function sanitizedUserArgv(argv) {
+                const count = process.env.PI_USER_ARGC ?? "";
+                if (!/^(0|[1-9][0-9]*)$/.test(count) || Number(count) > argv.length) return undefined;
+                return sanitizeArgv(count === "0" ? [] : argv.slice(-Number(count)));
+              }
+
+              function payload(name, event, ctx) {' \
+                --replace-fail 'argv: sanitizeArgv(process.argv.slice(2)),' 'argv: sanitizeArgv(process.argv.slice(2)),
+                user_argv: sanitizedUserArgv(process.argv.slice(2)),'
               hookyard validate --manifest ${./hookyard.json} --plugin-root $out
             '';
           # Runs every pre-commit hook over the tree (see pre-commit.check above).
@@ -2281,6 +2291,7 @@
               carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
               carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
               carouselPluginSkills = "${inputs.aeye}/adapters/claude-code/plugin/skills";
+              piHookyardPlugin = inputs.self.packages.${pkgs.system}.pi-hookyard-plugin;
               prdash = inputs.prdash.packages.${pkgs.system}.prdash;
             });
       };
