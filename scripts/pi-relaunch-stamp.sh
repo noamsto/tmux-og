@@ -64,6 +64,14 @@ quote() {
 	printf '%s' "$out"
 }
 
+secret_flag() {
+	local option="${1%%=*}"
+	while [[ $option == -* ]]; do
+		option="${option#-}"
+	done
+	[[ $option =~ [Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd] ]]
+}
+
 # A dispatcher-launched worker's own pi flags still carry /nix/store paths
 # (--append-system-prompt <protocol dir>/WORKER_PROTOCOL.md, and any -e files
 # dispatch supplies) that go stale exactly like the wrapper's, but dispatch
@@ -112,6 +120,10 @@ if [[ -z $cmd ]]; then
 	while (($#)); do
 		arg="$1"
 		shift
+		if secret_flag "$arg"; then
+			[[ $arg != *=* && -n ${1:-} ]] && shift
+			continue
+		fi
 		case "$arg" in
 		--)
 			# Everything after -- is positional by definition; drop it and stop.

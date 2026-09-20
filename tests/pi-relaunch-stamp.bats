@@ -205,6 +205,19 @@ stamp_json() {
 	[ "$(set_lines)" = "pi '--model' 'y' '--name' 'reef' --session '$SESS'" ]
 }
 
+@test "forged envelopes cannot persist separate or attached secret flags" {
+	run stamp_json '{"native":{"session_file":"session","argv":["--api-key","opaque-value","--name","reef"]}}'
+	[ "$status" -eq 0 ]
+	[ "$(set_lines)" = "pi '--name' 'reef' --session 'session'" ]
+	run ! grep -qF 'opaque-value' "$TMUX_LOG"
+
+	: >"$TMUX_LOG"
+	run stamp_json '{"native":{"session_file":"session","argv":["--name","reef"],"user_argv":["--access-token=opaque-value","--name","lagoon"]}}'
+	[ "$status" -eq 0 ]
+	[ "$(set_lines)" = "pi '--name' 'lagoon' --session 'session'" ]
+	run ! grep -qF 'opaque-value' "$TMUX_LOG"
+}
+
 @test "empty session file (--no-session) is a no-op with no tmux call at all" {
 	run stamp "" --print hi
 
