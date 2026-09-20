@@ -940,6 +940,12 @@
     # any 4+ digit run), git-status, git-status-branch, diff (niche).
     set -g @fingers-enabled-builtin-patterns "url,path,ip,uuid,sha,hex,kubernetes"
 
+    # fingers opens its hint overlay as a window and closes it again, so every
+    # invocation left a close in tmux-remux's undo list that nobody made and
+    # nobody can want back. Matched literally, not as a glob: "[fingers]" as a
+    # glob is a character class matching one of f,i,n,g,e,r,s.
+    set -g @remux_ignore_windows "[fingers]"
+
     # Apply theme-dependent colors (must run after catppuccin loads, and
     # before tmux-fingers loads: load-config snapshots @fingers-*-style into
     # its own config.json, so the styles must be set first or fingers renders
