@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # pi session relaunch stamper: stamp this pane's @remux_relaunch so tmux-remux
-# resumes the pi session (not a bare shell) on restore. Invoked by the
-# pi-relaunch-stamp.ts extension on session_start and turn_end with
-# <session-file> <pi-argv...> (the extension forwards pi's real argv as args,
-# so spaces/quotes/$ round-trip without any encoding).
+# resumes the pi session (not a bare shell) on restore. hookyard's Pi bridge
+# invokes it on session_start and turn_end with a normalized envelope on stdin.
 #
 # The stamped command replays pi's original flags with per-arg single-quote
 # shell quoting, minus the positional launch prompt (never re-sent on restore),
 # the session-selection flags (the --session <file> we append replaces them)
-# and --api-key (the credential would be persisted in the pane option,
-# tmux-remux's state.db and the restored pane's argv — a keyed launch restores
-# through the provider's env var instead). @remux_relaunch is emitted verbatim
+# and session-selection flags. hookyard sanitizes secret-looking flags before
+# this handler receives argv. @remux_relaunch is emitted verbatim
 # by tmux-remux into the restored pane's startup command and run through the
 # user's default-shell — fish included — so the value must be valid for all of
 # them: every argument is single-quoted with the standard '\'' trick, and the
@@ -20,6 +17,27 @@
 # Degrade to a bare-shell restore rather than stamp a broken or exploitable
 # command, mirroring codex/cursor.
 set -euo pipefail
+
+# Hookyard's Pi bridge owns input normalization and sanitization. Validate the
+# complete shape before consulting CREW_WORKER_ID, so a sessionless worker does
+# not acquire a resume stamp. The NUL check must precede NUL-delimited argv
+# extraction below: jq decodes JSON's \u0000 escape into a real byte.
+payload="$(</dev/stdin)"
+JQ="@jq@"
+if ! "$JQ" -e '
+  type == "object"
+  and (.native | type == "object")
+  and (.native.session_file | (type == "string" and length > 0 and (index("\u0000") | not)))
+  and (.native.argv | type == "array" and all(.[]; type == "string" and (index("\u0000") | not)))
+' <<<"$payload" >/dev/null 2>&1; then
+	exit 0
+fi
+
+IFS= read -r -d '' session_file < <("$JQ" -jr '.native.session_file, "\u0000"' <<<"$payload")
+argv=()
+while IFS= read -r -d '' arg; do
+	argv+=("$arg")
+done < <("$JQ" -jr '(.native.argv[] | ., "\u0000")' <<<"$payload")
 
 [[ -n ${TMUX_PANE:-} ]] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
@@ -54,9 +72,7 @@ role:*) exit 0 ;;
 esac
 
 if [[ -z $cmd ]]; then
-	[[ -n ${1:-} ]] || exit 0 # ephemeral (--no-session) — nothing to resume
-	session_file="$1"
-	shift
+	set -- "${argv[@]}"
 
 	# PI_USER_ARGC (set by the nix-config pi wrapper as $# before its `exec`,
 	# the count of trailing argv entries that are the caller's own) drops the
@@ -86,7 +102,7 @@ if [[ -z $cmd ]]; then
 			# Everything after -- is positional by definition; drop it and stop.
 			break
 			;;
-		--session | --session-id | --fork | --api-key)
+		--session | --session-id | --fork)
 			[[ -n ${1:-} ]] && shift # their value is stale or must not be persisted
 			continue
 			;;
@@ -98,7 +114,7 @@ if [[ -z $cmd ]]; then
 			# secret-carrying forms; a kept value-taking option is self-contained,
 			# so keep the whole token.
 			case "${arg%%=*}" in
-			--session | --session-id | --fork | --api-key | --continue | --resume | --no-session) continue ;;
+			--session | --session-id | --fork | --continue | --resume | --no-session) continue ;;
 			esac
 			replay+=("$arg")
 			continue

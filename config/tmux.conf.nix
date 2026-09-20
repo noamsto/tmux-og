@@ -708,7 +708,7 @@
     };
     "pi stamp" = {
       script = "pi-relaunch-stamp";
-      summary = "Stamp pi relaunch state (run by the pi extension, not interactive)";
+      summary = "Stamp pi relaunch state (run by the hookyard Pi bridge, not interactive)";
     };
     "notify" = {
       script = "og-notify";

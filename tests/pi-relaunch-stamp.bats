@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 bats_require_minimum_version 1.5.0 # run !
-# pi-relaunch-stamp: argv → @remux_relaunch replay transform (scripts/pi-relaunch-stamp.sh,
-# driven by plugins/pi-relaunch-stamp.ts). The stamper gates its write on a read-back of
+# pi-relaunch-stamp: hookyard's normalized envelope → @remux_relaunch replay
+# transform (scripts/pi-relaunch-stamp.sh). The stamper gates its write on a read-back of
 # the current value, so the fake tmux is STATEful, not a log-only spy: it stores the value
 # each `set-option` writes (per pane) and answers `show-options` from that store, so "the
 # second identical invocation writes nothing" is a real assertion rather than an artifact
@@ -13,7 +13,9 @@ setup() {
 	# one, possibly) already has this in its real environment.
 	unset CREW_WORKER_ID PI_USER_ARGC
 	export TMUX_PANE="%7"
-	STAMP="$BATS_TEST_DIRNAME/../scripts/pi-relaunch-stamp.sh"
+	STAMP="$BATS_TEST_TMPDIR/pi-relaunch-stamp.sh"
+	sed "s|@jq@|$(command -v jq)|" "$BATS_TEST_DIRNAME/../scripts/pi-relaunch-stamp.sh" >"$STAMP"
+	chmod +x "$STAMP"
 	export TMUX_LOG="$BATS_TEST_TMPDIR/tmux.log"
 	export TMUX_STORE="$BATS_TEST_TMPDIR/store"
 	mkdir -p "$TMUX_STORE"
@@ -66,8 +68,48 @@ set_lines() {
 	grep -F 'set-option' "$TMUX_LOG" | sed 's/^set-option -p -t %7 @remux_relaunch //'
 }
 
+stamp() {
+	local session_file="$1"
+	shift
+	jq -cn --arg session_file "$session_file" --args \
+		'{native: {session_file: $session_file, argv: $ARGS.positional}}' -- "$@" | bash "$STAMP"
+}
+
+stamp_json() {
+	printf '%s' "$1" | bash "$STAMP"
+}
+
+@test "session_start and turn_end envelopes both stamp a persisted session" {
+	run stamp "$SESS" --name reef
+	[ "$status" -eq 0 ]
+	[ "$(set_lines)" = "pi '--name' 'reef' --session '$SESS'" ]
+
+	: >"$TMUX_LOG"
+	run stamp "$SESS" --name lagoon
+	[ "$status" -eq 0 ]
+	[ "$(set_lines)" = "pi '--name' 'lagoon' --session '$SESS'" ]
+}
+
+@test "malformed, missing, null, empty, and NUL envelope fields are no-ops" {
+	local payload
+	for payload in \
+		'not json' \
+		'{}' \
+		'{"native":{}}' \
+		'{"native":{"session_file":null,"argv":[]}}' \
+		'{"native":{"session_file":"","argv":[]}}' \
+		'{"native":{"session_file":"session","argv":null}}' \
+		'{"native":{"session_file":"session","argv":[null]}}' \
+		'{"native":{"session_file":"\u0000","argv":[]}}' \
+		'{"native":{"session_file":"session","argv":["\u0000"]}}'; do
+		run stamp_json "$payload"
+		[ "$status" -eq 0 ]
+		run ! grep -q '^\(show-options\|set-option\)' "$TMUX_LOG"
+	done
+}
+
 @test "dispatcher-shaped argv: flags replayed, launch prompt dropped, --session appended" {
-	run bash "$STAMP" "$SESS" --name reef --model opencode/deepseek-v4-flash --thinking high --no-approve "resume me"
+	run stamp "$SESS" --name reef --model opencode/deepseek-v4-flash --thinking high --no-approve "resume me"
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -79,7 +121,7 @@ set_lines() {
 }
 
 @test "@file designators are dropped with the other positionals" {
-	run bash "$STAMP" "$SESS" --print @notes.md "some message"
+	run stamp "$SESS" --print @notes.md "some message"
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -90,7 +132,7 @@ set_lines() {
 }
 
 @test "existing session-selection flags are removed, only the appended --session survives" {
-	run bash "$STAMP" "$SESS" --session old.jsonl --continue --resume -c -r --session-id X --fork Y --name reef
+	run stamp "$SESS" --session old.jsonl --continue --resume -c -r --session-id X --fork Y --name reef
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -105,7 +147,7 @@ set_lines() {
 }
 
 @test "--opt=value form: session forms dropped, kept options pass through whole" {
-	run bash "$STAMP" "$SESS" --name=reef --session=old.jsonl --model=x
+	run stamp "$SESS" --name=reef --session=old.jsonl --model=x
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -115,7 +157,7 @@ set_lines() {
 }
 
 @test "a value-taking option consumes its next element even when it starts with -" {
-	run bash "$STAMP" "$SESS" --name -weird --model y
+	run stamp "$SESS" --name -weird --model y
 
 	[ "$status" -eq 0 ]
 	run set_lines
@@ -124,7 +166,7 @@ set_lines() {
 }
 
 @test "args with spaces and single quotes are single-quoted with the \\'\\'' trick" {
-	run bash "$STAMP" "$SESS" --append-system-prompt "it's a 'path' with spaces" --model "x y"
+	run stamp "$SESS" --append-system-prompt "it's a 'path' with spaces" --model "x y"
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -133,7 +175,7 @@ set_lines() {
 }
 
 @test "a | anywhere in the assembled command refuses to stamp" {
-	run bash "$STAMP" "$SESS" --name "a|b" --model y
+	run stamp "$SESS" --name "a|b" --model y
 
 	[ "$status" -eq 0 ]
 	run ! grep -q '^set-option' "$TMUX_LOG"
@@ -145,51 +187,46 @@ set_lines() {
 	# C0 + DEL. Pin the gap class, and a non-space C0 byte for good measure.
 	cr="$(printf 'a\rb')" # shell injection can't happen (single-quoted), the
 	# tmux format reader still mangles it — reject whole.
-	run bash "$STAMP" "$SESS" --name "$cr"
+	run stamp "$SESS" --name "$cr"
 	[ "$status" -eq 0 ]
 	run ! grep -q '^set-option' "$TMUX_LOG"
 
 	: >"$TMUX_LOG"
-	run bash "$STAMP" "$SESS" --name "$(printf 'a\x01b')"
+	run stamp "$SESS" --name "$(printf 'a\x01b')"
 	[ "$status" -eq 0 ]
 	run ! grep -q '^set-option' "$TMUX_LOG"
 }
 
-@test "--api-key is dropped with its value, like the session-selection flags" {
-	# The key would be persisted in the pane option / state.db and re-exposed
-	# per restore; a keyed launch restores via the provider env var instead.
-	run bash "$STAMP" "$SESS" --model y --api-key sk-not-a-real-key --name reef
+@test "bridge-sanitized argv does not carry a secret flag into the stamp" {
+	run stamp "$SESS" --model y --name reef
 
 	[ "$status" -eq 0 ]
-	local stamped
-	stamped="$(set_lines)"
-	run ! grep -qF 'sk-not-a-real-key' "$TMUX_LOG"
 	run ! grep -qF -- '--api-key' "$TMUX_LOG"
-	[ "$stamped" = "pi '--model' 'y' '--name' 'reef' --session '$SESS'" ]
+	[ "$(set_lines)" = "pi '--model' 'y' '--name' 'reef' --session '$SESS'" ]
 }
 
 @test "empty session file (--no-session) is a no-op with no tmux call at all" {
-	run bash "$STAMP" "" --print hi
+	run stamp "" --print hi
 
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_LOG" ]
 }
 
 @test "change-gate: identical re-stamp writes nothing, a changed session file writes again" {
-	run bash "$STAMP" "$SESS" --name reef
+	run stamp "$SESS" --name reef
 	[ "$(grep -c '^set-option' "$TMUX_LOG")" -eq 1 ]
 
 	# Second run, same argv + file: the store-backed show() reads back the same
 	# value, so the stamper must not issue another set.
 	: >"$TMUX_LOG"
-	run bash "$STAMP" "$SESS" --name reef
+	run stamp "$SESS" --name reef
 	[ "$status" -eq 0 ]
 	run ! grep -q '^set-option' "$TMUX_LOG"
 
 	# A different session file changes the command; the gate lets it through.
 	: >"$TMUX_LOG"
 	OTHER="$BATS_TEST_TMPDIR/sessions/--repo--/2026-09-16T01-00-00-000Z_01a0aa66-3333-76fc-a266-37d19900b74d.jsonl"
-	run bash "$STAMP" "$OTHER" --name reef
+	run stamp "$OTHER" --name reef
 	[ "$status" -eq 0 ]
 	local stamped
 	stamped="$(set_lines)"
@@ -198,13 +235,13 @@ set_lines() {
 
 @test "no-op when TMUX_PANE is unset" {
 	unset TMUX_PANE
-	run bash "$STAMP" "$SESS" --print hi
+	run stamp "$SESS" --print hi
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_LOG" ]
 }
 
 @test "PI_USER_ARGC drops the wrapper-injected prefix, keeping only the trailing user args" {
-	run env PI_USER_ARGC=5 bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills \
+	PI_USER_ARGC=5 run stamp "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills \
 		--name reef --model y "resume me"
 
 	[ "$status" -eq 0 ]
@@ -216,7 +253,7 @@ set_lines() {
 }
 
 @test "PI_USER_ARGC=0 drops every argv entry, stamping only --session" {
-	run env PI_USER_ARGC=0 bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills
+	PI_USER_ARGC=0 run stamp "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -225,7 +262,7 @@ set_lines() {
 }
 
 @test "PI_USER_ARGC unset replays everything, same as today" {
-	run bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills --name reef
+	run stamp "$SESS" -e /nix/store/abc-hook-bridge.ts --skill /home/x/.claude/skills --name reef
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -234,7 +271,7 @@ set_lines() {
 }
 
 @test "malformed PI_USER_ARGC (non-integer) falls back to replay-all" {
-	run env PI_USER_ARGC=nope bash "$STAMP" "$SESS" --name reef --model y
+	PI_USER_ARGC=nope run stamp "$SESS" --name reef --model y
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -246,7 +283,7 @@ set_lines() {
 	# "010" fed straight into (( )) arithmetic is octal 8, not decimal 10 —
 	# a zero-padded value is never what the wrapper's own $# produces, so
 	# reject it whole rather than silently drop real user args.
-	run env PI_USER_ARGC=010 bash "$STAMP" "$SESS" --name reef --model y
+	PI_USER_ARGC=010 run stamp "$SESS" --name reef --model y
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -255,7 +292,7 @@ set_lines() {
 }
 
 @test "PI_USER_ARGC larger than the available args falls back to replay-all" {
-	run env PI_USER_ARGC=99 bash "$STAMP" "$SESS" --name reef --model y
+	PI_USER_ARGC=99 run stamp "$SESS" --name reef --model y
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -264,7 +301,7 @@ set_lines() {
 }
 
 @test "CREW_WORKER_ID=worker:… stamps dispatch resume, ignoring argv entirely" {
-	run env CREW_WORKER_ID='worker:feat/661-x#s123' bash "$STAMP" "$SESS" -e /nix/store/abc-hook-bridge.ts --name reef
+	CREW_WORKER_ID='worker:feat/661-x#s123' run stamp "$SESS" -e /nix/store/abc-hook-bridge.ts --name reef
 
 	[ "$status" -eq 0 ]
 	local stamped
@@ -273,17 +310,15 @@ set_lines() {
 	run ! grep -qF 'nix/store' "$TMUX_LOG"
 }
 
-@test "CREW_WORKER_ID=worker:… stamps dispatch resume even with no session file" {
-	run env CREW_WORKER_ID='worker:feat/661-x#s123' bash "$STAMP" "" --print hi
+@test "CREW_WORKER_ID=worker:… with no session file is a no-op" {
+	CREW_WORKER_ID='worker:feat/661-x#s123' run stamp "" --print hi
 
 	[ "$status" -eq 0 ]
-	local stamped
-	stamped="$(set_lines)"
-	[ "$stamped" = "dispatch resume" ]
+	[ ! -s "$TMUX_LOG" ]
 }
 
 @test "CREW_WORKER_ID=role:… is a no-op, no tmux call at all" {
-	run env CREW_WORKER_ID='role:feat/661-x:reviewer' bash "$STAMP" "$SESS" --name reef
+	CREW_WORKER_ID='role:feat/661-x:reviewer' run stamp "$SESS" --name reef
 
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_LOG" ]
@@ -293,7 +328,10 @@ set_lines() {
 	mkdir -p "$BATS_TEST_TMPDIR/empty"
 	local bash_bin
 	bash_bin="$(command -v bash)"
-	run env PATH="$BATS_TEST_TMPDIR/empty" "$bash_bin" "$STAMP" "$SESS" --print hi
+	local envelope
+	envelope="$(jq -cn --arg session_file "$SESS" --args '{native: {session_file: $session_file, argv: $ARGS.positional}}' -- --print hi)"
+	# shellcheck disable=SC2016 # The child shell expands its positional arguments.
+	run env PATH="$BATS_TEST_TMPDIR/empty" "$bash_bin" -c 'printf %s "$1" | "$3" "$2"' _ "$envelope" "$STAMP" "$bash_bin"
 	[ "$status" -eq 0 ]
 	[ ! -f "$TMUX_LOG" ]
 }

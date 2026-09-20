@@ -38,6 +38,10 @@
       url = "github:noamsto/prdash";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    hookyard = {
+      url = "github:noamsto/hookyard/f7ada54b672ab1f45761bfebab615a628177e30c";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs @ {flake-parts, ...}: let
@@ -335,7 +339,7 @@
 
           pi-relaunch-stamp-tests =
             pkgs.runCommand "pi-relaunch-stamp-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
@@ -2203,6 +2207,16 @@
 
         packages = {
           default = tmuxConfig.tmux-wrapped;
+          pi-hookyard-plugin =
+            pkgs.runCommand "tmux-og-pi-hookyard-plugin" {
+              nativeBuildInputs = [inputs.hookyard.packages.${pkgs.system}.hookyard];
+            } ''
+              install -Dm755 ${./scripts/pi-relaunch-stamp.sh} $out/scripts/pi-relaunch-stamp.sh
+              substituteInPlace $out/scripts/pi-relaunch-stamp.sh \
+                --replace-fail '@jq@' '${pkgs.jq}/bin/jq'
+              hookyard build --engine pi --manifest ${./hookyard.json} --out $out --name tmux-og
+              hookyard validate --manifest ${./hookyard.json} --plugin-root $out
+            '';
           # Runs every pre-commit hook over the tree (see pre-commit.check above).
           lint = config.pre-commit.settings.run;
           # Stable store path for the Codex managed-hook config (tmux-og#140
