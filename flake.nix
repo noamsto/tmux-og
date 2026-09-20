@@ -2207,6 +2207,10 @@
 
         packages = {
           default = tmuxConfig.tmux-wrapped;
+          # Only reachable through homeManagerModules.default, which `nix flake
+          # check` never forces — without this alias CI builds nothing for it
+          # and downstream consumers compile it from source.
+          tmux-remux = inputs.tmux-remux.packages.${pkgs.system}.default;
           pi-hookyard-plugin =
             pkgs.runCommand "tmux-og-pi-hookyard-plugin" {
               nativeBuildInputs = [inputs.hookyard.packages.${pkgs.system}.hookyard];
