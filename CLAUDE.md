@@ -420,20 +420,19 @@ layer (replaces tmux-resurrect/tmux-continuum). Enabled by default via
 - `restoreMode` defaults to `"off"` (manual `prefix + R` only). Set to `"auto"`
   to apply the smart filter on tmux server start.
 - Pi sessions resume like the other agents via `persist.resumePi` (default false):
-  home-manager installs `pi-relaunch-stamp.ts` into `~/.pi/agent/extensions/`
-  (pi's global auto-discovery dir — pi has no settings hook, so the extension
-  only loads into pi processes started after the install) and adds
-  `pi-relaunch-stamp` to PATH. The extension replies to `session_start` and
-  `turn_end` by calling `pi-relaunch-stamp <session-file> <argv...>`, which
+  the flake Home Manager module symlinks `pi-hookyard-plugin` under
+  `~/.local/share/pi/extensions/tmux-og` and idempotently adds its bridge to
+  `~/.pi/agent/settings.json`. Restart pi after a switch; its extension set is
+  loaded only at process start. Its hookyard-built bridge
+  routes `session_start` and `turn_end` envelopes to `pi-relaunch-stamp`, which
   stamps the pane's `@remux_relaunch` with `pi <original flags> --session
   <file>` — every flag replayed with per-arg single quotes, the positional
-  launch prompt, the session-selection flags (`--session`/`--continue`/
-  `--resume`/`--fork`/`--session-id`/`--no-session`) and `--api-key` (the
-  credential would be persisted in the pane option / state.db; a keyed launch
-  restores via the provider env var) dropped. It stamps on every turn, so
+  launch prompt and session-selection flags (`--session`/`--continue`/
+  `--resume`/`--fork`/`--session-id`/`--no-session`) dropped. Hookyard removes
+  secret-looking flags before the handler receives argv. It stamps on every turn, so
   repeated restore cycles survive as long as one message is sent per cycle
   (the cursor caveat), and never stamps an ephemeral session (`--no-session`
-  ⇒ `getSessionFile()` is undefined) or a value containing `|` or any control
+  ⇒ the bridge supplies no session file) or a value containing `|` or any control
   byte (C0 + DEL — the tmux format reader mangles them).
 - **`pi` on PATH is commonly a wrapper that injects its own flags ahead of the
   caller's** (this machine's own `home/ai/pi/default.nix` loads a hook-bridge

@@ -1,0 +1,11 @@
+{
+  "handlers": [
+    {
+      "id": "pi-relaunch-stamp",
+      "exec": "scripts/pi-relaunch-stamp.sh",
+      "events": ["session_start", "turn_end"],
+      "engines": ["pi"],
+      "lane": "verdict"
+    }
+  ]
+}

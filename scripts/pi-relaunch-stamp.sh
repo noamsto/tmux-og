@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # pi session relaunch stamper: stamp this pane's @remux_relaunch so tmux-remux
-# resumes the pi session (not a bare shell) on restore. Invoked by the
-# pi-relaunch-stamp.ts extension on session_start and turn_end with
-# <session-file> <pi-argv...> (the extension forwards pi's real argv as args,
-# so spaces/quotes/$ round-trip without any encoding).
+# resumes the pi session (not a bare shell) on restore. hookyard's Pi bridge
+# invokes it on session_start and turn_end with a normalized envelope on stdin.
 #
 # The stamped command replays pi's original flags with per-arg single-quote
 # shell quoting, minus the positional launch prompt (never re-sent on restore),
 # the session-selection flags (the --session <file> we append replaces them)
-# and --api-key (the credential would be persisted in the pane option,
-# tmux-remux's state.db and the restored pane's argv — a keyed launch restores
-# through the provider's env var instead). @remux_relaunch is emitted verbatim
+# and session-selection flags. hookyard sanitizes secret-looking flags before
+# this handler receives argv. @remux_relaunch is emitted verbatim
 # by tmux-remux into the restored pane's startup command and run through the
 # user's default-shell — fish included — so the value must be valid for all of
 # them: every argument is single-quoted with the standard '\'' trick, and the
@@ -20,6 +17,38 @@
 # Degrade to a bare-shell restore rather than stamp a broken or exploitable
 # command, mirroring codex/cursor.
 set -euo pipefail
+
+# Hookyard's Pi bridge owns input normalization and sanitization. Validate the
+# complete shape before consulting CREW_WORKER_ID, so a sessionless worker does
+# not acquire a resume stamp. The NUL check must precede NUL-delimited argv
+# extraction below: jq decodes JSON's \u0000 escape into a real byte.
+payload="$(</dev/stdin)"
+JQ="@jq@"
+# shellcheck disable=SC2016 # jq owns its `$native` variable expansion.
+if ! "$JQ" -e '
+  if type != "object" or (.native | type) != "object" then false
+  else .native as $native |
+    ($native.session_file | (type == "string" and length > 0 and (index("\u0000") | not)))
+    and ($native.argv | type == "array" and all(.[]; type == "string" and (index("\u0000") | not)))
+    and ((($native | has("user_argv")) | not) or ($native.user_argv | type == "array" and all(.[]; type == "string" and (index("\u0000") | not))))
+  end
+' <<<"$payload" >/dev/null 2>&1; then
+	exit 0
+fi
+
+IFS= read -r -d '' session_file < <("$JQ" -jr '.native.session_file, "\u0000"' <<<"$payload")
+argv=()
+while IFS= read -r -d '' arg; do
+	argv+=("$arg")
+done < <("$JQ" -jr '(.native.argv[] | ., "\u0000")' <<<"$payload")
+user_argv=()
+has_user_argv=0
+if "$JQ" -e '.native | has("user_argv")' <<<"$payload" >/dev/null; then
+	has_user_argv=1
+	while IFS= read -r -d '' arg; do
+		user_argv+=("$arg")
+	done < <("$JQ" -jr '(.native.user_argv[] | ., "\u0000")' <<<"$payload")
+fi
 
 [[ -n ${TMUX_PANE:-} ]] || exit 0
 command -v tmux >/dev/null 2>&1 || exit 0
@@ -33,6 +62,14 @@ quote() {
 	done
 	out+="$s'"
 	printf '%s' "$out"
+}
+
+secret_flag() {
+	local option="${1%%=*}"
+	while [[ $option == -* ]]; do
+		option="${option#-}"
+	done
+	[[ $option =~ [Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd] ]]
 }
 
 # A dispatcher-launched worker's own pi flags still carry /nix/store paths
@@ -54,24 +91,26 @@ role:*) exit 0 ;;
 esac
 
 if [[ -z $cmd ]]; then
-	[[ -n ${1:-} ]] || exit 0 # ephemeral (--no-session) — nothing to resume
-	session_file="$1"
-	shift
+	if ((has_user_argv)); then
+		set -- "${user_argv[@]}"
+	else
+		set -- "${argv[@]}"
 
-	# PI_USER_ARGC (set by the nix-config pi wrapper as $# before its `exec`,
-	# the count of trailing argv entries that are the caller's own) drops the
-	# wrapper-injected prefix (-e hook-bridge.ts --skill … --prompt-template
-	# …) from the replay: those are store paths that go stale after a rebuild
-	# once garbage-collected, and replaying them re-injects the CURRENT
-	# wrapper's flags a second time on top. Keep only the last PI_USER_ARGC
-	# entries of the argv the extension forwarded. Unset (no wrapper, or an
-	# older one) or malformed (non-integer, a leading zero other than the
-	# literal "0" — bash's own $# is never zero-padded, and a zero-padded
-	# value would be misread as octal by the arithmetic below, silently
-	# dropping real args — or larger than the available args) falls back to
-	# today's replay-all — never crash, never stamp garbage.
-	if [[ -n ${PI_USER_ARGC:-} && $PI_USER_ARGC =~ ^(0|[1-9][0-9]*)$ ]] && ((PI_USER_ARGC <= $#)); then
-		((PI_USER_ARGC < $#)) && shift $(($# - PI_USER_ARGC))
+		# PI_USER_ARGC (set by the nix-config pi wrapper as $# before its `exec`,
+		# the count of trailing argv entries that are the caller's own) drops the
+		# wrapper-injected prefix (-e hook-bridge.ts --skill … --prompt-template
+		# …) from the replay: those are store paths that go stale after a rebuild
+		# once garbage-collected, and replaying them re-injects the CURRENT
+		# wrapper's flags a second time on top. Keep only the last PI_USER_ARGC
+		# entries of the argv the extension forwarded. Otherwise unset (no wrapper, or an
+		# older one) or malformed (non-integer, a leading zero other than the
+		# literal "0" — bash's own $# is never zero-padded, and a zero-padded
+		# value would be misread as octal by the arithmetic below, silently
+		# dropping real args — or larger than the available args) falls back to
+		# today's replay-all — never crash, never stamp garbage.
+		if [[ -n ${PI_USER_ARGC:-} && $PI_USER_ARGC =~ ^(0|[1-9][0-9]*)$ ]] && ((PI_USER_ARGC <= $#)); then
+			((PI_USER_ARGC < $#)) && shift $(($# - PI_USER_ARGC))
+		fi
 	fi
 
 	# Replay pi's argv: keep every non-positional flag, dropping the launch
@@ -81,12 +120,16 @@ if [[ -z $cmd ]]; then
 	while (($#)); do
 		arg="$1"
 		shift
+		if secret_flag "$arg"; then
+			[[ $arg != *=* && -n ${1:-} ]] && shift
+			continue
+		fi
 		case "$arg" in
 		--)
 			# Everything after -- is positional by definition; drop it and stop.
 			break
 			;;
-		--session | --session-id | --fork | --api-key)
+		--session | --session-id | --fork)
 			[[ -n ${1:-} ]] && shift # their value is stale or must not be persisted
 			continue
 			;;
@@ -98,7 +141,7 @@ if [[ -z $cmd ]]; then
 			# secret-carrying forms; a kept value-taking option is self-contained,
 			# so keep the whole token.
 			case "${arg%%=*}" in
-			--session | --session-id | --fork | --api-key | --continue | --resume | --no-session) continue ;;
+			--session | --session-id | --fork | --continue | --resume | --no-session) continue ;;
 			esac
 			replay+=("$arg")
 			continue
