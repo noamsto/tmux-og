@@ -4,6 +4,15 @@ package main
 // renderers, so the local walk from their pane PIDs measures the renderer
 // rather than the work — this fetches the remote's own process table and
 // aggregates it with the same tree walk (#452).
+//
+// The ssh leg is the version-skew fallback: the remote's own poller stamps its
+// session and the bridge daemon ships that across as @bridge_res, so a rebuilt
+// remote is covered with no ssh at all (#693). This leg serves a remote that
+// has not been rebuilt — which is why the three shell workarounds
+// this file documents (the separator must start with a letter, getconf rather
+// than nproc, the whole process table over the wire) still live here and only
+// here. Deletable once every host in @remote_bridge_hosts arms the poller:
+// `tmux show -gv @og-res-tick` on its live server prints the command.
 
 import (
 	"bytes"
@@ -168,15 +177,92 @@ func remoteResourcesFor(hosts []string) map[string]remoteHostResources {
 	return out
 }
 
+// bridgeResStaleAfter is three of the daemon's 30s unchanged-row refreshes, so
+// one missed refresh never flaps a healthy mirror down onto the ssh leg.
+const bridgeResStaleAfter = 90 * time.Second
+
+// bridgeResMaxLen mirrors the daemon's sessionResMaxLen.
+const bridgeResMaxLen = 128
+
+// bridgeResFutureSlack absorbs the second the two clocks may disagree by from
+// granularity alone. Past it the stamp is a clock jump, not a fresh
+// measurement, and trusting it would pin the row fresh for as long as the jump
+// lasts.
+const bridgeResFutureSlack = 2 * time.Second
+
+// parseBridgeRes reads "<cpu> <mem> <cores> <epoch> <agents>". The epoch is
+// the daemon's own local clock, so it compares against ours directly. agents is
+// the agent commands the remote found in the session's tree, comma-joined, or
+// "-" for none. A zero row is a real measurement — an idle remote session — and
+// must parse; absent is the other state entirely, and its caller falls back.
+func parseBridgeRes(v string, now int64) (sessionResources, float64, bool) {
+	// The daemon's own cap: any local writer can set a session option, and the
+	// agents list would otherwise drive an unbounded merge on every rebuild.
+	if len(v) > bridgeResMaxLen {
+		return sessionResources{}, 0, false
+	}
+	f := strings.Fields(v)
+	if len(f) != 5 {
+		return sessionResources{}, 0, false
+	}
+	cpu, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return sessionResources{}, 0, false
+	}
+	mem, err := strconv.ParseFloat(f[1], 64)
+	if err != nil {
+		return sessionResources{}, 0, false
+	}
+	cores, err := strconv.ParseFloat(f[2], 64)
+	if err != nil {
+		return sessionResources{}, 0, false
+	}
+	stamped, err := strconv.ParseInt(f[3], 10, 64)
+	if err != nil {
+		return sessionResources{}, 0, false
+	}
+	age := now - stamped
+	if age > int64(bridgeResStaleAfter/time.Second) || age < -int64(bridgeResFutureSlack/time.Second) {
+		return sessionResources{}, 0, false
+	}
+	var agents []string
+	if f[4] != "-" {
+		agents = strings.Split(f[4], ",")
+	}
+	return sessionResources{cpuPct: cpu, memMB: mem, agentCmds: agents}, cores, true
+}
+
 // mergeRemoteResources overwrites each mirror session's CPU/mem with its remote
-// counterpart's. A host that has not answered marks the row unknown, so it
-// renders "-" rather than its local figures, which measure the renderer.
+// counterpart's: from the daemon's @bridge_res stamp where there is a fresh
+// one, and otherwise from the legacy ssh leg. A mirror neither covers marks the
+// row unknown, so it renders "-" rather than its local figures, which measure
+// the renderer.
 func mergeRemoteResources(sessions []sessionData) {
+	now := time.Now().Unix()
+	covered := make([]bool, len(sessions))
+	for i := range sessions {
+		if sessions[i].bridgeHost == "" {
+			continue
+		}
+		r, cores, ok := parseBridgeRes(sessions[i].bridgeRes, now)
+		if !ok {
+			continue
+		}
+		sessions[i].cpuPct = r.cpuPct
+		sessions[i].memMB = r.memMB
+		sessions[i].cores = cores
+		mergeAgentCmds(&sessions[i], r.agentCmds)
+		covered[i] = true
+	}
+
+	// Only hosts still owing an answer are worth probing. On a fleet of rebuilt
+	// remotes this is empty and the steady state costs nothing at all — not even
+	// bridgeSessionNames' local round-trip.
 	hosts := make([]string, 0, 2)
 	seen := make(map[string]bool, 2)
 	for i := range sessions {
 		h := sessions[i].bridgeHost
-		if h == "" || seen[h] {
+		if h == "" || covered[i] || seen[h] {
 			continue
 		}
 		seen[h] = true
@@ -190,7 +276,7 @@ func mergeRemoteResources(sessions []sessionData) {
 	remoteSess := bridgeSessionNames()
 	for i := range sessions {
 		host := sessions[i].bridgeHost
-		if host == "" {
+		if host == "" || covered[i] {
 			continue
 		}
 		res, ok := byHost[host]

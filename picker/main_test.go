@@ -71,8 +71,8 @@ func TestDecodeBridgeName(t *testing.T) {
 
 func TestSessionHeaderLabelsAndAlignment(t *testing.T) {
 	snap := panesSnapshot{
-		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1||",
-		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src",
+		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
+		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src|",
 	}
 	items := buildSessionItems(nil, snap, nil, "dark", false, "")
 	hdr := items[0]
@@ -119,8 +119,8 @@ func TestSessionHeaderLabelsAndAlignment(t *testing.T) {
 // when non-empty (#513).
 func TestSessionsBridgeProcOverride(t *testing.T) {
 	snap := panesSnapshot{
-		"%1|mirror-sess|0|/home/noams/git/tmux-og|1900000300|tp-g6|fish|1|claude|/srv/remote/repo",
-		"%2|local-sess|0|/home/noams/src|1900000200||bash|2||/ignored",
+		"%1|mirror-sess|0|/home/noams/git/tmux-og|1900000300|tp-g6|fish|1|claude|/srv/remote/repo|",
+		"%2|local-sess|0|/home/noams/src|1900000200||bash|2||/ignored|",
 	}
 	sessions := snap.sessions()
 	byName := map[string]sessionData{}
@@ -210,8 +210,8 @@ func TestSortSessionsForDisplay(t *testing.T) {
 // the flag sinkCurrentMatchBelowPeer reads once a query is typed.
 func TestBuildSessionItemsMarksCurrent(t *testing.T) {
 	snap := panesSnapshot{
-		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1||",
-		"%2|g6-tmux-og|0|/home/noams/src|1900000100|g6|fish|2||/home/noams/src",
+		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
+		"%2|g6-tmux-og|0|/home/noams/src|1900000100|g6|fish|2||/home/noams/src|",
 	}
 	items := buildSessionItems(nil, snap, nil, "dark", false, "tmux-og")
 	// items[0] is the column-header row.

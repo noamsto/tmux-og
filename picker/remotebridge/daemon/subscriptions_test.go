@@ -37,7 +37,7 @@ func TestSubscribeCmdIsOneQuotedToken(t *testing.T) {
 	// The formats are interpolated into a single-quoted argv token, so a quote
 	// inside one would need escaping the subscribe path does not do — and the
 	// control-mode parser rejects an unquoted '#{...}' outright.
-	for _, f := range []string{windowLabelFormat, agentStatusFormat} {
+	for _, f := range []string{windowLabelFormat, agentStatusFormat, sessionResFormat} {
 		if strings.ContainsAny(f, "'\"") {
 			t.Errorf("format must carry no quotes of its own: %q", f)
 		}
@@ -47,18 +47,22 @@ func TestSubscribeCmdIsOneQuotedToken(t *testing.T) {
 func TestSubscribeFormatsFallsBackToPollingOnError(t *testing.T) {
 	var issued []string
 	rt := replyRT(&issued, controlmode.Line{Kind: controlmode.Error})
-	if labels, agents := subscribeFormats(rt); labels || agents {
-		t.Errorf("an %%error must leave both shippers polling, got labels=%v agents=%v", labels, agents)
+	if labels, agents, _ := subscribeFormats(rt); labels || agents {
+		t.Errorf("an %%error must leave both polling shippers polling, got labels=%v agents=%v", labels, agents)
 	}
 
 	issued = nil
 	rt = replyRT(&issued, body(""))
-	labels, agents := subscribeFormats(rt)
-	if !labels || !agents {
-		t.Fatalf("accepted subscriptions must mark both subscribed, got labels=%v agents=%v", labels, agents)
+	labels, agents, res := subscribeFormats(rt)
+	if !labels || !agents || !res {
+		t.Fatalf("accepted subscriptions must all be marked subscribed, got labels=%v agents=%v res=%v", labels, agents, res)
 	}
-	if len(issued) != 2 || !strings.Contains(issued[0], "@*") || !strings.Contains(issued[1], "%*") {
-		t.Errorf("issued = %v, want a window then a pane subscription", issued)
+	// The third carries an EMPTY what, which is the session-scoped spelling —
+	// and the one field a unit test cannot prove tmux accepts, since a bad spec
+	// is dropped with no %error (see TestSessionResSubscriptionIsSessionScoped).
+	if len(issued) != 3 || !strings.Contains(issued[0], "@*") || !strings.Contains(issued[1], "%*") ||
+		!strings.Contains(issued[2], resSubName+"::") {
+		t.Errorf("issued = %v, want a window, a pane, then a session subscription", issued)
 	}
 }
 

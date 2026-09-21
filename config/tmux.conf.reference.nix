@@ -45,6 +45,7 @@
   picker-card-bin,
   picker-splash-bin,
   picker-statusline-bin,
+  picker-session-res-bin,
   # The two enrich icon dialects (I8). Derived by the caller, which also feeds
   # the raw set to the lib-enrich substitution that does not move.
   enrichIconsDoubled,
@@ -711,6 +712,7 @@
           "@og-backfill-tick"
           "@og-usage-tick"
           "@og-sweep-tick"
+          "@og-res-tick"
         ];
         # `-g` leaves the monitor's session NULL (cmd-set-option.c), which keeps
         # the hook alive for the server's whole life instead of dying with the
@@ -739,8 +741,15 @@
           # dispatches on: $1 is a session name at every other callsite, and a
           # session literally named "--sweep" would misroute itself forever.
           # That also leaves this command free of any tmux format, which
-          # tick-floor-conf-assertions enforces for all four.
-          ++ [(setHook "@og-sweep-tick" "OG_TICK_SWEEP=1 ${script.tmux-update-icons}/bin/tmux-update-icons")];
+          # tick-floor-conf-assertions enforces for every setter here.
+          ++ [(setHook "@og-sweep-tick" "OG_TICK_SWEEP=1 ${script.tmux-update-icons}/bin/tmux-update-icons")]
+          # Unconditional too, and deliberately flagless: the session-resource
+          # stamp is the REMOTE half of a feature whose local half (the
+          # picker's CPU/Mem columns) is opted into on a different machine, so
+          # a host with no remote.hosts of its own is exactly the host someone
+          # bridges to. Its command is a bare store path plus a flag, so it
+          # keeps the no-tmux-format invariant the sweep comment above states.
+          ++ [(setHook "@og-res-tick" "${picker-session-res-bin} --tick")];
         body = esc (lib.concatStringsSep " \\; " (clears ++ setters));
       in ''
         # -B needs tmux 3.8+, probed against the LIVE server (#407) since a
@@ -750,7 +759,7 @@
         # string is format-expanded before it is parsed (hooks_parse via
         # hooks_monitor_hook_cb), which is safe here only because Nix store
         # paths never contain '#'.
-        if-shell "tmux list-commands set-hook | grep -q -- -B" "${body}" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached'"
+        if-shell "tmux list-commands set-hook | grep -q -- -B" "${body}" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached, and remote session resources are not stamped at all'"
       ''
     }
 

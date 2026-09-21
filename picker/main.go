@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +23,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/noamsto/themestate"
-	"github.com/noamsto/tmux-og/picker/agentdetect/manifest"
+	"github.com/noamsto/tmux-og/picker/proctree"
 )
 
 // Build-time constants injected via icons_generated.go:
@@ -68,6 +67,11 @@ type sessionData struct {
 	memMB      float64 // total RSS in MiB across all descendant processes
 	resUnknown bool    // mirror whose host has not reported yet: render "-", never the renderer's own figures
 	cores      float64 // cores of the machine these processes run on; 0 means this one
+	// @bridge_res — "<cpu> <mem> <cores> <epoch> <agents>", written by the bridge daemon
+	// from the remote's own poller. The epoch is the daemon's LOCAL clock at the
+	// moment it stamped, so a reader compares it against its own with no skew
+	// correction, and it stops advancing when the bridge or the poller dies.
+	bridgeRes string
 }
 
 type windowData struct {
@@ -153,9 +157,11 @@ type panesSnapshot []string
 // appended last: a mirror pane's own pane_current_command is the bridge
 // renderer, not the remote's real command (#513). @bridge_session_path follows
 // it for the same reason: a mirror's own session_path is the launcher's cwd.
+// @bridge_res is appended after both, and every later field must go after it
+// too: each one is positional, so a mid-format insert shifts all the rest.
 func collectPanesSnapshot() panesSnapshot {
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{pane_id}|#{session_name}|#{window_index}|#{session_path}|#{session_last_attached}|#{@bridge_host}|#{pane_current_command}|#{pane_pid}|#{@bridge_proc}|#{@bridge_session_path}").Output()
+		"#{pane_id}|#{session_name}|#{window_index}|#{session_path}|#{session_last_attached}|#{@bridge_host}|#{pane_current_command}|#{pane_pid}|#{@bridge_proc}|#{@bridge_session_path}|#{@bridge_res}").Output()
 	if err != nil {
 		return nil
 	}
@@ -176,12 +182,13 @@ func (snap panesSnapshot) sessions() []sessionData {
 		procs      []string
 		panePIDs   []int
 		bridgeHost string
+		bridgeRes  string
 	}
 	m := make(map[string]*sessInfo)
 
 	for _, line := range snap {
 		parts := strings.Split(line, "|")
-		if len(parts) != 10 {
+		if len(parts) != 11 {
 			continue
 		}
 		name, path, actStr, proc := parts[1], parts[3], parts[4], parts[6]
@@ -203,7 +210,9 @@ func (snap panesSnapshot) sessions() []sessionData {
 
 		si, ok := m[name]
 		if !ok {
-			si = &sessInfo{path: path, activity: act, seen: make(map[string]bool), bridgeHost: parts[5]}
+			// @bridge_res is session-scoped, so the first pane's copy is the
+			// session's, not an approximation of it.
+			si = &sessInfo{path: path, activity: act, seen: make(map[string]bool), bridgeHost: parts[5], bridgeRes: parts[10]}
 			m[name] = si
 		}
 		if act > si.activity {
@@ -227,6 +236,7 @@ func (snap panesSnapshot) sessions() []sessionData {
 			procs:      si.procs,
 			panePIDs:   si.panePIDs,
 			bridgeHost: si.bridgeHost,
+			bridgeRes:  si.bridgeRes,
 		})
 	}
 	return sessions
@@ -499,106 +509,17 @@ type sessionResources struct {
 	agentCmds []string
 }
 
-// psArgs is the process table both the local and the remote leg read. -A
-// (POSIX all-processes), not -e: BSD ps on macOS reads -e as "show
-// environment". No --no-headers either: it's GNU-only and errors on BSD ps —
-// the header row it leaves behind is skipped by aggregateResources, where
-// "PID" parses to 0. The trailing comm column is what lets an agent be found
-// by its process tree rather than by its pane's foreground command; a table
-// without it (an older remote, a test fixture) simply reports no tree agents.
-var psArgs = []string{"-Ao", "pid,ppid,pcpu,rss,comm"}
+// psArgs is the process table both the local and the remote leg read.
+var psArgs = proctree.PSArgs
 
-// agentCommands is the set of process names the agent manifests match — the
-// same list @AGENT_COMMANDS compiles into the shell scripts and agent-detect
-// reads, so the three cannot diverge. Loaded once from the embedded manifests;
-// a load failure yields an empty set, which degrades to the previous
-// pane-command-only behaviour.
-var agentCommands = sync.OnceValue(func() map[string]bool {
-	manifests, err := manifest.Load()
-	if err != nil {
-		return map[string]bool{}
-	}
-	set := make(map[string]bool, len(manifests))
-	for _, m := range manifests {
-		for _, c := range m.MatchCommands {
-			set[c] = true
-		}
-	}
-	return set
-})
-
-// procName reduces a ps comm field to the name the manifests and iconMap are
-// keyed by: BSD ps prints the executable's full path, and a makeWrapper nix
-// build names it `.foo-wrapped`.
-func procName(comm string) string {
-	name := filepath.Base(strings.TrimSpace(comm))
-	if m := wrappedProcRe.FindStringSubmatch(name); m != nil {
-		return m[1]
-	}
-	return name
-}
-
-// aggregateResources sums CPU% and RSS over each root PID's whole process
-// tree, given one `ps psArgs` table. Pure, and the only place the tree walk
-// lives: the remote leg feeds it a table fetched over ssh instead.
+// aggregateResources wraps proctree.Aggregate: sessionResources' fields are
+// unexported, so a type alias to proctree.Totals isn't possible, and this
+// converts between the two.
 func aggregateResources(rootPIDs map[string][]int, psOut string) map[string]sessionResources {
-	children := make(map[int][]int)
-	type procInfo struct {
-		cpu  float64
-		rss  int64 // KiB
-		comm string
-	}
-	procs := make(map[int]*procInfo)
-
-	for _, line := range strings.Split(strings.TrimSpace(psOut), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		pid, _ := strconv.Atoi(fields[0])
-		ppid, _ := strconv.Atoi(fields[1])
-		cpu, _ := strconv.ParseFloat(fields[2], 64)
-		rss, _ := strconv.ParseInt(fields[3], 10, 64)
-		if pid <= 0 {
-			continue
-		}
-		info := &procInfo{cpu: cpu, rss: rss}
-		if len(fields) > 4 {
-			info.comm = procName(strings.Join(fields[4:], " "))
-		}
-		procs[pid] = info
-		children[ppid] = append(children[ppid], pid)
-	}
-
-	agents := agentCommands()
-	result := make(map[string]sessionResources, len(rootPIDs))
-	for key, pids := range rootPIDs {
-		var totalCPU float64
-		var totalRSS int64
-		seen := make(map[string]bool)
-		var found []string
-		for _, root := range pids {
-			queue := []int{root}
-			for len(queue) > 0 {
-				cur := queue[0]
-				queue = queue[1:]
-				if p, ok := procs[cur]; ok {
-					totalCPU += p.cpu
-					totalRSS += p.rss
-					if p.comm != "" && agents[p.comm] && !seen[p.comm] {
-						seen[p.comm] = true
-						found = append(found, p.comm)
-					}
-				}
-				queue = append(queue, children[cur]...)
-			}
-		}
-		sort.Strings(found)
-		result[key] = sessionResources{
-			cpuPct:    totalCPU,
-			memMB:     float64(totalRSS) / 1024.0,
-			agentCmds: found,
-		}
+	totals := proctree.Aggregate(rootPIDs, psOut)
+	result := make(map[string]sessionResources, len(totals))
+	for key, t := range totals {
+		result[key] = sessionResources{cpuPct: t.CPUPct, memMB: t.MemMB, agentCmds: t.AgentCmds}
 	}
 	return result
 }
@@ -970,7 +891,11 @@ func (snap panesSnapshot) paneMap() map[string]paneMapping {
 	m := make(map[string]paneMapping)
 	for _, line := range snap {
 		parts := strings.Split(line, "|")
-		if len(parts) != 10 {
+		// Must track collectPanesSnapshot's field count in lockstep with
+		// sessions(): a stale count here drops every pane from the map rather
+		// than spoiling one column, and the agent state silently empties
+		// across the whole picker.
+		if len(parts) != 11 {
 			continue
 		}
 		paneID := strings.TrimPrefix(parts[0], "%")

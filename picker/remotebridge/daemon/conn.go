@@ -207,6 +207,10 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 	// Stamped before the first dial, so the badge appears within one status
 	// tick of the drop rather than after the backoff.
 	setBridgeState(cfg, bridgeStateDisconnected)
+	// Figures measured over a link that is gone describe nothing live. Dropped
+	// at the source, so the picker's freshness rule gets its "not disconnected"
+	// condition from the absent stamp rather than from reading a second option.
+	clearBridgeRes(cfg)
 	bo := cfg.retrySchedule()
 	start := bo.Now()
 	for attempt := 1; ; attempt++ {
@@ -474,6 +478,13 @@ func clearBridgeState(cfg Config) {
 		return
 	}
 	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_state")
+}
+
+func clearBridgeRes(cfg Config) {
+	if cfg.LocalSess == "" {
+		return
+	}
+	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
 }
 
 // stopped reports whether the user has asked the daemon to shut down. A nil

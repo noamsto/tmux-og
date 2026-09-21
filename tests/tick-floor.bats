@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Live proof for #603's tick floor: the four set-hook -g -B monitors in
+# Live proof for #603's tick floor: the set-hook -g -B monitors in
 # config/tmux.conf.nix fire on the server's own clock, independent of any
 # attached client -- which tick-floor-conf-assertions (flake.nix) can only
 # assert about the emitted TEXT, not about tmux's actual runtime behaviour.
@@ -22,6 +22,22 @@ setup() {
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/og-enrich-lock"
 	mkdir -p "$CLAUDE_STATUS_DIR/panes"
+
+	if [ "$(uname -s)" = Darwin ]; then
+		# The build sandbox cannot exec Apple's /bin/ps, and the store's adv_cmds
+		# ps refuses the rss keyword without an entitlement (rc 1, column
+		# dropped). Its pid/ppid/pcpu/comm still work, so the stand-in
+		# adds a constant rss: the cases here assert routing and agents, never a
+		# memory figure.
+		cat >"$BATS_TEST_TMPDIR/ps" <<-EOF
+			#!$(command -v bash)
+			set -o pipefail
+			$(command -v ps) -Ao pid,ppid,pcpu,comm | awk 'NR == 1 { print "PID PPID %CPU RSS COMM"; next }
+				{ pid = \$1; ppid = \$2; cpu = \$3; \$1 = \$2 = \$3 = ""; sub(/^ +/, ""); print pid, ppid, cpu, 1024, \$0 }'
+		EOF
+		chmod +x "$BATS_TEST_TMPDIR/ps"
+		export OG_PS_BIN="$BATS_TEST_TMPDIR/ps"
+	fi
 
 	t new-session -d -s s -x 80 -y 24 -c "$PWD"
 }
@@ -49,7 +65,7 @@ teardown() {
 		wait "$SLEEPER_PID" 2>/dev/null || true
 	fi
 	t kill-server 2>/dev/null || true
-	# Case 5 runs a second, unwrapped server on its own socket/TMUX_TMPDIR;
+	# The upstream-assumption test runs a second, unwrapped server on its own socket/TMUX_TMPDIR;
 	# belt-and-suspenders in case an assertion failure skipped its own cleanup.
 	[ -n "${SCRATCH_SOCK:-}" ] && tmux -S "$SCRATCH_SOCK" kill-server 2>/dev/null
 	return 0
@@ -75,15 +91,19 @@ file_exists() { [ -e "$1" ]; }
 # The tick stamps carry a per-server suffix (#705), so match by prefix.
 stamp_exists() { compgen -G "$1*" >/dev/null; }
 file_absent() { [ ! -e "$1" ]; }
+# res_stamped <session-id>: @og_session_res is "<cpu> <mem> <cores> <tick> <agents|->".
+res_stamped() {
+	[[ $(t display-message -p -t "$1" '#{@og_session_res}') =~ ^[0-9]+\.[0-9]\ [0-9]+\ [0-9]+\ [0-9]+\ [a-z0-9,.-]+$ ]]
+}
 pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 
-@test "all four tick hooks register via show-hooks -g -B" {
+@test "all five tick hooks register via show-hooks -g -B" {
 	# show-hooks -g alone prints a monitor's COMMAND with no indication it is
 	# a monitor at all (tests/tmux-next38-readiness.bats); -B is the one
 	# listing form that reports the subscription itself.
 	run t show-hooks -g -B
 	[ "$status" -eq 0 ]
-	for name in @og-pr-tick @og-backfill-tick @og-usage-tick @og-sweep-tick; do
+	for name in @og-pr-tick @og-backfill-tick @og-usage-tick @og-sweep-tick @og-res-tick; do
 		[[ $output == *"$name::"* ]]
 	done
 }
@@ -106,6 +126,50 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	wait_for 20 stamp_exists "$OG_ENRICH_CACHE_DIR/.last-backfill-tick"
 	# Cleanup lives in teardown (CTL_PID): a wait_for timeout above aborts
 	# the test here under errexit and must not skip it.
+}
+
+@test "session resources stay unstamped with zero clients attached" {
+	# The poller's gate: nobody is bridged here, so nothing reads the stamp.
+	# Two monitor periods is long enough for a pass to have run if it would.
+	sleep 11
+	[ -z "$(t display-message -p -t s '#{@og_session_res}')" ]
+}
+
+@test "session resources stamp each session's own figures with only a control-mode client attached" {
+	# "2" is a default-style session name that is also a pane index. The
+	# poller's current session is the one the control client is attached to —
+	# the mirrored session, in production — so with the bridge on "10"'s
+	# three-pane window, `set-option -t 2` resolves to pane 2 there and writes
+	# "10" with "2"'s figures (measured: permanently, with "2" never stamped).
+	# "2" runs an agent, so its figures carry "claude" and the misroute shows.
+	# The same copy-of-bash-named-claude as the sweep test below, for the same
+	# darwin reason.
+	cp -L "$(command -v bash)" "$BATS_TEST_TMPDIR/claude"
+	chmod +x "$BATS_TEST_TMPDIR/claude"
+	t new-session -d -s 10 -x 80 -y 24 -c "$PWD"
+	t split-window -t 10
+	t split-window -t 10
+	t new-session -d -s 2 -x 80 -y 24 -c "$PWD" -- "$BATS_TEST_TMPDIR/claude" -c 'read x'
+	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t 10; }
+
+	local id10 id2 v10 v2 seen2=0 i
+	id10=$(t display-message -p -t 10: '#{session_id}')
+	id2=$(t display-message -p -t 2: '#{session_id}')
+	for id in $(t list-sessions -F '#{session_id}'); do
+		wait_for 20 res_stamped "$id"
+	done
+	# Several monitor periods, so every session's pass has run more than once.
+	for ((i = 0; i < 16; i++)); do
+		v10=$(t display-message -p -t "$id10" '#{@og_session_res}')
+		v2=$(t display-message -p -t "$id2" '#{@og_session_res}')
+		[[ $v10 != *claude* ]] || {
+			echo "session 10 carries session 2's figures: $v10" >&2
+			return 1
+		}
+		[[ $v2 == *claude* ]] && seen2=1
+		sleep 1
+	done
+	[ "$seen2" = 1 ]
 }
 
 @test "sweep arms pipe-pane on an agent pane with zero clients attached" {

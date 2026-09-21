@@ -66,6 +66,7 @@ var RequiredScripts = []string{
 var RequiredBin = []string{
 	"og-remote-bridge-ctl",
 	"tmux-enrich-card",
+	"tmux-session-resources",
 	"tmux-splash",
 	"tmux-statusline",
 }

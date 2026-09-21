@@ -460,7 +460,7 @@ wait_for_client() {
 	run t show-hooks -g -B
 	[ "$status" -eq 0 ]
 	local stored_monitors="$output" monitor_name
-	for monitor_name in @og-pr-tick @og-backfill-tick @og-usage-tick @og-sweep-tick; do
+	for monitor_name in @og-pr-tick @og-backfill-tick @og-usage-tick @og-sweep-tick @og-res-tick; do
 		grep -qF "'${monitor_name}::" "$conf" || continue
 		if [[ $stored_monitors != *"$monitor_name"* ]]; then
 			printf 'monitor hook %s registered in config but not stored by tmux (show-hooks -g -B)\n' "$monitor_name" >&2
