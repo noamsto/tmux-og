@@ -25,6 +25,7 @@ setup() {
 	export FAKE_TMUX_STATE="$STATE"
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/lock"
 	export OG_ENRICH_CACHE_DIR="$BATS_TEST_TMPDIR/cache"
+	unset TMUX # stamps are suffixed per server when set; these tests expect none
 
 	# Fake tmux: list-windows -a -F <fmt> cats a fixture file the test writes
 	# ($STATE/windowlist) verbatim — it doesn't interpret the format string,
@@ -325,4 +326,13 @@ windowlist_line() {
 	run bash "$STAMP" w10 "$BATS_TEST_TMPDIR/repo10" main GH-999
 	[ "$status" -eq 0 ]
 	[ "$(cat "$STATE/opt_w10_@issue_backfill_tries")" = "1" ]
+}
+
+@test "backfill tick gate: each tmux server keeps its own stamp (#705)" {
+	TMUX=/tmp/sockA,1,0 run bash "$STAMP" --backfill
+	[ "$status" -eq 0 ]
+	TMUX=/tmp/sockB,1,0 run bash "$STAMP" --backfill
+	[ "$status" -eq 0 ]
+	[ -f "$OG_ENRICH_CACHE_DIR/.last-backfill-tick.srv_tmp_sockA" ]
+	[ -f "$OG_ENRICH_CACHE_DIR/.last-backfill-tick.srv_tmp_sockB" ]
 }

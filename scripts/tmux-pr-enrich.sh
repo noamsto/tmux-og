@@ -215,7 +215,7 @@ branch_cache_key() {
 # repo was first seen pending.
 pending_marker() {
 	branch_sha1 "$1"
-	REPLY="$ENRICH_CACHE_DIR/$REPLY.checks-pending"
+	REPLY="$ENRICH_CACHE_DIR/$REPLY.checks-pending$ENRICH_SRV"
 }
 
 # arm_pending_marker REPO_ID — create the repo's pending marker if it has none.
@@ -227,7 +227,7 @@ arm_pending_marker() {
 	pending_marker "$1"
 	[[ -f $REPLY ]] && return
 	printf '%s\n' "$EPOCHSECONDS" >"$REPLY"
-	rm -f "$ENRICH_CACHE_DIR/.last-pending-tick"
+	rm -f "$ENRICH_CACHE_DIR/.last-pending-tick$ENRICH_SRV"
 }
 
 # fetch_branch_pr DIR BRANCH [KEY]  → echoes cache JSON path, refreshing via
@@ -478,7 +478,7 @@ enrich_repo_group() {
 # checks-only pass: it runs just the repos whose pending marker is due.
 run_full_pass() {
 	local pending_only="${1:-0}"
-	local refresh_checks=0 check_tick="$ENRICH_CACHE_DIR/.last-check-tick"
+	local refresh_checks=0 check_tick="$ENRICH_CACHE_DIR/.last-check-tick$ENRICH_SRV"
 	if ((! pending_only)) && { [[ ! -f $check_tick ]] || ((EPOCHSECONDS - $(file_mtime "$check_tick") >= CHECK_REFRESH_SECONDS)); }; then
 		refresh_checks=1
 		touch "$check_tick"
@@ -532,7 +532,7 @@ run_full_pass() {
 	# keep the gate dispatching passes forever. A capped pass may have skipped a
 	# live repo, so it removes nothing.
 	if ((! truncated)); then
-		for m in "$ENRICH_CACHE_DIR"/*.checks-pending; do
+		for m in "$ENRICH_CACHE_DIR"/*.checks-pending"$ENRICH_SRV"; do
 			[[ -f $m && -z ${live[$m]:-} ]] && rm -f "$m"
 		done
 	fi
@@ -562,7 +562,7 @@ run_full_pass() {
 	# refresh ahead so the gate stops launching passes that find nothing due.
 	# arm_pending_marker drops it the moment a new repo goes pending.
 	if ((pending_only && ! fast)); then
-		touch -t "$(printf '%(%Y%m%d%H%M.%S)T' $((EPOCHSECONDS + CHECK_REFRESH_SECONDS)))" "$ENRICH_CACHE_DIR/.last-pending-tick"
+		touch -t "$(printf '%(%Y%m%d%H%M.%S)T' $((EPOCHSECONDS + CHECK_REFRESH_SECONDS)))" "$ENRICH_CACHE_DIR/.last-pending-tick$ENRICH_SRV"
 	fi
 }
 
@@ -606,13 +606,15 @@ if [[ -n $target && -n $branch ]]; then
 fi
 
 # --- tick mode: cheap gate, then daemonize a full pass ---
-last_tick="$ENRICH_CACHE_DIR/.last-tick"
+last_tick="$ENRICH_CACHE_DIR/.last-tick$ENRICH_SRV"
 if ((force == 0)) && [[ -f $last_tick ]]; then
 	tick_age=$((EPOCHSECONDS - $(file_mtime "$last_tick")))
 	if ((tick_age < REFRESH_SECONDS)); then
-		# compgen is a builtin, so a tick with nothing pending still forks nothing.
-		compgen -G "$ENRICH_CACHE_DIR/*.checks-pending" >/dev/null || exit 0
-		pending_tick="$ENRICH_CACHE_DIR/.last-pending-tick"
+		# Glob-and-test keeps a tick with nothing pending fork-free. Not compgen:
+		# nixpkgs' non-interactive bash is built without it.
+		pending_markers=("$ENRICH_CACHE_DIR"/*.checks-pending"$ENRICH_SRV")
+		[[ -e ${pending_markers[0]} ]] || exit 0
+		pending_tick="$ENRICH_CACHE_DIR/.last-pending-tick$ENRICH_SRV"
 		if [[ -f $pending_tick ]] && ((EPOCHSECONDS - $(file_mtime "$pending_tick") < PENDING_CHECK_SECONDS)); then
 			exit 0
 		fi
