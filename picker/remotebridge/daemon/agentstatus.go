@@ -235,12 +235,10 @@ func newAgentShipper(localSess string, skew int64) *agentShipper {
 // reconnect follows an outage of unknown length (#482).
 func (a *agentShipper) reskew(skew int64) { a.skew = skew }
 
-// localServerPID resolves and caches the LOCAL tmux server's own PID, for the
-// `server=` ownership field a panes/ file needs to survive a second server's
-// boot-time prune (#676). Cached once resolved successfully — it names this
-// process's own server, which does not change while the daemon runs — and
-// retried on the next stamp pass until then, so a transient failure does not
-// disable the stamp for the daemon's life.
+// localServerPID returns the LOCAL tmux server's own PID, the `server=`
+// ownership stamp that keeps a second server's boot-time prune off a panes/
+// file. Cached once resolved (it cannot change while the daemon runs); an
+// unusable answer is not cached, so the next stamp pass retries.
 func (a *agentShipper) localServerPID(cfg Config) string {
 	if a.localPID != "" {
 		return a.localPID

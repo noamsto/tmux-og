@@ -574,10 +574,8 @@ fi
 transcript_line=""
 [[ -n $transcript_path ]] && transcript_line=$'\n'"transcript=$transcript_path"
 
-# Server PID stamp: which tmux server wrote this file, so a second server's
-# config-load prune can tell a live different server's state from its own
-# stale leftovers. Omitted (not written empty) when unresolved, matching the
-# unseen_line/transcript_line append-only-if-set shape.
+# Owning tmux server's pid: lets claude_prune_stale_state protect this file
+# from another server's boot. Omitted when unresolved.
 server_line=""
 [[ -n $server_pid ]] && server_line=$'\n'"server=$server_pid"
 
