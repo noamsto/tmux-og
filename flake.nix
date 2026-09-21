@@ -378,7 +378,7 @@
           # center's line-count assertions on macOS.
           notify-router-tests =
             pkgs.runCommand "notify-router-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
