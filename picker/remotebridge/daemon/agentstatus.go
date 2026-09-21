@@ -284,6 +284,11 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 	}
 	local := cfg.LocalPanes()
 	live := make(map[string]bool, len(rows))
+	// Resolved once per pass, outside the per-row loop: while the pid is
+	// unresolved LocalTmuxOut forks tmux, and calling it per changed row made
+	// that one fork per row instead of one per pass (#712). Cached once it
+	// succeeds, so the steady state is unchanged.
+	localPID := a.localServerPID(cfg)
 
 	for _, r := range rows {
 		localPane, ok := local[r.pane]
@@ -319,8 +324,8 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			a.removeFiles(id)
 		} else {
 			body := fmt.Sprintf("state=%s\ntimestamp=%d\nsession=%s\n", r.state, r.ts+a.skew, a.sess)
-			if pid := a.localServerPID(cfg); pid != "" {
-				body += "server=" + pid + "\n"
+			if localPID != "" {
+				body += "server=" + localPID + "\n"
 			}
 			if r.unseen {
 				body += "unseen=1\n"
@@ -340,8 +345,8 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			a.removeScreenFile(id)
 		} else {
 			body := fmt.Sprintf("state=%s\ntimestamp=%d\n", r.screenState, r.screenTS+a.skew)
-			if pid := a.localServerPID(cfg); pid != "" {
-				body += "server=" + pid + "\n"
+			if localPID != "" {
+				body += "server=" + localPID + "\n"
 			}
 			if r.screenFlags != "" {
 				// screenFlags is the writer's space-joined "name=count"

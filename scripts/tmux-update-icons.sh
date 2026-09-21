@@ -9,6 +9,8 @@
 source @lib_icons@
 # shellcheck source=/dev/null
 source @lib_claude@
+# shellcheck source=/dev/null
+source @lib_log@
 
 # Derived at build time from the shipped manifests' match_commands (agentCommands
 # in config/tmux.conf.nix), so a manifest can't ship without being swept.
@@ -247,8 +249,18 @@ main() {
 	# label, so a restored pane that reused a dead pane's id doesn't inherit its
 	# name/task. No-op after the first tick of each server (marker-gated).
 	# SERVER_PID lets the sweep protect a live different server's state via the
-	# panes/<id> server= ownership stamp instead of mtime alone.
-	claude_prune_stale_state "$SERVER_START" "$SERVER_PID"
+	# panes/<id> server= ownership stamp instead of mtime alone. With it
+	# unresolved the sweep would silently fall back to mtime alone — the #676
+	# hazard, since mtime cannot tell a dead server's leftovers from a live
+	# server's fresh state under the shared CLAUDE_STATUS_DIR. Fail safe: skip
+	# the destructive sweep entirely rather than risk deleting live state, and
+	# log it. The lookup is retried every tick and no marker is written while it
+	# fails, so a stale reap is only delayed, never lost — the safer trade.
+	if [[ -n $SERVER_PID ]]; then
+		claude_prune_stale_state "$SERVER_START" "$SERVER_PID"
+	else
+		log_event status event prune_skipped reason "unresolved server pid"
+	fi
 
 	# session_id is $N and cannot contain '|'; session_name can. Key every
 	# window map by id:index, and parse names as the remainder after the first
@@ -292,8 +304,12 @@ main() {
 	# @window_ai_name is a plain user-settable option, and the row's only canary
 	# (pane_active) sits before it, so its copy is s/[|]/ /-wrapped like the
 	# task's: a '|' would otherwise shift every later field left (#714).
-	# @remux_relaunch is "claude --resume <uuid>" — no '|', so it stays a fixed
-	# middle field before the free-form task.
+	# @remux_relaunch is s/[|]/ /-wrapped like its neighbours: both producers
+	# ("claude --resume <uuid>" and the carousel's store path + pane index)
+	# reject a '|', but it is a plain user-settable option and an unwrapped '|'
+	# would shift the fields after it left, corrupting
+	# @window_has_agent/@window_manual_name/@window_naming_dirty/@window_task
+	# (#712, folded from #717's review of #714).
 	# The icon/ago/rename/session fields are our own writes read back for
 	# change-gating: glyphs, #[fg=…] codes, spaces, and hex colors — never '|'.
 	# @crew_name (harness-stamped codename) and @crew_seen (our shadow of it) are
@@ -382,7 +398,7 @@ main() {
 		*" $proc "*) ;;
 		*) win_procs[$wkey]="${existing:+$existing }$proc" ;;
 		esac
-	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
+	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
 
 	arm_agent_detect
 

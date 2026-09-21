@@ -254,6 +254,31 @@ func TestAgentShipperRetriesServerPID(t *testing.T) {
 	}
 }
 
+// The local server PID lookup sits OUTSIDE the per-row loop: while it cannot be
+// resolved it forks tmux display-message, so hoisting bounds that to once per
+// stamp pass rather than once per changed row (#712).
+func TestAgentShipperResolvesServerPIDOncePerPass(t *testing.T) {
+	dir := t.TempDir()
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+	asked := 0
+	cfg.LocalTmuxOut = func(args ...string) (string, error) {
+		asked++
+		return "", errors.New("unresolvable in this pass")
+	}
+
+	// Two mirrored, changed rows — one hook-driven panes/ write, one
+	// screen-scraped screen/ write: the two sites that used to call per row.
+	a.apply(cfg, []paneStatus{
+		{pane: "%1", proc: "claude", state: "waiting", ts: 1700000000},
+		{pane: "%2", proc: "pi", screenState: "processing", screenTS: 1700000000},
+	})
+	if asked != 1 {
+		t.Errorf("LocalTmuxOut called %d times in one pass, want 1 (hoisted)", asked)
+	}
+}
+
 // The local pane runs a renderer, so its own command tells the icons nothing.
 // @bridge_proc carries the remote's — stamped for every mirrored pane, agent or
 // not, and only when it changes (else it is a fork per pane per second).
