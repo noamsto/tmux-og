@@ -902,9 +902,10 @@ func Run(cfg Config) error {
 	// Ship the remote's agent state into the local claude-status tree, its
 	// window labels onto the mirror windows as @bridge_* options, and the remote
 	// session's own CPU/mem figures onto the mirror session.
-	agents = newAgentShipper(cfg.LocalSess, remoteClockSkew(rt))
+	skew := remoteClockSkew(rt)
+	agents = newAgentShipper(cfg.LocalSess, skew)
 	labels = newLabelShipper()
-	res = newResShipper()
+	res = newResShipper(pin.id, skew)
 	// Subscriptions are per control client, so this runs once per attach — here
 	// for the first one, and at the end of repair for every reconnect. The two
 	// shippers with a poll mode keep polling if the remote refuses.
@@ -972,8 +973,8 @@ func Run(cfg Config) error {
 			if v, ok := subscriptionValue(l, agentSubName); ok {
 				agents.queue(v)
 			}
-			if v, ok := subscriptionValue(l, resSubName); ok {
-				res.queue(v)
+			if v, ok := subscriptionValue(l, resSubName); ok && len(l.Args) > 1 {
+				res.queue(l.Args[1], v)
 			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
@@ -1206,7 +1207,9 @@ func Run(cfg Config) error {
 		// relied on for the repaint; and output produced while disconnected was
 		// dropped by the remote, not buffered.
 		reseedPanes(reg, router, rt, activeWin, "after reattach")
-		agents.reskew(remoteClockSkew(rt))
+		skew := remoteClockSkew(rt)
+		agents.reskew(skew)
+		res.reskew(skew)
 		// Before the re-subscribe below, whose re-report is the only thing that
 		// puts the figures back: reattach dropped the stamp, and a shipper that
 		// still remembered writing it would suppress the write as unchanged.

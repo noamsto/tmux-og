@@ -165,5 +165,5 @@ func tickHookIfShell(cfg *config.Config, p *paths.Paths) string {
 	parts = append(parts, setHook("@og-res-tick", p.Bin["tmux-session-resources"]+" --tick"))
 
 	body := strings.ReplaceAll(strings.Join(parts, " \\; "), `"`, `\"`)
-	return fmt.Sprintf(`if-shell "tmux list-commands set-hook | grep -q -- -B" "%s" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached'"`, body)
+	return fmt.Sprintf(`if-shell "tmux list-commands set-hook | grep -q -- -B" "%s" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached, and remote session resources are not stamped at all'"`, body)
 }

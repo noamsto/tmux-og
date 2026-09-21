@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,12 +21,27 @@ import (
 // Unquoted: it is a subscription format, and the call site owns the quoting.
 const sessionResFormat = "#{@og_session_res}"
 
+// sessionResTickMaxAge is how old the remote's own tick may be, on our clock,
+// before a report is dropped as a dead poller's leftover. The subscription
+// reports the option's current value on every subscribe, and an option outlives
+// the poller that wrote it — so a remote that stopped running one (downgraded,
+// or a server that lost the hook) would otherwise be stamped fresh on every
+// attach and every reconnect. A live poller's value is at most one 5s pass old
+// when it arrives.
+const sessionResTickMaxAge = 30 * time.Second
+
 // sessionResRefresh is the floor at which an UNCHANGED row is re-stamped. The
 // epoch field the daemon writes is a local receive time the picker ages
 // against, so a mirror whose figures genuinely hold still would otherwise age
 // out of that window and read as dead. Comfortably above mainLoopTickInterval,
 // so the re-stamp is a floor and not a race with the loop's own wake-up.
 const sessionResRefresh = 30 * time.Second
+
+// sessionResMaxLen caps the value before the regex runs, the length cap every
+// carried @bridge_* value has: the agents list is otherwise unbounded, and the
+// picker merges it into a proc list per session on every 1s rebuild. Four
+// manifest names and the numbers fit in well under half of it.
+const sessionResMaxLen = 128
 
 // sessionResRe matches the whole value or nothing, the identity-field policy
 // every non-display @bridge_* value here follows: a truncated number is a
@@ -45,6 +61,15 @@ var sessionResRe = regexp.MustCompile(`^[0-9]+(\.[0-9])? [0-9]+(\.[0-9])? [0-9]+
 // (including an empty one when the remote carries no poller), and repair's
 // re-subscribe is what recovers it after an outage.
 type resShipper struct {
+	// session is the pinned remote session's id. The subscription is
+	// session-scoped against the control client's CURRENT session, so during a
+	// session-pin excursion (#396) it reports another session's value; a report
+	// naming any other id is that, and is ignored. Empty accepts every report,
+	// the posture sessionPin itself takes when it could not read the id.
+	session string
+	// skew is localNow - remoteNow, for aging the remote's tick on our clock.
+	skew int64
+
 	// pending is the raw value the last notification carried, applied by flush
 	// rather than by the dispatch that queued it.
 	pending     string
@@ -61,12 +86,21 @@ type resShipper struct {
 	subscribed bool
 }
 
-func newResShipper() *resShipper { return &resShipper{} }
+func newResShipper(session string, skew int64) *resShipper {
+	return &resShipper{session: session, skew: skew}
+}
 
-// queue records the value a %subscription-changed line carried. Pure: it is
-// called from dispatch, which may itself be running inside a reply reader's
-// drain, so it must not read the remote or fork tmux.
-func (r *resShipper) queue(v string) {
+// reskew re-points the shipper at a freshly measured clock offset.
+func (r *resShipper) reskew(skew int64) { r.skew = skew }
+
+// queue records the value a %subscription-changed line carried, from the
+// session id that line names. Pure: it is called from dispatch, which may
+// itself be running inside a reply reader's drain, so it must not read the
+// remote or fork tmux.
+func (r *resShipper) queue(session, v string) {
+	if r.session != "" && session != r.session {
+		return
+	}
 	r.pending, r.havePending = v, true
 }
 
@@ -94,13 +128,20 @@ func (r *resShipper) flush(cfg Config) {
 		cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
 		return
 	}
-	if !sessionResRe.MatchString(v) {
+	if len(v) > sessionResMaxLen || !sessionResRe.MatchString(v) {
 		// Dropped whole, leaving the previous stamp standing: a malformed value
 		// is evidence about the remote's poller, not about the figures, and
 		// stale-but-real beats plausibly-wrong.
 		return
 	}
 	f := strings.Fields(v)
+	if tick, _ := strconv.ParseInt(f[3], 10, 64); time.Now().Unix()-(tick+r.skew) > int64(sessionResTickMaxAge/time.Second) {
+		// No poller moved this value recently: it is a leftover, and stamping it
+		// with our receive time would present it as a live reading. Dropped,
+		// not unset — a report this stale arrives only on subscribe, after
+		// reattach has already cleared the stamp.
+		return
+	}
 	figures := strings.Join([]string{f[0], f[1], f[2], f[4]}, " ")
 	if figures == r.figures && time.Since(r.lastWrite) < sessionResRefresh {
 		// This is what makes the remote's per-pass tick free locally: it moves

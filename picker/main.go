@@ -67,7 +67,7 @@ type sessionData struct {
 	memMB      float64 // total RSS in MiB across all descendant processes
 	resUnknown bool    // mirror whose host has not reported yet: render "-", never the renderer's own figures
 	cores      float64 // cores of the machine these processes run on; 0 means this one
-	// @bridge_res — "<cpu> <mem> <cores> <epoch>", written by the bridge daemon
+	// @bridge_res — "<cpu> <mem> <cores> <epoch> <agents>", written by the bridge daemon
 	// from the remote's own poller. The epoch is the daemon's LOCAL clock at the
 	// moment it stamped, so a reader compares it against its own with no skew
 	// correction, and it stops advancing when the bridge or the poller dies.

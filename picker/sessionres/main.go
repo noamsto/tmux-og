@@ -35,7 +35,7 @@ func main() {
 		return
 	}
 
-	panes, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}|#{pane_pid}").Output()
+	panes, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_id}|#{pane_pid}").Output()
 	if err != nil {
 		return
 	}
@@ -79,9 +79,9 @@ func parseControlClients(out string) bool {
 	return false
 }
 
-// parsePanePIDs groups every pane's pid by session, the root set proctree walks
-// from. Split at the LAST "|": pane_pid is the trailing field, so a session
-// name carrying a pipe still parses rather than losing its pid to the name.
+// parsePanePIDs groups every pane's pid by session id, the root set proctree
+// walks from. Keyed by id, never name, because the id is what setOptionArgv
+// targets. Split at the LAST "|": pane_pid is the trailing field.
 func parsePanePIDs(out string) map[string][]int {
 	roots := make(map[string][]int)
 	for _, line := range strings.Split(out, "\n") {
@@ -131,8 +131,13 @@ func stampValue(t proctree.Totals, cores int, now int64) string {
 }
 
 // setOptionArgv batches every session's stamp into one tmux argv, the way the
-// bridge's own shippers batch theirs. Sessions are sorted by name so the argv
-// is deterministic: map order would otherwise make it untestable.
+// bridge's own shippers batch theirs. rows is keyed by session id ($N), never
+// name: set-option's -t is a target-pane, and a bare name like "0" or "2" — the
+// names tmux hands out by default — also resolves as a pane index in the
+// current window, so a name-keyed stamp lands on whichever session is current
+// (measured: `set-option -t 0` from run-shell wrote session zed). The argv is
+// exec'd without a shell, so the "$" needs no quoting. Sorted so the argv is
+// deterministic: map order would otherwise make it untestable.
 func setOptionArgv(rows map[string]string) []string {
 	if len(rows) == 0 {
 		return nil

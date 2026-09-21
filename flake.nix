@@ -1220,7 +1220,7 @@
             backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
             usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
             sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${tmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
-            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-generate}/bin/tmux-session-resources --tick\\\"'";
+            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-session-res-bin} --tick\\\"'";
           in
             pkgs.runCommand "tick-floor-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep pkgs.gawk pkgs.gnused pkgs.coreutils];
@@ -1374,7 +1374,7 @@
             # binary, whose only inputs are the process icons and the splash
             # tips, so neither enrichEnable nor agentUsageEnable moves its
             # store path and both configs name the same one.
-            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-generate}/bin/tmux-session-resources --tick\\\"'";
+            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-session-res-bin} --tick\\\"'";
           in
             pkgs.runCommand "tick-floor-disabled-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];

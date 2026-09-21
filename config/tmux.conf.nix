@@ -981,6 +981,9 @@
   tmuxConf = generatedConf;
 
   # --- Wrapped tmux binary ---
+  # pkgs.ps because tmux-session-resources forks `ps` from a monitor hook, whose
+  # PATH is the server's own — and a headless tmux-startup.service sets none, on
+  # exactly the hosts a bridge reads that stamp from.
   tmux-wrapped = pkgs.symlinkJoin {
     name = "tmux-wrapped";
     paths = [tmuxPkg];
@@ -988,7 +991,7 @@
     postBuild = ''
       wrapProgram $out/bin/tmux \
         --add-flags "-f ${tmuxConf}" \
-        --prefix PATH : ${lib.makeBinPath ([tmuxPkg] ++ scripts ++ [picker-generate pkgs.bash pkgs.lazygit pkgs.yazi pkgs.btop pkgs.zoxide pkgs.jq pkgs.curl pkgs.util-linux pkgs.coreutils pkgs.xdg-utils pkgs.chafa pkgs.socat] ++ lib.optional (carousel-toggle != null) carousel-toggle ++ lib.optional (prdash != null) prdash)}
+        --prefix PATH : ${lib.makeBinPath ([tmuxPkg] ++ scripts ++ [picker-generate pkgs.bash pkgs.lazygit pkgs.yazi pkgs.btop pkgs.zoxide pkgs.jq pkgs.curl pkgs.util-linux pkgs.coreutils pkgs.ps pkgs.xdg-utils pkgs.chafa pkgs.socat] ++ lib.optional (carousel-toggle != null) carousel-toggle ++ lib.optional (prdash != null) prdash)}
     '';
     meta.mainProgram = "tmux";
   };
@@ -997,4 +1000,4 @@ in
     og dispatcher partition mismatch (see ogVerbSpec/ogInternal in config/tmux.conf.nix):
       in scriptNames but not in ogVerbSpec or ogInternal: ${lib.concatStringsSep ", " ogPartitionUndecided}
       in ogVerbSpec/ogInternal but not in scriptNames: ${lib.concatStringsSep ", " ogPartitionUnknown}
-  ''; {inherit tmux-wrapped tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf picker-generate;}
+  ''; {inherit tmux-wrapped tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf picker-session-res-bin;}

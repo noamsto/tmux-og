@@ -759,7 +759,7 @@
         # string is format-expanded before it is parsed (hooks_parse via
         # hooks_monitor_hook_cb), which is safe here only because Nix store
         # paths never contain '#'.
-        if-shell "tmux list-commands set-hook | grep -q -- -B" "${body}" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached'"
+        if-shell "tmux list-commands set-hook | grep -q -- -B" "${body}" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached, and remote session resources are not stamped at all'"
       ''
     }
 

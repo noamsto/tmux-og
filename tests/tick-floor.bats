@@ -75,6 +75,10 @@ file_exists() { [ -e "$1" ]; }
 # The tick stamps carry a per-server suffix (#705), so match by prefix.
 stamp_exists() { compgen -G "$1*" >/dev/null; }
 file_absent() { [ ! -e "$1" ]; }
+# res_stamped <session-id>: @og_session_res is "<cpu> <mem> <cores> <tick> <agents|->".
+res_stamped() {
+	[[ $(t display-message -p -t "$1" '#{@og_session_res}') =~ ^[0-9]+\.[0-9]\ [0-9]+\ [0-9]+\ [0-9]+\ [a-z0-9,.-]+$ ]]
+}
 pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 
 @test "all five tick hooks register via show-hooks -g -B" {
@@ -106,6 +110,50 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	wait_for 20 stamp_exists "$OG_ENRICH_CACHE_DIR/.last-backfill-tick"
 	# Cleanup lives in teardown (CTL_PID): a wait_for timeout above aborts
 	# the test here under errexit and must not skip it.
+}
+
+@test "session resources stay unstamped with zero clients attached" {
+	# The poller's gate: nobody is bridged here, so nothing reads the stamp.
+	# Two monitor periods is long enough for a pass to have run if it would.
+	sleep 11
+	[ -z "$(t display-message -p -t s '#{@og_session_res}')" ]
+}
+
+@test "session resources stamp each session's own figures with only a control-mode client attached" {
+	# "2" is a default-style session name that is also a pane index. The
+	# poller's current session is the one the control client is attached to —
+	# the mirrored session, in production — so with the bridge on "10"'s
+	# three-pane window, `set-option -t 2` resolves to pane 2 there and writes
+	# "10" with "2"'s figures (measured: permanently, with "2" never stamped).
+	# "2" runs an agent, so its figures carry "claude" and the misroute shows.
+	# The same copy-of-bash-named-claude as the sweep test below, for the same
+	# darwin reason.
+	cp -L "$(command -v bash)" "$BATS_TEST_TMPDIR/claude"
+	chmod +x "$BATS_TEST_TMPDIR/claude"
+	t new-session -d -s 10 -x 80 -y 24 -c "$PWD"
+	t split-window -t 10
+	t split-window -t 10
+	t new-session -d -s 2 -x 80 -y 24 -c "$PWD" -- "$BATS_TEST_TMPDIR/claude" -c 'read x'
+	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t 10; }
+
+	local id10 id2 v10 v2 seen2=0 i
+	id10=$(t display-message -p -t 10: '#{session_id}')
+	id2=$(t display-message -p -t 2: '#{session_id}')
+	for id in $(t list-sessions -F '#{session_id}'); do
+		wait_for 20 res_stamped "$id"
+	done
+	# Several monitor periods, so every session's pass has run more than once.
+	for ((i = 0; i < 16; i++)); do
+		v10=$(t display-message -p -t "$id10" '#{@og_session_res}')
+		v2=$(t display-message -p -t "$id2" '#{@og_session_res}')
+		[[ $v10 != *claude* ]] || {
+			echo "session 10 carries session 2's figures: $v10" >&2
+			return 1
+		}
+		[[ $v2 == *claude* ]] && seen2=1
+		sleep 1
+	done
+	[ "$seen2" = 1 ]
 }
 
 @test "sweep arms pipe-pane on an agent pane with zero clients attached" {

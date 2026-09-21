@@ -311,6 +311,12 @@ func TestParseBridgeRes(t *testing.T) {
 	if _, _, ok := parseBridgeRes("1 1 1 "+strconv.FormatInt(now+1, 10)+" -", now); !ok {
 		t.Error("a stamp one second ahead is granularity, not a jump")
 	}
+	// Any local writer can set a session option; an unbounded agent list would
+	// drive the per-session merge on every rebuild.
+	long := "1 1 1 " + strconv.FormatInt(now, 10) + " " + strings.Repeat("a,", 64) + "a"
+	if _, _, ok := parseBridgeRes(long, now); ok {
+		t.Errorf("a %d-byte stamp must be rejected whole", len(long))
+	}
 }
 
 // The stamp the bridge daemon ships is the primary path: a covered mirror must

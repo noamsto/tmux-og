@@ -11,7 +11,8 @@ package main
 // remote that has not been rebuilt — which is why the three shell workarounds
 // this file documents (the separator must start with a letter, getconf rather
 // than nproc, the whole process table over the wire) still live here and only
-// here. Deletable once every host in @remote_bridge_hosts reports a stamp.
+// here. Deletable once every host in @remote_bridge_hosts arms the poller:
+// `tmux show -gv @og-res-tick` on its live server prints the command.
 
 import (
 	"bytes"
@@ -180,6 +181,9 @@ func remoteResourcesFor(hosts []string) map[string]remoteHostResources {
 // one missed refresh never flaps a healthy mirror down onto the ssh leg.
 const bridgeResStaleAfter = 90 * time.Second
 
+// bridgeResMaxLen mirrors the daemon's sessionResMaxLen.
+const bridgeResMaxLen = 128
+
 // bridgeResFutureSlack absorbs the second the two clocks may disagree by from
 // granularity alone. Past it the stamp is a clock jump, not a fresh
 // measurement, and trusting it would pin the row fresh for as long as the jump
@@ -192,6 +196,11 @@ const bridgeResFutureSlack = 2 * time.Second
 // "-" for none. A zero row is a real measurement — an idle remote session — and
 // must parse; absent is the other state entirely, and its caller falls back.
 func parseBridgeRes(v string, now int64) (sessionResources, float64, bool) {
+	// The daemon's own cap: any local writer can set a session option, and the
+	// agents list would otherwise drive an unbounded merge on every rebuild.
+	if len(v) > bridgeResMaxLen {
+		return sessionResources{}, 0, false
+	}
 	f := strings.Fields(v)
 	if len(f) != 5 {
 		return sessionResources{}, 0, false

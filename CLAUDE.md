@@ -148,7 +148,7 @@ A row is given up only once clipping can no longer save it (#686). `total_long` 
 
 ### Session Targeting Gotcha
 
-Numeric session names (e.g., "10") cause ambiguity with `tmux set -t '10'` when piped through `tmux source -`. The Go TUI targets sessions by name (`tmux switch-client -t <name>`; zoxide suggestions use `=name` exact-match when creating a new session). Direct `tmux set` calls (as in update-icons) work fine with session names.
+Numeric session names (e.g., "10") cause ambiguity with `tmux set -t '10'` when piped through `tmux source -`. The Go TUI targets sessions by name (`tmux switch-client -t <name>`; zoxide suggestions use `=name` exact-match when creating a new session). Direct `tmux set` calls (as in update-icons) work fine with session names — except a numeric one: `set-option -t` takes a target-pane, so a bare `0` also resolves as pane index 0 of the current window, and from a hook or `run-shell` context the write lands on whichever session is current (measured, #693). Target by session id (`-t '$N'`) when the name may be numeric.
 
 **`show-options` does not accept the `=` exact-match prefix.** `has-session`, `switch-client` and `kill-session` all take `-t "=name"`; `show-options -t "=name"` answers `no such session`, and `-q` turns that into an empty string indistinguishable from an unset option — so a script can stamp an option with `set-option -t "$name"` and never read it back. That silently disabled `og-remote-open`'s mirror dedup, forking a `-remote` session on every re-open (#474). Read session user-options with a bare `-t "$name"` (an exact match still beats a prefix match), or via `display-message -p` / `list-sessions -F`.
 
@@ -189,7 +189,9 @@ the ssh `ps` leg survives only as the version-skew fallback
   (every 5s, `--tick`) on every tmux-og host, and a pass runs **only while the
   server has a control-mode client attached** — i.e. only while something is
   bridged to it, so an unbridged host pays nothing for a column nobody reads. It
-  stamps every session's own `@og_session_res` with
+  stamps every session's own `@og_session_res`, targeting it by id (`-t '$N'`,
+  never the name: `set-option -t` takes a target-pane, and a name like `0` also
+  resolves as a pane index in the current window) with
   `"<cpu> <mem> <cores> <tick> <agents>"`, where `agents` is the tree's agent
   commands comma-joined, or `-` for none. Cores is `runtime.NumCPU()`, which is
   what retires `getconf`. The values are quantised to a coarse fixed precision and
@@ -205,7 +207,13 @@ the ssh `ps` leg survives only as the version-skew fallback
   where the **empty `what` field is the session-scoped spelling**, reported back
   as `%subscription-changed og_res $N - - - : <value>`. It deduplicates on
   every field but the tick, so the per-pass tick costs no local write, and
-  re-stamps an unchanged row only once its 30s refresh floor has elapsed.
+  re-stamps an unchanged row only once its 30s refresh floor has elapsed. Three
+  reports are dropped whole: one over 128 bytes (every carried value is
+  length-capped), one naming a session other than the pinned one (the
+  subscription follows the control client's CURRENT session, so a session-pin
+  excursion reports someone else's), and one whose tick, corrected by the
+  measured clock skew, is over 30s old — the subscription reports the option on
+  every subscribe, and an option outlives the poller that wrote it.
 - **A malformed `-B` spec is not reportable.**
   `cmd_refresh_client_update_subscription` silently removes the subscription and
   returns with no `%error`, and this shipper has no poll backstop to mask one —
@@ -220,7 +228,9 @@ the ssh `ps` leg survives only as the version-skew fallback
   bridge is up" condition without the picker reading a second option.
 - **Precedence is per session, not per host.** The picker reads `@bridge_res`
   out of the `list-panes -a` snapshot it already takes and treats it as fresh
-  when it parses and its epoch is within 90s (three of the daemon's refreshes);
+  when it parses and its epoch is no more than 90s old (three of the daemon's
+  refreshes) and no more than 2s in the future (past that it is a clock jump,
+  not a measurement);
   a session with a fresh stamp keeps it, and the ssh path is probed only for
   hosts with at least one uncovered session, filling only those sessions. Two
   self-heals fall out of that epoch alone — a poller that stops while the bridge
@@ -251,8 +261,10 @@ the ssh `ps` leg survives only as the version-skew fallback
   swallowed it and left every mirror at 0% / 0M. Core count comes from
   `getconf _NPROCESSORS_ONLN`, never `nproc` — coreutils-only, absent on macOS.
   The leg needs nothing new on the remote's PATH, `tmux` and `ps` only. Sunset
-  condition: it is deletable once every host in `@remote_bridge_hosts` reports a
-  stamp.
+  condition: it is deletable once every host in `@remote_bridge_hosts` arms the
+  poller — `tmux show -gv @og-res-tick` on that host's live server prints the
+  `tmux-session-resources --tick` command. A host rebuilt from this revision
+  whose resident server predates 3.8 (#407) arms nothing until it restarts.
 - **That leg never blocks the render.** `remoteResourcesFor` returns what is
   cached and kicks a background refresh (`remoteResourceTTL`, 10s — an ssh
   round-trip where the local leg costs a fork). A host already in flight is

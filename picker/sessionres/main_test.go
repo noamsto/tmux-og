@@ -36,18 +36,13 @@ func TestParsePanePIDs(t *testing.T) {
 	}{
 		{
 			name: "two sessions",
-			out:  "work|101\nwork|102\nscratch|203\n",
-			want: map[string][]int{"work": {101, 102}, "scratch": {203}},
-		},
-		{
-			name: "session name containing a pipe",
-			out:  "a|b|404\n",
-			want: map[string][]int{"a|b": {404}},
+			out:  "$0|101\n$0|102\n$3|203\n",
+			want: map[string][]int{"$0": {101, 102}, "$3": {203}},
 		},
 		{
 			name: "unusable pids skipped",
-			out:  "work|0\nwork|-3\nwork|abc\nwork|7\n",
-			want: map[string][]int{"work": {7}},
+			out:  "$0|0\n$0|-3\n$0|abc\n$0|7\n",
+			want: map[string][]int{"$0": {7}},
 		},
 		{
 			name: "empty",
@@ -122,14 +117,14 @@ func TestStampValue(t *testing.T) {
 
 func TestSetOptionArgv(t *testing.T) {
 	rows := map[string]string{
-		"work":    "1.0 10 8 17",
-		"scratch": "0.0 0 8 17",
-		"alpha":   "2.5 20 8 17",
+		"$2": "1.0 10 8 17 -",
+		"$1": "0.0 0 8 17 -",
+		"$0": "2.5 20 8 17 claude",
 	}
 	want := []string{
-		"set-option", "-t", "alpha", resOption, "2.5 20 8 17", ";",
-		"set-option", "-t", "scratch", resOption, "0.0 0 8 17", ";",
-		"set-option", "-t", "work", resOption, "1.0 10 8 17",
+		"set-option", "-t", "$0", resOption, "2.5 20 8 17 claude", ";",
+		"set-option", "-t", "$1", resOption, "0.0 0 8 17 -", ";",
+		"set-option", "-t", "$2", resOption, "1.0 10 8 17 -",
 	}
 	got := setOptionArgv(rows)
 	if !reflect.DeepEqual(got, want) {

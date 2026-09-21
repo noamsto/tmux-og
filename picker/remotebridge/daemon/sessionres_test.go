@@ -20,18 +20,24 @@ import (
 // unchanged-row suppression, and what reset forgets are all invisible to a
 // case that starts fresh.
 func TestResShipperFlush(t *testing.T) {
+	// The remote's clock runs skew seconds behind ours, so a live tick is
+	// now-skew: fresh once skew-corrected, and far enough from our own clock
+	// that a shipper stamping the remote tick instead of its receive time
+	// fails the receive-time check below.
+	const skew = 1000
+	tick := func(age int64) string { return strconv.FormatInt(time.Now().Unix()-skew-age, 10) }
 	// figures is every field but the tick, in the order the daemon writes them
 	// around its own receive time.
-	const (
-		figures = "12.5 340 32 claude"
-		row     = "12.5 340 32 1789727000 claude"
-	)
+	const figures = "12.5 340 32 claude"
+	row := "12.5 340 32 " + tick(0) + " claude"
 
 	steps := []struct {
 		name string
-		// queue is the value a notification carried; nothing is queued when
-		// silent is set, which is the loop's own tick re-entering.
+		// queue is the value a notification carried, from session from (the
+		// pinned "$0" when empty); nothing is queued when silent is set, which
+		// is the loop's own tick re-entering.
 		queue  string
+		from   string
 		silent bool
 		// reset stands in for repair, and age for the refresh floor elapsing.
 		reset bool
@@ -50,13 +56,13 @@ func TestResShipperFlush(t *testing.T) {
 			// The remote's poller moves its tick every pass by design; that is
 			// what makes it observable, and it must cost nothing here.
 			name:  "same figures, newer tick, inside the floor",
-			queue: "12.5 340 32 1789727005 claude",
+			queue: "12.5 340 32 " + tick(-5) + " claude",
 		},
 		{
 			// The agent field is a figure, not a tick: a restored agent appearing
 			// in the tree must reach the picker without waiting out the floor.
 			name:  "an agent change inside the floor writes",
-			queue: "12.5 340 32 1789727005 -",
+			queue: "12.5 340 32 " + tick(-5) + " -",
 			stamp: "12.5 340 32 -",
 		},
 		{
@@ -76,29 +82,48 @@ func TestResShipperFlush(t *testing.T) {
 		},
 		{
 			name:  "a letter drops whole",
-			queue: "12.5 34O 32 1789727000 claude",
+			queue: "12.5 34O 32 " + tick(0) + " claude",
 		},
 		{
 			name:  "a pipe drops whole",
-			queue: "12.5|340 32 1789727000 claude",
+			queue: "12.5|340 32 " + tick(0) + " claude",
 		},
 		{
 			// The pre-agent-field shape: nothing this revision emits, and a
 			// four-field row the picker would misread.
 			name:  "a short row drops whole",
-			queue: "12.5 340 32 1789727000",
+			queue: "12.5 340 32 " + tick(0),
 		},
 		{
 			name:  "two decimals drop whole",
-			queue: "12.55 340 32 1789727000 claude",
+			queue: "12.55 340 32 " + tick(0) + " claude",
 		},
 		{
 			name:  "a markup-bearing agent drops whole",
-			queue: "12.5 340 32 1789727000 #[fg=red]",
+			queue: "12.5 340 32 " + tick(0) + " #[fg=red]",
 		},
 		{
 			name:  "an empty agent in the list drops whole",
-			queue: "12.5 340 32 1789727000 claude,",
+			queue: "12.5 340 32 " + tick(0) + " claude,",
+		},
+		{
+			// Regex-shaped but unbounded: the agents list is the one field with
+			// no natural length, and the picker merges it per session per tick.
+			name:  "an over-long agent list drops whole",
+			queue: "12.5 340 32 " + tick(0) + " " + strings.Repeat("a,", 64) + "a",
+		},
+		{
+			// A leftover from a poller that stopped: the subscription reports it
+			// on every subscribe, and stamping it would present it as live.
+			name:  "a stale tick drops whole",
+			queue: "1.0 1 32 " + tick(int64(sessionResTickMaxAge/time.Second)+5) + " -",
+		},
+		{
+			// A session-pin excursion: the session-scoped subscription reports
+			// whatever session the control client was switched to.
+			name:  "another session's report is ignored",
+			queue: "99.0 999 32 " + tick(0) + " -",
+			from:  "$7",
 		},
 		{
 			// Dropped, not unset: the previous stamp is still the last real
@@ -133,7 +158,7 @@ func TestResShipperFlush(t *testing.T) {
 			return nil
 		},
 	}
-	r := newResShipper()
+	r := newResShipper("$0", skew)
 	var lastStamp int64
 
 	for _, s := range steps {
@@ -142,7 +167,11 @@ func TestResShipperFlush(t *testing.T) {
 				r.reset()
 			}
 			if !s.silent {
-				r.queue(s.queue)
+				from := s.from
+				if from == "" {
+					from = "$0"
+				}
+				r.queue(from, s.queue)
 			}
 			if s.age > 0 {
 				r.lastWrite = r.lastWrite.Add(-s.age)
@@ -185,8 +214,8 @@ func TestResShipperFlush(t *testing.T) {
 				t.Fatalf("receive time %q: %v", f[3], err)
 			}
 			// The daemon's own clock, never the remote's tick — every fixture
-			// above carries a tick far in the future, so a shipper that passed
-			// one through fails here.
+			// above carries a tick skew seconds behind it, so a shipper that
+			// passed one through fails here.
 			if delta := time.Now().Unix() - now; delta < 0 || delta > 5 {
 				t.Errorf("receive time %d is %ds off the local clock", now, delta)
 			}
@@ -262,7 +291,7 @@ func TestSessionResSubscriptionIsSessionScoped(t *testing.T) {
 		t.Fatalf("initial report = %q, %v; want an empty value for the unset option", v, ok)
 	}
 
-	const want = "12.5 340 32 1789727000 claude"
+	want := "12.5 340 32 " + strconv.FormatInt(time.Now().Unix(), 10) + " claude"
 	if out, err := tmux("set-option", "-t", "w", "@og_session_res", want).CombinedOutput(); err != nil {
 		t.Fatalf("set @og_session_res: %v\n%s", err, out)
 	}

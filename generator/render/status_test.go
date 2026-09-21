@@ -68,7 +68,7 @@ func TestTickHookIfShellJoinAndEscaping(t *testing.T) {
 		`set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \"/store/au/bin/tmux-agent-usage --tick\"' \; ` +
 		`set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \"OG_TICK_SWEEP=1 /store/ui/bin/tmux-update-icons\"' \; ` +
 		`set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \"/store/sr/bin/tmux-session-resources --tick\"'" ` +
-		`"display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached'"`
+		`"display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached, and remote session resources are not stamped at all'"`
 	if got != want {
 		t.Fatalf("tickHookIfShell =\n%s\nwant\n%s", got, want)
 	}
