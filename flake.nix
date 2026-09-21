@@ -1870,7 +1870,7 @@
               # grep makes that guard fail closed and the suite would pass or
               # fail for the wrong reason. util-linux supplies `script`, which
               # case 5 uses to give a real attach a pty.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux (mkTmux pkgs)];
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep pkgs.ps pkgs.util-linux (mkTmux pkgs)];
               TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";

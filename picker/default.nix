@@ -72,9 +72,18 @@ in
     subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "sessionres" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl"];
     # -s -w strip debug info for a smaller binary + faster startup. psBin pins
     # tmux-session-resources' ps: it runs from a monitor hook, whose PATH is the
-    # server's own — a headless tmux-startup.service sets none, and the nix
-    # sandbox has no ps at all.
-    ldflags = ["-s" "-w" "-X main.psBin=${pkgs.ps}/bin/ps"];
+    # server's own — a headless tmux-startup.service sets none. Darwin takes
+    # Apple's /bin/ps: the store's adv_cmds ps refuses the rss keyword ("requires
+    # entitlement") and exits 1 with the column dropped.
+    ldflags = [
+      "-s"
+      "-w"
+      "-X main.psBin=${
+        if pkgs.stdenv.hostPlatform.isDarwin
+        then "/bin/ps"
+        else "${pkgs.ps}/bin/ps"
+      }"
+    ];
     # Binary name matches pname (Go module produces "picker" by default)
     postInstall = ''
       mv $out/bin/picker $out/bin/tmux-picker-generate

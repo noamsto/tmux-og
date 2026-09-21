@@ -23,6 +23,21 @@ setup() {
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/og-enrich-lock"
 	mkdir -p "$CLAUDE_STATUS_DIR/panes"
 
+	if [ "$(uname -s)" = Darwin ]; then
+		# The build sandbox cannot exec Apple's /bin/ps, and the store's adv_cmds
+		# ps refuses the rss keyword without an entitlement (rc 1, column
+		# dropped). Its pid/ppid/pcpu/comm still work, so the stand-in
+		# adds a constant rss: the cases here assert routing and agents, never a
+		# memory figure.
+		cat >"$BATS_TEST_TMPDIR/ps" <<-EOF
+			#!$(command -v bash)
+			ps -Ao pid,ppid,pcpu,comm | awk 'NR == 1 { print "PID PPID %CPU RSS COMM"; next }
+				{ pid = \$1; ppid = \$2; cpu = \$3; \$1 = \$2 = \$3 = ""; sub(/^ +/, ""); print pid, ppid, cpu, 1024, \$0 }'
+		EOF
+		chmod +x "$BATS_TEST_TMPDIR/ps"
+		export OG_PS_BIN="$BATS_TEST_TMPDIR/ps"
+	fi
+
 	t new-session -d -s s -x 80 -y 24 -c "$PWD"
 }
 
@@ -112,34 +127,6 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	# the test here under errexit and must not skip it.
 }
 
-# DIAG-TEMP
-res_diag() {
-	{
-		echo "DIAG stuck session $1: [$(t display-message -p -t "$1" '#{@og_session_res}')]"
-		echo "DIAG hook: $(t show-options -gv @og-res-tick)"
-		echo "DIAG clients: $(t list-clients -F '#{client_control_mode}' | tr '\n' ' ')"
-		echo "DIAG all: $(t list-sessions -F '#{session_id}=[#{@og_session_res}]' | tr '\n' ' ')"
-		local bin p
-		bin=$(t show-options -gv @og-res-tick | grep -o '/nix/store/[^ "\\]*tmux-session-resources')
-		echo "DIAG bin=$bin"
-		for p in /nix/store/*-ps-*/bin/ps /bin/ps; do
-			[ -x "$p" ] || continue
-			echo "DIAG ps=$p"
-			local a out rc
-			for a in "-Ao pid,ppid,pcpu,rss,comm" "-Ao pid,ppid,pcpu,rss" "-Ao pid,ppid" "-A -o pid" "-ax -o pid" "-p $$ -o pid" "-o pid" ""; do
-				rc=0
-				# shellcheck disable=SC2086
-				out=$("$p" $a 2>&1) || rc=$?
-				echo "DIAG ps [$a] rc=$rc lines=$(printf '%s\n' "$out" | wc -l) first=[$(printf '%s\n' "$out" | head -2 | tr '\n' '~')]"
-			done
-		done
-		echo "DIAG run:"
-		TMUX="$(t display-message -p '#{socket_path},#{pid},0')" "$bin" --tick 2>&1
-		echo "DIAG run rc=$?"
-		echo "DIAG after: $(t list-sessions -F '#{session_id}=[#{@og_session_res}]' | tr '\n' ' ')"
-	} >&3
-}
-
 @test "session resources stay unstamped with zero clients attached" {
 	# The poller's gate: nobody is bridged here, so nothing reads the stamp.
 	# Two monitor periods is long enough for a pass to have run if it would.
@@ -168,10 +155,7 @@ res_diag() {
 	id10=$(t display-message -p -t 10: '#{session_id}')
 	id2=$(t display-message -p -t 2: '#{session_id}')
 	for id in $(t list-sessions -F '#{session_id}'); do
-		wait_for 20 res_stamped "$id" || {
-			res_diag "$id"
-			return 1
-		}
+		wait_for 20 res_stamped "$id"
 	done
 	# Several monitor periods, so every session's pass has run more than once.
 	for ((i = 0; i < 16; i++)); do

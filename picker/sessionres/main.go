@@ -21,10 +21,23 @@ import (
 
 const resOption = "@og_session_res"
 
-// psBin is set at link time to a store path (picker/default.nix): the monitor
-// hook this runs from inherits the server's PATH, which a headless
-// tmux-startup.service leaves empty. "ps" is the go-build fallback.
+// psBin is set at link time (picker/default.nix): the monitor hook this runs
+// from inherits the server's PATH, which a headless tmux-startup.service leaves
+// empty. It is the store's procps on Linux and Apple's own /bin/ps on darwin,
+// because the store's adv_cmds ps lacks the entitlement its rss keyword needs.
+// "ps" is the go-build fallback.
 var psBin = "ps"
+
+// psEnv overrides psBin, for the darwin build sandbox: it cannot exec /bin/ps,
+// so a test supplies a stand-in there.
+const psEnv = "OG_PS_BIN"
+
+func psPath() string {
+	if p := os.Getenv(psEnv); p != "" {
+		return p
+	}
+	return psBin
+}
 
 func main() {
 	if len(os.Args) != 2 || os.Args[1] != "--tick" {
@@ -49,7 +62,7 @@ func main() {
 		return
 	}
 
-	ps, err := exec.Command(psBin, proctree.PSArgs...).Output()
+	ps, err := exec.Command(psPath(), proctree.PSArgs...).Output()
 	if err != nil {
 		return
 	}

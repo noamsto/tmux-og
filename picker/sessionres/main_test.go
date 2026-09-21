@@ -137,3 +137,14 @@ func TestSetOptionArgv(t *testing.T) {
 		t.Errorf("setOptionArgv(empty) = %#v, want nil", nilArgv)
 	}
 }
+
+func TestPSPath(t *testing.T) {
+	t.Setenv(psEnv, "")
+	if got := psPath(); got != psBin {
+		t.Errorf("psPath() = %q, want the linked %q", got, psBin)
+	}
+	t.Setenv(psEnv, "/tmp/shim-ps")
+	if got := psPath(); got != "/tmp/shim-ps" {
+		t.Errorf("psPath() = %q, want the override", got)
+	}
+}

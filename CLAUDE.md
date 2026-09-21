@@ -197,6 +197,14 @@ the ssh `ps` leg survives only as the version-skew fallback
   what retires `getconf`. The values are quantised to a coarse fixed precision and
   never pre-rendered: `formatCPU`/`formatMem` stay the sole owners of display
   precision.
+- **The poller's `ps` is pinned at link time, and differs by platform.** Linux
+  links the store's procps; darwin links Apple's `/bin/ps`, because the store's
+  adv_cmds `ps` refuses the `rss` keyword ("requires entitlement"), drops the
+  column and exits 1 — which the poller reads as a failed pass and stamps
+  nothing. The Nix darwin build sandbox in turn cannot exec `/bin/ps`, so the
+  darwin arm of `tests/tick-floor.bats` points `OG_PS_BIN` at a stand-in over the
+  store `ps` (constant rss); the linked-`/bin/ps` path itself is not exercised
+  by any check.
 - **The `tick` (the remote's epoch seconds) exists only so the value changes
   every pass.** A tmux option outlives the process that wrote it, so no amount
   of re-reading one can distinguish a live poller from a dead one — the absence
