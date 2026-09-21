@@ -36,16 +36,20 @@ start_fake_tmux_server() {
 	FAKE_TMUX_PID=$!
 }
 
-# Fake tmux on PATH. $1 is has-session's exit status (0 = session exists).
-# display-message (claude_progress_emit) fails closed; the helper never aborts.
+# Fake tmux on PATH. $1 is has-session's exit status (0 = session exists); $2,
+# when set, is what `display-message -p '#{pid}'` prints (this server's own
+# pid). Every other display-message (claude_progress_emit's #{pane_tty}) fails
+# closed, and so does the pid query when $2 is unset.
 install_fake_tmux() {
-	local has_session="${1:-1}"
+	local has_session="${1:-1}" own_pid="${2:-}" pid_case=""
+	[[ -n $own_pid ]] && pid_case="*'#{pid}'*) echo $own_pid ;;"
 	FAKEBIN="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$FAKEBIN"
 	cat >"$FAKEBIN/tmux" <<-EOF
 		#!/bin/sh
 		case "\$*" in
 		*"has-session"*) exit $has_session ;;
+		$pid_case
 		*) exit 1 ;;
 		esac
 	EOF
@@ -351,4 +355,262 @@ stamp() {
 	seed_reap_files 5
 	claude_reap_pane %5
 	[ ! -e "$CLAUDE_PANES_DIR/5" ]
+}
+
+# #711: ownership by server= for the pane-exit reapers and the sweep. OWN is the
+# fake tmux's own pid; DEAD_PID exceeds any real pid_max.
+OWN_PID=4242
+DEAD_PID=2147483647
+OWNED_DIRS=(PANES SCREEN INTERRUPT TASKS ISSUES WATCHERS)
+
+# seed_owned ID OWNER [SESSION] — a full set of ID's files; OWNER (may be empty
+# for a legacy file) goes in server= on panes/screen/watchers, the three writers
+# that stamp it.
+seed_owned() {
+	local id="$1" owner="$2" sess="${3:-alpha}" stamp=""
+	[[ -n $owner ]] && stamp="server=$owner"
+	printf 'state=idle\nsession=%s\n%s\n' "$sess" "$stamp" >"$CLAUDE_PANES_DIR/$id"
+	printf 'state=idle\ntimestamp=1\n%s\n' "$stamp" >"$CLAUDE_SCREEN_DIR/$id"
+	printf '123\n%s\n' "$stamp" >"$CLAUDE_WATCHERS_DIR/$id"
+	printf 'x' >"$CLAUDE_INTERRUPT_DIR/$id"
+	printf 'x' >"$CLAUDE_TASKS_DIR/$id"
+	printf 'x' >"$CLAUDE_ISSUES_DIR/$id"
+}
+
+# owned_dir NAME — the CLAUDE_<NAME>_DIR value.
+owned_dir() {
+	local var="CLAUDE_${1}_DIR"
+	printf '%s' "${!var}"
+}
+
+assert_files() {
+	local want="$1" id="$2" name
+	for name in "${OWNED_DIRS[@]}"; do
+		if [[ $want == kept ]]; then
+			[ -e "$(owned_dir "$name")/$id" ]
+		else
+			[ ! -e "$(owned_dir "$name")/$id" ]
+		fi
+	done
+}
+
+@test "reap_pane keeps every file when panes/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$FAKE_TMUX_PID"
+	claude_reap_pane 5
+	assert_files kept 5
+}
+
+@test "reap_pane deletes when server= is its own pid" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$OWN_PID"
+	claude_reap_pane 5
+	assert_files gone 5
+}
+
+@test "reap_pane deletes when server= names a dead process" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$DEAD_PID"
+	claude_reap_pane 5
+	assert_files gone 5
+}
+
+@test "reap_pane deletes a legacy file with no server=" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 ""
+	claude_reap_pane 5
+	assert_files gone 5
+}
+
+@test "reap_pane keeps a screen-only pane whose screen/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 1 "$OWN_PID"
+	printf 'state=idle\ntimestamp=1\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_SCREEN_DIR/5"
+	printf 'x' >"$CLAUDE_TASKS_DIR/5"
+	claude_reap_pane 5
+	[ -e "$CLAUDE_SCREEN_DIR/5" ]
+	[ -e "$CLAUDE_TASKS_DIR/5" ]
+}
+
+@test "reap_pane keeps a pane whose only stamped file is watchers/ naming another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 1 "$OWN_PID"
+	printf '123\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_WATCHERS_DIR/5"
+	printf 'x' >"$CLAUDE_SCREEN_DIR/5"
+	claude_reap_pane 5
+	[ -e "$CLAUDE_WATCHERS_DIR/5" ]
+	[ -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "reap_pane still fails closed on a session mismatch when server= is its own pid" {
+	install_fake_tmux 1 "$OWN_PID"
+	seed_owned 5 "$OWN_PID"
+	claude_reap_pane 5
+	assert_files kept 5
+}
+
+@test "reap_pane keeps a live-owner file when its own pid cannot be resolved" {
+	start_fake_tmux_server
+	install_fake_tmux 0
+	seed_owned 5 "$FAKE_TMUX_PID"
+	claude_reap_pane 5
+	assert_files kept 5
+}
+
+@test "clear_agent_state keeps everything when panes/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$FAKE_TMUX_PID"
+	claude_clear_agent_state 5 alpha
+	assert_files kept 5
+}
+
+@test "clear_agent_state clears panes/screen/interrupt when server= is its own pid" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$OWN_PID"
+	claude_clear_agent_state 5 alpha
+	[ ! -e "$CLAUDE_PANES_DIR/5" ]
+	[ ! -e "$CLAUDE_SCREEN_DIR/5" ]
+	[ ! -e "$CLAUDE_INTERRUPT_DIR/5" ]
+	[ -e "$CLAUDE_TASKS_DIR/5" ]
+	[ -e "$CLAUDE_ISSUES_DIR/5" ]
+	[ -e "$CLAUDE_WATCHERS_DIR/5" ]
+}
+
+@test "clear_agent_state clears when server= names a dead process" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$DEAD_PID"
+	claude_clear_agent_state 5 alpha
+	[ ! -e "$CLAUDE_PANES_DIR/5" ]
+	[ ! -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "clear_agent_state clears a legacy file with no server=" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 ""
+	claude_clear_agent_state 5 alpha
+	[ ! -e "$CLAUDE_PANES_DIR/5" ]
+	[ ! -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "clear_agent_state keeps a screen-only pane whose screen/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 0 "$OWN_PID"
+	printf 'state=idle\ntimestamp=1\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_SCREEN_DIR/5"
+	claude_clear_agent_state 5 alpha
+	[ -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "clear_agent_state keeps a screen-only pane whose watchers/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 0 "$OWN_PID"
+	printf 'state=idle\ntimestamp=1\n' >"$CLAUDE_SCREEN_DIR/5"
+	printf '123\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_WATCHERS_DIR/5"
+	claude_clear_agent_state 5 alpha
+	[ -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "clear_agent_state still fails closed on a session mismatch when server= is its own pid" {
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$OWN_PID" beta
+	claude_clear_agent_state 5 alpha
+	[ -e "$CLAUDE_PANES_DIR/5" ]
+	[ -e "$CLAUDE_SCREEN_DIR/5" ]
+}
+
+@test "clear_agent_state keeps a live-owner file when its own pid cannot be resolved" {
+	start_fake_tmux_server
+	install_fake_tmux 0
+	seed_owned 5 "$FAKE_TMUX_PID"
+	claude_clear_agent_state 5 alpha
+	assert_files kept 5
+}
+
+@test "sweep keeps every file of an absent id whose panes/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 1 "$OWN_PID"
+	seed_owned 8 "$FAKE_TMUX_PID"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	assert_files kept 8
+}
+
+@test "sweep keeps every file of an absent screen-only id owned by another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 1 "$OWN_PID"
+	printf 'state=idle\ntimestamp=1\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_SCREEN_DIR/8"
+	printf 'x' >"$CLAUDE_TASKS_DIR/8"
+	printf 'x' >"$CLAUDE_INTERRUPT_DIR/8"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	[ -e "$CLAUDE_SCREEN_DIR/8" ]
+	[ -e "$CLAUDE_TASKS_DIR/8" ]
+	[ -e "$CLAUDE_INTERRUPT_DIR/8" ]
+}
+
+@test "sweep keeps every file of an absent id whose watchers/ names another live server" {
+	start_fake_tmux_server
+	install_fake_tmux 1 "$OWN_PID"
+	printf '123\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_WATCHERS_DIR/8"
+	printf 'x' >"$CLAUDE_SCREEN_DIR/8"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	[ -e "$CLAUDE_WATCHERS_DIR/8" ]
+	[ -e "$CLAUDE_SCREEN_DIR/8" ]
+}
+
+@test "sweep reaps an absent id owned by its own pid" {
+	install_fake_tmux 1 "$OWN_PID"
+	seed_owned 8 "$OWN_PID"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	assert_files gone 8
+}
+
+@test "sweep reaps an absent legacy id with no server=" {
+	install_fake_tmux 1 "$OWN_PID"
+	seed_owned 8 ""
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	assert_files gone 8
+}
+
+@test "sweep reaps an absent id whose server= names a dead process" {
+	install_fake_tmux 1 "$OWN_PID"
+	seed_owned 8 "$DEAD_PID"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	assert_files gone 8
+}
+
+@test "sweep guards per id: a foreign id is kept while its neighbour is reaped" {
+	start_fake_tmux_server
+	install_fake_tmux 1 "$OWN_PID"
+	seed_owned 8 "$FAKE_TMUX_PID"
+	seed_owned 9 "$OWN_PID"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	assert_files kept 8
+	assert_files gone 9
+}
+
+@test "sweep takes the own pid from its OWN_PID argument without asking tmux" {
+	start_fake_tmux_server
+	install_fake_tmux 1
+	seed_owned 8 "$FAKE_TMUX_PID"
+	seed_owned 9 "$OWN_PID"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')" "$OWN_PID"
+	assert_files kept 8
+	assert_files gone 9
+}
+
+@test "sweep keeps a live-owner id when its own pid cannot be resolved" {
+	start_fake_tmux_server
+	install_fake_tmux 1
+	seed_owned 8 "$FAKE_TMUX_PID"
+	claude_reap_dead_panes "$(printf '%%3|fish|0\n')"
+	assert_files kept 8
+}
+
+@test "reap_pane: one foreign-stamped file keeps the whole id, own-stamped panes/ included" {
+	start_fake_tmux_server
+	install_fake_tmux 0 "$OWN_PID"
+	seed_owned 5 "$OWN_PID"
+	printf 'server=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_SCREEN_DIR/5"
+	claude_reap_pane 5
+	assert_files kept 5
 }

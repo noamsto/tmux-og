@@ -63,11 +63,12 @@ CLAUDE_INTERRUPT_MARKER="Request interrupted by user"
 # Dead-agent floor. An agent that exits back to a shell leaves its last state
 # behind: claude_prune_stale_state reaps only a previous tmux server's files
 # and claude_reap_dead_panes reaps only a pane list-panes -a no longer
-# reports, so a pane running a plain shell keeps reporting an agent state and
-# merely fades. The presence sweep in tmux-update-icons stamps live/<id> for
-# every pane whose foreground command is an agent, and live/.sweep once that
-# pass completes; read_pane_state withdraws a state that has gone stale on a
-# pane the sweep stopped stamping.
+# reports (and no other live tmux server's state file claims), so a pane
+# running a plain shell keeps reporting an agent state and merely fades. The
+# presence sweep in tmux-update-icons stamps live/<id> for every pane whose
+# foreground command is an agent, and live/.sweep once that pass completes;
+# read_pane_state withdraws a state that has gone stale on a pane the sweep
+# stopped stamping.
 #
 # Positive evidence only — a *missing* live/<id> never vetoes. Absence is
 # ambiguous (pane never swept, feature just switched on, sweep never ran), while
@@ -97,6 +98,42 @@ claude_pid_is_tmux() {
 	comm=$(ps -o comm= -p "$1" 2>/dev/null)
 	[[ -z $comm ]] && return 0
 	[[ $comm == *tmux* ]]
+}
+
+# claude_pane_owned_elsewhere ID [OWN_PID]
+# Succeeds when a state file for pane ID (bare digits) names, in its server=
+# field, a different tmux server that is still alive: pane ids are per-server
+# %N counters under a CLAUDE_STATUS_DIR shared by every server on the machine,
+# so an id this server has never heard of may be a live neighbour's pane. Reads
+# panes/, screen/ and watchers/ — the same writers claude_prune_stale_state
+# trusts. A dead owner does not protect (its leftovers are ours to reap), and a
+# file with no server= (legacy) says nothing. OWN_PID defaults to the live
+# server's #{pid}; when it cannot be resolved a numeric owner is assumed
+# foreign, so the caller under-reaps rather than deletes. Sets REPLY to the own
+# pid it used, so a caller looping over ids resolves it once.
+claude_pane_owned_elsewhere() {
+	local id=$1 own=${2:-} resolved=0 dir key val owner
+	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_WATCHERS_DIR"; do
+		[[ -f $dir/$id ]] || continue
+		owner=""
+		while IFS='=' read -r key val || [[ -n $key ]]; do
+			[[ $key == server ]] && {
+				owner="$val"
+				break
+			}
+		done <"$dir/$id"
+		[[ $owner =~ ^[0-9]+$ ]] || continue
+		if [[ -z $own && $resolved == 0 ]]; then
+			resolved=1
+			own=$(tmux display-message -p '#{pid}' 2>/dev/null || true)
+		fi
+		REPLY=$own
+		[[ $owner == "$own" ]] && continue
+		[[ -z $own ]] && return 0
+		claude_pid_is_tmux "$owner" && return 0
+	done
+	REPLY=$own
+	return 1
 }
 
 # claude_prune_stale_state SERVER_START [SERVER_PID]
@@ -129,10 +166,10 @@ claude_pid_is_tmux() {
 #   (b) screen-only agent panes (pi/codex/cursor, no panes/<id> sibling) are
 #       protected through the server= stamps on screen/<id> and watchers/<id>.
 #       Files written before those stamps existed carry none and still fall to
-#       mtime alone. Separately, claude_reap_dead_panes (the ~60s sweep) deletes
-#       screen/<id> and watchers/<id> for ids absent from this server's pane
-#       list with no ownership guard, so cross-server flapping is not fully
-#       closed — a known follow-up.
+#       mtime alone. claude_reap_dead_panes (the ~60s sweep) and the
+#       pane-exit reapers key on the same stamps through
+#       claude_pane_owned_elsewhere, so a stamped file is not flapped away by
+#       another server either; legacy unstamped files are still unguarded there.
 #   (c) with SERVER_PID the marker gate is per-server
 #       (.server_start.<pid>, content = start_time), so two live servers each
 #       sweep once per boot instead of ping-ponging one shared marker. The
@@ -227,11 +264,14 @@ claude_progress_emit() {
 # claude_reap_pane PANE_ID
 # Single-id unlink for pane-exited/pane-died. CLAUDE_STATUS_DIR is a bare /tmp
 # path shared by every tmux server on the machine, and pane ids are per-server
-# %N counters, so this never iterates a directory: the file's session= field is
-# the only ownership evidence once the pane is gone. Guard residuals, accepted:
-# two servers with a same-named session and a colliding id pass; a
-# rename-session between the last write and death fails closed and waits for
-# the backstop. names/ and live/ are excluded — ids are monotonic within a
+# %N counters, so this never iterates a directory: the files' session= and
+# server= fields are the only ownership evidence once the pane is gone. A file
+# stamped with another live tmux server's pid is kept (claude_pane_owned_elsewhere,
+# #711), screen/ and watchers/ included, which carry no session=. Guard
+# residuals, accepted: a legacy file with no server= stamp still passes when two
+# servers have a same-named session and a colliding id; a rename-session between
+# the last write and death fails closed and waits for the backstop. names/ and
+# live/ are excluded — ids are monotonic within a
 # server run, so that residue can never attach to a new pane;
 # claude_prune_stale_state already owns them.
 claude_reap_pane() {
@@ -255,6 +295,7 @@ claude_reap_pane() {
 			tmux has-session -t "=$sess" 2>/dev/null || return 0
 		fi
 	fi
+	claude_pane_owned_elsewhere "$id" && return 0
 
 	claude_progress_emit "$id" clear
 	rm -f "$CLAUDE_PANES_DIR/$id" "$CLAUDE_SCREEN_DIR/$id" "$CLAUDE_INTERRUPT_DIR/$id" \
@@ -267,6 +308,9 @@ claude_reap_pane() {
 # ownership guard is stronger than claude_reap_pane's because the pane is ALIVE
 # here — the firing pane's own session name (passed from #{session_name}) is
 # compared against the state file's session= field, not just existence-checked.
+# The server= stamp adds a machine-wide check on top (claude_pane_owned_elsewhere,
+# #711): a screen-only pane has no panes/ file to carry session=, so a live
+# foreign owner is its only protection against a colliding id.
 #
 # Clears the modern state only: panes/screen/interrupt (so shell AND Go
 # consumers stop rendering it) plus the @claude_status/@agent_screen pane
@@ -302,6 +346,7 @@ claude_clear_agent_state() {
 		[[ -z $sess ]] && return 0
 		[[ -n $file_sess && $file_sess != "$sess" ]] && return 0
 	fi
+	claude_pane_owned_elsewhere "$id" && return 0
 
 	claude_progress_emit "$id" clear
 	rm -f "$CLAUDE_PANES_DIR/$id" "$CLAUDE_SCREEN_DIR/$id" "$CLAUDE_INTERRUPT_DIR/$id"
@@ -359,7 +404,7 @@ claude_clear_window_naming() {
 	tmux set -qw -t "$target" @window_naming_dirty ""
 }
 
-# claude_reap_dead_panes ROWS
+# claude_reap_dead_panes ROWS [OWN_PID]
 # BACKSTOP for death paths no pane hook fires on: kill-pane, kill-window,
 # kill-session, respawn-pane -k, and a server crash (measured matrix in
 # SPEC.md). pane-exited/pane-died own the common process-exit path via
@@ -371,12 +416,20 @@ claude_clear_window_naming() {
 # ROWS is a no-op here, never reaping anything, so a bad call site can only
 # under-reap, not wipe.
 #
+# "Absent from ROWS" only proves the id is not on THIS server, and the state
+# dirs are shared by every tmux server on the machine, so an id whose panes/,
+# screen/ or watchers/ file names another live tmux server in server= is skipped
+# in every dir (claude_pane_owned_elsewhere, #711); OWN_PID overrides the live
+# server's #{pid}. Id-scoped, so a live foreign owner of the same id also
+# strands this server's own leftover file until a restart's mtime prune —
+# under-reap, never over-delete. Legacy files with no server= are still reaped.
+#
 # '|' and not a tab: tmux rewrites non-printable bytes to "_" unless the
 # querying client's locale is UTF-8, so a tab-delimited format collapses to one
 # field, every pane id reads as dead, and this deleted every state file once
 # per 5s (#373).
 claude_reap_dead_panes() {
-	local rows="$1"
+	local rows="$1" own_pid="${2:-}"
 	[[ -n $rows ]] || return 0
 
 	local -A live=()
@@ -392,13 +445,22 @@ claude_reap_dead_panes() {
 	done <<<"$rows"
 
 	local dir f id
-	local -A cleared=()
+	local -A cleared=() foreign=()
 	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_WATCHERS_DIR"; do
 		[[ -d $dir ]] || continue
 		for f in "$dir"/*; do
 			[[ -f $f ]] || continue
 			id="${f##*/}"
 			[[ -n ${live[$id]:-} ]] && continue
+			if [[ -z ${foreign[$id]:-} ]]; then
+				if claude_pane_owned_elsewhere "$id" "$own_pid"; then
+					foreign["$id"]=1
+				else
+					foreign["$id"]=0
+				fi
+				own_pid=$REPLY
+			fi
+			[[ ${foreign[$id]} == 1 ]] && continue
 			if [[ -z ${cleared[$id]:-} ]]; then
 				claude_progress_emit "$id" clear
 				cleared[$id]=1
