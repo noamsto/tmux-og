@@ -30,6 +30,12 @@ RECONCILE_BIN="${RECONCILE_BIN:-@reconcile@}"
 # placeholder). ${CAROUSEL_RESTORE_BIN:-...} is the same test-seam shape as
 # AGENT_DETECT_BIN above.
 CAROUSEL_RESTORE_BIN="${CAROUSEL_RESTORE_BIN:-@carousel_restore@}"
+# Store path to tmux-reflow-windows. The per-session forced reflow at the loop
+# tail and the #692 occupancy sweep both call it from here, so a config reload
+# repoints them without a server restart. ${REFLOW_BIN:-...} is the same
+# test-seam shape as AGENT_DETECT_BIN above; an unsubstituted @reflow@ disables
+# the forced reflow rather than exec'ing a literal placeholder.
+REFLOW_BIN="${REFLOW_BIN:-@reflow@}"
 
 # normalize_wrapped_cmd CMD
 # Strips nix makeWrapper's `.foo-wrapped` shape down to `foo` (what
@@ -81,8 +87,21 @@ arm_agent_detect() {
 	# result is indistinguishable from "no agent panes", and stamping .sweep
 	# after one would assert a pass that never observed anything — the reader
 	# would then read every live pane's lagging stamp as a dead agent.
+	#
+	# #{window_id}/#{@bridge_win}/#{@window_has_agent}/#{@window_manual_name}
+	# plus the naming options ride the same roundtrip for the #692 occupancy
+	# pass below — no second call, no separate state. #{window_id} is the row's
+	# canary (only a real window id matches ^@[0-9]+$, and #{pane_current_command}
+	# — the one field ahead of it that is not a closed token — can in principle
+	# carry a '|' and shift it into something that fails the match).
+	# #{@window_task} and #{@window_ai_name} are both free-form, so their row
+	# copies run through tmux's s/[|]/ / substitution (the bracket expression
+	# is load-bearing — a bare s/|/ / is an ERE empty alternation) to keep them
+	# pipe-free: the canary above sits before them, so a '|' here would shift
+	# task/session_name with nothing left to catch it. #{session_name} is last
+	# because it may contain '|'.
 	local rows
-	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}' 2>/dev/null) || return 0
+	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}|#{window_id}|#{@bridge_win}|#{@window_has_agent}|#{@window_manual_name}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@window_task}|#{session_name}' 2>/dev/null) || return 0
 	# claude_reap_dead_panes deletes under CLAUDE_STATUS_DIR -- a bare /tmp path
 	# shared by every tmux server on the machine, which TMUX_TMPDIR/-L isolation
 	# does not touch -- by checking each pane id against THIS CALLER's own
@@ -99,18 +118,32 @@ arm_agent_detect() {
 		claude_reap_dead_panes "$rows"
 	fi
 
-	((arm || stamp)) || return 0
-
 	if ((stamp)) && [[ ! -d $CLAUDE_LIVE_DIR ]]; then
 		mkdir -p "$CLAUDE_LIVE_DIR"
 	fi
 
-	local pid cmd piped
-	while IFS='|' read -r pid cmd piped; do
+	# Per-window occupancy (#692), accumulated in the same pass. With neither
+	# arming nor stamping this loop now only does the fork-free command match
+	# (the old `((arm || stamp)) || return 0` short-circuit is gone) so the sweep
+	# caller can reconcile occupancy from the same rows.
+	local -A win_has=() win_cur=() win_manual=() win_bridge=() win_sess=() win_ai=() win_task=()
+	local pid cmd piped wid bridge ha manual ai task sname
+	while IFS='|' read -r pid cmd piped wid bridge ha manual ai task sname; do
 		# A here-string of an empty result still yields one blank line.
 		[[ -n $pid ]] || continue
+		# A shifted row (see the format comment above) leaves nothing here, so
+		# it contributes no occupancy and no stale-naming clear — fail closed.
+		if [[ $wid =~ ^@[0-9]+$ ]]; then
+			win_cur[$wid]="$ha"
+			win_manual[$wid]="$manual"
+			win_bridge[$wid]="$bridge"
+			win_sess[$wid]="$sname"
+			win_ai[$wid]="$ai"
+			win_task[$wid]="$task"
+		fi
 		normalize_wrapped_cmd "$cmd"
 		case " $AGENT_COMMANDS " in *" $REPLY "*) ;; *) continue ;; esac
+		[[ $wid =~ ^@[0-9]+$ ]] && win_has[$wid]=1
 		((stamp)) && printf '%s\n' "$CLAUDE_NOW" >"$CLAUDE_LIVE_DIR/${pid#%}"
 		[[ $piped == 0 ]] || continue
 		((arm)) && tmux pipe-pane -o -t "$pid" "$AGENT_DETECT_BIN ${pid#%}"
@@ -121,6 +154,50 @@ arm_agent_detect() {
 	# stamped, so a lagging per-pane stamp means "no agent here" with no grace
 	# window to wait out after a resume.
 	((stamp)) && printf '%s\n' "$CLAUDE_NOW" >"$CLAUDE_LIVE_DIR/.sweep"
+
+	# #692: on the client-independent sweep, make @window_has_agent track live
+	# occupancy and reset naming display on any window that has no live agent but
+	# still carries naming state. Entering only on a 1->0 option transition would
+	# miss the reported host outright: @window_has_agent is never written there,
+	# so it is never 1 and the stale @window_ai_name/@window_task would never
+	# clear. A manually-named window's naming is not stale
+	# and is left alone, matching claude_clear_window_display. The per-tick caller
+	# ($1 empty) does the same with claude_clear_window_naming, which also deletes
+	# names/tasks/issues; here only the option half is safe (CLAUDE_STATUS_DIR is
+	# a bare /tmp path shared by every tmux server on the machine), so the
+	# deletion is owed via the @window_naming_dirty mark — stamped BEFORE the
+	# clear so a crash between the two writes still leaves the deletion owed.
+	# Mirrors are daemon-owned and skipped, matching the per-tick loop.
+	if [[ -n ${1:-} ]]; then
+		local -A sess_reflow=()
+		local wid stale
+		for wid in "${!win_cur[@]}"; do
+			[[ ${win_bridge[$wid]:-} == 1 ]] && continue
+			if [[ -n ${win_has[$wid]:-} ]]; then
+				[[ ${win_cur[$wid]:-} == 1 ]] && continue
+				tmux set -qw -t "$wid" @window_has_agent 1
+			else
+				stale=""
+				[[ -n ${win_cur[$wid]:-} ]] && stale=1
+				if [[ ${win_manual[$wid]:-} != 1 && (-n ${win_ai[$wid]:-} || -n ${win_task[$wid]:-}) ]]; then
+					stale=1
+				fi
+				[[ -n $stale ]] || continue
+				tmux set -qw -t "$wid" @window_naming_dirty 1
+				claude_clear_window_display "$wid" "${win_manual[$wid]:-}"
+			fi
+			sess_reflow[${win_sess[$wid]:-}]=1
+		done
+		# A session name (not a window id) so reflow's own scratch-* skip still
+		# applies. Load-bearing: a control-mode client reports a real
+		# #{client_width}, so reflow runs on a bridge-only host and is what
+		# recomposes @window_label_rest_long from the cleared options.
+		for s in "${!sess_reflow[@]}"; do
+			[[ -n $s && $REFLOW_BIN != @* ]] || continue
+			"$REFLOW_BIN" "$s" --force >/dev/null 2>&1 &
+			disown 2>/dev/null || true
+		done
+	fi
 	return 0
 }
 
@@ -198,7 +275,7 @@ main() {
 	# never set).
 	declare -A pane_to_win win_procs win_pane_path win_cur_branch win_active_pane win_cur_task win_cur_name pane_cur_relaunch pane_img_src pane_idx
 	declare -A win_cur_display win_cur_padded win_cur_ago win_cur_rename win_cur_crew win_cur_crew_seen win_cur_bridge
-	declare -A win_panes win_cur_has_agent win_cur_manual
+	declare -A win_panes win_cur_has_agent win_cur_manual win_cur_naming_dirty
 	declare -A all_sess sess_cur_active_icon sess_cur_session_fg sess_active_proc sess_active_win
 	# cwd-move re-stamp (#596): win_cwd/win_cwd_pane/win_worktree/win_cwd_seen are
 	# captured on the window's first NON-floating pane — a separate authority from
@@ -222,8 +299,11 @@ main() {
 	# "1" or empty and @bridge_proc is a command name, so both do too.
 	# @claude_img_src is aeye's own pane option (a "<server pid>-<pane>" key, or
 	# empty) — no '|', so it too stays a fixed middle field before the task.
-	# @window_has_agent and @window_manual_name (#671) are both closed "1"/""
-	# tokens, same shape as @crew_name, so both sit safely before the task too.
+	# @window_has_agent, @window_manual_name and @window_naming_dirty (#671/#692)
+	# are all closed "1"/"" tokens, same shape as @crew_name, so all three sit
+	# safely before the task too. @window_naming_dirty is the client-independent
+	# sweep's mark that a window's shared-dir naming files are still owed a
+	# deletion (see claude_clear_window_naming).
 	# pane_floating_flag and pane_active are both closed sets ("0"/"1"), so —
 	# like session_id — they're safe as fixed middle fields no matter what's in
 	# neighboring paths; win_poison below fails a window closed when either reads
@@ -232,7 +312,7 @@ main() {
 	# '|' exposure pane_current_path already does, so both sit ahead of
 	# pane_active/window_active — a '|' in either then cannot shift the flags the
 	# rest of this script trusts as fixed-format.
-	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_task; do
+	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_task; do
 		[[ -n $pane_id ]] || continue
 		# A mirror pane runs the bridge renderer; @bridge_proc carries what the
 		# remote pane is actually running, which is what the icons should show.
@@ -272,6 +352,7 @@ main() {
 			win_cur_bridge[$wkey]="$cur_bridge"
 			win_cur_has_agent[$wkey]="$cur_has_agent"
 			win_cur_manual[$wkey]="$cur_manual"
+			win_cur_naming_dirty[$wkey]="$cur_naming_dirty"
 		fi
 		# cwd authority (#596): the FIRST NON-FLOATING pane, not the first pane full
 		# stop and not the active pane — a floating scratch pane commonly sits in a
@@ -299,7 +380,7 @@ main() {
 		*" $proc "*) ;;
 		*) win_procs[$wkey]="${existing:+$existing }$proc" ;;
 		esac
-	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_task}')
+	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
 
 	arm_agent_detect
 
@@ -450,12 +531,37 @@ main() {
 		pane_path="${win_cwd[$wkey]:-${win_pane_path[$wkey]}}"
 		target="$wkey"
 
+		# Agent occupancy (#671/#692): @window_has_agent tracks whether any pane
+		# in the window currently runs a manifest agent command, and gates the
+		# task/name file reads just below — a lingering self-report file must not
+		# re-stamp an option the client-independent sweep cleared. That hazard
+		# exists only for a window the sweep owns: a manually-named or mirror
+		# window's naming is never cleared by the sweep, so its kept file still
+		# legitimately owns the option and is read as before. Computed here
+		# (ahead of those reads) and reused by the transition block below.
+		has_agent=""
+		if [[ ${win_cur_bridge[$wkey]:-} != 1 ]]; then
+			# shellcheck disable=SC2086  # win_procs is a space-joined string; word-split intentionally
+			for p in ${win_procs[$wkey]:-}; do
+				normalize_wrapped_cmd "$p"
+				case " $AGENT_COMMANDS " in *" $REPLY "*)
+					has_agent=1
+					break
+					;;
+				esac
+			done
+		fi
+		naming_read=1
+		if [[ -z $has_agent && ${win_cur_manual[$wkey]:-} != 1 && ${win_cur_bridge[$wkey]:-} != 1 ]]; then
+			naming_read=""
+		fi
+
 		# Task label tracks the active pane's self-reported "what Claude is doing"
 		# phrase (UserPromptSubmit hook). It can change in any window, so poll every
 		# window each tick — a single small file read. Set directly (not batched via
 		# `source -`): the phrase is free-form and would break the command parser.
 		task=""
-		[[ -f "$CLAUDE_TASKS_DIR/${win_active_pane[$wkey]}" ]] &&
+		[[ -n $naming_read && -f "$CLAUDE_TASKS_DIR/${win_active_pane[$wkey]}" ]] &&
 			IFS= read -r task <"$CLAUDE_TASKS_DIR/${win_active_pane[$wkey]}"
 		if [[ $task != "${win_cur_task[$wkey]:-}" ]]; then
 			tmux set -qw -t "$target" @window_task "$task"
@@ -467,7 +573,7 @@ main() {
 		# build_window_label prefers it over the raw task. Mirror like the task —
 		# free-form, set directly, only on change so reflow isn't kicked every tick.
 		ai_name=""
-		[[ -f "$CLAUDE_NAMES_DIR/${win_active_pane[$wkey]}" ]] &&
+		[[ -n $naming_read && -f "$CLAUDE_NAMES_DIR/${win_active_pane[$wkey]}" ]] &&
 			IFS= read -r ai_name <"$CLAUDE_NAMES_DIR/${win_active_pane[$wkey]}"
 		if [[ $ai_name != "${win_cur_name[$wkey]:-}" ]]; then
 			tmux set -qw -t "$target" @window_ai_name "$ai_name"
@@ -485,24 +591,21 @@ main() {
 			sess_need_reflow[$s]=1
 		fi
 
-		# Agent occupancy (#671): @window_has_agent tracks whether any pane in the
-		# window currently runs a manifest agent command. On a genuine transition,
-		# clear naming/crew display state via claude_clear_window_naming (never
-		# @crew_name/@crew_color themselves — dispatcher-owned, CLAUDE.md hard
-		# constraint). Mirror windows are excluded outright (daemon-owned).
-		has_agent=""
-		if [[ ${win_cur_bridge[$wkey]:-} != 1 ]]; then
-			# shellcheck disable=SC2086  # win_procs is a space-joined string; word-split intentionally
-			for p in ${win_procs[$wkey]:-}; do
-				normalize_wrapped_cmd "$p"
-				case " $AGENT_COMMANDS " in *" $REPLY "*)
-					has_agent=1
-					break
-					;;
-				esac
-			done
+		# Agent occupancy (#671/#692) transition: @window_has_agent tracks whether
+		# any pane in the window currently runs a manifest agent command. On a
+		# genuine transition, clear naming/crew display state via
+		# claude_clear_window_naming (never @crew_name/@crew_color themselves —
+		# dispatcher-owned, CLAUDE.md hard constraint). clear_needed adds the
+		# @window_naming_dirty mark the client-independent sweep leaves when it
+		# cleared the options but could not delete the shared-dir files; it is
+		# gated on has_agent being empty so a window that gained a new agent while
+		# the mark was outstanding does not re-fire every tick. Mirror windows are
+		# excluded outright (daemon-owned).
+		clear_needed=""
+		if [[ -z $has_agent && -n ${win_cur_naming_dirty[$wkey]:-} ]]; then
+			clear_needed=1
 		fi
-		if [[ -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 && $has_agent != "${win_cur_has_agent[$wkey]:-}" ]]; then
+		if [[ -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 && ($has_agent != "${win_cur_has_agent[$wkey]:-}" || -n $clear_needed) ]]; then
 			if [[ -n $has_agent ]]; then
 				tmux set -qw -t "$target" @window_has_agent 1
 			else
@@ -708,7 +811,7 @@ main() {
 	# reload repoints it without a tmux server restart. Reflow takes a session
 	# name; we map from the id we keyed on.
 	for s in "${!sess_need_reflow[@]}"; do
-		@reflow@ "${sess_name[$s]}" --force >/dev/null 2>&1 &
+		"$REFLOW_BIN" "${sess_name[$s]}" --force >/dev/null 2>&1 &
 		# Instant reflow can finish before disown; a reaped job makes disown
 		# return 1, which is then the process exit (main's last command).
 		disown 2>/dev/null || true

@@ -9,10 +9,16 @@
 # Also the event trigger for #671: when this was the window's last live
 # agent, resets the window's naming/crew display state (never
 # @crew_name/@crew_color themselves — dispatcher-owned, CLAUDE.md hard
-# constraint). tmux-update-icons.sh's backstop is the ground truth for
-# whatever this event path can't reach (a host whose only clients are
-# control-mode remote-bridge transports never ticks that poller, so
-# @window_has_agent is never written there and this event path stays inert).
+# constraint). It takes only the *option* half of that reset and stamps
+# @window_naming_dirty: this hook is server-side, so it fires with or without
+# an attached client, and CLAUDE_STATUS_DIR is a bare /tmp path shared by every
+# tmux server on the machine — the rm's stay on the client-gated per-tick pass
+# (#692), which clears the mark last. tmux-update-icons.sh is the ground truth
+# for whatever this event path can't reach: its per-tick loop for a client-less
+# window or a shell with no OSC 133 support, and since #692 its
+# client-independent @og-sweep-tick pass, which is what writes
+# @window_has_agent on a host whose only clients are control-mode remote-bridge
+# transports — so this path is armed there too, not inert.
 
 set -euo pipefail
 
@@ -72,10 +78,8 @@ bridge_manual=$(tmux display-message -p -t "$window_id" '#{@bridge_win}|#{@windo
 manual="${bridge_manual#*|}"
 
 still_has_agent=""
-pane_ids=()
 while IFS='|' read -r p_id p_cmd; do
 	[[ -n $p_id ]] || continue
-	pane_ids+=("$p_id")
 	normalize_wrapped_cmd "$p_cmd"
 	case " $AGENT_COMMANDS " in *" $REPLY "*)
 		still_has_agent=1
@@ -86,7 +90,12 @@ done < <(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_current_command}'
 
 [[ -n $still_has_agent ]] && exit 0
 
-claude_clear_window_naming "$window_id" "$manual" "${pane_ids[@]}"
+# Option half only (#692), then the deletion owed. Stamp the mark BEFORE the
+# clear so a crash between the two writes still leaves the deletion owed;
+# claude_clear_window_naming (the client-gated per-tick pass) clears it last,
+# after the files are gone.
+tmux set -qw -t "$window_id" @window_naming_dirty 1
+claude_clear_window_display "$window_id" "$manual"
 
 if [[ $REFLOW_BIN != @* ]]; then
 	"$REFLOW_BIN" "${3:-}" --force >/dev/null 2>&1 &
