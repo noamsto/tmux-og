@@ -83,9 +83,11 @@ wopt() {
 	t show-options -w -t "$1" -qv "$2" 2>/dev/null || true
 }
 
-# window_naming_cleared TARGET BARE_PANE_ID — #671's window-wide reset done:
-# @window_has_agent/@window_ai_name/@window_task empty and their
-# names/tasks/issues files gone for BARE_PANE_ID.
+# window_naming_cleared TARGET BARE_PANE_ID — #671's window-wide reset fully
+# discharged: @window_has_agent/@window_ai_name/@window_task empty and their
+# names/tasks/issues files gone for BARE_PANE_ID. That takes the event hook's
+# option half plus one client-gated per-tick pass (#692) — see
+# window_naming_options_cleared for the hook's own half.
 window_naming_cleared() {
 	local target="$1" bare="$2"
 	[ -z "$(wopt "$target" @window_has_agent)" ] || return 1
@@ -96,13 +98,36 @@ window_naming_cleared() {
 	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ] || return 1
 }
 
-# window_agent_gone_only TARGET BARE_PANE_ID — the manual-name arm of
-# claude_clear_window_naming: @window_has_agent empty and issues/<pane> gone,
-# but naming (ai_name/task/their files) untouched — asserted by the caller.
+# window_naming_options_cleared TARGET — the OSC-133 event hook's half of
+# #671's reset (#692): it clears the options and stamps @window_naming_dirty
+# instead of deleting, because it fires with or without an attached client and
+# CLAUDE_STATUS_DIR is machine-global. The client-gated per-tick pass discharges
+# the rm's and clears the mark.
+window_naming_options_cleared() {
+	local target="$1"
+	[ -z "$(wopt "$target" @window_has_agent)" ] || return 1
+	[ -z "$(wopt "$target" @window_ai_name)" ] || return 1
+	[ -z "$(wopt "$target" @window_task)" ] || return 1
+	[ "$(wopt "$target" @window_naming_dirty)" = 1 ] || return 1
+}
+
+# window_agent_gone_only TARGET BARE_PANE_ID — the manual-name arm of the
+# reset: @window_has_agent empty and issues/<pane> gone, but naming
+# (ai_name/task/their files) untouched — asserted by the caller. The option
+# clear is the event hook's half; the issues rm is the client-gated per-tick
+# pass's (window_agent_gone_options is that first half alone).
 window_agent_gone_only() {
 	local target="$1" bare="$2"
 	[ -z "$(wopt "$target" @window_has_agent)" ] || return 1
 	[ ! -e "$CLAUDE_STATUS_DIR/issues/$bare" ] || return 1
+}
+
+# window_agent_gone_options TARGET — the manual-name arm of the event hook's
+# half: @window_has_agent empty and the issues deletion owed, naming untouched.
+window_agent_gone_options() {
+	local target="$1"
+	[ -z "$(wopt "$target" @window_has_agent)" ] || return 1
+	[ "$(wopt "$target" @window_naming_dirty)" = 1 ] || return 1
 }
 
 # reflow SESSION — direct tmux-reflow-windows pass. A numeric WIDTH arg
@@ -335,7 +360,7 @@ EOF
 
 # #671: reset window naming/crew display when a window's last agent exits.
 # claude_clear_agent_state's own pane-scoped state (exercised above) and
-# claude_clear_window_naming's window-scoped naming/crew reset are two
+# the pane-state clear and the window-scoped naming/crew reset are two
 # different clears fired by the same pane-shell-prompt hook invocation — these
 # cases are additive to the ones above, not a replacement for them.
 
@@ -356,7 +381,11 @@ EOF
 	printf 'ISSUE-1\n' >"$CLAUDE_STATUS_DIR/issues/$bare"
 
 	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
-	wait_for 5 window_naming_cleared naming1 "$bare"
+	wait_for 5 window_naming_options_cleared naming1
+	# The event hook has no client guarantee, so the shared-dir rm's are owed
+	# (#692) and the client-gated per-tick pass discharges them.
+	update_icons_tick naming1
+	window_naming_cleared naming1 "$bare"
 
 	# Hard constraint: @crew_name/@crew_color are dispatcher-owned and this
 	# feature must never touch them.
@@ -474,7 +503,11 @@ EOF
 	[ "$(wopt naming5 automatic-rename)" = off ]
 
 	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
-	wait_for 5 window_agent_gone_only naming5 "$bare"
+	wait_for 5 window_agent_gone_options naming5
+	# The hook cleared @window_has_agent and owed the issues rm; the
+	# client-gated per-tick pass discharges it (names/tasks stay: manual).
+	update_icons_tick naming5
+	window_agent_gone_only naming5 "$bare"
 
 	# Naming state is left untouched for a manually-renamed window.
 	[ "$(wopt naming5 @window_ai_name)" = "Old AI Name" ]

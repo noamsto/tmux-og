@@ -306,12 +306,13 @@ claude_clear_agent_state() {
 # claude_clear_window_display WINDOW_TARGET MANUAL_NAME
 # The option half of the #671 reset, safe on a client-independent timer: no
 # file deletions. CLAUDE_STATUS_DIR is a bare /tmp path shared by every tmux
-# server on the machine, and the sweep that calls this (tmux-update-icons.sh's
-# arm_agent_detect, #692) runs on every server, so a deletion there would let a
-# scratch server wipe the real server's live naming state. Always clears
-# @window_has_agent; clears @window_ai_name/@window_task only when MANUAL_NAME
-# != 1, the same rule claude_clear_window_naming applies to its file half.
-# @crew_name/@crew_color are dispatcher-owned and never touched.
+# server on the machine, and both callers — tmux-update-icons.sh's sweep
+# (arm_agent_detect, #692) and tmux-shell-prompt.sh's OSC-133 prompt hook — run
+# with no client guarantee, so a deletion there would let a scratch server wipe
+# the real server's live naming state. Always clears @window_has_agent; clears
+# @window_ai_name/@window_task only when MANUAL_NAME != 1, the same rule
+# claude_clear_window_naming applies to its file half. @crew_name/@crew_color
+# are dispatcher-owned and never touched.
 claude_clear_window_display() {
 	local target="$1" manual="$2"
 
@@ -321,17 +322,18 @@ claude_clear_window_display() {
 }
 
 # claude_clear_window_naming WINDOW_TARGET MANUAL_NAME PANE_ID...
-# Called once a window has no live agent left in any pane (#671):
-# tmux-shell-prompt.sh's event trigger and tmux-update-icons.sh's backstop are
-# the two callers. Always removes issues/<pane> for every PANE_ID — issue
-# self-reports "die with the pane or CC session" per the CLAUDE.md "Issue
-# self-report" bullet, and losing the window's last agent is exactly that
-# death, independent of naming/display mode. When MANUAL_NAME != 1 (the window
-# has never had @window_manual_name stamped by the user's own prefix + ,
-# rename), also removes names/<pane>/tasks/<pane>. Deletes the option writes to
-# claude_clear_window_display, and consumes the @window_naming_dirty mark the
-# client-independent sweep leaves (it may clear the options but must not delete
-# from the shared dir) — last, after the files are gone, so a failed delete
+# The one path that may delete a window's shared-dir naming state, and the only
+# caller left is tmux-update-icons.sh's client-gated per-tick backstop under the
+# @window_naming_dirty mark — the OSC-133 event hook and the #692 sweep both
+# clear the options and stamp that mark instead (they have no client guarantee,
+# and CLAUDE_STATUS_DIR is machine-global). Always removes issues/<pane> for
+# every PANE_ID — issue self-reports "die with the pane or CC session" per the
+# CLAUDE.md "Issue self-report" bullet, and losing the window's last agent is
+# exactly that death, independent of naming/display mode. When MANUAL_NAME != 1
+# (the window has never had @window_manual_name stamped by the user's own
+# prefix + , rename), also removes names/<pane>/tasks/<pane>. Delegates the
+# option writes to claude_clear_window_display, and consumes the
+# @window_naming_dirty mark last, after the files are gone, so a failed delete
 # leaves the deletion still owed.
 claude_clear_window_naming() {
 	local target="$1" manual="$2"

@@ -411,3 +411,26 @@ callers (event hook + per-tick backstop), the per-tick task/name read block,
 - Any dispatcher-owned option write (`@crew_name`/`@crew_color`/`@crew_role`).
 - Claude-only (vs generic) occupancy for the naming reset — see "Known
   residual".
+
+## Review round 1 extension: the event path takes the same split
+
+The first review found the invariant half-done. The sweep does only option
+writes, as planned — but the *only* arming signal for `pane-shell-prompt`'s
+reset is `@window_has_agent`, and this change starts writing it from a
+client-independent timer. `tmux-shell-prompt.sh` (a server-side hook, so it
+fires with or without an attached client) still called the deleting
+`claude_clear_window_naming`, so the change made a never-client host — the
+bridge-only class this issue targets — able to delete `names/`/`tasks/`/
+`issues/` under the machine-global `CLAUDE_STATUS_DIR` where it previously
+could not. Measured: a second, client-less wrapped-tmux server whose `%0` ran a
+manifest agent, sweep-armed, deleted the first server's live pane `%0` state
+when a shell prompt answered.
+
+Fixed by giving the event path the same contract as the sweep: it clears the
+options via `claude_clear_window_display`, stamps `@window_naming_dirty 1`
+before the clear, and lets the client-gated per-tick pass do the `rm`s. All
+shared-dir deletion is now on one client-gated path. This is a deliberate
+change to #671's event-trigger contract (which used to delete immediately, and
+`tests/pane-shell-prompt.bats` pinned it client-less); the visible naming
+reset is unchanged and still immediate, and only the file `rm` is deferred to
+the next client-gated pass.
