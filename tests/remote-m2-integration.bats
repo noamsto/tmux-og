@@ -3681,3 +3681,82 @@ attach_pty_client() {
 	[ "$status" -eq 0 ]
 	[ -z "$clients" ]
 }
+
+# #715: `prefix + p` in a mirror sends the ctl `tool` verb, whose remote leg is
+# an if-shell reuse gate (#679). The float it opens on the remote has to reach
+# the mirror on its own — before, it only appeared after a reattach re-read the
+# layout. `prdash` is a stub that just sleeps, so the remote float stays open.
+@test "ctl tool opens a REMOTE float the mirror gains without a reattach (#715)" {
+	mkdir -p "$BATS_TEST_TMPDIR/bin"
+	printf '#!/bin/sh\nexec sleep 300\n' >"$BATS_TEST_TMPDIR/bin/prdash"
+	chmod +x "$BATS_TEST_TMPDIR/bin/prdash"
+	export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 tool1
+
+	pane="$(remote_pane_of 0)"
+	[ -n "$pane" ]
+	run "$CTL" --sock "$sock" tool "$pane" prdash
+	[ "$status" -eq 0 ]
+
+	src_float="" dst_float=""
+	for _ in $(seq 1 60); do
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{@pane_label}:#{pane_width}x#{pane_height}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F 'prdash:#{pane_width}x#{pane_height}')"
+		[ -n "$dst_float" ] && [ "$src_float" = "$dst_float" ] && break
+		sleep 0.15
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$src_float" ]
+	[ "$src_float" = "$dst_float" ]
+}
+
+# The if-shell gate's branch replies used to shift the daemon's reply
+# accounting for the rest of the connection (#715), so the press after a tool
+# press was the one to suffer. A second press must reuse the float (#679), and
+# an ordinary verb after both must still round-trip and mirror.
+@test "ctl tool twice reuses the float and later verbs still mirror (#715)" {
+	mkdir -p "$BATS_TEST_TMPDIR/bin"
+	printf '#!/bin/sh\nexec sleep 300\n' >"$BATS_TEST_TMPDIR/bin/prdash"
+	chmod +x "$BATS_TEST_TMPDIR/bin/prdash"
+	export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 tool2
+
+	pane="$(remote_pane_of 0)"
+	[ -n "$pane" ]
+	run "$CTL" --sock "$sock" tool "$pane" prdash
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		[ -n "$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F x)" ] && break
+		sleep 0.15
+	done
+	run "$CTL" --sock "$sock" tool "$pane" prdash
+	[ "$status" -eq 0 ]
+	run "$CTL" --sock "$sock" split-h "$pane"
+	[ "$status" -eq 0 ]
+
+	for _ in $(seq 1 60); do
+		src_n="$($SRC list-panes -t rem -F '#{pane_id}' | wc -l)"
+		dst_n="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+		[ "$src_n" -eq 3 ] && [ "$dst_n" -eq 3 ] && break
+		sleep 0.15
+	done
+	src_floats="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F x | wc -l)"
+	src_map="$(pane_map "$SRC" rem '#{pane_id}' | sort)"
+	dst_map="$(pane_map "$DST" host-sess:1 '#{@bridge_pane}' | sort)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	# One float, not two: the second press focused it.
+	[ "$src_floats" -eq 1 ]
+	# The split landed on the remote and the mirror wired it.
+	[ "$src_n" -eq 3 ]
+	[ "$src_map" = "$dst_map" ]
+}
