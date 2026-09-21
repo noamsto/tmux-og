@@ -465,19 +465,21 @@ type stream struct {
 // anything written behind it, so the barrier's reply (recognised by its body,
 // which no branch command can produce) is the first block after them. Every
 // block between the command's own reply and that one takes no ordinal.
+//
+// EVERY command takes one, not just the verbs known to fan out (#723). The
+// swallow window in claim is not an N-block assumption — it consumes whatever
+// arrives until the barrier's own reply — so arming it unconditionally leaves
+// no verb list to keep in sync with tmux. Measured on tmux next-3.9, one
+// control client, counting client-flagged blocks per command written:
+// `display-message -p` 1, `run-shell -C` 2, `if-shell` with a two-command
+// branch 3. Nothing compares s.seen against s.sent, so an unarmed fan-out
+// desyncs the stream for the rest of the connection.
+//
+// `run-shell -b` needs no barrier: it defers its branch past one, and those
+// blocks come back flagged 0, which claim never sees.
 type fanout struct {
-	after uint64 // ordinal of the if-shell command itself
+	after uint64 // ordinal of the command the barrier follows
 	tag   string // body of the barrier's reply
-}
-
-// expandsReplies reports whether cmd runs further commands of its own. It is
-// keyed on the verb, so it covers if-shell/if only: a line that chains commands
-// itself (`a ; b`) or `run-shell -C` fans out the same way and takes no barrier.
-// `if-shell -b` defers its branch past the barrier, but those blocks come back
-// flagged 0, which claim never sees.
-func expandsReplies(cmd string) bool {
-	verb, _, _ := strings.Cut(cmd, " ")
-	return verb == "if-shell" || verb == "if"
 }
 
 func newStream(w io.Writer) *stream { return &stream{w: bufio.NewWriter(w)} }
@@ -503,15 +505,13 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 		fmt.Fprintf(s.w, "%s\n", cmd)
 		s.sent++
 		seqs = append(seqs, s.sent)
-		if expandsReplies(cmd) {
-			// The tag is a format to display-message: keep it a literal, never
-			// remote-derived text. No -t either — a target that vanished would
-			// answer with an error block and leave the swallow window open.
-			f := fanout{after: s.sent, tag: fmt.Sprintf("og-fanout-%d", s.sent)}
-			fmt.Fprintf(s.w, "display-message -p %s\n", f.tag)
-			s.sent++
-			s.fans = append(s.fans, f)
-		}
+		// The tag is a format to display-message: keep it a literal, never
+		// remote-derived text. No -t either — a target that vanished would
+		// answer with an error block and leave the swallow window open.
+		f := fanout{after: s.sent, tag: fmt.Sprintf("og-fanout-%d", s.sent)}
+		fmt.Fprintf(s.w, "display-message -p %s\n", f.tag)
+		s.sent++
+		s.fans = append(s.fans, f)
 	}
 	// bufio.Writer latches its first write error and no-ops every later write,
 	// so a half-closed ssh stdin mid-batch has to fail the whole batch: s.sent

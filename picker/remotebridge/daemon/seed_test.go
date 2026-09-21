@@ -13,7 +13,8 @@ import (
 // commands, one reader answering them — with the wire discarded and the command
 // lines recorded for assertions.
 func testRoundTrip(stream string, sent *[]string) roundTrip {
-	rt := newRoundTrip(controlmode.NewReader(strings.NewReader(stream)),
+	// withBarriers: the wire carries a barrier block per command (#723).
+	rt := newRoundTrip(controlmode.NewReader(strings.NewReader(withBarriers(stream))),
 		NewRouter(), &asyncQueue{}, newStream(io.Discard))
 	return func(cmds ...string) replies {
 		*sent = append(*sent, cmds...)
@@ -133,7 +134,7 @@ func TestPaneSeedWritesBothCommandsBeforeReadingEitherReply(t *testing.T) {
 	}, "\n") + "\n"
 
 	sent := &bytes.Buffer{}
-	g := &gatingReader{sent: sent, need: []string{"display-message", "capture-pane"}, script: strings.NewReader(replyStream)}
+	g := &gatingReader{sent: sent, need: []string{"display-message", "capture-pane"}, script: strings.NewReader(withBarriers(replyStream))}
 	rt := newRoundTrip(controlmode.NewReader(g), NewRouter(), &asyncQueue{}, newStream(sent))
 
 	got, err := PaneSeed(rt, "%3")

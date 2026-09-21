@@ -3,10 +3,12 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +23,55 @@ import (
 type capBuf struct{ bytes.Buffer }
 
 func newTestReader(s string) *controlmode.Reader {
+	return controlmode.NewReader(strings.NewReader(withBarriers(s)))
+}
+
+// rawTestReader is newTestReader without the barrier injection, for a fixture
+// that scripts the BLOCK stream directly rather than one block per command —
+// where an injected barrier would shift the very ordinals the test is pinning.
+func rawTestReader(s string) *controlmode.Reader {
 	return controlmode.NewReader(strings.NewReader(s))
+}
+
+// withBarriers is what lets a fixture keep scripting one reply block per
+// command. stampAll writes a barrier behind every command (#723), so the real
+// wire carries two blocks per command and a fixture listing only its own would
+// desynchronise from the second command on — failing closed, since claim's
+// swallow window stays open and the round-trip returns not-ok.
+//
+// The barrier goes after each client-flagged block, carrying the tag of the
+// command that block answered. Only flagged blocks count, because those are the
+// only ones claim gives an ordinal to — a hook's block (flags 0) is not one of
+// ours and takes no barrier.
+//
+// A fixture that scripts a fan-out — more blocks than commands — cannot use
+// this and builds its reader directly.
+func withBarriers(script string) string {
+	var out []string
+	cmds := 0
+	for _, line := range strings.Split(script, "\n") {
+		out = append(out, line)
+		if !isFlaggedBlockEnd(line) {
+			continue
+		}
+		cmds++
+		// The command's own ordinal is 2n-1: each one before it spent two.
+		out = append(out,
+			"%begin 1 1 1",
+			fmt.Sprintf("og-fanout-%d", 2*cmds-1),
+			"%end 1 1 1")
+	}
+	return strings.Join(out, "\n")
+}
+
+// isFlaggedBlockEnd reports whether line closes a block one of our own commands
+// produced — "%end <t> <n> 1" or "%error <t> <n> 1".
+func isFlaggedBlockEnd(line string) bool {
+	f := strings.Fields(line)
+	if len(f) != 4 || (f[0] != "%end" && f[0] != "%error") {
+		return false
+	}
+	return f[3] == strconv.Itoa(controlmode.ClientCommandFlag)
 }
 
 // testStream is a stream whose command side goes nowhere, for driving a reply
@@ -133,7 +183,9 @@ func TestReadReplyRoutingMatchesItsOwnCommand(t *testing.T) {
 		"%end 1 4 1",
 	}, "\n") + "\n"
 
-	l, ok := readReplyRouting(newTestReader(s), NewRouter(), &asyncQueue{}, testStream(), 2)
+	// A raw reader: this pins readReplyRouting's ordinal matching against a
+	// hand-built block stream, so the fixture owns every block in it.
+	l, ok := readReplyRouting(rawTestReader(s), NewRouter(), &asyncQueue{}, testStream(), 2)
 	if !ok || l.Kind != controlmode.End {
 		t.Fatalf("readReplyRouting returned %+v ok=%v, want End", l, ok)
 	}
