@@ -272,6 +272,7 @@
   picker-bridge-ctl-bin = "${picker-generate}/bin/og-remote-bridge-ctl";
   picker-bridge-daemon-bin = "${picker-generate}/bin/og-remote-bridge-daemon";
   picker-bridge-renderer-bin = "${picker-generate}/bin/og-remote-bridge-renderer";
+  picker-session-res-bin = "${picker-generate}/bin/tmux-session-resources";
 
   picker-agent-detect-bin = "${picker-generate}/bin/agent-detect";
 
@@ -924,6 +925,7 @@
         tmux-statusline = picker-statusline-bin;
         tmux-enrich-card = picker-card-bin;
         og-remote-bridge-ctl = picker-bridge-ctl-bin;
+        tmux-session-resources = picker-session-res-bin;
       };
       # The .tmux entry file, never the package root — the template joins no
       # path segments.
@@ -966,6 +968,7 @@
     inherit carousel-toggle prdash;
     inherit processIcons script;
     inherit picker-bridge-ctl-bin picker-card-bin picker-splash-bin picker-statusline-bin;
+    inherit picker-session-res-bin;
     inherit enrichIconsDoubled enrichIconsRaw;
   };
   referenceConf = reference.tmuxConf;
@@ -994,4 +997,4 @@ in
     og dispatcher partition mismatch (see ogVerbSpec/ogInternal in config/tmux.conf.nix):
       in scriptNames but not in ogVerbSpec or ogInternal: ${lib.concatStringsSep ", " ogPartitionUndecided}
       in ogVerbSpec/ogInternal but not in scriptNames: ${lib.concatStringsSep ", " ogPartitionUnknown}
-  ''; {inherit tmux-wrapped tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf;}
+  ''; {inherit tmux-wrapped tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf picker-generate;}

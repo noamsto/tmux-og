@@ -163,50 +163,104 @@ Git worktree management is handled by the third-party `worktrunk` tool, configur
 ### Remote Session Resources
 
 The session picker's CPU/Mem columns on a mirror row measure the **remote**
-session, not the local renderers its panes actually run (`picker/remote_resources.go`).
+session, not the local renderers its panes actually run. The aggregation now
+runs where the process tree is and crosses as an ordinary bridge stamp (#693);
+the ssh `ps` leg survives only as the version-skew fallback
+(`picker/remote_resources.go`).
 
-- **One aggregator, two sources.** `aggregateResources` (pure) walks the process
-  tree from a set of root PIDs over one `ps psArgs` table. The local leg forks
-  `ps`; the remote leg fetches the same table over ssh. Neither owns the walk.
-- **The same walk reports which agent runs in a session.** `psArgs` carries a
+- **One walk, one implementation.** `picker/proctree` is the only place the
+  process-tree walk lives — the picker's local leg, the ssh fallback and the
+  remote's own poller all call it over one `ps`-shaped table. Extracting it is
+  what let the remote be measured where it is without a second copy of the walk
+  drifting from this one.
+- **The same walk reports which agent runs in a session.** `PSArgs` carries a
   trailing `comm` (BSD ps prints a full path, so it is basenamed and
-  `.foo-wrapped`-normalised), and `aggregateResources` collects any agent
+  `.foo-wrapped`-normalised), and `proctree.Aggregate` collects any agent
   manifest command found anywhere in a session's tree. `pane_current_command`
   names a pane's process-group leader, so an agent tmux-remux relaunched —
   `cat-scrollback …; <agent>; exec <shell>` under one non-interactive shell,
   which has no job control, so the agent shares that shell's group — is
   invisible there while its state file, and so its agent icon, is live. The
   tree-found name joins `sessionData.procs`, restoring the program icon in the
-  Procs column; both legs get it from the one table, and the command list is
-  the manifests' own `match_commands`, the same list `@AGENT_COMMANDS` and
-  agent-detect read.
-- **The payload is one ssh round-trip** per host — core count, then
-  `<session>|<pane_pid>` lines, then a `PSTABLE` separator, then the process
-  table. The separator **must start with a letter**: the remote's login shell is
-  whatever the user set, and fish reads `echo --` as end-of-options and prints a
-  blank line, which silently swallowed it and left every mirror at 0% / 0M.
+  Procs column; every source gets it from the one walk — a mirror's names ride
+  the stamp below — and the command list is the manifests' own
+  `match_commands`, the same list `@AGENT_COMMANDS` and agent-detect read.
+- **`tmux-session-resources` is armed by the `@og-res-tick` monitor hook**
+  (every 5s, `--tick`) on every tmux-og host, and a pass runs **only while the
+  server has a control-mode client attached** — i.e. only while something is
+  bridged to it, so an unbridged host pays nothing for a column nobody reads. It
+  stamps every session's own `@og_session_res` with
+  `"<cpu> <mem> <cores> <tick> <agents>"`, where `agents` is the tree's agent
+  commands comma-joined, or `-` for none. Cores is `runtime.NumCPU()`, which is
+  what retires `getconf`. The values are quantised to a coarse fixed precision and
+  never pre-rendered: `formatCPU`/`formatMem` stay the sole owners of display
+  precision.
+- **The `tick` (the remote's epoch seconds) exists only so the value changes
+  every pass.** A tmux option outlives the process that wrote it, so no amount
+  of re-reading one can distinguish a live poller from a dead one — the absence
+  of notifications is the only evidence there is, and a row that never changes
+  emits none.
+- **The daemon subscribes session-scoped**, the third subscription beside
+  `og_labels` and `og_agents`: `refresh-client -B 'og_res::#{@og_session_res}'`,
+  where the **empty `what` field is the session-scoped spelling**, reported back
+  as `%subscription-changed og_res $N - - - : <value>`. It deduplicates on
+  every field but the tick, so the per-pass tick costs no local write, and
+  re-stamps an unchanged row only once its 30s refresh floor has elapsed.
+- **A malformed `-B` spec is not reportable.**
+  `cmd_refresh_client_update_subscription` silently removes the subscription and
+  returns with no `%error`, and this shipper has no poll backstop to mask one —
+  so its spec string is a constant with a live test.
+- **`@bridge_res` carries the daemon's own local clock**, never the remote's
+  tick: it writes the LOCAL mirror session's option as
+  `"<cpu> <mem> <cores> <local-receive-epoch> <agents>"`, so the reader needs
+  no skew correction; the picker merges `agents` into a covered mirror's Procs
+  column the way the ssh leg merges its own tree walk's. `reattach` drops it at the moment it sets `@bridge_state
+  disconnected`, and `repair` resets the shipper so the re-subscription's
+  re-report re-stamps — that is how the freshness rule below gets its "the
+  bridge is up" condition without the picker reading a second option.
+- **Precedence is per session, not per host.** The picker reads `@bridge_res`
+  out of the `list-panes -a` snapshot it already takes and treats it as fresh
+  when it parses and its epoch is within 90s (three of the daemon's refreshes);
+  a session with a fresh stamp keeps it, and the ssh path is probed only for
+  hosts with at least one uncovered session, filling only those sessions. Two
+  self-heals fall out of that epoch alone — a poller that stops while the bridge
+  stays healthy, and a daemon killed without teardown leaving an orphaned mirror
+  — both age out on the reader's own clock.
+- **CPU is the raw per-core `ps` sum whatever the source, and the owning
+  machine's core count rides beside it.** Normalising the remote by its own core
+  count read as "% of that machine", but the local leg does no such division, so
+  one column carried two units 32x apart — measured on a 32-core remote, every
+  session rendered a permanent `<1%` (a whole core pegged reads 3%).
+  `sessionData.cores` carries the owning machine's count (0 means this one) and
+  `cpuColor` scales against *that*, where before it divided an already-divided
+  remote value by the local `numCPU` again and pinned every mirror row to the
+  grey tint. The column widens off the rendered strings, so `cpuColWidth` stays
+  a floor. Unrelated and still true of every source: `ps` `%CPU` is a lifetime
+  average, not a rate, so a long-lived pane's figure lags reality in either
+  direction.
+- **A session covered by neither source renders `-`, not its local figures**
+  (`resUnknown`). Those figures measure the renderer, and a wrong number is
+  worse than an absent one — an unreachable host shows `-` indefinitely, which
+  is the truth.
+- **The ssh `ps` leg is the version-skew fallback**, and its three workarounds
+  are live constraints there and nowhere else now. The payload is one ssh
+  round-trip per host — core count, then `<session>|<pane_pid>` lines, then a
+  `PSTABLE` separator, then the whole process table. The separator **must start
+  with a letter**: the remote's login shell is whatever the user set, and fish
+  reads `echo --` as end-of-options and prints a blank line, which silently
+  swallowed it and left every mirror at 0% / 0M. Core count comes from
   `getconf _NPROCESSORS_ONLN`, never `nproc` — coreutils-only, absent on macOS.
-- **CPU is the raw per-core `ps` sum on both legs, and the host's core count
-  rides beside it.** Normalising the remote leg by its own core count read as
-  "% of that machine", but the local leg does no such division, so one column
-  carried two units 32x apart — measured on a 32-core remote, every session
-  rendered a permanent `<1%` (a whole core pegged reads 3%). `sessionData.cores`
-  now carries the owning machine's count (0 means this one) and `cpuColor`
-  scales against *that*, where before it divided an already-divided remote value
-  by the local `numCPU` again and pinned every mirror row to the grey tint. The
-  column widens off the rendered strings, so `cpuColWidth` stays a floor.
-  Unrelated and still true of both legs: `ps` `%CPU` is a lifetime average, not
-  a rate, so a long-lived pane's figure lags reality in either direction.
-- **Never blocks the render.** `remoteResourcesFor` returns what is cached and
-  kicks a background refresh (`remoteResourceTTL`, 10s — an ssh round-trip where
-  the local leg costs a fork). A host already in flight is skipped, not queued,
-  so the 1s item rebuild cannot pile ssh processes behind a slow host, and a
-  failed fetch keeps the previous values.
-- **A mirror with no answer renders `-`, not its local figures** (`resUnknown`).
-  Those figures measure the renderer, and a wrong number is worse than an
-  absent one — an unreachable host shows `-` indefinitely, which is the truth.
-- Remote needs nothing new on PATH: `tmux` and `ps` only, which the existing
-  session probe already assumes.
+  The leg needs nothing new on the remote's PATH, `tmux` and `ps` only. Sunset
+  condition: it is deletable once every host in `@remote_bridge_hosts` reports a
+  stamp.
+- **That leg never blocks the render.** `remoteResourcesFor` returns what is
+  cached and kicks a background refresh (`remoteResourceTTL`, 10s — an ssh
+  round-trip where the local leg costs a fork). A host already in flight is
+  skipped, not queued, so the 1s item rebuild cannot pile ssh processes behind a
+  slow host, and a failed fetch keeps the previous values.
+- Known limit, accepted: the poller can only ever be armed once the remote is
+  rebuilt, so an older remote stamps nothing and degrades silently to the
+  fallback.
 
 ### Remote Agent Status
 
@@ -1004,6 +1058,7 @@ they are all satisfied the same way — a remote rebuilt from this revision, who
 | Bridge graphics (`prefix + I` across a mirror) | `tmux-claude-images`, `resvg` |
 | Remote agent status | tmux-og's `claude-status-update` (`@claude_status`) for Claude, and `agent-detect` (`@agent_screen`, #635) for pi/codex/cursor — both stamp the pane options the daemon subscribes to |
 | Remote window labels | tmux-og's own `tmux-reflow-windows` (what stamps `@window_label_*`) and, for a codename, whatever fan-out harness stamps `@crew_name`/`@crew_color` — plus its per-pane `@crew_role`/`@crew_state`/`@crew_role_color` for the role-grid borders. The one requirement with no capability probe: an older remote stamps nothing and the mirror silently falls back to the remote window name. |
+| Remote session resources (the picker's CPU/Mem columns on a mirror row) | nothing new on PATH — the `@og-res-tick` monitor hook names `tmux-session-resources`' own store path; what it needs is a remote rebuilt from this revision, so the hook exists to arm it at all. No capability probe either: an older remote stamps nothing and the picker degrades silently to the ssh `ps` fallback (#693). |
 | Cold start (`prefix + s` on a serverless host) | `tmux-startup.service` / the launchd agent, plus lingering |
 | Remote-side picker (`prefix + s` `^o`) | `og-remote-picker` (`remote.exposePickOnPath`, default true) |
 | Tool binds across a mirror (`prefix + p`/`g`/`y`) | whichever of `prdash`, `lazygit`, `yazi` you press — the bind sends a bare name, never this host's store path. A missing one opens a short-lived message pane instead of the tool. The remote leg opens a **float**, which the mirror renders as a local float, so the remote's tmux must know `new-pane -A` — a Z-ORDER flag (the float stays visible above a zoomed pane), not attach-if-exists. The reuse of an already-open float is the gate both legs build themselves (#679); a remote whose tmux-og predates it keeps stacking until it is rebuilt. |
@@ -1120,7 +1175,7 @@ isn't on PATH.
 - **The which-key popup's filtered list is flat and score-ranked; its unfiltered list is grouped.** Grouping and ranking cannot both hold, and a search wants its best hit on line 1 rather than wherever its key table happens to fall — so `rebuildVisible` (`picker/whichkey.go`) drops the `── prefix ──` headers under a query and moves the table into a per-row column. 298 of a stock 434-bind server carry no `-N`, so their "note" is the raw `key_command`, and a query subsequence-matching a `/nix/store` path the column never shows returned 20 rows for `float` of which 2 were the floating-pane binds. `describedRank` sorts every real description above every command, rather than dropping the command rows — a plugin bind stays reachable by its command text, just below. Table headers carry a plain-words gloss (`whichKeyTableGloss`) because `prefix`/`root`/`move` are tmux's jargon, not descriptions; the prefix key is read live from the `prefix` option, and an unknown table gets no gloss rather than a guessed one.
 - **Enrichment window options** (`@issue_*`, `@pr_*`) are the single source of truth for issue/PR state — display formats, keybinds, and the window picker read them; only the stamp/enrich scripts write them.
 - **Every hand-rolled tmux repro opens on its own socket in its own `TMUX_TMPDIR`.** Inside a pane `$TMUX` is set, so a bare `tmux new-session` builds on the **live** server — a detached one-window shell nobody attaches and nothing reaps, which resurfaces days later as a mystery session (`t`, `p` and `probe` all leaked this way; the tell is an empty `#{session_last_attached}`). A bare `tmux kill-server` is the same mistake with the user's whole server as the blast radius. Reading the live server (`list-sessions`, `show-options`, `capture-pane`) is fine and usually the point — it is *creating* on it that leaks. So: `TMUX_TMPDIR=/tmp/og-$$ tmux -L probe new-session -d …`, then `kill-server` when the repro is done; the private dir confines a forgotten server to a path you can find, and the socket path is capped at ~108 bytes, so keep the dir short. tmux leaves the socket *file* behind on exit either way, unlinking a stale one only when a new server claims that name, so a shared `TMUX_TMPDIR` grows one dead entry per run. Every test here already works this way: the bats suites set a per-run `TMUX_TMPDIR`, and the Go tests that start a live tmux use `os.MkdirTemp("", "lz")` and pass it through the command env. **A private `TMUX_TMPDIR` does NOT isolate `CLAUDE_STATUS_DIR`** — it defaults to a bare `/tmp/claude-status` shared by every tmux server on the machine. A scratch server built from `tmuxConfig.tmux-wrapped` therefore shares the real server's agent state, and both its config-load `run-shell` (unconditional, on every boot — not client-gated) and its per-tick status-format call (client-gated) prune and reap from that shared directory exactly as they always do — export `CLAUDE_STATUS_DIR` to a scratch dir too, the way the bats suites already do. `claude_prune_stale_state`'s per-`server=`-owner PID-liveness check (#676) protects a real, still-live server's `panes/<id>` files from a scratch server's boot, but a scratch server with no client (and so no real agent panes of its own) still has nothing of its own to protect the real server's other state files with, so isolating `CLAUDE_STATUS_DIR` remains the actual requirement here, not something this guard makes optional. The tick is not the only destructive writer: `pane-exited`/`pane-died` fire `tmux-reap-pane` with no client and no status line at all, so even an unattached scratch server unlinks under the shared dir (ownership-guarded only when the colliding `panes/<id>` carries a `session=` this server lacks). (The `@og-sweep-tick` monitor hook, #603, is exempt: it only arms `agent-detect`, which is non-destructive — see the `tmux-update-icons` row above.)
-- **A background side effect must not be driven from `status-format`.** `status_line_size()` returns 0 for any control-mode client, so `status_redraw()` returns before expanding `status-format[0]` and none of its `#()` jobs ever runs — which froze `tmux-pr-enrich`, `tmux-issue-stamp --backfill`, `tmux-agent-usage`, and `tmux-update-icons`' full-server sweep on a host whose only clients are remote-bridge transports (#603). The test is artifact privacy, not whether a human is looking: the shorter rule "a client that renders no status line needs no text" is false on a bridge host, because a bridge is a consumer that is not a status client — the same reason `@bridge_proc`, #589 and #590 exist. Those four now run from tmux 3.8 `-B` monitor hooks (`@og-pr-tick`, `@og-backfill-tick`, `@og-usage-tick`, `@og-sweep-tick`, every 5s) instead, which fire off the server's own clock with zero clients attached. Three traps in that mechanism:
+- **A background side effect must not be driven from `status-format`.** `status_line_size()` returns 0 for any control-mode client, so `status_redraw()` returns before expanding `status-format[0]` and none of its `#()` jobs ever runs — which froze `tmux-pr-enrich`, `tmux-issue-stamp --backfill`, `tmux-agent-usage`, and `tmux-update-icons`' full-server sweep on a host whose only clients are remote-bridge transports (#603). The test is artifact privacy, not whether a human is looking: the shorter rule "a client that renders no status line needs no text" is false on a bridge host, because a bridge is a consumer that is not a status client — the same reason `@bridge_proc`, #589 and #590 exist. Those four now run from tmux 3.8 `-B` monitor hooks (`@og-pr-tick`, `@og-backfill-tick`, `@og-usage-tick`, `@og-sweep-tick`, every 5s) instead, which fire off the server's own clock with zero clients attached; `@og-res-tick` (`tmux-session-resources`, #693) is the fifth, born on the mechanism rather than frozen into it — and the one whose own pass is gated on a control-mode client being attached, since a host nobody bridges to has no reader for what it would stamp. Three traps in that mechanism:
   - A monitor hook's target field is **empty** for a session monitor (`@name::<format>`), never the word `session`. `monitor_parse` requires it, and upstream commit `557967c3` turned the permissive fallthrough into a hard failure, so `:session:` works on the current pin and dies on the next `flake.lock` bump.
   - A version guard around `-B` must pass its body as a **string**, not a brace block, because tmux parses every branch at source time and rejects the unknown flag even when the condition is false — `config/tmux.conf.nix:691` already records this for `floatNewPaneGuard`.
   - Each `-B` hook needs an unconditional `set-hook -g -u -B` clear paired with a `set -gu`, above the conditional setters. Setting a monitor replaces a same-named one, but **disabling** it does not: without the clear, a rebuild with the feature off leaves the old monitor firing at a garbage-collected store path for the life of the server. The `-u -B` form removes the monitor but leaves the option string, which is what the paired `set -gu` cleans up.

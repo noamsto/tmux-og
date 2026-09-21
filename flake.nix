@@ -135,6 +135,7 @@
               go test ./enrichstate/...
               go test ./agentdetect/...
               go test ./statusline/...
+              go test ./proctree/...
               go test -race ./remotebridge/...
               runHook postCheck
             '';
@@ -1219,6 +1220,7 @@
             backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
             usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
             sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${tmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
+            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-generate}/bin/tmux-session-resources --tick\\\"'";
           in
             pkgs.runCommand "tick-floor-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep pkgs.gawk pkgs.gnused pkgs.coreutils];
@@ -1232,10 +1234,13 @@
               USAGE_CLEAR_OPT = "set -gu '@og-usage-tick'";
               SWEEP_CLEAR_B = "set-hook -g -u -B '@og-sweep-tick'";
               SWEEP_CLEAR_OPT = "set -gu '@og-sweep-tick'";
+              RES_CLEAR_B = "set-hook -g -u -B '@og-res-tick'";
+              RES_CLEAR_OPT = "set -gu '@og-res-tick'";
               PR_SETTER = prSetter;
               BACKFILL_SETTER = backfillSetter;
               USAGE_SETTER = usageSetter;
               SWEEP_SETTER = sweepSetter;
+              RES_SETTER = resSetter;
               # The guard's condition-close / string-branch-open join, which
               # only exists when the hooks sit inside if-shell's STRING form
               # ("..." "...") rather than a brace block -- tmux parses every
@@ -1247,7 +1252,8 @@
 
               for v in PR_CLEAR_B PR_CLEAR_OPT BACKFILL_CLEAR_B BACKFILL_CLEAR_OPT \
                        USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT \
-                       PR_SETTER BACKFILL_SETTER USAGE_SETTER SWEEP_SETTER GUARD_JOIN; do
+                       RES_CLEAR_B RES_CLEAR_OPT \
+                       PR_SETTER BACKFILL_SETTER USAGE_SETTER SWEEP_SETTER RES_SETTER GUARD_JOIN; do
                 pat="''${!v}"
                 grep -qF "$pat" "$CONF" || {
                   echo "missing from conf ($v): $pat" >&2
@@ -1285,13 +1291,14 @@
 
               clear_max=-1
               for v in "$PR_CLEAR_B" "$PR_CLEAR_OPT" "$BACKFILL_CLEAR_B" "$BACKFILL_CLEAR_OPT" \
-                       "$USAGE_CLEAR_B" "$USAGE_CLEAR_OPT" "$SWEEP_CLEAR_B" "$SWEEP_CLEAR_OPT"; do
+                       "$USAGE_CLEAR_B" "$USAGE_CLEAR_OPT" "$SWEEP_CLEAR_B" "$SWEEP_CLEAR_OPT" \
+                       "$RES_CLEAR_B" "$RES_CLEAR_OPT"; do
                 prefix="''${line%%"$v"*}"
                 [ "$prefix" != "$line" ] || { echo "clear not found in guard line: $v" >&2; exit 1; }
                 [ "''${#prefix}" -gt "$clear_max" ] && clear_max="''${#prefix}"
               done
               setter_min=-1
-              for v in "$PR_SETTER" "$BACKFILL_SETTER" "$USAGE_SETTER" "$SWEEP_SETTER"; do
+              for v in "$PR_SETTER" "$BACKFILL_SETTER" "$USAGE_SETTER" "$SWEEP_SETTER" "$RES_SETTER"; do
                 prefix="''${line%%"$v"*}"
                 [ "$prefix" != "$line" ] || { echo "setter not found in guard line: $v" >&2; exit 1; }
                 if [ "$setter_min" -eq -1 ] || [ "''${#prefix}" -lt "$setter_min" ]; then
@@ -1311,7 +1318,7 @@
               # very backslashes #{q:} inserts -- before run-shell expands a
               # second time; #{q:start_time} was inert only because a start
               # time is pure digits, the kind of idiom someone copies next
-              # for a format that isn't. All four commands are pure store paths
+              # for a format that isn't. All five commands are pure store paths
               # plus literal flags, so the invariant is enforceable as written.
               cmds="$(echo "$line" | awk -F'\\\\"' '{for(i=2;i<NF;i+=2) print $i}')"
               [ -n "$cmds" ] || { echo "no hook commands extracted from guard line" >&2; exit 1; }
@@ -1325,10 +1332,10 @@
                     ;;
                 esac
               done <<<"$cmds"
-              # Still 4, not 8, with sixteen clear literals above: n counts the
+              # Still 5, not 10, with twenty clear literals above: n counts the
               # \"-wrapped run-shell payloads (awk's odd fields), and a clear
               # carries no command payload at all.
-              [ "$n" -eq 4 ] || { echo "expected 4 hook commands, got $n" >&2; exit 1; }
+              [ "$n" -eq 5 ] || { echo "expected 5 hook commands, got $n" >&2; exit 1; }
 
               touch $out
             '';
@@ -1362,6 +1369,12 @@
             backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
             usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
             sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${disabledTmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
+            # Unconditional like the sweep, but built off the DEFAULT config,
+            # the opposite of the case above: the poller is a picker-generate
+            # binary, whose only inputs are the process icons and the splash
+            # tips, so neither enrichEnable nor agentUsageEnable moves its
+            # store path and both configs name the same one.
+            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-generate}/bin/tmux-session-resources --tick\\\"'";
           in
             pkgs.runCommand "tick-floor-disabled-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];
@@ -1374,18 +1387,22 @@
               USAGE_CLEAR_OPT = "set -gu '@og-usage-tick'";
               SWEEP_CLEAR_B = "set-hook -g -u -B '@og-sweep-tick'";
               SWEEP_CLEAR_OPT = "set -gu '@og-sweep-tick'";
+              RES_CLEAR_B = "set-hook -g -u -B '@og-res-tick'";
+              RES_CLEAR_OPT = "set -gu '@og-res-tick'";
               PR_SETTER = prSetter;
               BACKFILL_SETTER = backfillSetter;
               USAGE_SETTER = usageSetter;
               SWEEP_SETTER = sweepSetter;
+              RES_SETTER = resSetter;
             } ''
-              # All eight clears survive a disabled feature -- four names times
+              # All ten clears survive a disabled feature -- five names times
               # the -B and option forms. They're keyed off the fixed hookNames
               # list, never the enable flags, which is what makes disabling a
               # feature actually drop its stale monitor on reload instead of
               # leaving argv's previous generation armed.
               for v in PR_CLEAR_B PR_CLEAR_OPT BACKFILL_CLEAR_B BACKFILL_CLEAR_OPT \
-                       USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT; do
+                       USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT \
+                       RES_CLEAR_B RES_CLEAR_OPT; do
                 pat="''${!v}"
                 grep -qF "$pat" "$CONF" || {
                   echo "disabled conf is missing a clear ($v): $pat" >&2
@@ -1393,10 +1410,13 @@
                 }
               done
 
-              grep -qF "$SWEEP_SETTER" "$CONF" || {
-                echo "disabled conf is missing the unconditional sweep setter" >&2
-                exit 1
-              }
+              for v in SWEEP_SETTER RES_SETTER; do
+                pat="''${!v}"
+                grep -qF "$pat" "$CONF" || {
+                  echo "disabled conf is missing an unconditional setter ($v): $pat" >&2
+                  exit 1
+                }
+              done
 
               for v in PR_SETTER BACKFILL_SETTER USAGE_SETTER; do
                 pat="''${!v}"

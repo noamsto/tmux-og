@@ -69,7 +69,7 @@ in
     version = "0.1.0";
     inherit src;
     vendorHash = "sha256-Z72w5oQsXFFqvkK1ndOTtu7AonXtxAM55JhzgJV5Usc=";
-    subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl"];
+    subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "sessionres" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl"];
     ldflags = ["-s" "-w"]; # strip debug info for smaller binary + faster startup
     # Binary name matches pname (Go module produces "picker" by default)
     postInstall = ''
@@ -78,6 +78,7 @@ in
       mv $out/bin/statusline $out/bin/tmux-statusline
       mv $out/bin/enrichcard $out/bin/tmux-enrich-card
       mv $out/bin/agentdetect $out/bin/agent-detect
+      mv $out/bin/sessionres $out/bin/tmux-session-resources
       mv $out/bin/remotebridge $out/bin/og-remote-bridge
       mv $out/bin/daemon $out/bin/og-remote-bridge-daemon
       mv $out/bin/renderer $out/bin/og-remote-bridge-renderer

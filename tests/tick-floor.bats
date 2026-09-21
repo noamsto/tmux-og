@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Live proof for #603's tick floor: the four set-hook -g -B monitors in
+# Live proof for #603's tick floor: the set-hook -g -B monitors in
 # config/tmux.conf.nix fire on the server's own clock, independent of any
 # attached client -- which tick-floor-conf-assertions (flake.nix) can only
 # assert about the emitted TEXT, not about tmux's actual runtime behaviour.
@@ -77,13 +77,13 @@ stamp_exists() { compgen -G "$1*" >/dev/null; }
 file_absent() { [ ! -e "$1" ]; }
 pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 
-@test "all four tick hooks register via show-hooks -g -B" {
+@test "all five tick hooks register via show-hooks -g -B" {
 	# show-hooks -g alone prints a monitor's COMMAND with no indication it is
 	# a monitor at all (tests/tmux-next38-readiness.bats); -B is the one
 	# listing form that reports the subscription itself.
 	run t show-hooks -g -B
 	[ "$status" -eq 0 ]
-	for name in @og-pr-tick @og-backfill-tick @og-usage-tick @og-sweep-tick; do
+	for name in @og-pr-tick @og-backfill-tick @og-usage-tick @og-sweep-tick @og-res-tick; do
 		[[ $output == *"$name::"* ]]
 	done
 }

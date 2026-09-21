@@ -765,6 +765,7 @@ func Run(cfg Config) error {
 	// nil-guarded handle to stop it.
 	var (
 		labels   *labelShipper
+		res      *resShipper
 		loopTick *time.Ticker
 	)
 	teardown := func() {
@@ -779,6 +780,9 @@ func Run(cfg Config) error {
 		// reg.all() loop between only unregisters sinks and closes conns.
 		if labels != nil {
 			labels.clear(cfg, reg)
+		}
+		if res != nil {
+			res.clear(cfg)
 		}
 		if loopTick != nil {
 			loopTick.Stop()
@@ -895,14 +899,16 @@ func Run(cfg Config) error {
 		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, cfg.RemoteSession, reg, cv, sendCtl, stopWatch, ticker.C)
 	}()
 
-	// Ship the remote's agent state into the local claude-status tree, and its
-	// window labels onto the mirror windows as @bridge_* options.
+	// Ship the remote's agent state into the local claude-status tree, its
+	// window labels onto the mirror windows as @bridge_* options, and the remote
+	// session's own CPU/mem figures onto the mirror session.
 	agents = newAgentShipper(cfg.LocalSess, remoteClockSkew(rt))
 	labels = newLabelShipper()
+	res = newResShipper()
 	// Subscriptions are per control client, so this runs once per attach — here
-	// for the first one, and at the end of repair for every reconnect. Both
-	// shippers keep polling if the remote refuses.
-	subscribe := func() { labels.subscribed, agents.subscribed = subscribeFormats(rt) }
+	// for the first one, and at the end of repair for every reconnect. The two
+	// shippers with a poll mode keep polling if the remote refuses.
+	subscribe := func() { labels.subscribed, agents.subscribed, res.subscribed = subscribeFormats(rt) }
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
 	// its floor on every reconnect.
@@ -965,6 +971,9 @@ func Run(cfg Config) error {
 			}
 			if v, ok := subscriptionValue(l, agentSubName); ok {
 				agents.queue(v)
+			}
+			if v, ok := subscriptionValue(l, resSubName); ok {
+				res.queue(v)
 			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
@@ -1040,6 +1049,7 @@ func Run(cfg Config) error {
 			drained := len(c.pump.lines) == 0
 			agents.flush(cfg, rt, gen, drained)
 			labels.flush(cfg, reg, rt, gen, drained)
+			res.flush(cfg)
 			sweeper.sweep(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
 			reseedDropped(router, rt)
 			reseedReshaped(router, rt)
@@ -1197,6 +1207,10 @@ func Run(cfg Config) error {
 		// dropped by the remote, not buffered.
 		reseedPanes(reg, router, rt, activeWin, "after reattach")
 		agents.reskew(remoteClockSkew(rt))
+		// Before the re-subscribe below, whose re-report is the only thing that
+		// puts the figures back: reattach dropped the stamp, and a shipper that
+		// still remembered writing it would suppress the write as unchanged.
+		res.reset()
 		// Last, and after the registry has settled: the fresh client carries no
 		// subscriptions, and re-subscribing re-reports every window and pane —
 		// so this doubles as the label/agent-state half of the repair.

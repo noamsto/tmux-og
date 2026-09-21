@@ -106,8 +106,8 @@ func agentUsageArgs(cfg *config.Config) string {
 		cfg.AgentUsage.MonthlyThreshold)
 }
 
-// tickHookNames is the CLEAR list, not the set list — the four setters below
-// carry their names inline, so the two lists are deliberately different lengths.
+// tickHookNames is the CLEAR list, not the set list — the setters below carry
+// their names inline, so the two lists are deliberately different lengths.
 //
 // Emission order is load-bearing — every clear precedes the first setter,
 // which tick-floor-conf-assertions measures.
@@ -116,6 +116,7 @@ var tickHookNames = []string{
 	"@og-backfill-tick",
 	"@og-usage-tick",
 	"@og-sweep-tick",
+	"@og-res-tick",
 }
 
 // tickHookIfShell arms the monitor-hook floor for the status-tick side effects
@@ -157,6 +158,11 @@ func tickHookIfShell(cfg *config.Config, p *paths.Paths) string {
 	// argv flag: $1 is a session name at every other callsite, so a session
 	// literally named "--sweep" would misroute itself forever.
 	parts = append(parts, setHook("@og-sweep-tick", "OG_TICK_SWEEP=1 "+p.Scripts["tmux-update-icons"]))
+	// Unconditional too, and deliberately flagless: the session-resource
+	// stamp is the REMOTE half of a feature whose local half (the picker's
+	// CPU/Mem columns) is opted into on a different machine, so a host with
+	// no remote.hosts of its own is exactly the host someone bridges to.
+	parts = append(parts, setHook("@og-res-tick", p.Bin["tmux-session-resources"]+" --tick"))
 
 	body := strings.ReplaceAll(strings.Join(parts, " \\; "), `"`, `\"`)
 	return fmt.Sprintf(`if-shell "tmux list-commands set-hook | grep -q -- -B" "%s" "display-message 'tmux-og: tmux predates 3.8 -B session monitors -- PR/backfill/usage polling and the agent sweep only run while a real client has this session attached'"`, body)

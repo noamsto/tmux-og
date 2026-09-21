@@ -17,15 +17,22 @@ import (
 // One notification per changed object, carrying that object's own value.
 // Objects created after the subscription are covered; re-subscribing under the
 // same name re-reports every object, which is the cheap way back to ground
-// truth.
+// truth. A subscription also reports once on subscribe, including an empty
+// value for an unset option — which is what lets "this remote stamps nothing"
+// be recognised rather than merely looking silent.
+//
+// An EMPTY what is the session-scoped spelling: the format is evaluated against
+// the control client's own attached session, and reported with no object to
+// name — "%subscription-changed <name> $N - - - : <value>".
 //
 // Each subscription carries the shipper's own -F format verbatim, so the
-// notification and the backstop read cannot describe different rows. Both
-// formats begin with their object's id, which is why nothing here parses the
-// ids out of the notification.
+// notification and the backstop read cannot describe different rows. The window
+// and pane formats begin with their object's id, which is why nothing here
+// parses the ids out of the notification.
 const (
 	labelSubName = "og_labels"
 	agentSubName = "og_agents"
+	resSubName   = "og_res"
 )
 
 // subscribeCmd builds the subscribe command for one format. Quoted as a single
@@ -35,16 +42,19 @@ func subscribeCmd(name, what, format string) string {
 	return "refresh-client -B " + tmuxQuote(name+":"+what+":"+format)
 }
 
-// subscribeFormats installs both subscriptions on the current control client
-// and reports, per shipper, whether it may now rely on notifications. Per
-// client, not per session, so a reconnect must re-run it — see repair.
+// subscribeFormats installs the subscriptions on the current control client and
+// reports, per shipper, whether it may now rely on notifications. Per client,
+// not per session, so a reconnect must re-run it — see repair.
 //
 // A round-trip rather than a bare send, because the answer decides whether the
 // 1s poll can stand down: an %error means the remote's tmux predates
 // subscriptions, and that shipper keeps polling for the life of the connection.
-func subscribeFormats(rt roundTrip) (labels, agents bool) {
+// The res result is recorded and drives nothing: that shipper has no poll mode
+// to fall back to, by design.
+func subscribeFormats(rt roundTrip) (labels, agents, res bool) {
 	return sendSubscription(rt, labelSubName, "@*", windowLabelFormat),
-		sendSubscription(rt, agentSubName, "%*", agentStatusFormat)
+		sendSubscription(rt, agentSubName, "%*", agentStatusFormat),
+		sendSubscription(rt, resSubName, "", sessionResFormat)
 }
 
 func sendSubscription(rt roundTrip, name, what, format string) bool {
