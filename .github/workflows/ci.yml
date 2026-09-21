@@ -38,4 +38,5 @@ jobs:
           name: lazytmux
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - run: nix build .#default --accept-flake-config
+      - run: nix build .#tmux-remux --accept-flake-config
       - run: nix flake check --accept-flake-config
