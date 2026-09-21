@@ -94,13 +94,14 @@ arm_agent_detect() {
 	# canary (only a real window id matches ^@[0-9]+$, and #{pane_current_command}
 	# — the one field ahead of it that is not a closed token — can in principle
 	# carry a '|' and shift it into something that fails the match).
-	# #{@window_task} is free-form, so its row copy runs through tmux's
-	# s/[|]/ / substitution (the bracket expression is load-bearing — a bare
-	# s/|/ / is an ERE empty alternation) to keep it pipe-free ahead of the
-	# last field. #{@window_ai_name} is sanitized '|'-free by
-	# claude-status-update. #{session_name} is last because it may contain '|'.
+	# #{@window_task} and #{@window_ai_name} are both free-form, so their row
+	# copies run through tmux's s/[|]/ / substitution (the bracket expression
+	# is load-bearing — a bare s/|/ / is an ERE empty alternation) to keep them
+	# pipe-free: the canary above sits before them, so a '|' here would shift
+	# task/session_name with nothing left to catch it. #{session_name} is last
+	# because it may contain '|'.
 	local rows
-	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}|#{window_id}|#{@bridge_win}|#{@window_has_agent}|#{@window_manual_name}|#{@window_ai_name}|#{s/[|]/ /:@window_task}|#{session_name}' 2>/dev/null) || return 0
+	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}|#{window_id}|#{@bridge_win}|#{@window_has_agent}|#{@window_manual_name}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@window_task}|#{session_name}' 2>/dev/null) || return 0
 	# claude_reap_dead_panes deletes under CLAUDE_STATUS_DIR -- a bare /tmp path
 	# shared by every tmux server on the machine, which TMUX_TMPDIR/-L isolation
 	# does not touch -- by checking each pane id against THIS CALLER's own

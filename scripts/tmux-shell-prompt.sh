@@ -9,10 +9,12 @@
 # Also the event trigger for #671: when this was the window's last live
 # agent, resets the window's naming/crew display state (never
 # @crew_name/@crew_color themselves — dispatcher-owned, CLAUDE.md hard
-# constraint). tmux-update-icons.sh's backstop is the ground truth for
-# whatever this event path can't reach (a host whose only clients are
-# control-mode remote-bridge transports never ticks that poller, so
-# @window_has_agent is never written there and this event path stays inert).
+# constraint). tmux-update-icons.sh is the ground truth for whatever this
+# event path can't reach: its per-tick loop for a client-less window or a
+# shell with no OSC 133 support, and since #692 its client-independent
+# @og-sweep-tick pass, which is what writes @window_has_agent on a host whose
+# only clients are control-mode remote-bridge transports — so this path is
+# armed there too, not inert).
 
 set -euo pipefail
 

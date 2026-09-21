@@ -413,3 +413,23 @@ claude_win() {
 	[ "$(opt_of "$cwin" @window_ai_name)" = "Old Claude Name" ]
 	[ -z "$(opt_of "$cwin" @window_naming_dirty)" ]
 }
+
+# @window_ai_name is a plain user-settable window option, so its row copy is
+# s/[|]/ /-wrapped like @window_task's: the row's only canary (window_id) sits
+# ahead of both, and an unwrapped '|' here shifts the task into session_name and
+# leaves win_ai/win_task empty, so the sweep's stale test never fires and the
+# name the sweep exists to clear survives (#692 review, round 1 MEDIUM).
+@test "sweep clears a stale name whose own value opens with a '|'" {
+	local bare
+	bare="$(bare_id "$(tmux list-panes -t A -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks}
+	tmux set -w -t A @window_ai_name '|'
+	tmux set -w -t A @window_task 'stale task'
+	printf '|\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+
+	run sweep_tick
+	[ "$status" -eq 0 ]
+	[ -z "$(opt_of A @window_ai_name)" ]
+	[ -z "$(opt_of A @window_task)" ]
+	[ "$(opt_of A @window_naming_dirty)" = 1 ]
+}
