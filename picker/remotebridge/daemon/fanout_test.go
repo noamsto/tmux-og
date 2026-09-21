@@ -1,7 +1,8 @@
 package daemon
 
 import (
-	"io"
+	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,7 +15,7 @@ import (
 func fanoutStream(branch ...string) string {
 	lines := []string{"%begin 1 1 1", "%end 1 1 1"} // the if-shell itself
 	for i, b := range branch {
-		n := string(rune('2' + i))
+		n := strconv.Itoa(i + 2)
 		lines = append(lines, "%begin 1 "+n+" 1")
 		if b != "" {
 			lines = append(lines, b)
@@ -35,17 +36,23 @@ func fanoutStream(branch ...string) string {
 func TestIfShellBranchRepliesDoNotDesyncRoundTrips(t *testing.T) {
 	for name, branch := range map[string][]string{
 		"branch of two commands": {"", ""},
-		"failing first command":  {""}, // an error aborts the rest of its list
+		"failing first command":  {"no such window: @9"}, // an error aborts the rest of its list; its block still prints
 		"no branch replies":      {},
 		"long branch":            {"", "", "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			st := newStream(io.Discard)
+			wire := &bytes.Buffer{}
+			st := newStream(wire)
 			rt := newRoundTrip(controlmode.NewReader(strings.NewReader(fanoutStream(branch...))),
 				NewRouter(), &asyncQueue{}, st)
 
 			if !st.send("if-shell -F 1 'set -p @x 1 ; set -p @y 2' ''") {
 				t.Fatal("send failed")
+			}
+			// The barrier must be on the wire, right behind the if-shell: the
+			// reader's swallow window is only closed by its reply.
+			if want := "if-shell -F 1 'set -p @x 1 ; set -p @y 2' ''\ndisplay-message -p og-fanout-1\n"; wire.String() != want {
+				t.Fatalf("wire = %q, want %q", wire.String(), want)
 			}
 			l, ok := one(rt, "display-message -p layout")
 			if !ok {
@@ -55,6 +62,29 @@ func TestIfShellBranchRepliesDoNotDesyncRoundTrips(t *testing.T) {
 				t.Fatalf("round-trip read %q, want its own reply: the branch's blocks were counted as replies", got)
 			}
 		})
+	}
+}
+
+// Two presses in flight at once each get their own swallow window, in order.
+func TestBackToBackIfShellsEachTakeABarrier(t *testing.T) {
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "%end 1 1 1", // if-shell #1
+		"%begin 1 2 1", "%end 1 2 1", // its branch
+		"%begin 1 3 1", "og-fanout-1", "%end 1 3 1", // barrier #1
+		"%begin 1 4 1", "%end 1 4 1", // if-shell #2
+		"%begin 1 5 1", "%end 1 5 1", // its branch
+		"%begin 1 6 1", "%end 1 6 1", // its second branch command
+		"%begin 1 7 1", "og-fanout-3", "%end 1 7 1", // barrier #2
+		"%begin 1 8 1", "reply", "%end 1 8 1",
+	}, "\n") + "\n"
+	st := newStream(&bytes.Buffer{})
+	rt := newRoundTrip(controlmode.NewReader(strings.NewReader(stream)), NewRouter(), &asyncQueue{}, st)
+
+	st.send("if-shell -F 1 'a' ''")
+	st.send("if-shell -F 1 'a ; b' ''")
+	l, ok := one(rt, "display-message -p x")
+	if !ok || string(l.Data) != "reply" {
+		t.Fatalf("round-trip after two if-shells read %q, %v; want its own reply", l.Data, ok)
 	}
 }
 

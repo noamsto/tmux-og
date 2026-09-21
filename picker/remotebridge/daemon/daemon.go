@@ -458,10 +458,8 @@ type stream struct {
 // them guards a client-flagged reply block of its own, so one command written
 // produces 1+N blocks, N being however many branch commands actually ran — a
 // failing branch command aborts the rest of its list, so N is not even a
-// constant. Counting blocks cannot tell them from the next command's reply, and
-// the count then runs ahead of the commands for the rest of the connection
-// (#715): the layout read after a tool press answered with the branch's empty
-// block, and nothing round-tripped correctly again until a reattach reset it.
+// constant. Counting blocks cannot tell them from the next command's reply, so
+// the count would run ahead of the commands for the rest of the connection.
 //
 // The branch runs immediately after the if-shell's own block and before
 // anything written behind it, so the barrier's reply (recognised by its body,
@@ -472,7 +470,11 @@ type fanout struct {
 	tag   string // body of the barrier's reply
 }
 
-// expandsReplies reports whether cmd runs further commands of its own.
+// expandsReplies reports whether cmd runs further commands of its own. It is
+// keyed on the verb, so it covers if-shell/if only: a line that chains commands
+// itself (`a ; b`) or `run-shell -C` fans out the same way and takes no barrier.
+// `if-shell -b` defers its branch past the barrier, but those blocks come back
+// flagged 0, which claim never sees.
 func expandsReplies(cmd string) bool {
 	verb, _, _ := strings.Cut(cmd, " ")
 	return verb == "if-shell" || verb == "if"
@@ -502,6 +504,9 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 		s.sent++
 		seqs = append(seqs, s.sent)
 		if expandsReplies(cmd) {
+			// The tag is a format to display-message: keep it a literal, never
+			// remote-derived text. No -t either — a target that vanished would
+			// answer with an error block and leave the swallow window open.
 			f := fanout{after: s.sent, tag: fmt.Sprintf("og-fanout-%d", s.sent)}
 			fmt.Fprintf(s.w, "display-message -p %s\n", f.tag)
 			s.sent++
