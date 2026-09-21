@@ -125,8 +125,12 @@ res_diag() {
 		for p in /nix/store/*-ps-*/bin/ps /bin/ps; do
 			[ -x "$p" ] || continue
 			echo "DIAG ps=$p"
-			"$p" -Ao pid,ppid,pcpu,rss,comm 2>&1 | head -4
-			echo "DIAG ps rc=${PIPESTATUS[0]}"
+			local a out
+			for a in "-Ao pid,ppid,pcpu,rss,comm" "-Ao pid,ppid,pcpu,rss" "-Ao pid,ppid" "-A -o pid" "-ax -o pid" "-p $$ -o pid" "-o pid" ""; do
+				# shellcheck disable=SC2086
+				out=$("$p" $a 2>&1)
+				echo "DIAG ps [$a] rc=$? lines=$(printf '%s\n' "$out" | wc -l) first=[$(printf '%s\n' "$out" | head -2 | tr '\n' '~')]"
+			done
 		done
 		echo "DIAG run:"
 		TMUX="$(t display-message -p '#{socket_path},#{pid},0')" "$bin" --tick 2>&1
