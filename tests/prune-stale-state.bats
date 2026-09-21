@@ -152,6 +152,60 @@ stamp() {
 	[ -e "$CLAUDE_NAMES_DIR/8" ]
 }
 
+# #709: a screen-only agent pane (pi/codex/cursor) has no panes/<id>; its owner
+# rides screen/<id> (statefile.Writer, agentstatus.go) and watchers/<id>
+# (registerWatcher) instead.
+
+@test "prune protects a stale screen file (and its watcher) owned by a live foreign server" {
+	start_fake_tmux_server
+	printf 'state=idle\ntimestamp=1\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_SCREEN_DIR/8"
+	printf '123\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_WATCHERS_DIR/8"
+	touch -t 200001010000 "$CLAUDE_SCREEN_DIR/8" "$CLAUDE_WATCHERS_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ -e "$CLAUDE_SCREEN_DIR/8" ]
+	[ -e "$CLAUDE_WATCHERS_DIR/8" ]
+}
+
+@test "prune protects screen/<id> through a stale watchers file alone" {
+	start_fake_tmux_server
+	printf 'state=idle\ntimestamp=1\n' >"$CLAUDE_SCREEN_DIR/8"
+	printf '123\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_WATCHERS_DIR/8"
+	touch -t 200001010000 "$CLAUDE_SCREEN_DIR/8" "$CLAUDE_WATCHERS_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ -e "$CLAUDE_SCREEN_DIR/8" ]
+	[ -e "$CLAUDE_WATCHERS_DIR/8" ]
+}
+
+@test "prune reaps screen and watchers files whose server= pid is dead" {
+	printf 'state=idle\ntimestamp=1\nserver=2147483647\n' >"$CLAUDE_SCREEN_DIR/8"
+	printf '123\nserver=2147483647\n' >"$CLAUDE_WATCHERS_DIR/8"
+	touch -t 200001010000 "$CLAUDE_SCREEN_DIR/8" "$CLAUDE_WATCHERS_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ ! -e "$CLAUDE_SCREEN_DIR/8" ]
+	[ ! -e "$CLAUDE_WATCHERS_DIR/8" ]
+}
+
+@test "prune reaps screen and watchers files owned by its own SERVER_PID" {
+	printf 'state=idle\ntimestamp=1\nserver=12345\n' >"$CLAUDE_SCREEN_DIR/8"
+	printf '123\nserver=12345\n' >"$CLAUDE_WATCHERS_DIR/8"
+	touch -t 200001010000 "$CLAUDE_SCREEN_DIR/8" "$CLAUDE_WATCHERS_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 12345
+	[ ! -e "$CLAUDE_SCREEN_DIR/8" ]
+	[ ! -e "$CLAUDE_WATCHERS_DIR/8" ]
+}
+
+@test "prune: an own-pid panes file does not hide a foreign live owner in watchers" {
+	start_fake_tmux_server
+	printf 'server=12345\n' >"$CLAUDE_PANES_DIR/8"
+	printf '123\nserver=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_WATCHERS_DIR/8"
+	printf 'state=idle\ntimestamp=1\n' >"$CLAUDE_SCREEN_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8" "$CLAUDE_WATCHERS_DIR/8" "$CLAUDE_SCREEN_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 12345
+	[ -e "$CLAUDE_PANES_DIR/8" ]
+	[ -e "$CLAUDE_WATCHERS_DIR/8" ]
+	[ -e "$CLAUDE_SCREEN_DIR/8" ]
+}
+
 @test "prune does not protect an alive owner that is not a tmux process (pid reuse)" {
 	command -v ps >/dev/null || skip "ps not available"
 	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"

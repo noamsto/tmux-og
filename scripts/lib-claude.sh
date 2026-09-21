@@ -112,24 +112,27 @@ claude_pid_is_tmux() {
 # "written moments ago by a different, still-running server" — under the
 # shared CLAUDE_STATUS_DIR, a second server's very first boot could otherwise
 # delete a live different server's state. When SERVER_PID (this booting
-# server's own #{pid}) is passed, panes/<id> files are scanned once up front
-# for their server= field (stamped by both writers of panes/<id>:
-# scripts/claude-status-update.sh and picker/remotebridge/daemon/agentstatus.go);
-# an id whose recorded owner PID is numeric, not SERVER_PID, and still a live
-# tmux process (claude_pid_is_tmux, evaluated once per distinct owner per pass)
-# is protected from deletion across every dir this sweeps, regardless of mtime.
+# server's own #{pid}) is passed, panes/, screen/ and watchers/ files are
+# scanned once up front for their server= field (stamped by the writers of
+# panes/<id>: scripts/claude-status-update.sh and
+# picker/remotebridge/daemon/agentstatus.go; of screen/<id>: agent-detect's
+# statefile.Writer and that same shipper; of watchers/<id>: agent-detect's
+# registerWatcher); an id whose recorded owner PID is numeric, not SERVER_PID,
+# and still a live tmux process (claude_pid_is_tmux, evaluated once per
+# distinct owner per pass) is protected from deletion across every dir this
+# sweeps, regardless of mtime.
 # Caveats, deliberately:
 #   (a) the liveness check is `kill -0` plus a `ps` comm match for "tmux", so a
 #       reused PID belonging to an unrelated process no longer protects a dead
 #       generation's ids. Where ps is missing or answers nothing it cannot
 #       tell and protects — under-reap, never over-delete, is the posture.
-#   (b) protection is only granted to ids that have a panes/<id> server=
-#       field — a screen-only agent pane (pi/codex/cursor, no panes/<id>
-#       sibling) stays mtime-prunable. For such a pane on a live server,
-#       another server's boot still deletes its screen/<id> AND watchers/<id>;
-#       the live agent-detect watcher then exits on its missing registry file
-#       and is re-armed within a tick (a flap, not a permanent hole). Known
-#       follow-up.
+#   (b) screen-only agent panes (pi/codex/cursor, no panes/<id> sibling) are
+#       protected through the server= stamps on screen/<id> and watchers/<id>.
+#       Files written before those stamps existed carry none and still fall to
+#       mtime alone. Separately, claude_reap_dead_panes (the ~60s sweep) deletes
+#       screen/<id> and watchers/<id> for ids absent from this server's pane
+#       list with no ownership guard, so cross-server flapping is not fully
+#       closed — a known follow-up.
 #   (c) with SERVER_PID the marker gate is per-server
 #       (.server_start.<pid>, content = start_time), so two live servers each
 #       sweep once per boot instead of ping-ponging one shared marker. The
@@ -151,27 +154,29 @@ claude_prune_stale_state() {
 
 	local -A protected=() owner_live=()
 	if [[ -n $server_pid ]]; then
-		local pf id owner key val
-		for pf in "$CLAUDE_PANES_DIR"/*; do
-			[[ -f $pf ]] || continue
-			id="${pf##*/}"
-			owner=""
-			while IFS='=' read -r key val || [[ -n $key ]]; do
-				[[ $key == server ]] && {
-					owner="$val"
-					break
-				}
-			done <"$pf"
-			[[ $owner =~ ^[0-9]+$ ]] || continue
-			[[ $owner == "$server_pid" ]] && continue
-			if [[ -z ${owner_live[$owner]+x} ]]; then
-				if claude_pid_is_tmux "$owner"; then
-					owner_live["$owner"]=1
-				else
-					owner_live["$owner"]=0
+		local odir pf id owner key val
+		for odir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_WATCHERS_DIR"; do
+			for pf in "$odir"/*; do
+				[[ -f $pf ]] || continue
+				id="${pf##*/}"
+				owner=""
+				while IFS='=' read -r key val || [[ -n $key ]]; do
+					[[ $key == server ]] && {
+						owner="$val"
+						break
+					}
+				done <"$pf"
+				[[ $owner =~ ^[0-9]+$ ]] || continue
+				[[ $owner == "$server_pid" ]] && continue
+				if [[ -z ${owner_live[$owner]+x} ]]; then
+					if claude_pid_is_tmux "$owner"; then
+						owner_live["$owner"]=1
+					else
+						owner_live["$owner"]=0
+					fi
 				fi
-			fi
-			[[ ${owner_live[$owner]} == 1 ]] && protected["$id"]=1
+				[[ ${owner_live[$owner]} == 1 ]] && protected["$id"]=1
+			done
 		done
 	fi
 

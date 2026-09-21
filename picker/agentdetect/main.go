@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -61,13 +62,14 @@ func main() {
 	}
 
 	myPID := os.Getpid()
-	if !registerWatcher(watcherRegDir, paneID, myPID) {
+	server := serverPID(paneID)
+	if !registerWatcher(watcherRegDir, paneID, myPID, server) {
 		return
 	}
 
 	scr, curCols, curRows := seededScreen(paneID)
 	deb := debounce.New(debounceWindow, sampleCeiling)
-	w := statefile.New(stateDir, paneID)
+	w := statefile.New(stateDir, paneID).WithServer(server)
 	emit(scr, m, w) // report what is already on screen, before any new output
 
 	buf := drainbuf.New(maxBufferedBytes)
@@ -238,18 +240,40 @@ func parsePaneInfo(out string) (cols, rows int, cmd string, ok bool) {
 	return c, r, cmd, true
 }
 
+var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
+
+// serverPID returns the pid of the tmux server owning paneID, or "" when it
+// cannot be resolved to a number. It is the ownership stamp that keeps another
+// server's boot-time prune off this pane's state files.
+func serverPID(paneID string) string {
+	out, err := exec.Command("tmux", "display", "-p", "-t", "%"+paneID, "#{pid}").Output()
+	if err != nil {
+		return ""
+	}
+	pid := strings.TrimSpace(string(out))
+	if !serverPIDRe.MatchString(pid) {
+		return ""
+	}
+	return pid
+}
+
 // registerWatcher atomically claims paneID for pid, replacing whatever a
-// previous watcher wrote. Returns false only if the filesystem itself is
+// previous watcher wrote. The file is the pid on line 1, plus a server=<pid>
+// line when server is known. Returns false only if the filesystem itself is
 // unusable (can't mkdir/write/rename) — in that case the caller can't
 // guarantee it's the sole watcher for this pane, so it should not become a
 // long-lived process that might duplicate one (#239).
-func registerWatcher(dir, paneID string, pid int) bool {
+func registerWatcher(dir, paneID string, pid int, server string) bool {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false
 	}
 	final := filepath.Join(dir, paneID)
 	tmp := final + "." + strconv.Itoa(pid) + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	content := strconv.Itoa(pid)
+	if server != "" {
+		content += "\nserver=" + server + "\n"
+	}
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return false
 	}
 	return os.Rename(tmp, final) == nil
@@ -270,7 +294,8 @@ func stillOwner(dir, paneID string, pid int) bool {
 // ownerMatches is the pure comparison stillOwner delegates to, split out so
 // the decision is testable without touching the filesystem.
 func ownerMatches(registered string, pid int) bool {
-	return strings.TrimSpace(registered) == strconv.Itoa(pid)
+	first, _, _ := strings.Cut(registered, "\n")
+	return strings.TrimSpace(first) == strconv.Itoa(pid)
 }
 
 // paneAlive reports whether the pane still exists, by asking tmux directly

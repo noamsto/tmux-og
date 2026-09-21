@@ -339,6 +339,32 @@ func TestAgentShipperWritesScreenFile(t *testing.T) {
 	}
 }
 
+// screen/ carries the same server= ownership stamp as panes/, since a
+// screen-only pane has no panes/ sibling to protect it from another server's
+// boot-time prune.
+func TestAgentShipperStampsServerPIDOnScreenFile(t *testing.T) {
+	dir := t.TempDir()
+	a := &agentShipper{dir: dir, sess: "lab-mono", skew: 10, written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+	cfg.LocalTmuxOut = func(args ...string) (string, error) {
+		return "4242", nil
+	}
+
+	a.apply(cfg, []paneStatus{
+		{pane: "%1", proc: "pi", screenState: "processing", screenTS: 1700000000, screenFlags: "bg=2"},
+	})
+
+	body, err := os.ReadFile(filepath.Join(dir, "screen", "7"))
+	if err != nil {
+		t.Fatalf("screen file: %v", err)
+	}
+	want := "state=processing\ntimestamp=1700000010\nserver=4242\nbg=2\n"
+	if string(body) != want {
+		t.Errorf("screen file =\n%q\nwant\n%q", body, want)
+	}
+}
+
 // An unchanged screen row must not be rewritten, the same rule panes/ already
 // gets — and it must be independent of the hook state, since a Claude pane
 // stamps only @claude_status and a screen-only pane stamps only

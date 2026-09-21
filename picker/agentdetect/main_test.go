@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -180,6 +181,8 @@ func TestOwnerMatches(t *testing.T) {
 		{"trailing newline", "1234\n", 1234, true},
 		{"different pid", "5678", 1234, false},
 		{"empty registry", "", 1234, false},
+		{"two-line file", "1234\nserver=99\n", 1234, true},
+		{"two-line file, different pid", "5678\nserver=1234\n", 1234, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -190,10 +193,37 @@ func TestOwnerMatches(t *testing.T) {
 	}
 }
 
+func TestRegisterWatcherContent(t *testing.T) {
+	cases := []struct {
+		name, server, want string
+	}{
+		{"with server", "777", "100\nserver=777\n"},
+		{"without server", "", "100"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if !registerWatcher(dir, "42", 100, c.server) {
+				t.Fatal("registerWatcher failed")
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "42"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != c.want {
+				t.Errorf("content = %q, want %q", got, c.want)
+			}
+			if !stillOwner(dir, "42", 100) {
+				t.Error("registered pid should still be the owner")
+			}
+		})
+	}
+}
+
 func TestRegisterWatcherAndStillOwner(t *testing.T) {
 	dir := t.TempDir()
 
-	if !registerWatcher(dir, "42", 100) {
+	if !registerWatcher(dir, "42", 100, "") {
 		t.Fatal("registerWatcher should succeed against a writable temp dir")
 	}
 	if !stillOwner(dir, "42", 100) {
@@ -206,7 +236,7 @@ func TestRegisterWatcherAndStillOwner(t *testing.T) {
 	// A later registration (simulating a re-arm) supersedes the first —
 	// this is the exact scenario that leaked in #239: old watcher still
 	// running, new watcher starts for the same pane.
-	if !registerWatcher(dir, "42", 200) {
+	if !registerWatcher(dir, "42", 200, "") {
 		t.Fatal("re-registration should succeed")
 	}
 	if stillOwner(dir, "42", 100) {
@@ -240,13 +270,13 @@ func TestEmitIfOwnerSkipsWhenSuperseded(t *testing.T) {
 		{State: "done", Priority: 1, Contains: []string{"NEW-SCREEN"}},
 	}}
 
-	if !registerWatcher(regDir, paneID, 100) {
+	if !registerWatcher(regDir, paneID, 100, "") {
 		t.Fatal("registerWatcher should succeed for the old watcher")
 	}
 
 	// Re-arm supersedes the old watcher before it exits — the exact race
 	// #239/#324 target: old pid 100 is still running when pid 200 takes over.
-	if !registerWatcher(regDir, paneID, 200) {
+	if !registerWatcher(regDir, paneID, 200, "") {
 		t.Fatal("registerWatcher should succeed for the new watcher")
 	}
 
@@ -286,7 +316,7 @@ func TestEmitIfOwnerEmitsWhenStillOwner(t *testing.T) {
 		{State: "busy", Priority: 1, Contains: []string{"SCREEN"}},
 	}}
 
-	if !registerWatcher(regDir, paneID, 100) {
+	if !registerWatcher(regDir, paneID, 100, "") {
 		t.Fatal("registerWatcher should succeed")
 	}
 

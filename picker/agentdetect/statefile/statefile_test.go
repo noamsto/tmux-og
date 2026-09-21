@@ -210,3 +210,36 @@ func TestUpdateStampsPaneOption(t *testing.T) {
 		t.Fatalf("stamp call = %q, want %q", got, want)
 	}
 }
+
+func TestWithServerStampsFileBetweenTimestampAndFlags(t *testing.T) {
+	dir := t.TempDir()
+	w, _ := newTestWriter(dir, "3")
+	w.WithServer("4242")
+
+	if _, err := w.Update("idle", map[string]int{"bg": 1}, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "state=idle\ntimestamp=1000\nserver=4242\nbg=1\n"; string(data) != want {
+		t.Fatalf("file = %q, want %q", data, want)
+	}
+}
+
+func TestUnstampedWriterOutputUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	w, _ := newTestWriter(dir, "3")
+
+	if _, err := w.Update("idle", map[string]int{"bg": 1}, time.Unix(1000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "state=idle\ntimestamp=1000\nbg=1\n"; string(data) != want {
+		t.Fatalf("file = %q, want %q", data, want)
+	}
+}

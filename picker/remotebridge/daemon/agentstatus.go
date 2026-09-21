@@ -59,8 +59,8 @@ const (
 // later consumer could forget to apply.
 var crewWordRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
-// serverPIDRe is the shape the shell reader of a panes/ file's server= field
-// requires; anything else would be written into the file as-is.
+// serverPIDRe is the shape the shell reader of a panes/ or screen/ file's
+// server= field requires; anything else would be written into the file as-is.
 var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
 
 // paneStatus is one remote pane's foreground command and, when an agent runs
@@ -340,6 +340,9 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			a.removeScreenFile(id)
 		} else {
 			body := fmt.Sprintf("state=%s\ntimestamp=%d\n", r.screenState, r.screenTS+a.skew)
+			if pid := a.localServerPID(cfg); pid != "" {
+				body += "server=" + pid + "\n"
+			}
 			if r.screenFlags != "" {
 				// screenFlags is the writer's space-joined "name=count"
 				// tokens; the on-disk form is the same tokens, one per line.
