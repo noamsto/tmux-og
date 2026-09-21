@@ -361,7 +361,7 @@
 
           prune-stale-state-tests =
             pkgs.runCommand "prune-stale-state-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
@@ -1891,7 +1891,7 @@
               # scripts/ is also copied below: the writer-fixture case runs the RAW
               # scripts/claude-status-update.sh directly (bash scripts/…), same
               # pattern as remote-tests.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs) tmuxConfig.script.tmux-reflow-windows tmuxConfig.script.tmux-update-icons];
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.procps (mkTmux pkgs) tmuxConfig.script.tmux-reflow-windows tmuxConfig.script.tmux-update-icons];
               TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
