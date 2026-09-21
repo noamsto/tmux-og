@@ -19,6 +19,23 @@ seed_reap_files() {
 	done
 }
 
+teardown() {
+	[[ -n ${FAKE_TMUX_PID:-} ]] && kill "$FAKE_TMUX_PID" 2>/dev/null
+	return 0
+}
+
+# A long-lived process whose comm is "tmux" — a live owner that passes
+# claude_pid_is_tmux. Sets FAKE_TMUX_PID.
+start_fake_tmux_server() {
+	# A copied bash named "tmux" idling in a builtin read: comm is the exec'd
+	# file's name, and a multicall sleep would refuse an unknown argv[0].
+	cp "$(command -v bash)" "$BATS_TEST_TMPDIR/tmux"
+	mkfifo "$BATS_TEST_TMPDIR/idle"
+	# shellcheck disable=SC2016 # $1 is expanded by the child bash, not here
+	"$BATS_TEST_TMPDIR/tmux" -c 'read -t 300 <>"$1"' _ "$BATS_TEST_TMPDIR/idle" &
+	FAKE_TMUX_PID=$!
+}
+
 # Fake tmux on PATH. $1 is has-session's exit status (0 = session exists).
 # display-message (claude_progress_emit) fails closed; the helper never aborts.
 install_fake_tmux() {
@@ -102,7 +119,8 @@ stamp() {
 # when SERVER_PID is omitted entirely.
 
 @test "prune protects a stale panes file whose server= pid is a different, live process" {
-	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"
+	start_fake_tmux_server
+	printf 'server=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_PANES_DIR/8"
 	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
 	# 999999999: this booting server's own pid, deliberately not $$.
 	claude_prune_stale_state "$SERVER_START" 999999999
@@ -125,12 +143,44 @@ stamp() {
 }
 
 @test "prune protection extends from panes/<id> to a sibling dir under the same id" {
-	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"
+	start_fake_tmux_server
+	printf 'server=%s\n' "$FAKE_TMUX_PID" >"$CLAUDE_PANES_DIR/8"
 	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
 	stamp "$CLAUDE_NAMES_DIR/8"
 	claude_prune_stale_state "$SERVER_START" 999999999
 	[ -e "$CLAUDE_PANES_DIR/8" ]
 	[ -e "$CLAUDE_NAMES_DIR/8" ]
+}
+
+@test "prune does not protect an alive owner that is not a tmux process (pid reuse)" {
+	command -v ps >/dev/null || skip "ps not available"
+	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ ! -e "$CLAUDE_PANES_DIR/8" ]
+}
+
+@test "prune gates per server pid: same pid skips, a different pid still sweeps" {
+	claude_prune_stale_state "$SERVER_START" 111
+	stamp "$CLAUDE_NAMES_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 111
+	[ -e "$CLAUDE_NAMES_DIR/8" ]
+	# Same start_time, another server: its own marker is absent, so it sweeps.
+	claude_prune_stale_state "$SERVER_START" 222
+	[ ! -e "$CLAUDE_NAMES_DIR/8" ]
+}
+
+@test "prune with a pid still writes the shared .server_start marker" {
+	claude_prune_stale_state "$SERVER_START" 111
+	[ "$(cat "$CLAUDE_STATUS_DIR/.server_start")" = "$SERVER_START" ]
+	[ "$(cat "$CLAUDE_STATUS_DIR/.server_start.111")" = "$SERVER_START" ]
+}
+
+@test "prune removes per-server markers of dead pids" {
+	printf '%s\n' "$SERVER_START" >"$CLAUDE_STATUS_DIR/.server_start.2147483647"
+	claude_prune_stale_state "$SERVER_START" 111
+	[ ! -e "$CLAUDE_STATUS_DIR/.server_start.2147483647" ]
+	[ -e "$CLAUDE_STATUS_DIR/.server_start.111" ]
 }
 
 @test "prune reaps a legacy panes file with no server= field" {

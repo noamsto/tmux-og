@@ -59,6 +59,10 @@ const (
 // later consumer could forget to apply.
 var crewWordRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// serverPIDRe is the shape the shell reader of a panes/ file's server= field
+// requires; anything else would be written into the file as-is.
+var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
+
 // paneStatus is one remote pane's foreground command and, when an agent runs
 // there, the state either the hook writer or the screen scraper stamped.
 type paneStatus struct {
@@ -165,8 +169,7 @@ type agentShipper struct {
 	lastApply time.Time // last time queued rows were applied; bounds the burst wait
 	lastGen   uint64    // registry generation the last backstop read was made against
 
-	localPID         string // the LOCAL tmux server's own #{pid}, resolved once
-	localPIDResolved bool
+	localPID string // the LOCAL tmux server's own #{pid}, once resolved
 
 	// subscribed is set per connection by Run once the remote has accepted the
 	// subscription; false leaves this shipper polling.
@@ -234,13 +237,14 @@ func (a *agentShipper) reskew(skew int64) { a.skew = skew }
 
 // localServerPID resolves and caches the LOCAL tmux server's own PID, for the
 // `server=` ownership field a panes/ file needs to survive a second server's
-// boot-time prune (#676). Resolved once per shipper lifetime: it names this
-// process's own server, which does not change while the daemon runs.
+// boot-time prune (#676). Cached once resolved successfully — it names this
+// process's own server, which does not change while the daemon runs — and
+// retried on the next stamp pass until then, so a transient failure does not
+// disable the stamp for the daemon's life.
 func (a *agentShipper) localServerPID(cfg Config) string {
-	if a.localPIDResolved {
+	if a.localPID != "" {
 		return a.localPID
 	}
-	a.localPIDResolved = true
 	if cfg.LocalTmuxOut == nil {
 		return ""
 	}
@@ -248,8 +252,12 @@ func (a *agentShipper) localServerPID(cfg Config) string {
 	if err != nil {
 		return ""
 	}
-	a.localPID = strings.TrimSpace(out)
-	return a.localPID
+	pid := strings.TrimSpace(out)
+	if !serverPIDRe.MatchString(pid) {
+		return ""
+	}
+	a.localPID = pid
+	return pid
 }
 
 // apply stamps rows and then drops the panes that stopped reporting (the agent

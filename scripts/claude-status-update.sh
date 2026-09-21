@@ -483,7 +483,7 @@ server_pid=""
 if [[ -z $session_name ]] && command -v tmux &>/dev/null; then
 	IFS='|' read -r server_pid session_name <<<"$(tmux display-message -p -t "$pane_id" '#{pid}|#{session_name}' 2>/dev/null || true)"
 elif [[ -n $session_name ]] && command -v tmux &>/dev/null; then
-	server_pid=$(tmux display-message -p '#{pid}' 2>/dev/null || true)
+	server_pid=$(tmux display-message -p -t "$pane_id" '#{pid}' 2>/dev/null || true)
 fi
 
 # Clean pane_id for filename (remove % prefix if present)

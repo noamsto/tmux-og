@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -164,15 +165,92 @@ func TestAgentShipperStampsServerPID(t *testing.T) {
 	}
 
 	a.apply(cfg, []paneStatus{
-		{pane: "%1", proc: "claude", state: "waiting", ts: 1700000000},
+		{pane: "%1", proc: "claude", state: "waiting", ts: 1700000000, unseen: true},
 	})
 
-	body, err := os.ReadFile(filepath.Join(dir, "panes", "7"))
+	want := "state=waiting\ntimestamp=1700000000\nsession=lab-mono\nserver=4242\nunseen=1\n"
+	if got := readPaneFile(t, dir, "7"); got != want {
+		t.Errorf("pane file =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func readPaneFile(t *testing.T, dir, id string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(dir, "panes", id))
 	if err != nil {
 		t.Fatalf("pane file: %v", err)
 	}
-	if !strings.Contains(string(body), "server=4242\n") {
-		t.Errorf("pane file = %q, want it to contain server=4242", body)
+	return string(body)
+}
+
+// A server PID that cannot be resolved to a plain integer must leave server=
+// off the file rather than write it: the shell reader requires ^[0-9]+$, and a
+// value with an embedded newline would inject a key=val line of its own.
+func TestAgentShipperOmitsUnusableServerPID(t *testing.T) {
+	const noServer = "state=waiting\ntimestamp=1700000000\nsession=lab-mono\n"
+	cases := map[string]func(args ...string) (string, error){
+		"error":     func(...string) (string, error) { return "", errors.New("no server") },
+		"empty":     func(...string) (string, error) { return "\n", nil },
+		"malformed": func(...string) (string, error) { return "12\nstate=done", nil },
+	}
+	run := func(t *testing.T, out func(args ...string) (string, error)) string {
+		dir := t.TempDir()
+		a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+		var calls [][]string
+		cfg := mirrorCfg(&calls)
+		cfg.LocalTmuxOut = out
+		a.apply(cfg, []paneStatus{{pane: "%1", proc: "claude", state: "waiting", ts: 1700000000}})
+		return readPaneFile(t, dir, "7")
+	}
+	for name, out := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := run(t, out); got != noServer {
+				t.Errorf("pane file =\n%q\nwant\n%q", got, noServer)
+			}
+		})
+	}
+	t.Run("nil", func(t *testing.T) {
+		if got := run(t, nil); got != noServer {
+			t.Errorf("pane file =\n%q\nwant\n%q", got, noServer)
+		}
+	})
+}
+
+// A failed resolution is retried on the next stamp pass rather than latched off
+// for the daemon's life, and a successful one is never asked for again.
+func TestAgentShipperRetriesServerPID(t *testing.T) {
+	dir := t.TempDir()
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+	asked := 0
+	cfg.LocalTmuxOut = func(args ...string) (string, error) {
+		asked++
+		if asked == 1 {
+			return "", errors.New("transient")
+		}
+		return "4242\n", nil
+	}
+	row := func(ts int64) []paneStatus {
+		return []paneStatus{{pane: "%1", proc: "claude", state: "waiting", ts: ts}}
+	}
+
+	a.apply(cfg, row(1700000000))
+	if got, want := readPaneFile(t, dir, "7"), "state=waiting\ntimestamp=1700000000\nsession=lab-mono\n"; got != want {
+		t.Errorf("after failed resolve, pane file =\n%q\nwant\n%q", got, want)
+	}
+
+	a.apply(cfg, row(1700000001))
+	if got, want := readPaneFile(t, dir, "7"), "state=waiting\ntimestamp=1700000001\nsession=lab-mono\nserver=4242\n"; got != want {
+		t.Errorf("after retry, pane file =\n%q\nwant\n%q", got, want)
+	}
+
+	a.apply(cfg, row(1700000002))
+	if got, want := readPaneFile(t, dir, "7"), "state=waiting\ntimestamp=1700000002\nsession=lab-mono\nserver=4242\n"; got != want {
+		t.Errorf("pane file =\n%q\nwant\n%q", got, want)
+	}
+	if asked != 2 {
+		t.Errorf("LocalTmuxOut called %d times, want 2 (one failure, one success, then cached)", asked)
 	}
 }
 
