@@ -2143,15 +2143,12 @@
               touch $out
             '';
 
-          # Live regression for popups → floating panes (#725): upstream
-          # `34cd5da4` deletes popups, and `display-popup` survives only as an
-          # undocumented compat command that opens a modal floating pane
-          # (design: docs/superpowers/specs/2026-09-21-popups-to-floats-design.md).
-          # Same attached-client harness and same reduced conf as
-          # float-tool-focus-tests above, for the same reason — a key binding
-          # fires only for a real client. notifyEnable/splashEnable keep their
-          # `true` defaults (config/tmux.conf.nix:34,67): `prefix + n` needs
-          # notify on, and the splash is suppressed per-test via @splash_shown.
+          # Popups are modal floating panes since upstream 34cd5da4 (#725);
+          # `display-popup` survives only as an undocumented compat command,
+          # so this pins what the launchers rely on. Same attached-client
+          # harness and reduced conf as float-tool-focus-tests above, for the
+          # same reason — a key binding fires only for a real client. Notify
+          # stays on (its default): `prefix + n` is one of the popups under test.
           popup-float-tests = let
             popupFloatTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;

@@ -239,14 +239,10 @@ func sendKeys(target string, args []string, run captureRunner) error {
 // --- Never capture the picker's own popup-float (#725) ---
 
 // selfTargets maps the picker's own session ("sess") and window ("sess:idx")
-// targets to the pane under its float, so the wall and preview never
-// capture the picker's own popup pane. pane is the picker's own pane
-// (TMUX_PANE). The middle field is blank — and the result nil, with a nil
-// error — whenever the picker's window isn't a modal (window_modal_pane
-// unset), so a picker run by hand in a plain pane gets no redirect. Returns
-// a nil map and nil error for pane == "" or a non-%N result too; the error
-// return is reserved for a runner failure, so callers can retry later
-// instead of caching a transient failure as "no float".
+// targets to the pane under its float: while the float is open it is the
+// window's active pane, so capturing those targets would capture the picker.
+// A nil map means no redirect (no float, e.g. a picker run by hand in a plain
+// pane); an error is only a failed tmux call, which is worth retrying.
 func selfTargets(pane string, run captureRunner) (map[string]string, error) {
 	if pane == "" {
 		return nil, nil
@@ -316,11 +312,9 @@ func selfCaptureTarget(t string) string {
 	return t
 }
 
-// captureViaSelf resolves each target through resolve (selfCaptureTarget in
-// production) before capturing, then re-keys the result — and a captureErr's
-// Target — back to the original targets, so callers stay keyed by item
-// target regardless of the self-capture substitution. Factored out of
-// captureWallCmd so it is testable without selfCaptureTargetCache.
+// captureViaSelf captures each target through resolve, then re-keys the
+// result — and a captureErr's Target — back to the original targets, which is
+// what wallContent and wallBad are keyed by.
 func captureViaSelf(targets []string, resolve func(string) string, run captureRunner) (map[string]string, error) {
 	resolved := make([]string, len(targets))
 	resolvedToOriginal := make(map[string]string, len(targets))

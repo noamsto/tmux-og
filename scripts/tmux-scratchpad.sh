@@ -16,7 +16,7 @@ if [[ ${1:-} == --attach ]]; then
 	# reparses the remainder as command words (measured: "too few arguments").
 	tmux set -t "$SCRATCH" detach-on-destroy on 2>/dev/null || true
 	tmux set -t "$SCRATCH" status off 2>/dev/null || true
-	# The launch is now a real pane, not a popup PTY, so tmux's nested-client
+	# display-popup opens a real pane (a modal float), so tmux's nested-client
 	# check refuses this attach unless TMUX is unset; the socket comes from
 	# $TMUX's first field since -u drops it before tmux can resolve one itself.
 	exec env -u TMUX tmux -S "${TMUX%%,*}" new-session -A -s "$SCRATCH"
@@ -50,7 +50,7 @@ TITLE=" #[fg=#{@thm_lavender}]scratch: ${SESSION}#[fg=#{@thm_overlay_1}]  ·  #[
 # Pin the client: unpinned, tmux re-resolves to the session's most-recently-active
 # client, which on a bridged host can be the tty-less control client (#346,
 # reported upstream as tmux/tmux#5551 — drop the pin once that ships). Also pin
-# -t "$CLIENT:": the compat display-popup opens a float IN A WINDOW, and -c only
+# -t "$CLIENT:": display-popup opens a float in the -t window, and -c only
 # picks the client, not the window — unpinned, tmux resolves -t to its "best"
 # session rather than the client's (measured: landed in an unrelated newer session).
 POPUP_CLIENT=()

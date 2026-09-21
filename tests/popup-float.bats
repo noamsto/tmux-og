@@ -1,20 +1,16 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2016 # the #{...} fixtures are literal tmux formats
 bats_require_minimum_version 1.5.0 # run !
-# Live regression coverage for popups → floating panes (#725). Upstream tmux
-# `34cd5da4` deletes popups; `display-popup` survives only as an undocumented
-# compat command that opens a MODAL FLOATING PANE in the target window (spec:
-# docs/superpowers/specs/2026-09-21-popups-to-floats-design.md). This file
-# pins that the config still loads clean on the new pin and that the
-# properties the rest of the codebase depends on — modal, all-keys,
-# remain-on-exit off, silent no-op on a second popup, close restores focus —
-# actually hold against the real binary. `docs/agents/floats.md`'s "Popups
-# are modal floats" bullet is the prose version of what this file measures.
+# Upstream tmux 34cd5da4 deletes popups; `display-popup` survives only as an
+# undocumented compat command that opens a modal floating pane in the target
+# window (#725, docs/agents/floats.md). This pins, against the real binary,
+# that the config loads clean and that the launchers' assumptions hold:
+# modal, remain-on-exit off, a second popup is a silent no-op, closing
+# restores focus.
 #
-# Same attached-client harness as tests/float-tool-focus.bats, and for the
-# same reason: a key binding fires only for an ATTACHED CLIENT, so
-# `send-keys` alone never reaches the key table — the outer server's pane
-# must run a real `tmux attach`.
+# Same attached-client harness as tests/float-tool-focus.bats: a key binding
+# fires only for an attached client, so the outer server's pane runs a real
+# `tmux attach`.
 
 setup() {
 	IN="pf725-in-${BATS_TEST_NUMBER}-$$"
