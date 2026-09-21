@@ -500,6 +500,10 @@
                 exit 1
               fi
 
+              # OSC 52 reads must cross the bridge (#694): default `buffer` would
+              # answer from the remote server's own stale paste buffer.
+              grep -qx 'set -s get-clipboard request' "$CONF"
+
               grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
 
               # ORDER, as for the alert hooks above: the clear must precede the

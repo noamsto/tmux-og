@@ -351,6 +351,10 @@
     ${terminalConfig}set -as terminal-features '*:hyperlinks'
     set -as terminal-features 'xterm-kitty*:progressbar'
     set -s set-clipboard on
+    # Default `buffer` answers an app's OSC 52 read from this server's own newest
+    # paste buffer; on a mirrored host that is stale remote content and the query
+    # never crosses the bridge.
+    set -s get-clipboard request
     set -s copy-command '${
       if pkgs.stdenv.hostPlatform.isDarwin
       then "pbcopy"
