@@ -189,8 +189,11 @@ func TestWaitHellosKeepsReplyOrdinalsInIssueOrder(t *testing.T) {
 	if added["%9"] == nil {
 		t.Fatalf("waitHellos returned %v, want the %%9 renderer", added)
 	}
-	// The next block off the stream must answer command 2 — the one whose reply
-	// has not been consumed yet.
+	// The next block off the stream is command 1's barrier (#723); the one after
+	// it answers command 2, whose reply has not been consumed yet.
+	if got := st.claim([]byte(fmt.Sprintf("og-fanout-%d", seq1))); got != seq1+1 {
+		t.Errorf("barrier claim = %d, want %d", got, seq1+1)
+	}
 	if got := st.claim(nil); got != seq2 {
 		t.Errorf("next claim = %d, want %d: the wait must advance seen by exactly one per client-flagged block", got, seq2)
 	}

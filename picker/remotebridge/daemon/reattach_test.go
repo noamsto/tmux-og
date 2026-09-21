@@ -20,7 +20,11 @@ type scriptConn struct {
 }
 
 func newScriptConn(script string) *scriptConn {
-	return &scriptConn{rest: []byte(script), closed: make(chan struct{})}
+	// withBarriers for the same reason newTestReader applies it: the wire now
+	// carries a barrier block per command (#723), and a fixture scripting only
+	// its own replies would leave every round-trip after the first waiting on an
+	// ordinal that never arrives.
+	return &scriptConn{rest: []byte(withBarriers(script)), closed: make(chan struct{})}
 }
 
 func (c *scriptConn) Read(p []byte) (int, error) {

@@ -9,9 +9,9 @@ import (
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
-// A scripted control stream for: the if-shell, a fan-out of branch replies, then
-// a layout read. Block bodies are what tmux prints; the barrier's is the tag
-// stampAll gave it, which for the first command written is og-fanout-1.
+// A scripted control stream for: one command, a fan-out of extra replies behind
+// it, then a layout read. Block bodies are what tmux prints; the barrier's is
+// the tag stampAll gave it, which for the first command written is og-fanout-1.
 func fanoutStream(branch ...string) string {
 	lines := []string{"%begin 1 1 1", "%end 1 1 1"} // the if-shell itself
 	for i, b := range branch {
@@ -88,15 +88,49 @@ func TestBackToBackIfShellsEachTakeABarrier(t *testing.T) {
 	}
 }
 
-func TestExpandsReplies(t *testing.T) {
-	for cmd, want := range map[string]bool{
-		"if-shell -t %1 -F 1 'a' 'b'": true,
-		"if -F 1 'a'":                 true,
-		"display-message -p x":        false,
-		"run-shell -b 'if-shell'":     false,
+// #723: the barrier is armed for every command, so a verb nobody enumerated as
+// fanning out cannot desync the stream. run-shell -C is the measured case — two
+// client-flagged blocks on tmux next-3.9 — and it matched no verb list this
+// daemon ever had.
+func TestUnenumeratedFanOutDoesNotDesyncRoundTrips(t *testing.T) {
+	for name, cmd := range map[string]string{
+		"run-shell -C":            "run-shell -C 'set -g @z 3'",
+		"semicolon-chained":       "set -p @x 1 ; set -p @y 2",
+		"a verb not yet invented": "some-future-verb -q",
 	} {
-		if got := expandsReplies(cmd); got != want {
-			t.Errorf("expandsReplies(%q) = %v, want %v", cmd, got, want)
-		}
+		t.Run(name, func(t *testing.T) {
+			st := newStream(&bytes.Buffer{})
+			rt := newRoundTrip(controlmode.NewReader(strings.NewReader(fanoutStream(""))),
+				NewRouter(), &asyncQueue{}, st)
+
+			if !st.send(cmd) {
+				t.Fatal("send failed")
+			}
+			l, ok := one(rt, "display-message -p layout")
+			if !ok {
+				t.Fatal("round-trip after the fan-out got no reply")
+			}
+			if got := string(l.Data); got != "@0-layout %2 0" {
+				t.Fatalf("round-trip read %q, want its own reply: the fan-out's blocks were counted as replies", got)
+			}
+		})
+	}
+}
+
+// The barrier rides behind every command, not only the ones that fan out — that
+// is what leaves nothing to enumerate.
+func TestEveryCommandTakesABarrier(t *testing.T) {
+	wire := &bytes.Buffer{}
+	st := newStream(wire)
+	if !st.send("display-message -p x") {
+		t.Fatal("send failed")
+	}
+	if want := "display-message -p x\ndisplay-message -p og-fanout-1\n"; wire.String() != want {
+		t.Fatalf("wire = %q, want %q", wire.String(), want)
+	}
+	// The barrier consumes an ordinal of its own, so the next command is 3.
+	seqs, ok := st.stampAll("display-message -p y")
+	if !ok || len(seqs) != 1 || seqs[0] != 3 {
+		t.Fatalf("stampAll seqs = %v, %v; want [3]: the barrier takes ordinal 2", seqs, ok)
 	}
 }
