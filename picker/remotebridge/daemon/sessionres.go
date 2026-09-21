@@ -77,13 +77,6 @@ type resShipper struct {
 
 	figures   string    // every field but the tick, as last written, for the unchanged-row check
 	lastWrite time.Time // when they were written, for the refresh floor
-
-	// subscribed is recorded per connection by Run and drives nothing: there is
-	// no poll to fall back to. It could not be trusted for that anyway —
-	// cmd_refresh_client_update_subscription silently DROPS a subscription it
-	// cannot parse and returns no %error, so an accepted-looking reply is not
-	// evidence the spec parsed.
-	subscribed bool
 }
 
 func newResShipper(session string, skew int64) *resShipper {
@@ -105,12 +98,9 @@ func (r *resShipper) queue(session, v string) {
 }
 
 // flush stamps whatever the last notification queued. Main loop only, but it
-// issues no round-trip: everything it needs already arrived on the stream.
-//
-// The nothing-pending return is first and unconditional. Without it the loop's
-// own 5s tick re-enters holding a stale pending, and the refresh floor below
-// stops being a floor: it becomes an unconditional re-stamp of whatever arrived
-// last, including re-stamping a value the empty branch had just unset.
+// issues no round-trip: everything it needs already arrived on the stream. It
+// acts only on a queued report — the loop re-enters every 5s, and re-applying
+// the last one would turn the refresh floor into an unconditional re-stamp.
 func (r *resShipper) flush(cfg Config) {
 	if !r.havePending {
 		return
@@ -138,8 +128,11 @@ func (r *resShipper) flush(cfg Config) {
 	if tick, _ := strconv.ParseInt(f[3], 10, 64); time.Now().Unix()-(tick+r.skew) > int64(sessionResTickMaxAge/time.Second) {
 		// No poller moved this value recently: it is a leftover, and stamping it
 		// with our receive time would present it as a live reading. Dropped,
-		// not unset — a report this stale arrives only on subscribe, after
-		// reattach has already cleared the stamp.
+		// not unset — on steady clocks a report this stale arrives only on
+		// subscribe, after reattach has already cleared the stamp. The skew is
+		// measured per connection, so a clock step larger than the cutoff drops
+		// live reports too until the next reconnect, and the picker falls back
+		// to its ssh leg for that long.
 		return
 	}
 	figures := strings.Join([]string{f[0], f[1], f[2], f[4]}, " ")

@@ -100,28 +100,14 @@ func parsePanePIDs(out string) map[string][]int {
 	return roots
 }
 
-// stampValue quantises one session's totals for the wire. It is not rendering:
-// the picker's formatCPU/formatMem stay the sole owners of display precision,
-// and a second copy of "<1%" or M-vs-G across this boundary would be two things
-// to keep in step. %.1f is what keeps a sub-1% session distinguishable from an
-// idle one — 0 is a real measurement, not an absent one.
-//
-// The epoch exists ONLY so the value moves on every pass. A tmux option
-// outlives the process that wrote it, so re-reading it can never tell a live
-// poller from a dead one; the absence of notifications is the daemon's only
-// evidence. It dedupes on every field but this one, so the tick costs it no
-// local write.
-//
-// The last field is the agent commands found in the session's tree,
-// comma-joined, or "-" for none: a mirror pane's own command is the renderer
-// and its @bridge_proc names only the remote pane's group leader, so an agent a
-// restore chain relaunched under a shell reaches the picker's Procs column by
-// this field alone.
-//
-// By construction the value holds no "|". That matters: the picker reads
-// session-scoped @bridge_* out of a pipe-delimited list-panes -a format whose
-// parse fails CLOSED on a wrong field count, so a pipe here would not garble
-// one column, it would drop the whole session from the picker.
+// stampValue renders one session's "<cpu> <mem> <cores> <tick> <agents>". It
+// quantises, it does not render: the picker's formatCPU/formatMem stay the
+// sole owners of display precision. %.1f keeps a sub-1% session apart from an
+// idle one — 0 is a measurement, not an absence. The tick exists only so the
+// value moves every pass (see the daemon's sessionResFormat), and agents is the
+// tree's agent commands comma-joined, or "-": a mirror's pane commands are its
+// renderers, so a relaunched agent reaches the picker's Procs column this way.
+// No field can hold "|", which the picker's pipe-delimited read depends on.
 func stampValue(t proctree.Totals, cores int, now int64) string {
 	agents := "-"
 	if len(t.AgentCmds) > 0 {
@@ -130,30 +116,28 @@ func stampValue(t proctree.Totals, cores int, now int64) string {
 	return fmt.Sprintf("%.1f %.0f %d %d %s", t.CPUPct, t.MemMB, cores, now, agents)
 }
 
-// setOptionArgv batches every session's stamp into one tmux argv, the way the
-// bridge's own shippers batch theirs. rows is keyed by session id ($N), never
-// name: set-option's -t is a target-pane, and a bare name like "0" or "2" — the
-// names tmux hands out by default — also resolves as a pane index in the
-// current window, so a name-keyed stamp lands on whichever session is current
-// (measured: `set-option -t 0` from run-shell wrote session zed). The argv is
-// exec'd without a shell, so the "$" needs no quoting. Sorted so the argv is
-// deterministic: map order would otherwise make it untestable.
+// setOptionArgv batches every session's stamp into one tmux argv. rows is keyed
+// by session id ($N), never name: set-option's -t is a target-pane, so a bare
+// name like "2" — tmux's own default naming — also resolves as a pane index in
+// the current session's window, and the stamp lands on the current session:
+// the mirrored one, with the bridge attached. Exec'd without a shell, so "$"
+// needs no quoting. Sorted so the argv is deterministic.
 func setOptionArgv(rows map[string]string) []string {
 	if len(rows) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(rows))
-	for name := range rows {
-		names = append(names, name)
+	ids := make([]string, 0, len(rows))
+	for id := range rows {
+		ids = append(ids, id)
 	}
-	sort.Strings(names)
+	sort.Strings(ids)
 
 	var argv []string
-	for _, name := range names {
+	for _, id := range ids {
 		if len(argv) > 0 {
 			argv = append(argv, ";")
 		}
-		argv = append(argv, "set-option", "-t", name, resOption, rows[name])
+		argv = append(argv, "set-option", "-t", id, resOption, rows[id])
 	}
 	return argv
 }

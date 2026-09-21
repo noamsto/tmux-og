@@ -983,7 +983,9 @@
   # --- Wrapped tmux binary ---
   # pkgs.ps because tmux-session-resources forks `ps` from a monitor hook, whose
   # PATH is the server's own — and a headless tmux-startup.service sets none, on
-  # exactly the hosts a bridge reads that stamp from.
+  # exactly the hosts a bridge reads that stamp from. Linux only: a launchd
+  # agent's PATH already has /bin, and a store copy would shadow the setuid
+  # /bin/ps in every pane.
   tmux-wrapped = pkgs.symlinkJoin {
     name = "tmux-wrapped";
     paths = [tmuxPkg];
@@ -991,7 +993,7 @@
     postBuild = ''
       wrapProgram $out/bin/tmux \
         --add-flags "-f ${tmuxConf}" \
-        --prefix PATH : ${lib.makeBinPath ([tmuxPkg] ++ scripts ++ [picker-generate pkgs.bash pkgs.lazygit pkgs.yazi pkgs.btop pkgs.zoxide pkgs.jq pkgs.curl pkgs.util-linux pkgs.coreutils pkgs.ps pkgs.xdg-utils pkgs.chafa pkgs.socat] ++ lib.optional (carousel-toggle != null) carousel-toggle ++ lib.optional (prdash != null) prdash)}
+        --prefix PATH : ${lib.makeBinPath ([tmuxPkg] ++ scripts ++ [picker-generate pkgs.bash pkgs.lazygit pkgs.yazi pkgs.btop pkgs.zoxide pkgs.jq pkgs.curl pkgs.util-linux pkgs.coreutils pkgs.xdg-utils pkgs.chafa pkgs.socat] ++ lib.optional pkgs.stdenv.isLinux pkgs.ps ++ lib.optional (carousel-toggle != null) carousel-toggle ++ lib.optional (prdash != null) prdash)}
     '';
     meta.mainProgram = "tmux";
   };

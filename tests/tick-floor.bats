@@ -49,7 +49,7 @@ teardown() {
 		wait "$SLEEPER_PID" 2>/dev/null || true
 	fi
 	t kill-server 2>/dev/null || true
-	# Case 5 runs a second, unwrapped server on its own socket/TMUX_TMPDIR;
+	# The upstream-assumption test runs a second, unwrapped server on its own socket/TMUX_TMPDIR;
 	# belt-and-suspenders in case an assertion failure skipped its own cleanup.
 	[ -n "${SCRATCH_SOCK:-}" ] && tmux -S "$SCRATCH_SOCK" kill-server 2>/dev/null
 	return 0

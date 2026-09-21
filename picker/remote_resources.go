@@ -5,10 +5,10 @@ package main
 // rather than the work — this fetches the remote's own process table and
 // aggregates it with the same tree walk (#452).
 //
-// The ssh leg is now the LEGACY fallback: the remote's own poller stamps its
+// The ssh leg is the version-skew fallback: the remote's own poller stamps its
 // session and the bridge daemon ships that across as @bridge_res, so a rebuilt
-// remote is covered with no ssh at all (#693). What is left here serves a
-// remote that has not been rebuilt — which is why the three shell workarounds
+// remote is covered with no ssh at all (#693). This leg serves a remote that
+// has not been rebuilt — which is why the three shell workarounds
 // this file documents (the separator must start with a letter, getconf rather
 // than nproc, the whole process table over the wire) still live here and only
 // here. Deletable once every host in @remote_bridge_hosts arms the poller:

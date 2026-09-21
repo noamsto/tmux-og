@@ -908,8 +908,10 @@ func Run(cfg Config) error {
 	res = newResShipper(pin.id, skew)
 	// Subscriptions are per control client, so this runs once per attach — here
 	// for the first one, and at the end of repair for every reconnect. The two
-	// shippers with a poll mode keep polling if the remote refuses.
-	subscribe := func() { labels.subscribed, agents.subscribed, res.subscribed = subscribeFormats(rt) }
+	// shippers with a poll mode keep polling if the remote refuses; res has none,
+	// and could not trust the answer anyway — a spec tmux cannot parse is dropped
+	// with no %error.
+	subscribe := func() { labels.subscribed, agents.subscribed, _ = subscribeFormats(rt) }
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
 	// its floor on every reconnect.
