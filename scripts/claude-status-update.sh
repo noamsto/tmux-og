@@ -474,9 +474,16 @@ if [[ -z $pane_id ]]; then
 	exit 0
 fi
 
-# Get session name from tmux if not provided
+# Get session name and server pid from tmux if not provided. Pid first in the
+# combined query: a session name may itself contain '|', and read's
+# last-variable-absorbs-remainder semantics only protect the LAST field.
+# <<<"$(... || true)" (not < <(... || true)): the herestring always supplies a
+# trailing newline, so read returns 0 even on empty tmux output under set -e.
+server_pid=""
 if [[ -z $session_name ]] && command -v tmux &>/dev/null; then
-	session_name=$(tmux display-message -p -t "$pane_id" '#{session_name}' 2>/dev/null || true)
+	IFS='|' read -r server_pid session_name <<<"$(tmux display-message -p -t "$pane_id" '#{pid}|#{session_name}' 2>/dev/null || true)"
+elif [[ -n $session_name ]] && command -v tmux &>/dev/null; then
+	server_pid=$(tmux display-message -p -t "$pane_id" '#{pid}' 2>/dev/null || true)
 fi
 
 # Clean pane_id for filename (remove % prefix if present)
@@ -567,6 +574,11 @@ fi
 transcript_line=""
 [[ -n $transcript_path ]] && transcript_line=$'\n'"transcript=$transcript_path"
 
+# Owning tmux server's pid: lets claude_prune_stale_state protect this file
+# from another server's boot. Omitted when unresolved.
+server_line=""
+[[ -n $server_pid ]] && server_line=$'\n'"server=$server_pid"
+
 # Write pane state with timestamp. A passive idle write (idle_prompt, resume)
 # preserves the prior timestamp so the "last active" label reflects real work.
 printf -v _now '%(%s)T' -1
@@ -582,7 +594,7 @@ fi
 cat >"$PANES_DIR/$pane_file" <<EOF
 state=$state
 timestamp=$ts
-session=$session_name${unseen_line}${transcript_line}
+session=$session_name${server_line}${unseen_line}${transcript_line}
 EOF
 
 # Space-separated triple (state, epoch, unseen) — all three are token-safe, so a

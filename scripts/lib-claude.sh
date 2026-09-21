@@ -84,34 +84,118 @@ CLAUDE_ASSUME_DEAD_AFTER="${CLAUDE_ASSUME_DEAD_AFTER:-@assume_dead_after@}"
 # presence (client detached, feature off), which deactivates the veto entirely.
 CLAUDE_LIVE_SWEEP_FRESH=15
 
-# claude_prune_stale_state SERVER_START
+# claude_pid_is_tmux PID
+# Succeeds when PID looks like a live tmux server. `kill -0` alone is satisfied
+# by any process that reused a dead server's pid, so the process name is
+# checked too (`ps -o comm= -p`, portable to macOS; the nix wrapper may show as
+# .tmux-wrapped). Fails safe toward "yes": no ps on PATH, or an empty answer,
+# cannot tell, so the caller protects.
+claude_pid_is_tmux() {
+	kill -0 "$1" 2>/dev/null || return 1
+	command -v ps &>/dev/null || return 0
+	local comm
+	comm=$(ps -o comm= -p "$1" 2>/dev/null)
+	[[ -z $comm ]] && return 0
+	[[ $comm == *tmux* ]]
+}
+
+# claude_prune_stale_state SERVER_START [SERVER_PID]
 # Drops pane-id-keyed status files left behind by a previous tmux server. tmux
 # restarts pane ids at %0 on server (re)start, so a restored pane can reuse a
 # dead pane's id and inherit its cached name/task/issue — surfacing an unrelated
-# window's label. The files carry no server generation, so mtime vs the server's
-# start_time is the only signal: anything written before this server booted is
-# stale. A marker file holding the current start_time gates the directory scan
-# to once per server, so the per-tick status poller that calls this stays cheap.
+# window's label. mtime vs this server's start_time is the base signal:
+# anything written before this server booted is stale. A marker file holding
+# the current start_time gates the directory scan to once per server, so the
+# per-tick status poller that calls this stays cheap.
+#
+# mtime alone cannot tell "written by a server that has since died" from
+# "written moments ago by a different, still-running server" — under the
+# shared CLAUDE_STATUS_DIR, a second server's very first boot could otherwise
+# delete a live different server's state. When SERVER_PID (this booting
+# server's own #{pid}) is passed, panes/<id> files are scanned once up front
+# for their server= field (stamped by both writers of panes/<id>:
+# scripts/claude-status-update.sh and picker/remotebridge/daemon/agentstatus.go);
+# an id whose recorded owner PID is numeric, not SERVER_PID, and still a live
+# tmux process (claude_pid_is_tmux, evaluated once per distinct owner per pass)
+# is protected from deletion across every dir this sweeps, regardless of mtime.
+# Caveats, deliberately:
+#   (a) the liveness check is `kill -0` plus a `ps` comm match for "tmux", so a
+#       reused PID belonging to an unrelated process no longer protects a dead
+#       generation's ids. Where ps is missing or answers nothing it cannot
+#       tell and protects — under-reap, never over-delete, is the posture.
+#   (b) protection is only granted to ids that have a panes/<id> server=
+#       field — a screen-only agent pane (pi/codex/cursor, no panes/<id>
+#       sibling) stays mtime-prunable. For such a pane on a live server,
+#       another server's boot still deletes its screen/<id> AND watchers/<id>;
+#       the live agent-detect watcher then exits on its missing registry file
+#       and is re-armed within a tick (a flap, not a permanent hole). Known
+#       follow-up.
+#   (c) with SERVER_PID the marker gate is per-server
+#       (.server_start.<pid>, content = start_time), so two live servers each
+#       sweep once per boot instead of ping-ponging one shared marker. The
+#       shared .server_start is still written after every sweep, and is the
+#       only gate when SERVER_PID is empty. A sweep also removes
+#       .server_start.<pid> markers whose pid is no longer alive.
 # GNU stat pinned by Nix, same rationale as lib-log.sh's OG_STAT.
 OG_STAT="@stat@"
 if [[ $OG_STAT == @* ]]; then
 	OG_STAT=stat
 fi
 claude_prune_stale_state() {
-	local server_start=$1
+	local server_start=$1 server_pid=${2:-}
 	[[ -z $server_start ]] && return 0
 	local marker="$CLAUDE_STATUS_DIR/.server_start"
-	[[ -r $marker && $(<"$marker") == "$server_start" ]] && return 0
+	local gate="$marker"
+	[[ -n $server_pid ]] && gate="$marker.$server_pid"
+	[[ -r $gate && $(<"$gate") == "$server_start" ]] && return 0
+
+	local -A protected=() owner_live=()
+	if [[ -n $server_pid ]]; then
+		local pf id owner key val
+		for pf in "$CLAUDE_PANES_DIR"/*; do
+			[[ -f $pf ]] || continue
+			id="${pf##*/}"
+			owner=""
+			while IFS='=' read -r key val || [[ -n $key ]]; do
+				[[ $key == server ]] && {
+					owner="$val"
+					break
+				}
+			done <"$pf"
+			[[ $owner =~ ^[0-9]+$ ]] || continue
+			[[ $owner == "$server_pid" ]] && continue
+			if [[ -z ${owner_live[$owner]+x} ]]; then
+				if claude_pid_is_tmux "$owner"; then
+					owner_live["$owner"]=1
+				else
+					owner_live["$owner"]=0
+				fi
+			fi
+			[[ ${owner_live[$owner]} == 1 ]] && protected["$id"]=1
+		done
+	fi
+
 	local dir f mt
 	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_NAMES_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_WATCHERS_DIR" "$CLAUDE_LIVE_DIR"; do
 		[[ -d $dir ]] || continue
 		for f in "$dir"/*; do
 			[[ -f $f ]] || continue
+			[[ -n ${protected[${f##*/}]+x} ]] && continue
 			mt=$("$OG_STAT" -c %Y "$f" 2>/dev/null || echo 0)
 			((mt < server_start)) && rm -f "$f"
 		done
 	done
 	mkdir -p "$CLAUDE_STATUS_DIR"
+	if [[ -n $server_pid ]]; then
+		printf '%s\n' "$server_start" >"$gate"
+		local m mpid
+		for m in "$marker".*; do
+			[[ -f $m ]] || continue
+			mpid="${m##*.server_start.}"
+			[[ $mpid == "$server_pid" ]] && continue
+			kill -0 "$mpid" 2>/dev/null || rm -f "$m"
+		done
+	fi
 	printf '%s\n' "$server_start" >"$marker"
 }
 

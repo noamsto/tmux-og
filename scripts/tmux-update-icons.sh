@@ -158,6 +158,10 @@ main() {
 	# avoids a show-option fork per tick; direct invocations (hooks) fall back
 	# to one via setup_claude_colors's own $TMUX-gated fork.
 	CATPPUCCIN_FLAVOR=${5:-}
+	# $6 is #{pid} (this server's own), expanded by the status format like $2 —
+	# avoids a display-message fork per tick; direct invocations (hooks, the
+	# config-load call site) fall back to one, same shape as SERVER_START/$3.
+	SERVER_PID=${6:-$(tmux display-message -p '#{pid}')}
 	MAX_ICONS=@MAX_ICONS@
 
 	setup_claude_colors "$CATPPUCCIN_FLAVOR"
@@ -165,7 +169,9 @@ main() {
 	# Purge pane-keyed status left by a previous tmux server before deriving any
 	# label, so a restored pane that reused a dead pane's id doesn't inherit its
 	# name/task. No-op after the first tick of each server (marker-gated).
-	claude_prune_stale_state "$SERVER_START"
+	# SERVER_PID lets the sweep protect a live different server's state via the
+	# panes/<id> server= ownership stamp instead of mtime alone.
+	claude_prune_stale_state "$SERVER_START" "$SERVER_PID"
 
 	# session_id is $N and cannot contain '|'; session_name can. Key every
 	# window map by id:index, and parse names as the remainder after the first

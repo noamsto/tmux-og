@@ -59,6 +59,10 @@ const (
 // later consumer could forget to apply.
 var crewWordRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// serverPIDRe is the shape the shell reader of a panes/ file's server= field
+// requires; anything else would be written into the file as-is.
+var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
+
 // paneStatus is one remote pane's foreground command and, when an agent runs
 // there, the state either the hook writer or the screen scraper stamped.
 type paneStatus struct {
@@ -165,6 +169,8 @@ type agentShipper struct {
 	lastApply time.Time // last time queued rows were applied; bounds the burst wait
 	lastGen   uint64    // registry generation the last backstop read was made against
 
+	localPID string // the LOCAL tmux server's own #{pid}, once resolved
+
 	// subscribed is set per connection by Run once the remote has accepted the
 	// subscription; false leaves this shipper polling.
 	subscribed bool
@@ -229,6 +235,29 @@ func newAgentShipper(localSess string, skew int64) *agentShipper {
 // reconnect follows an outage of unknown length (#482).
 func (a *agentShipper) reskew(skew int64) { a.skew = skew }
 
+// localServerPID returns the LOCAL tmux server's own PID, the `server=`
+// ownership stamp that keeps a second server's boot-time prune off a panes/
+// file. Cached once resolved (it cannot change while the daemon runs); an
+// unusable answer is not cached, so the next stamp pass retries.
+func (a *agentShipper) localServerPID(cfg Config) string {
+	if a.localPID != "" {
+		return a.localPID
+	}
+	if cfg.LocalTmuxOut == nil {
+		return ""
+	}
+	out, err := cfg.LocalTmuxOut("display-message", "-p", "#{pid}")
+	if err != nil {
+		return ""
+	}
+	pid := strings.TrimSpace(out)
+	if !serverPIDRe.MatchString(pid) {
+		return ""
+	}
+	a.localPID = pid
+	return pid
+}
+
 // apply stamps rows and then drops the panes that stopped reporting (the agent
 // exited, or its pane is gone). Full-set only: a pane absent from rows is taken
 // as gone, so this may be called only with the whole remote pane set — which is
@@ -290,6 +319,9 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			a.removeFiles(id)
 		} else {
 			body := fmt.Sprintf("state=%s\ntimestamp=%d\nsession=%s\n", r.state, r.ts+a.skew, a.sess)
+			if pid := a.localServerPID(cfg); pid != "" {
+				body += "server=" + pid + "\n"
+			}
 			if r.unseen {
 				body += "unseen=1\n"
 			}
