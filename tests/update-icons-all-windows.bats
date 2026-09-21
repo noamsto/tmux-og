@@ -45,6 +45,7 @@ setup() {
 	sed \
 		-e "s|@lib_icons@|$licons|g" \
 		-e "s|@lib_claude@|$PWD/scripts/lib-claude.sh|g" \
+		-e "s|@lib_log@|$PWD/scripts/lib-log.sh|g" \
 		-e "s|@reflow@|$FAKE_REFLOW|g" \
 		-e "s|@MAX_ICONS@|$MAX_ICONS|g" \
 		scripts/tmux-update-icons.sh >"$UPDATE_ICONS"
@@ -453,6 +454,83 @@ claude_win() {
 
 	run bash "$UPDATE_ICONS" A
 	[ "$status" -eq 0 ]
+	[ "$(opt_of A @window_task)" = "my task" ]
+	[ -z "$(opt_of A @window_naming_dirty)" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+}
+
+# #712: SERVER_PID is this server's own #{pid}, and claude_prune_stale_state
+# needs it to protect a live foreign server's state files. When it cannot be
+# resolved the script must skip the destructive sweep rather than fall back to
+# mtime alone (which can delete a different, live server's files, #676) and log
+# the skip. A legacy (no server=) stale panes file keyed to a LIVE pane id is
+# the discriminator: the mtime sweep deletes it, the skip keeps it, and the id
+# being live keeps claude_reap_dead_panes (which fires at CLAUDE_NOW % 60 == 0)
+# from removing it in either version.
+@test "unresolvable server pid skips the destructive prune and logs it" {
+	local bare stale
+	bare="$(bare_id "$(tmux list-panes -t A -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR/panes"
+	stale="$CLAUDE_STATUS_DIR/panes/$bare"
+	printf 'state=waiting\ntimestamp=1\nsession=A\n' >"$stale"
+	touch -t 200001010000 "$stale"
+
+	# A tmux shim that fails only the pid lookup and forwards everything else
+	# to the real binary by ABSOLUTE path — a bare-name exec would recurse into
+	# this same shim.
+	local real_tmux shim="$TDIR/shim"
+	real_tmux="$(command -v tmux)"
+	mkdir -p "$shim"
+	cat >"$shim/tmux" <<-EOF
+		#!/bin/sh
+		if [ "\$*" = "display-message -p #{pid}" ]; then
+		    exit 1
+		fi
+		exec "$real_tmux" "\$@"
+	EOF
+	chmod +x "$shim/tmux"
+
+	export OG_DEBUG_SENTINEL="$TDIR/debug.on"
+	export XDG_STATE_HOME="$TDIR/state"
+	: >"$OG_DEBUG_SENTINEL"
+
+	run env PATH="$shim:$PATH" bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ] || {
+		echo "update-icons exited $status: $output"
+		false
+	}
+	[ -e "$stale" ] || {
+		echo "prune ran with an unresolved server pid: $stale deleted"
+		false
+	}
+	grep -q 'prune_skipped' "$XDG_STATE_HOME/og/events.log" || {
+		echo "skip was not logged: $(cat "$XDG_STATE_HOME/og/events.log" 2>/dev/null)"
+		false
+	}
+}
+
+# #712 (folded from #717's review of #714): @remux_relaunch is a fixed middle
+# field of the per-tick row, ahead of @bridge_proc/@window_has_agent/
+# @window_manual_name/@window_naming_dirty/@window_task. An unwrapped '|' in it
+# shifts those fields left, so a manually-named window loses its protection and
+# the #692 clear fires, deleting the window's name/task files. The row copy is
+# s/[|]/ /-wrapped like its neighbours.
+@test "per-tick row survives a '|' in @remux_relaunch on a manually-named window" {
+	local bare pane
+	pane="$(tmux list-panes -t A -F '#{pane_id}' | head -1)"
+	bare="$(bare_id "$pane")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks}
+	tmux set -w -t A @window_manual_name 1
+	tmux set -w -t A @window_ai_name 'ai name'
+	tmux set -w -t A @window_task 'my task'
+	tmux set -p -t "$pane" @remux_relaunch 'a|b'
+	printf 'ai name\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'my task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ "$(opt_of A @window_ai_name)" = "ai name" ]
 	[ "$(opt_of A @window_task)" = "my task" ]
 	[ -z "$(opt_of A @window_naming_dirty)" ]
 	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]

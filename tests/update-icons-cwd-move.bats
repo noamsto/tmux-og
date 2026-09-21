@@ -48,6 +48,7 @@ setup() {
 	sed \
 		-e "s|@lib_icons@|$licons|g" \
 		-e "s|@lib_claude@|$PWD/scripts/lib-claude.sh|g" \
+		-e "s|@lib_log@|$PWD/scripts/lib-log.sh|g" \
 		-e "s|@reflow@|$FAKE_REFLOW|g" \
 		-e 's|@MAX_ICONS@|5|g' \
 		scripts/tmux-update-icons.sh >"$UPDATE_ICONS"
