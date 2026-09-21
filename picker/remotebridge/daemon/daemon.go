@@ -468,17 +468,15 @@ type stream struct {
 //
 // EVERY command takes one, not just the verbs known to fan out (#723). The
 // swallow window in claim is not an N-block assumption — it consumes whatever
-// arrives until the barrier's own reply — so arming it unconditionally is what
-// makes an unforeseen fan-out inert, where enumerating verbs only ever covers
-// the ones already known. Measured on tmux next-3.9, one control client,
-// counting client-flagged blocks per command written: `display-message -p` 1,
-// `run-shell -C` 2, `if-shell` with a two-command branch 3. #715 was the
-// if-shell; `run-shell -C` was uncovered, and nothing anywhere compares s.seen
-// against s.sent, so the next such verb would desync the stream for the rest of
-// the connection with no diagnostic naming the cause.
+// arrives until the barrier's own reply — so arming it unconditionally leaves
+// no verb list to keep in sync with tmux. Measured on tmux next-3.9, one
+// control client, counting client-flagged blocks per command written:
+// `display-message -p` 1, `run-shell -C` 2, `if-shell` with a two-command
+// branch 3. Nothing compares s.seen against s.sent, so an unarmed fan-out
+// desyncs the stream for the rest of the connection.
 //
-// `run-shell -b` needs no barrier either way: it defers its branch past one,
-// and those blocks come back flagged 0, which claim never sees.
+// `run-shell -b` needs no barrier: it defers its branch past one, and those
+// blocks come back flagged 0, which claim never sees.
 type fanout struct {
 	after uint64 // ordinal of the command the barrier follows
 	tag   string // body of the barrier's reply

@@ -39,14 +39,13 @@ func rawTestReader(s string) *controlmode.Reader {
 // desynchronise from the second command on — failing closed, since claim's
 // swallow window stays open and the round-trip returns not-ok.
 //
-// So the barrier is injected here rather than written out nineteen times: after
-// each client-flagged block, carrying the tag of the command that block
-// answered. Only flagged blocks are counted, because those are the only ones
-// claim gives an ordinal to — a hook's block (flags 0) is not one of ours and
-// takes no barrier.
+// The barrier goes after each client-flagged block, carrying the tag of the
+// command that block answered. Only flagged blocks count, because those are the
+// only ones claim gives an ordinal to — a hook's block (flags 0) is not one of
+// ours and takes no barrier.
 //
 // A fixture that scripts a fan-out — more blocks than commands — cannot use
-// this and builds its reader directly; fanout_test.go is the one that does.
+// this and builds its reader directly.
 func withBarriers(script string) string {
 	var out []string
 	cmds := 0

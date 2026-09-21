@@ -90,8 +90,7 @@ func TestBackToBackIfShellsEachTakeABarrier(t *testing.T) {
 
 // #723: the barrier is armed for every command, so a verb nobody enumerated as
 // fanning out cannot desync the stream. run-shell -C is the measured case — two
-// client-flagged blocks on tmux next-3.9 — and it matched no verb list this
-// daemon ever had.
+// client-flagged blocks on tmux next-3.9.
 func TestUnenumeratedFanOutDoesNotDesyncRoundTrips(t *testing.T) {
 	for name, cmd := range map[string]string{
 		"run-shell -C":            "run-shell -C 'set -g @z 3'",

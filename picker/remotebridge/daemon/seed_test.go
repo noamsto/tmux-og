@@ -13,9 +13,7 @@ import (
 // commands, one reader answering them — with the wire discarded and the command
 // lines recorded for assertions.
 func testRoundTrip(stream string, sent *[]string) roundTrip {
-	// withBarriers: the wire carries one barrier block per command (#723), so a
-	// fixture scripting only its own replies desynchronises from the second
-	// command on.
+	// withBarriers: the wire carries a barrier block per command (#723).
 	rt := newRoundTrip(controlmode.NewReader(strings.NewReader(withBarriers(stream))),
 		NewRouter(), &asyncQueue{}, newStream(io.Discard))
 	return func(cmds ...string) replies {
