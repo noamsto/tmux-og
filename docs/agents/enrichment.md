@@ -20,7 +20,7 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   `p` open PR URL, `r` force-refresh the current window. In a **mirror** window
   the card reads the bridged `@bridge_*` state and `r` routes to the remote via
   the `enrich-refresh` ctl verb, since the local poller refuses a `@bridge_win`
-  target outright (see "Remote Window Labels", #598).
+  target outright (see "Remote Window Labels" in `bridge-shipped-state.md`, #598).
 - **Refresh:** `prRefreshSeconds` (default 120, clamped 10-300) gates fast PR
   identity polling. `prCheckRefreshSeconds` (default 300, clamped 10-300)
   separately gates the more expensive CI-rollup query; `r` refreshes both for
