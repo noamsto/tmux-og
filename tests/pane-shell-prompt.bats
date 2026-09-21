@@ -279,6 +279,60 @@ EOF
 	[ -e "$CLAUDE_STATUS_DIR/panes/$(bare_id "$a_id")" ]
 }
 
+# #676: a second server's own CONFIG-LOAD prune (claude_prune_stale_state, run
+# unconditionally and synchronously at boot — not client-gated, unlike
+# status-format[0]) must never delete a live, different server's state. This
+# is the deterministic repro from the issue: seed alpha's file BEFORE beta
+# boots (the opposite ordering from the cross-server guard test above, which
+# deliberately dodges this exact race per #675's own scoping) and prove
+# alpha's file survives beta's startup prune.
+@test "config-load prune never deletes a live different server's state (#676)" {
+	SCRATCH_SOCK="$BATS_TEST_TMPDIR/scratch.sock"
+
+	t new-session -d -s alpha -x 80 -y 24 -c "$PWD" -- bash
+	local a_id
+	a_id="$(t list-panes -t alpha -F '#{pane_id}')"
+	[ -n "$a_id" ]
+
+	# Seed alpha's own panes/<id> via the real writer, routed to alpha's own
+	# socket (SHIM_DIR execs $TMUX_BIN -L $SOCKET) — no --session, so it
+	# round-trips through alpha's real server and picks up alpha's real
+	# server= pid, the same way a live Claude Code hook would.
+	local bare_a
+	bare_a="$(bare_id "$a_id")"
+	CLAUDE_STATUS_DIR="$CLAUDE_STATUS_DIR" PATH="$SHIM_DIR:$PATH" bash scripts/claude-status-update.sh \
+		processing --pane "$a_id"
+	[ -e "$CLAUDE_STATUS_DIR/panes/$bare_a" ]
+	grep -q '^server=' "$CLAUDE_STATUS_DIR/panes/$bare_a"
+
+	# Backdate to match the issue's repro: written well before beta boots.
+	touch -d "@$(($(date +%s) - 30))" "$CLAUDE_STATUS_DIR/panes/$bare_a"
+
+	# Positive control: an unowned, equally-backdated decoy that ANY prune
+	# pass (fixed or not) must delete. Its survival would mean beta's
+	# config-load prune silently never ran at all — e.g. the marker gate's
+	# same-wall-clock-second start_time collision short-circuiting it — in
+	# which case a green result here would prove nothing. names/99999 cannot
+	# collide with a real pane id (alpha and beta both open %0).
+	printf 'decoy\n' >"$CLAUDE_STATUS_DIR/names/99999"
+	touch -d "@$(($(date +%s) - 30))" "$CLAUDE_STATUS_DIR/names/99999"
+
+	# Reduce (not just detect, via the decoy above) a same-second start_time
+	# collision between alpha and beta.
+	sleep 1
+
+	tb new-session -d -s beta -x 80 -y 24 -c "$PWD" -- bash
+	local b_id
+	b_id="$(tb list-panes -t beta -F '#{pane_id}')"
+	[ -n "$b_id" ]
+
+	# The decoy is gone: beta's config-load prune genuinely ran.
+	[ ! -e "$CLAUDE_STATUS_DIR/names/99999" ]
+	# Alpha's file, owned by alpha's still-live server, survives it.
+	[ -e "$CLAUDE_STATUS_DIR/panes/$bare_a" ]
+	grep -q '^state=processing$' "$CLAUDE_STATUS_DIR/panes/$bare_a"
+}
+
 # #671: reset window naming/crew display when a window's last agent exits.
 # claude_clear_agent_state's own pane-scoped state (exercised above) and
 # claude_clear_window_naming's window-scoped naming/crew reset are two

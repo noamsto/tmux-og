@@ -84,29 +84,71 @@ CLAUDE_ASSUME_DEAD_AFTER="${CLAUDE_ASSUME_DEAD_AFTER:-@assume_dead_after@}"
 # presence (client detached, feature off), which deactivates the veto entirely.
 CLAUDE_LIVE_SWEEP_FRESH=15
 
-# claude_prune_stale_state SERVER_START
+# claude_prune_stale_state SERVER_START [SERVER_PID]
 # Drops pane-id-keyed status files left behind by a previous tmux server. tmux
 # restarts pane ids at %0 on server (re)start, so a restored pane can reuse a
 # dead pane's id and inherit its cached name/task/issue — surfacing an unrelated
-# window's label. The files carry no server generation, so mtime vs the server's
-# start_time is the only signal: anything written before this server booted is
-# stale. A marker file holding the current start_time gates the directory scan
-# to once per server, so the per-tick status poller that calls this stays cheap.
+# window's label. mtime vs this server's start_time is the base signal:
+# anything written before this server booted is stale. A marker file holding
+# the current start_time gates the directory scan to once per server, so the
+# per-tick status poller that calls this stays cheap.
+#
+# mtime alone cannot tell "written by a server that has since died" from
+# "written moments ago by a different, still-running server" — under the
+# shared CLAUDE_STATUS_DIR, a second server's very first boot could otherwise
+# delete a live different server's state. When SERVER_PID (this booting
+# server's own #{pid}) is passed, panes/<id> files are scanned once up front
+# for their server= field (stamped by claude-status-update.sh); an id whose
+# recorded owner PID is numeric, not SERVER_PID, and still alive (`kill -0`)
+# is protected from deletion across every dir this sweeps, regardless of
+# mtime. Three caveats, deliberately:
+#   (a) `kill -0` proves *a* process exists, not specifically a tmux server —
+#       after a reboot or long uptime a reused PID could protect a dead
+#       generation's id until that PID also dies. This fails safe (under-reap,
+#       never over-delete), which is the posture this needs.
+#   (b) protection is only granted to ids that have a panes/<id> server=
+#       field — a screen-only agent pane (pi/codex/cursor, no panes/<id>
+#       sibling) stays mtime-prunable; a known, narrower, out-of-scope gap.
+#   (c) the marker gate above is per-machine, not per-server (one
+#       .server_start file in the shared dir), so two servers alternating
+#       boots can each re-run this scan (one panes/* pass + one kill -0 per
+#       recorded owner) more than once per boot — cheap, but not free.
 # GNU stat pinned by Nix, same rationale as lib-log.sh's OG_STAT.
 OG_STAT="@stat@"
 if [[ $OG_STAT == @* ]]; then
 	OG_STAT=stat
 fi
 claude_prune_stale_state() {
-	local server_start=$1
+	local server_start=$1 server_pid=${2:-}
 	[[ -z $server_start ]] && return 0
 	local marker="$CLAUDE_STATUS_DIR/.server_start"
 	[[ -r $marker && $(<"$marker") == "$server_start" ]] && return 0
+
+	local -A protected=()
+	if [[ -n $server_pid ]]; then
+		local pf id owner key val
+		for pf in "$CLAUDE_PANES_DIR"/*; do
+			[[ -f $pf ]] || continue
+			id="${pf##*/}"
+			owner=""
+			while IFS='=' read -r key val || [[ -n $key ]]; do
+				[[ $key == server ]] && {
+					owner="$val"
+					break
+				}
+			done <"$pf"
+			[[ $owner =~ ^[0-9]+$ ]] || continue
+			[[ $owner == "$server_pid" ]] && continue
+			kill -0 "$owner" 2>/dev/null && protected["$id"]=1
+		done
+	fi
+
 	local dir f mt
 	for dir in "$CLAUDE_PANES_DIR" "$CLAUDE_SCREEN_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_NAMES_DIR" "$CLAUDE_INTERRUPT_DIR" "$CLAUDE_WATCHERS_DIR" "$CLAUDE_LIVE_DIR"; do
 		[[ -d $dir ]] || continue
 		for f in "$dir"/*; do
 			[[ -f $f ]] || continue
+			[[ -n ${protected[${f##*/}]+x} ]] && continue
 			mt=$("$OG_STAT" -c %Y "$f" 2>/dev/null || echo 0)
 			((mt < server_start)) && rm -f "$f"
 		done

@@ -151,6 +151,31 @@ func TestAgentShipperApply(t *testing.T) {
 	}
 }
 
+// A panes/ file this shipper writes must carry the LOCAL tmux server's own
+// PID as server=, so a second server's boot-time prune can tell it belongs to
+// a still-live server rather than deleting it (#676).
+func TestAgentShipperStampsServerPID(t *testing.T) {
+	dir := t.TempDir()
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+	cfg.LocalTmuxOut = func(args ...string) (string, error) {
+		return "4242", nil
+	}
+
+	a.apply(cfg, []paneStatus{
+		{pane: "%1", proc: "claude", state: "waiting", ts: 1700000000},
+	})
+
+	body, err := os.ReadFile(filepath.Join(dir, "panes", "7"))
+	if err != nil {
+		t.Fatalf("pane file: %v", err)
+	}
+	if !strings.Contains(string(body), "server=4242\n") {
+		t.Errorf("pane file = %q, want it to contain server=4242", body)
+	}
+}
+
 // The local pane runs a renderer, so its own command tells the icons nothing.
 // @bridge_proc carries the remote's — stamped for every mirrored pane, agent or
 // not, and only when it changes (else it is a fork per pane per second).

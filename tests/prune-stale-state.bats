@@ -94,6 +94,58 @@ stamp() {
 	[ ! -e "$CLAUDE_STATUS_DIR/.server_start" ]
 }
 
+# #676: cross-server ownership. A panes/<id> file's server= field (stamped by
+# claude-status-update.sh / agentstatus.go) names the PID of the tmux server
+# that wrote it; when SERVER_PID is passed, claude_prune_stale_state must
+# never delete a file owned by a different, still-live PID, regardless of
+# mtime — but must still reap its own dead leftovers, exactly as before,
+# when SERVER_PID is omitted entirely.
+
+@test "prune protects a stale panes file whose server= pid is a different, live process" {
+	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
+	# 999999999: this booting server's own pid, deliberately not $$.
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ -e "$CLAUDE_PANES_DIR/8" ]
+}
+
+@test "prune reaps a stale panes file whose server= pid is dead" {
+	# 2147483647 exceeds any real pid_max — guaranteed never a live process.
+	printf 'server=2147483647\n' >"$CLAUDE_PANES_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ ! -e "$CLAUDE_PANES_DIR/8" ]
+}
+
+@test "prune reaps its own stale files (server= matches SERVER_PID)" {
+	printf 'server=12345\n' >"$CLAUDE_PANES_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 12345
+	[ ! -e "$CLAUDE_PANES_DIR/8" ]
+}
+
+@test "prune protection extends from panes/<id> to a sibling dir under the same id" {
+	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
+	stamp "$CLAUDE_NAMES_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ -e "$CLAUDE_PANES_DIR/8" ]
+	[ -e "$CLAUDE_NAMES_DIR/8" ]
+}
+
+@test "prune reaps a legacy panes file with no server= field" {
+	stamp "$CLAUDE_PANES_DIR/8"
+	claude_prune_stale_state "$SERVER_START" 999999999
+	[ ! -e "$CLAUDE_PANES_DIR/8" ]
+}
+
+@test "prune with SERVER_PID omitted ignores server= entirely (backward compatible)" {
+	printf 'server=%s\n' "$$" >"$CLAUDE_PANES_DIR/8"
+	touch -t 200001010000 "$CLAUDE_PANES_DIR/8"
+	claude_prune_stale_state "$SERVER_START"
+	[ ! -e "$CLAUDE_PANES_DIR/8" ]
+}
+
 @test "reap drops dead pane files across panes/screen/interrupt/tasks/issues/watchers, keeps live ones" {
 	local rows
 	rows="$(printf '%%3|codex|0\n%%5|fish|0\n')"

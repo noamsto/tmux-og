@@ -165,6 +165,9 @@ type agentShipper struct {
 	lastApply time.Time // last time queued rows were applied; bounds the burst wait
 	lastGen   uint64    // registry generation the last backstop read was made against
 
+	localPID         string // the LOCAL tmux server's own #{pid}, resolved once
+	localPIDResolved bool
+
 	// subscribed is set per connection by Run once the remote has accepted the
 	// subscription; false leaves this shipper polling.
 	subscribed bool
@@ -229,6 +232,26 @@ func newAgentShipper(localSess string, skew int64) *agentShipper {
 // reconnect follows an outage of unknown length (#482).
 func (a *agentShipper) reskew(skew int64) { a.skew = skew }
 
+// localServerPID resolves and caches the LOCAL tmux server's own PID, for the
+// `server=` ownership field a panes/ file needs to survive a second server's
+// boot-time prune (#676). Resolved once per shipper lifetime: it names this
+// process's own server, which does not change while the daemon runs.
+func (a *agentShipper) localServerPID(cfg Config) string {
+	if a.localPIDResolved {
+		return a.localPID
+	}
+	a.localPIDResolved = true
+	if cfg.LocalTmuxOut == nil {
+		return ""
+	}
+	out, err := cfg.LocalTmuxOut("display-message", "-p", "#{pid}")
+	if err != nil {
+		return ""
+	}
+	a.localPID = strings.TrimSpace(out)
+	return a.localPID
+}
+
 // apply stamps rows and then drops the panes that stopped reporting (the agent
 // exited, or its pane is gone). Full-set only: a pane absent from rows is taken
 // as gone, so this may be called only with the whole remote pane set — which is
@@ -290,6 +313,9 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			a.removeFiles(id)
 		} else {
 			body := fmt.Sprintf("state=%s\ntimestamp=%d\nsession=%s\n", r.state, r.ts+a.skew, a.sess)
+			if pid := a.localServerPID(cfg); pid != "" {
+				body += "server=" + pid + "\n"
+			}
 			if r.unseen {
 				body += "unseen=1\n"
 			}
