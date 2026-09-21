@@ -28,6 +28,7 @@ func runTmux(args ...string) error {
 
 type Writer struct {
 	dir, paneID, last string
+	server            string
 	tmux              TmuxRunner
 }
 
@@ -38,6 +39,14 @@ func New(dir, paneID string) *Writer { return &Writer{dir: dir, paneID: paneID, 
 // real tmux binary.
 func NewWithTmuxRunner(dir, paneID string, tmux TmuxRunner) *Writer {
 	return &Writer{dir: dir, paneID: paneID, tmux: tmux}
+}
+
+// WithServer stamps every state file with the writing tmux server's pid, the
+// ownership key claude_prune_stale_state protects a live server's screen state
+// by. An empty pid leaves the file unstamped.
+func (w *Writer) WithServer(pid string) *Writer {
+	w.server = pid
+	return w
 }
 
 // Update records a newly observed agent state and its counted flags. An empty
@@ -60,7 +69,7 @@ func (w *Writer) Update(state string, flags map[string]int, now time.Time) (bool
 		return false, err
 	}
 	tmp := w.path() + ".tmp"
-	content := fmt.Sprintf("state=%s\ntimestamp=%d\n%s", state, now.Unix(), flagLines(flags))
+	content := fmt.Sprintf("state=%s\ntimestamp=%d\n%s%s", state, now.Unix(), w.serverLine(), flagLines(flags))
 	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
 		return false, err
 	}
@@ -70,6 +79,13 @@ func (w *Writer) Update(state string, flags map[string]int, now time.Time) (bool
 	w.last = key
 	w.stampOption(stampValue(state, flags, now))
 	return true, nil
+}
+
+func (w *Writer) serverLine() string {
+	if w.server == "" {
+		return ""
+	}
+	return "server=" + w.server + "\n"
 }
 
 // stampValue renders the tmux-mirrored form of a state: "<state> <epoch>"
