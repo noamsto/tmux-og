@@ -112,6 +112,29 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	# the test here under errexit and must not skip it.
 }
 
+# DIAG-TEMP
+res_diag() {
+	{
+		echo "DIAG stuck session $1: [$(t display-message -p -t "$1" '#{@og_session_res}')]"
+		echo "DIAG hook: $(t show-options -gv @og-res-tick)"
+		echo "DIAG clients: $(t list-clients -F '#{client_control_mode}' | tr '\n' ' ')"
+		echo "DIAG all: $(t list-sessions -F '#{session_id}=[#{@og_session_res}]' | tr '\n' ' ')"
+		local bin p
+		bin=$(t show-options -gv @og-res-tick | grep -o '/nix/store/[^ "\\]*tmux-session-resources')
+		echo "DIAG bin=$bin"
+		for p in /nix/store/*-ps-*/bin/ps /bin/ps; do
+			[ -x "$p" ] || continue
+			echo "DIAG ps=$p"
+			"$p" -Ao pid,ppid,pcpu,rss,comm 2>&1 | head -4
+			echo "DIAG ps rc=${PIPESTATUS[0]}"
+		done
+		echo "DIAG run:"
+		TMUX="$(t display-message -p '#{socket_path},#{pid},0')" "$bin" --tick 2>&1
+		echo "DIAG run rc=$?"
+		echo "DIAG after: $(t list-sessions -F '#{session_id}=[#{@og_session_res}]' | tr '\n' ' ')"
+	} >&3
+}
+
 @test "session resources stay unstamped with zero clients attached" {
 	# The poller's gate: nobody is bridged here, so nothing reads the stamp.
 	# Two monitor periods is long enough for a pass to have run if it would.
@@ -140,7 +163,10 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	id10=$(t display-message -p -t 10: '#{session_id}')
 	id2=$(t display-message -p -t 2: '#{session_id}')
 	for id in $(t list-sessions -F '#{session_id}'); do
-		wait_for 20 res_stamped "$id"
+		wait_for 20 res_stamped "$id" || {
+			res_diag "$id"
+			return 1
+		}
 	done
 	# Several monitor periods, so every session's pass has run more than once.
 	for ((i = 0; i < 16; i++)); do
