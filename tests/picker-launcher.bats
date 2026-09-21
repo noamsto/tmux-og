@@ -82,16 +82,18 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	[ "$(height_of)" = "100%" ]
 }
 
-@test "session picker: --client foo pins the popup's client" {
+@test "session picker: --client foo pins the popup's client and window" {
 	launcher="$(mk_launcher tmux-session-picker.sh)"
 	bash "$launcher" --client foo
 	grep -Eq -- '(^| )-c foo( |$)' "$ARGS_LOG"
+	grep -Eq -- '(^| )-t foo:( |$)' "$ARGS_LOG"
 }
 
-@test "session picker: no --client logs no -c" {
+@test "session picker: no --client logs no -c or -t" {
 	launcher="$(mk_launcher tmux-session-picker.sh)"
 	bash "$launcher"
 	run ! grep -Eq -- '(^| )-c ' "$ARGS_LOG"
+	run ! grep -Eq -- '(^| )-t ' "$ARGS_LOG"
 }
 
 @test "session picker: --current bar sets the popup's env" {
@@ -104,6 +106,7 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	launcher="$(mk_launcher tmux-session-picker.sh)"
 	bash "$launcher" --client foo --current bar
 	grep -Eq -- '(^| )-c foo( |$)' "$ARGS_LOG"
+	grep -Eq -- '(^| )-t foo:( |$)' "$ARGS_LOG"
 	grep -Eq -- '(^| )-e OG_PICKER_CURRENT_SESSION=bar( |$)' "$ARGS_LOG"
 }
 
@@ -117,6 +120,7 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	launcher="$(mk_launcher tmux-window-picker.sh)"
 	bash "$launcher" --client foo --agent
 	grep -Eq -- '(^| )-c foo( |$)' "$ARGS_LOG"
+	grep -Eq -- '(^| )-t foo:( |$)' "$ARGS_LOG"
 	grep -q -- '--agent' "$ARGS_LOG"
 }
 
@@ -124,6 +128,7 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	launcher="$(mk_launcher tmux-scratchpad.sh)"
 	bash "$launcher" --client foo sess
 	grep -Eq -- '(^| )-c foo( |$)' "$ARGS_LOG"
+	grep -Eq -- '(^| )-t foo:( |$)' "$ARGS_LOG"
 	grep -F -- 'scratch: sess' "$ARGS_LOG"
 	# the shape of the quoting is printf %q's business (a benign name needs
 	# none) -- assert the session reaches --attach, not how it was quoted

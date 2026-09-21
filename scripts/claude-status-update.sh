@@ -80,14 +80,15 @@ REFLOW_BIN="@reflow@"
 # run, and it is the sole other writer of @window_ai_name/@window_task (#589).
 #
 # Active pane only, the rule update-icons applies — a background agent in a
-# split must not retitle the window out from under the one on screen.
+# split must not retitle the window out from under the one on screen, looking
+# past a modal float.
 window_stamp() {
 	[[ -n ${TMUX:-} && -n ${pane_id:-} ]] || return 0
 	local active win sess cur
 	# session_name last: it may itself contain the '|' delimiter, and as the
 	# final read target it absorbs the rest of the line whole.
 	IFS='|' read -r active win sess < <(tmux display-message -p -t "$pane_id" \
-		'#{?pane_active,1,}|#{window_id}|#{session_name}' 2>/dev/null) || return 0
+		'#{?#{?window_modal_pane,#{pane_last},#{pane_active}},1,}|#{window_id}|#{session_name}' 2>/dev/null) || return 0
 	[[ $active == 1 && -n $win ]] || return 0
 	cur=$(tmux show -wqv -t "$win" "$1" 2>/dev/null)
 	[[ $cur == "$2" ]] && return 0

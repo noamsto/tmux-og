@@ -150,6 +150,18 @@ func main() {
 // needs both derivations before it can paint.
 type panesSnapshot []string
 
+// notModalFilter is a `list-panes -f` filter that drops a popup-float's pane:
+// it is the window's active pane while open, but its content is chrome, not
+// window content the picker should show (docs/agents/floats.md).
+const notModalFilter = "#{!:#{pane_modal_flag}}"
+
+// panesSnapshotArgv builds collectPanesSnapshot's `list-panes` argv, split out
+// so picker/main_test.go can assert notModalFilter is on it.
+func panesSnapshotArgv() []string {
+	return []string{"list-panes", "-a", "-f", notModalFilter, "-F",
+		"#{pane_id}|#{session_name}|#{window_index}|#{session_path}|#{session_last_attached}|#{@bridge_host}|#{pane_current_command}|#{pane_pid}|#{@bridge_proc}|#{@bridge_session_path}|#{@bridge_res}"}
+}
+
 // collectPanesSnapshot fetches the union of the fields sessions() and paneMap()
 // read. Fields are pipe-delimited; wrong field count fails closed (session_path
 // and pane_current_command may contain |). @bridge_host is mid-format; pane_pid
@@ -160,8 +172,7 @@ type panesSnapshot []string
 // @bridge_res is appended after both, and every later field must go after it
 // too: each one is positional, so a mid-format insert shifts all the rest.
 func collectPanesSnapshot() panesSnapshot {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{pane_id}|#{session_name}|#{window_index}|#{session_path}|#{session_last_attached}|#{@bridge_host}|#{pane_current_command}|#{pane_pid}|#{@bridge_proc}|#{@bridge_session_path}|#{@bridge_res}").Output()
+	out, err := exec.Command("tmux", panesSnapshotArgv()...).Output()
 	if err != nil {
 		return nil
 	}
@@ -429,11 +440,19 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 	return order, m
 }
 
+// windowsArgv builds collectWindows' `list-panes` argv, split out so
+// picker/main_test.go can assert notModalFilter is on it.
+func windowsArgv() []string {
+	return []string{"list-panes", "-a", "-f", notModalFilter, "-F",
+		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}"}
+}
+
 func collectWindows() []windowData {
 	// Fetch both @branch and pane path basename. The window_name contains
 	// icons/colors from automatic-rename-format so we reconstruct a clean name.
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}").Output()
+	// -f drops a popup-float's pane (notModalFilter): it is the window's active
+	// pane while open, but its content is chrome, not window content.
+	out, err := exec.Command("tmux", windowsArgv()...).Output()
 	if err != nil {
 		return nil
 	}

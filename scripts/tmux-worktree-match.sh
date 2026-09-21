@@ -34,7 +34,7 @@ w_phys=$(cd -P -- "$w" 2>/dev/null && pwd -P)
 # "_" and nothing would ever parse — the matcher would silently match nothing
 # and every `wt switch` would spawn a fresh window. "|" is printable and
 # survives every locale (tmux-pr-enrich uses it for the same reason).
-rows=$(tmux list-panes -a -F '#{session_name}|#{window_index}|#{window_id}|#{@worktree}|#{@bridge_win}|#{pane_active}|#{pane_current_path}' 2>/dev/null) || exit 0
+rows=$(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{session_name}|#{window_index}|#{window_id}|#{@worktree}|#{@bridge_win}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{pane_current_path}' 2>/dev/null) || exit 0
 [[ -z $rows ]] && exit 0
 
 # Values come in through the environment, not -v: POSIX has awk escape-process a

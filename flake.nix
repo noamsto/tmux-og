@@ -20,7 +20,7 @@
     # landed as tmux/tmux#5398, the other was rejected upstream.
     # Bump: repoint rev, then `nix flake lock --update-input tmux-upstream`.
     tmux-upstream = {
-      url = "github:tmux/tmux/81794f30471265c33c783129173c861eba91a982";
+      url = "github:tmux/tmux/3a6c2e7877e8c017edb84c8d3ee41b98abee27d3";
       flake = false;
     };
     flake-parts.url = "github:hercules-ci/flake-parts";
@@ -64,8 +64,6 @@
       pkgs.tmux.overrideAttrs (old: {
         version = "next-3.9";
         src = inputs.tmux-upstream;
-        # tmux/tmux 3d5f946f typo fix; drop on next bump past 5aa17a0c
-        patches = (old.patches or []) ++ [./patches/tmux-client-control-discard.patch];
         configureFlags =
           old.configureFlags
           ++ ["--disable-asan"]
@@ -1654,6 +1652,24 @@
               touch $out
             '';
 
+          # #725: the modal-skip / EFF_ACTIVE chrome rule (docs/agents/floats.md
+          # "Popups are modal floats") needs a server that actually has
+          # pane_modal_flag/window_modal_pane, so this drives the pinned wrapper
+          # instead of nixpkgs' tmux — the only difference from
+          # update-icons-all-windows-tests above.
+          update-icons-modal-tests =
+            pkgs.runCommand "update-icons-modal-tests" {
+              # tmux: drives a private, config-less server (like reflow-fanout-tests);
+              # git: builds a real repo so unseeded @branch seeding has a cwd.
+              # bash: copied to a binary named `claude` so pane_current_command is literal.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git (mkTmux pkgs) pkgs.bash];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/update-icons-modal.bats
+              touch $out
+            '';
+
           carousel-restore-tests =
             pkgs.runCommand "carousel-restore-tests" {
               # tmux: drives a private, config-less server (like
@@ -2124,6 +2140,39 @@
               export HOME=$TMPDIR/home
               mkdir -p "$HOME"
               bats tests/float-tool-focus.bats
+              touch $out
+            '';
+
+          # Live regression for popups → floating panes (#725): upstream
+          # `34cd5da4` deletes popups, and `display-popup` survives only as an
+          # undocumented compat command that opens a modal floating pane
+          # (design: docs/superpowers/specs/2026-09-21-popups-to-floats-design.md).
+          # Same attached-client harness and same reduced conf as
+          # float-tool-focus-tests above, for the same reason — a key binding
+          # fires only for a real client. notifyEnable/splashEnable keep their
+          # `true` defaults (config/tmux.conf.nix:34,67): `prefix + n` needs
+          # notify on, and the splash is suppressed per-test via @splash_shown.
+          popup-float-tests = let
+            popupFloatTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "popup-float-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+              TMUX_BIN = "${popupFloatTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/popup-float.bats
               touch $out
             '';
 

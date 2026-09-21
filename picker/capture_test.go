@@ -374,3 +374,133 @@ func TestSendKeysPropagatesError(t *testing.T) {
 		t.Errorf("sendKeys err = %v, want %v", err, wantErr)
 	}
 }
+
+func TestSelfTargets(t *testing.T) {
+	run := func(stdout string, err error) captureRunner {
+		return func(args ...string) ([]byte, error) { return []byte(stdout), err }
+	}
+
+	got, err := selfTargets("%5", run("2|%9|my|sess\n", nil))
+	if err != nil {
+		t.Fatalf("selfTargets: %v", err)
+	}
+	want := map[string]string{"my|sess": "%9", "my|sess:2": "%9"}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("got[%q] = %q, want %q", k, got[k], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+
+	if got, err := selfTargets("", run("2|%9|my|sess\n", nil)); got != nil || err != nil {
+		t.Errorf("empty pane: got %+v, err %v, want nil, nil", got, err)
+	}
+	if got, err := selfTargets("%5", run("2||my|sess\n", nil)); got != nil || err != nil {
+		t.Errorf("non-modal window (no float open): got %+v, err %v, want nil, nil", got, err)
+	}
+	if got, err := selfTargets("%5", run("", errors.New("boom"))); got != nil || err == nil {
+		t.Errorf("runner error: got %+v, err %v, want nil, non-nil error", got, err)
+	}
+
+	// The picker's own window must be gated on window_modal_pane, not just on
+	// P:… finding a last pane — a plain (non-float) pane gets no redirect.
+	var gotFormat string
+	f := func(args ...string) ([]byte, error) {
+		gotFormat = args[len(args)-1]
+		return []byte("2|%9|my|sess\n"), nil
+	}
+	if _, err := selfTargets("%5", f); err != nil {
+		t.Fatalf("selfTargets: %v", err)
+	}
+	if !strings.Contains(gotFormat, "#{?window_modal_pane,") {
+		t.Errorf("format = %q, want it gated on window_modal_pane", gotFormat)
+	}
+}
+
+func TestSelfCaptureCacheRetriesAfterError(t *testing.T) {
+	var c selfCaptureCache
+	wantErr := errors.New("boom")
+	calls := 0
+	failing := func(args ...string) ([]byte, error) {
+		calls++
+		return nil, wantErr
+	}
+	if _, err := c.resolve("%5", failing); !errors.Is(err, wantErr) {
+		t.Fatalf("resolve: err = %v, want %v", err, wantErr)
+	}
+	if c.resolved {
+		t.Fatalf("a runner error must not be memoized")
+	}
+
+	succeeding := func(args ...string) ([]byte, error) { return []byte("2|%9|my|sess\n"), nil }
+	got, err := c.resolve("%5", succeeding)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got["my|sess"] != "%9" {
+		t.Errorf("got %+v, want my|sess -> %%9", got)
+	}
+	if !c.resolved {
+		t.Fatalf("a definitive answer must be memoized")
+	}
+
+	if _, err := c.resolve("%5", failing); err != nil {
+		t.Fatalf("cached resolve must not call the runner: err = %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("failing runner called %d times, want exactly 1 (before the success)", calls)
+	}
+}
+
+func TestCaptureViaSelf(t *testing.T) {
+	resolve := func(t string) string {
+		if t == "sess:2" {
+			return "%9"
+		}
+		return t
+	}
+
+	f := &fakeCapture{stdout: "alpha\n%M\nbeta\n%M\n"}
+	got, err := captureViaSelf([]string{"sess:2", "%3"}, resolve, f.run)
+	if err != nil {
+		t.Fatalf("captureViaSelf: %v", err)
+	}
+	want := map[string]string{
+		"sess:2": "alpha" + captureBGReset,
+		"%3":     "beta" + captureBGReset,
+	}
+	for target, w := range want {
+		if got[target] != w {
+			t.Errorf("content[%s] = %q, want %q", target, got[target], w)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d keys, want %d (%+v)", len(got), len(want), got)
+	}
+	if !slices.Contains(f.argv, "%9") {
+		t.Errorf("argv = %v, want it to address the resolved pane %%9", f.argv)
+	}
+	if slices.Contains(f.argv, "sess:2") {
+		t.Errorf("argv = %v, must not address the picker's own target", f.argv)
+	}
+}
+
+func TestCaptureViaSelfReKeysGoneTarget(t *testing.T) {
+	resolve := func(t string) string {
+		if t == "sess:2" {
+			return "%9"
+		}
+		return t
+	}
+	f := &fakeCapture{stdout: "alpha\n%M\n", err: exitErrWithStderr(t, "can't find pane: %9\n")}
+	_, err := captureViaSelf([]string{"%1", "sess:2", "%3"}, resolve, f.run)
+	var cErr *captureErr
+	if !errors.As(err, &cErr) {
+		t.Fatalf("want a captureErr, got %v", err)
+	}
+	if cErr.Target != "sess:2" {
+		t.Errorf("captureErr.Target = %q, want %q (re-keyed to the item target)", cErr.Target, "sess:2")
+	}
+}

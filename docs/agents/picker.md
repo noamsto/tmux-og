@@ -38,6 +38,23 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   used to unwrap; that helper is gone).
 
 
+## Launch
+
+- **The picker itself launches in a popup-float** (`display-popup`'s compat
+  modal-pane form, #725 — see `floats.md`'s "Popups are modal floats"): its
+  own window/session targets are never captured by the preview or the wall,
+  `selfCaptureTarget` (`picker/capture.go`) resolving them to the pane under
+  the float instead so a tile for the current window shows the window's real
+  content, not the picker looking at itself. Killing the picker's *own*
+  window (from the window picker) or session (from the session picker) takes
+  the picker down with it — the popup used to survive and refresh; a
+  popup-float cannot, since it lives inside the window it just killed.
+  Accepted, not worked around: the action still completes, and the end state
+  is the one any picker that closes after acting leaves behind. Launchers
+  pass `-t "<client>:"` alongside `-c "$CLIENT"` — the float lands in the
+  `-t` window, and unpinned that defaults to tmux's "best" session rather
+  than the client's own.
+
 ## Input and filtering
 
 - **A typed key is `printableKeyText`, never `len(key) == 1`** (`picker/tui.go`). bubbletea v2 reports the space key by its NAME — `KeyPressMsg.String()` falls through to `Keystroke()` for it, "the only invisible printable character" — so a length test silently dropped every space typed into a query and no picker filter could express `new window` (#689). The helper returns the literal character, which is what its three consumers need: the session/window picker and which-key append it to the query, and `relayKeyArgs` (`picker/capture.go`) sends it to a pane with `send-keys -l`, where widening the length test alone would have typed the word `space`.

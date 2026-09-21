@@ -37,23 +37,31 @@ func gitOutput(dir string, args ...string) (string, bool) {
 // completion that output is empty, which paints line 0 blank. A command string
 // that stays constant across ticks lets tmux reuse the one job and keep the last
 // line painted while this binary recomputes.
+// underModal builds the tmux expression for field x of the pane under a modal
+// float — a popup-float is the window's active pane while open, but its
+// content is chrome, not what the statusline should show (docs/agents/floats.md).
+func underModal(x string) string {
+	return "#{?window_modal_pane,#{P:#{?pane_last," + x + ",}}," + x + "}"
+}
+
 var volatileFields = []string{
 	"#{client_prefix}",
 	"#{@issue_id}", "#{@issue_branch}", "#{@issue_provider}", "#{@issue_title}",
-	"#{@branch}", "#{pane_current_path}", "#{@git_root}",
-	"#{@active_pane_icon}", "#{pane_current_command}", "#{@claude_session_fg}",
+	"#{@branch}", underModal("#{pane_current_path}"), "#{@git_root}",
+	"#{@active_pane_icon}", underModal("#{pane_current_command}"), "#{@claude_session_fg}",
 	"#{@crew_name}", "#{@crew_color}",
 	"#{@bridge_win}", "#{@bridge_host}", "#{@bridge_state}",
 	"#{@bridge_crew_name}", "#{@bridge_crew_color}",
 	"#{@bridge_label_id}", "#{@bridge_label_rest_long}",
-	"#{@bridge_proc}",
+	underModal("#{@bridge_proc}"),
 	"#{@window_has_agent}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message
-// roundtrip to the session's active pane. It reports whether prefix is active
-// and whether the fetch succeeded; a failed fetch leaves the fields empty (the
-// caller re-paints the cached last-good line instead of that degraded frame).
+// roundtrip to the session's active pane, looking past a modal float to the
+// pane it covers. It reports whether prefix is active and whether the fetch
+// succeeded; a failed fetch leaves the fields empty (the caller re-paints the
+// cached last-good line instead of that degraded frame).
 // Fields are pipe-delimited; wrong field count fails closed (paths/titles may contain |).
 func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

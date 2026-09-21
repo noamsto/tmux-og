@@ -8,6 +8,18 @@ import (
 	"testing"
 )
 
+func TestCollectorArgvCarriesNotModalFilter(t *testing.T) {
+	for name, argv := range map[string][]string{
+		"panesSnapshotArgv": panesSnapshotArgv(),
+		"windowsArgv":       windowsArgv(),
+	} {
+		i := slices.Index(argv, "-f")
+		if i == -1 || i+1 >= len(argv) || argv[i+1] != notModalFilter {
+			t.Fatalf("%s = %v, want -f %q", name, argv, notModalFilter)
+		}
+	}
+}
+
 func TestAgentPriority(t *testing.T) {
 	cases := []struct {
 		name string
