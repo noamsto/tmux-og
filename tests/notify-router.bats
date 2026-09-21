@@ -37,6 +37,23 @@ setup() {
 	make_notify_router
 }
 
+teardown() {
+	[[ -n ${FAKE_TMUX_PID:-} ]] && kill "$FAKE_TMUX_PID" 2>/dev/null
+	return 0
+}
+
+# A long-lived process whose comm is "tmux" — a live owner that passes
+# notify_pid_is_tmux. Sets FAKE_TMUX_PID. Copied from
+# tests/prune-stale-state.bats (the #706 suite): a copied bash named "tmux"
+# idling in a builtin read, so comm is the exec'd file's name.
+start_fake_tmux_server() {
+	cp "$(command -v bash)" "$BATS_TEST_TMPDIR/tmux"
+	mkfifo "$BATS_TEST_TMPDIR/idle"
+	# shellcheck disable=SC2016 # $1 is expanded by the child bash, not here
+	"$BATS_TEST_TMPDIR/tmux" -c 'read -t 300 <>"$1"' _ "$BATS_TEST_TMPDIR/idle" &
+	FAKE_TMUX_PID=$!
+}
+
 # One event file must exist; echo its path.
 only_event() {
 	# Not named `f`: callers assign the result to a scalar `f`, and a local array
@@ -47,8 +64,8 @@ only_event() {
 	printf '%s' "${ev[0]}"
 }
 
-active_info='@7|1|1|$3|1500000000|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
-background_info='@9|0|1|$3|1500000000|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
+active_info='@7|1|1|$3|1500000000|1234|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
+background_info='@9|0|1|$3|1500000000|1234|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
 
 # --- the pure gating decision, table-driven ---
 
@@ -127,7 +144,7 @@ background_info='@9|0|1|$3|1500000000|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
 }
 
 @test "message path: an empty theme value omits the colour, never emits #[fg=]" {
-	export FAKE_INFO='@7|1|1|$3|1500000000|||||mysess'
+	export FAKE_INFO='@7|1|1|$3|1500000000|1234|||||mysess'
 	run bash "$NOTIFY_ROUTER" emit --source claude --level error --pane %5 --title boom
 	[ "$status" -eq 0 ]
 	run grep -qF '#[fg=]' "$TMUX_LOG"
@@ -171,7 +188,7 @@ background_info='@9|0|1|$3|1500000000|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
 }
 
 @test "history path: an active window in a detached session still routes to history" {
-	export FAKE_INFO='@7|1|0|$3|1500000000|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
+	export FAKE_INFO='@7|1|0|$3|1500000000|1234|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
 	run bash "$NOTIFY_ROUTER" emit --source claude --level info --pane %5 --title hi
 	[ "$status" -eq 0 ]
 	grep -qx 'routed=history' "$(only_event)"
@@ -188,6 +205,7 @@ background_info='@9|0|1|$3|1500000000|#ff5555|#fab387|#a6e3a1|#9399b2|mysess'
 	f="$(only_event)"
 	run cut -d= -f1 "$f"
 	[ "$output" = "ts
+server
 source
 level
 window
@@ -196,6 +214,7 @@ title
 routed" ]
 	grep -qx 'window=@9' "$f" # normalized from $3:@9
 	grep -qx 'session=mysess' "$f"
+	grep -qx 'server=1234' "$f" # the fetched #{pid} reaches the file verbatim
 	grep -qE '^ts=[0-9]+$' "$f"
 }
 
@@ -205,7 +224,7 @@ routed" ]
 		--title "$(printf 'a\nb\tc  d')"
 	[ "$status" -eq 0 ]
 	f="$(only_event)"
-	[ "$(wc -l <"$f")" -eq 7 ]
+	[ "$(wc -l <"$f")" -eq 8 ]
 	grep -qx 'title=a b c d' "$f"
 }
 
@@ -306,4 +325,104 @@ stamp() {
 	notify_prune ""
 	[ -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
 	[ ! -e "$NOTIFY_MARKER" ]
+}
+
+# #710: cross-server ownership. An event's server= field (stamped by
+# og-notify.sh) names the PID of the tmux server that wrote it; when SERVER_PID
+# is passed, notify_prune must never delete an event owned by a different,
+# still-live PID, regardless of mtime — but must still reap its own dead
+# leftovers, exactly as before, when SERVER_PID is omitted entirely.
+
+@test "prune protects a stale event whose server= pid is a different, live process" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	start_fake_tmux_server
+	printf 'ts=1\nserver=%s\nwindow=@7\n' "$FAKE_TMUX_PID" >"$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	touch -t 200001010000 "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START" 999999999
+	[ -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+}
+
+@test "prune reaps a stale event whose server= pid is dead" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	# 2147483647 exceeds any real pid_max — guaranteed never a live process.
+	printf 'ts=1\nserver=2147483647\nwindow=@7\n' >"$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	touch -t 200001010000 "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START" 999999999
+	[ ! -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+}
+
+@test "prune reaps its own stale events (server= matches SERVER_PID)" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	printf 'ts=1\nserver=12345\nwindow=@7\n' >"$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	touch -t 200001010000 "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START" 12345
+	[ ! -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+}
+
+@test "prune does not protect an alive owner that is not a tmux process (pid reuse)" {
+	command -v ps >/dev/null || skip "ps not available"
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	printf 'ts=1\nserver=%s\nwindow=@7\n' "$$" >"$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	touch -t 200001010000 "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START" 999999999
+	[ ! -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+}
+
+@test "prune gates per server pid: same pid skips, a different pid still sweeps" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	notify_prune "$SERVER_START" 111
+	stamp "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START" 111
+	[ -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+	# Same start_time, another server: its own marker is absent, so it sweeps.
+	notify_prune "$SERVER_START" 222
+	[ ! -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+}
+
+@test "prune with a pid still writes the shared .server_start marker" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	notify_prune "$SERVER_START" 111
+	[ "$(cat "$NOTIFY_MARKER")" = "$SERVER_START" ]
+	[ "$(cat "$NOTIFY_MARKER.111")" = "$SERVER_START" ]
+}
+
+@test "prune removes per-server markers of dead pids" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	printf '%s\n' "$SERVER_START" >"$NOTIFY_MARKER.2147483647"
+	notify_prune "$SERVER_START" 111
+	[ ! -e "$NOTIFY_MARKER.2147483647" ]
+	[ -e "$NOTIFY_MARKER.111" ]
+}
+
+@test "prune reaps a legacy event with no server= field" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	stamp "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START" 999999999
+	[ ! -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
+}
+
+@test "prune with SERVER_PID omitted ignores server= entirely (backward compatible)" {
+	setup_lib_log
+	setup_lib_notify
+	mkdir -p "$NOTIFY_EVENTS_DIR"
+	printf 'ts=1\nserver=%s\nwindow=@7\n' "$$" >"$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	touch -t 200001010000 "$NOTIFY_EVENTS_DIR/1400000000-000-8"
+	notify_prune "$SERVER_START"
+	[ ! -e "$NOTIFY_EVENTS_DIR/1400000000-000-8" ]
 }

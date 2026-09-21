@@ -113,20 +113,54 @@ notify_valid_level() {
 	return 1
 }
 
-# notify_prune SERVER_START
+# notify_pid_is_tmux PID
+# Succeeds when PID looks like a live tmux server. `kill -0` alone is satisfied
+# by any process that reused a dead server's pid, so the process name is
+# checked too (`ps -o comm= -p`, portable to macOS; the nix wrapper may show as
+# .tmux-wrapped). Fails safe toward "yes": no ps on PATH, or an empty answer,
+# cannot tell, so the caller protects. Deliberate copy of claude_pid_is_tmux in
+# lib-claude.sh rather than a shared helper: factoring it into lib-log.sh would
+# edit lib-claude.sh, owned by another worker while this landed.
+notify_pid_is_tmux() {
+	kill -0 "$1" 2>/dev/null || return 1
+	command -v ps &>/dev/null || return 0
+	local comm
+	comm=$(ps -o comm= -p "$1" 2>/dev/null)
+	[[ -z $comm ]] && return 0
+	[[ $comm == *tmux* ]]
+}
+
+# notify_prune SERVER_START [SERVER_PID]
 # Drops events written by a previous tmux server. Window and pane ids restart on
 # server (re)start, so an event naming @7 from a dead server points at an
 # unrelated window — actively misleading, not merely stale. A marker holding the
 # current start_time gates the directory scan to once per server generation, so
-# the emit path never globs the events dir outside that gate. Structurally
-# mirrors claude_prune_stale_state in lib-claude.sh.
+# the emit path never globs the events dir outside that gate.
+#
+# mtime alone cannot tell "written by a server that has since died" from
+# "written moments ago by a different, still-running server" — under the shared
+# OG_NOTIFY_DIR, a second server's very first boot could otherwise delete a live
+# different server's events. When SERVER_PID (this booting server's own #{pid})
+# is passed, events/<name> files are scanned for their server= field (stamped
+# by og-notify.sh); a file whose recorded owner PID is numeric, not SERVER_PID,
+# and still a live tmux process (notify_pid_is_tmux, evaluated once per distinct
+# owner per pass) is protected from deletion regardless of mtime. A legacy file
+# with no server= field falls to mtime alone. With SERVER_PID the marker gate is
+# per-server (.server_start.<pid>, content = start_time), so two live servers
+# each sweep once per boot instead of ping-ponging one shared marker; the shared
+# .server_start is still written after every sweep, and is the only gate when
+# SERVER_PID is empty. A sweep also removes .server_start.<pid> markers whose
+# pid is no longer alive.
 #
 # Requires acquire_lock + file_mtime from lib-log.sh. Failing to acquire the
 # lock is not an error: another emit is already pruning, so skip and continue.
 notify_prune() {
-	local server_start="${1:-}"
+	local server_start="${1:-}" server_pid="${2:-}"
 	[[ -z $server_start ]] && return 0
-	[[ -r $NOTIFY_MARKER && $(<"$NOTIFY_MARKER") == "$server_start" ]] && return 0
+	local marker="$NOTIFY_MARKER"
+	local gate="$marker"
+	[[ -n $server_pid ]] && gate="$marker.$server_pid"
+	[[ -r $gate && $(<"$gate") == "$server_start" ]] && return 0
 	# The lock is a mkdir inside this dir, so the dir must exist first or every
 	# acquire fails and the prune never runs.
 	mkdir -p "$OG_NOTIFY_DIR" 2>/dev/null || return 0
@@ -134,13 +168,44 @@ notify_prune() {
 		# Called inside the subshell whose exit releases it: acquire_lock arms an
 		# EXIT trap that rmdir's the lock.
 		acquire_lock "$NOTIFY_PRUNE_LOCK" || exit 0
-		local f mt
+		local -A owner_live=()
+		local f mt owner key val
 		for f in "$NOTIFY_EVENTS_DIR"/*; do
 			[[ -f $f ]] || continue
+			if [[ -n $server_pid ]]; then
+				owner=""
+				while IFS='=' read -r key val || [[ -n $key ]]; do
+					[[ $key == server ]] && {
+						owner="$val"
+						break
+					}
+				done <"$f"
+				# Owner liveness is memoized: one ps per distinct pid per pass.
+				if [[ $owner =~ ^[0-9]+$ && $owner != "$server_pid" ]]; then
+					if [[ -z ${owner_live[$owner]+x} ]]; then
+						if notify_pid_is_tmux "$owner"; then
+							owner_live["$owner"]=1
+						else
+							owner_live["$owner"]=0
+						fi
+					fi
+					[[ ${owner_live[$owner]} == 1 ]] && continue
+				fi
+			fi
 			mt=$(file_mtime "$f")
 			((mt < server_start)) && rm -f "$f"
 		done
-		printf '%s\n' "$server_start" >"$NOTIFY_MARKER"
+		if [[ -n $server_pid ]]; then
+			printf '%s\n' "$server_start" >"$gate"
+			local m mpid
+			for m in "$marker".*; do
+				[[ -f $m ]] || continue
+				mpid="${m##*.server_start.}"
+				[[ $mpid == "$server_pid" ]] && continue
+				kill -0 "$mpid" 2>/dev/null || rm -f "$m"
+			done
+		fi
+		printf '%s\n' "$server_start" >"$marker"
 	)
 	return 0
 }

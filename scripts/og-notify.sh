@@ -68,9 +68,9 @@ command -v tmux >/dev/null 2>&1 || exit 0
 # target. Safe here because the router passes it as its own argv; nothing
 # re-expands it through sh -c.
 info=$(tmux display-message -p -t "$target" \
-	'#{window_id}|#{window_active}|#{session_attached}|#{session_id}|#{start_time}|#{@thm_red}|#{@thm_peach}|#{@thm_green}|#{@thm_subtext_0}|#{session_name}' \
+	'#{window_id}|#{window_active}|#{session_attached}|#{session_id}|#{start_time}|#{pid}|#{@thm_red}|#{@thm_peach}|#{@thm_green}|#{@thm_subtext_0}|#{session_name}' \
 	2>/dev/null) || exit 0
-IFS='|' read -r win_id win_active sess_attached sess_id srv_start \
+IFS='|' read -r win_id win_active sess_attached sess_id srv_start srv_pid \
 	thm_red thm_peach thm_green thm_sub sess_name <<<"$info"
 # Empty resolution (window gone, wrong server): nothing written, nothing shown.
 [[ -n ${win_id:-} ]] || exit 0
@@ -91,6 +91,7 @@ printf -v now '%(%s)T' -1
 mkdir -p "$NOTIFY_EVENTS_DIR" 2>/dev/null || exit 0
 {
 	printf 'ts=%s\n' "$now"
+	printf 'server=%s\n' "$srv_pid"
 	printf 'source=%s\n' "$src"
 	printf 'level=%s\n' "$level"
 	printf 'window=%s\n' "$win_id"
@@ -161,5 +162,5 @@ fi
 
 # Prune last: it is a marker-gated no-op on all but the first emit of a server
 # generation, and the just-written event is newer than start_time so it survives.
-notify_prune "$srv_start"
+notify_prune "$srv_start" "$srv_pid"
 exit 0
