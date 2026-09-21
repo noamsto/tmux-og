@@ -72,6 +72,8 @@ wait_for() {
 }
 
 file_exists() { [ -e "$1" ]; }
+# The tick stamps carry a per-server suffix (#705), so match by prefix.
+stamp_exists() { compgen -G "$1*" >/dev/null; }
 file_absent() { [ ! -e "$1" ]; }
 pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 
@@ -91,8 +93,8 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	# is the root cause itself: a status-format-driven poller has never run
 	# under this condition. Both scripts stamp unconditionally in --tick /
 	# --backfill mode, so the stamp alone is a sound recovery witness.
-	wait_for 20 file_exists "$OG_ENRICH_CACHE_DIR/.last-tick"
-	wait_for 20 file_exists "$OG_ENRICH_CACHE_DIR/.last-backfill-tick"
+	wait_for 20 stamp_exists "$OG_ENRICH_CACHE_DIR/.last-tick"
+	wait_for 20 stamp_exists "$OG_ENRICH_CACHE_DIR/.last-backfill-tick"
 }
 
 @test "pr and backfill tick stamps appear with only a control-mode client attached" {
@@ -100,8 +102,8 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	# report): a control client renders no status line, so the old
 	# status-format[0] #() jobs never ran for it either.
 	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t s; }
-	wait_for 20 file_exists "$OG_ENRICH_CACHE_DIR/.last-tick"
-	wait_for 20 file_exists "$OG_ENRICH_CACHE_DIR/.last-backfill-tick"
+	wait_for 20 stamp_exists "$OG_ENRICH_CACHE_DIR/.last-tick"
+	wait_for 20 stamp_exists "$OG_ENRICH_CACHE_DIR/.last-backfill-tick"
 	# Cleanup lives in teardown (CTL_PID): a wait_for timeout above aborts
 	# the test here under errexit and must not skip it.
 }

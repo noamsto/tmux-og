@@ -15,6 +15,7 @@ setup() {
 	mkdir -p "$FAKEBIN"
 	export GH_LOG="$BATS_TEST_TMPDIR/gh.log"
 	export TMUX_LOG="$BATS_TEST_TMPDIR/tmux.log"
+	export TMUX_SRV_LOG="$BATS_TEST_TMPDIR/tmux-srv.log"
 	export OG_ENRICH_CACHE_DIR="$BATS_TEST_TMPDIR/cache"
 	unset TMUX TMUX_PANE
 
@@ -39,7 +40,10 @@ setup() {
 		case "$1" in
 		list-windows) printf '%s\n' "$FAKE_WINDOWS" ;;
 		display-message) printf '\n' ;;
-		set-option) printf '%s\n' "$*" >>"$TMUX_LOG" ;;
+		set-option)
+			printf '%s\n' "$*" >>"$TMUX_LOG"
+			printf '%s %s\n' "${TMUX%%,*}" "$*" >>"$TMUX_SRV_LOG"
+			;;
 		esac
 		exit 0
 	EOF
@@ -173,6 +177,30 @@ markers() {
 	[ ! -s "$GH_LOG" ]
 }
 
+# make_gate — the tick gate re-execs itself through detach, so it needs to be
+# runnable as a file, with a shebang that resolves inside the nix build sandbox.
+# It runs with compgen disabled: nixpkgs' non-interactive bash is built without
+# it, and the gate must not depend on it (#705). Sets GATE.
+make_gate() {
+	GATE="$BATS_TEST_TMPDIR/tmux-pr-enrich-exec"
+	{
+		printf '#!%s\n' "$BASH"
+		printf 'enable -n compgen\n'
+		tail -n +2 "$PR_ENRICH_SCRIPT"
+	} >"$GATE"
+	chmod +x "$GATE"
+}
+
+# wait_for_srv SOCKET — wait until a pass on that tmux server has written options.
+wait_for_srv() {
+	local i
+	for ((i = 0; i < 50; i++)); do
+		grep -q "^$1 " "$TMUX_SRV_LOG" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
 # stamp EPOCH FILE — set FILE's mtime to EPOCH (portable: no GNU touch -d).
 stamp() {
 	touch -t "$(printf '%(%Y%m%d%H%M.%S)T' "$1")" "$2"
@@ -188,15 +216,8 @@ stamp() {
 	touch "$OG_ENRICH_CACHE_DIR/.last-tick"
 	stamp $((now - 30)) "$OG_ENRICH_CACHE_DIR/.last-pending-tick"
 	stamp $((now - 29)) "$(markers)"
-	# The gate execs itself through detach, so it needs to be runnable as a file —
-	# with a shebang that resolves inside the nix build sandbox.
-	local gate="$BATS_TEST_TMPDIR/tmux-pr-enrich-exec"
-	{
-		printf '#!%s\n' "$BASH"
-		tail -n +2 "$PR_ENRICH_SCRIPT"
-	} >"$gate"
-	chmod +x "$gate"
-	GH_CHECK_JSON="$PENDING_CHECK_JSON" run "$gate" --tick
+	make_gate
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run "$GATE" --tick
 	[ "$status" -eq 0 ]
 	# The gate detaches its pass; wait for it to reach gh.
 	local i
@@ -242,4 +263,46 @@ stamp() {
 	grep -q -- '@pr_check_state pending' "$TMUX_LOG"
 	[ "$(markers | wc -l)" -eq 1 ]
 	[ "$(cat "$(markers)")" -le "$EPOCHSECONDS" ]
+}
+
+@test "tick: the gate runs with no compgen builtin and still dispatches nothing when idle" {
+	make_gate
+	mkdir -p "$OG_ENRICH_CACHE_DIR"
+	touch "$OG_ENRICH_CACHE_DIR/.last-tick"
+	run "$GATE" --tick
+	[ "$status" -eq 0 ]
+	[[ $output != *"command not found"* ]]
+	sleep 0.3
+	[ ! -s "$GH_LOG" ]
+	[ ! -e "$OG_ENRICH_CACHE_DIR/.last-pending-tick" ]
+}
+
+@test "tick: another tmux server's gate stamp does not starve this server's pass (#705)" {
+	make_gate
+	# Two servers share one cache dir. B ticks first and its pass runs against B's
+	# windows; A's tick, inside the same refresh window, must still get its own.
+	TMUX=/tmp/sockB,1,0 run "$GATE" --tick
+	[ "$status" -eq 0 ]
+	wait_for_srv /tmp/sockB
+	# Let B's pass finish so A's fetches aren't skipped on a per-branch lock.
+	local i
+	for ((i = 0; i < 50; i++)); do
+		[ -z "$(compgen -G "$OG_ENRICH_CACHE_DIR/*.lock")" ] && break
+		sleep 0.1
+	done
+	TMUX=/tmp/sockA,1,0 run "$GATE" --tick
+	[ "$status" -eq 0 ]
+	wait_for_srv /tmp/sockA
+}
+
+@test "pass: another server's pending markers survive this server's cleanup (#705)" {
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" TMUX=/tmp/sockA,1,0 run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	local marker
+	marker="$(compgen -G "$OG_ENRICH_CACHE_DIR/*.checks-pending*")"
+	[ -f "$marker" ]
+	# B has no windows at all, so nothing of A's is live from B's point of view.
+	FAKE_WINDOWS='' TMUX=/tmp/sockB,1,0 run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ -f "$marker" ]
 }

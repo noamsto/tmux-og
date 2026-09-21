@@ -9,6 +9,17 @@
 # PR-state cache dir; consumed by the PR enrichment poller. Overridable for the
 # same reason as the stamp lock below — a test must not touch the real cache.
 ENRICH_CACHE_DIR="${OG_ENRICH_CACHE_DIR:-/tmp/og-pr}"
+# Suffix for the cache dir's per-server state: the tick gates' stamps and the
+# pending-checks markers. The dir is a bare /tmp path shared by every tmux server
+# on the machine, but a pass enriches only the windows of the server that
+# launched it — so an unsuffixed stamp lets any other server's tick (a scratch
+# or test server) consume the gate and starve the real one (#705). $TMUX is set
+# by run-shell, so this costs no fork; empty outside tmux, where nothing ticks.
+ENRICH_SRV=""
+if [[ -n ${TMUX:-} ]]; then
+	ENRICH_SRV=".srv${TMUX%%,*}"
+	ENRICH_SRV=${ENRICH_SRV//[^A-Za-z0-9._-]/_}
+fi
 # Per-window stamp lock (#137 conflict safety). Overridable so tests don't share
 # a real machine's /tmp dir across concurrent bats runs.
 ENRICH_STAMP_LOCK_DIR="${OG_ENRICH_LOCK_DIR:-/tmp/og-enrich-lock}"

@@ -61,7 +61,7 @@ run_backfill_pass() {
 
 if [[ ${1:-} == "--backfill" ]]; then
 	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
-	last_tick="$ENRICH_CACHE_DIR/.last-backfill-tick"
+	last_tick="$ENRICH_CACHE_DIR/.last-backfill-tick$ENRICH_SRV"
 	if [[ -f $last_tick ]]; then
 		tick_age=$((EPOCHSECONDS - $(file_mtime "$last_tick")))
 		((tick_age < BACKFILL_TICK_SECONDS)) && exit 0
