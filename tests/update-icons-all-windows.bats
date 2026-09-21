@@ -433,3 +433,28 @@ claude_win() {
 	[ -z "$(opt_of A @window_task)" ]
 	[ "$(opt_of A @window_naming_dirty)" = 1 ]
 }
+
+# #714: the per-tick row's @window_ai_name is a fixed middle field ahead of
+# @window_has_agent/@window_manual_name/@window_naming_dirty/@window_task, and
+# the row's only canary (pane_active) sits before it. An unwrapped '|' in the
+# option shifts those fields left by one: @window_manual_name reads as the
+# (empty) dirty mark, so a manually-named window loses its protection, and the
+# dirty mark reads as the task text, so the #692 discharge fires and deletes
+# the window's name files.
+@test "per-tick row survives a '|' in @window_ai_name on a manually-named window" {
+	local bare
+	bare="$(bare_id "$(tmux list-panes -t A -F '#{pane_id}' | head -1)")"
+	mkdir -p "$CLAUDE_STATUS_DIR"/{names,tasks}
+	tmux set -w -t A @window_manual_name 1
+	tmux set -w -t A @window_ai_name 'a|b'
+	tmux set -w -t A @window_task 'my task'
+	printf 'a b\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	printf 'my task\n' >"$CLAUDE_STATUS_DIR/tasks/$bare"
+
+	run bash "$UPDATE_ICONS" A
+	[ "$status" -eq 0 ]
+	[ "$(opt_of A @window_task)" = "my task" ]
+	[ -z "$(opt_of A @window_naming_dirty)" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	[ -e "$CLAUDE_STATUS_DIR/tasks/$bare" ]
+}

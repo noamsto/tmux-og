@@ -289,9 +289,11 @@ main() {
 	# never session_name, which may itself contain '|'. '@window_task' is
 	# free-form so it stays last — read drops any stray '|' it contains into that
 	# final field.
-	# @window_ai_name is sanitized free of '|' (claude-status-update), so it is safe
-	# as a fixed middle field. @remux_relaunch is "claude --resume <uuid>" — no '|'
-	# either, so it also stays a fixed middle field before the free-form task.
+	# @window_ai_name is a plain user-settable option, and the row's only canary
+	# (pane_active) sits before it, so its copy is s/[|]/ /-wrapped like the
+	# task's: a '|' would otherwise shift every later field left (#714).
+	# @remux_relaunch is "claude --resume <uuid>" — no '|', so it stays a fixed
+	# middle field before the free-form task.
 	# The icon/ago/rename/session fields are our own writes read back for
 	# change-gating: glyphs, #[fg=…] codes, spaces, and hex colors — never '|'.
 	# @crew_name (harness-stamped codename) and @crew_seen (our shadow of it) are
@@ -380,7 +382,7 @@ main() {
 		*" $proc "*) ;;
 		*) win_procs[$wkey]="${existing:+$existing }$proc" ;;
 		esac
-	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
+	done < <(tmux list-panes -a -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{pane_active}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
 
 	arm_agent_detect
 
