@@ -125,11 +125,12 @@ res_diag() {
 		for p in /nix/store/*-ps-*/bin/ps /bin/ps; do
 			[ -x "$p" ] || continue
 			echo "DIAG ps=$p"
-			local a out
+			local a out rc
 			for a in "-Ao pid,ppid,pcpu,rss,comm" "-Ao pid,ppid,pcpu,rss" "-Ao pid,ppid" "-A -o pid" "-ax -o pid" "-p $$ -o pid" "-o pid" ""; do
+				rc=0
 				# shellcheck disable=SC2086
-				out=$("$p" $a 2>&1)
-				echo "DIAG ps [$a] rc=$? lines=$(printf '%s\n' "$out" | wc -l) first=[$(printf '%s\n' "$out" | head -2 | tr '\n' '~')]"
+				out=$("$p" $a 2>&1) || rc=$?
+				echo "DIAG ps [$a] rc=$rc lines=$(printf '%s\n' "$out" | wc -l) first=[$(printf '%s\n' "$out" | head -2 | tr '\n' '~')]"
 			done
 		done
 		echo "DIAG run:"
