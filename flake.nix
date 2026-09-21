@@ -20,7 +20,7 @@
     # landed as tmux/tmux#5398, the other was rejected upstream.
     # Bump: repoint rev, then `nix flake lock --update-input tmux-upstream`.
     tmux-upstream = {
-      url = "github:tmux/tmux/e880cf63e0a9fe095d7c5d313761520fb1a8653c";
+      url = "github:tmux/tmux/81794f30471265c33c783129173c861eba91a982";
       flake = false;
     };
     flake-parts.url = "github:hercules-ci/flake-parts";
@@ -64,6 +64,8 @@
       pkgs.tmux.overrideAttrs (old: {
         version = "next-3.9";
         src = inputs.tmux-upstream;
+        # tmux/tmux 3d5f946f typo fix; drop on next bump past 5aa17a0c
+        patches = (old.patches or []) ++ [./patches/tmux-client-control-discard.patch];
         configureFlags =
           old.configureFlags
           ++ ["--disable-asan"]
