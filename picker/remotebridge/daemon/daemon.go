@@ -448,6 +448,34 @@ type stream struct {
 	closed bool
 	sent   uint64 // commands written
 	seen   uint64 // client-flagged reply blocks consumed
+	// fans is the FIFO of if-shell commands whose branch replies are still
+	// being swallowed; see fanout.
+	fans []fanout
+}
+
+// fanout marks one command written with its own barrier behind it. tmux runs
+// an if-shell's branch as further commands of the SAME client, and each of
+// them guards a client-flagged reply block of its own, so one command written
+// produces 1+N blocks, N being however many branch commands actually ran — a
+// failing branch command aborts the rest of its list, so N is not even a
+// constant. Counting blocks cannot tell them from the next command's reply, and
+// the count then runs ahead of the commands for the rest of the connection
+// (#715): the layout read after a tool press answered with the branch's empty
+// block, and nothing round-tripped correctly again until a reattach reset it.
+//
+// The branch runs immediately after the if-shell's own block and before
+// anything written behind it, so the barrier's reply (recognised by its body,
+// which no branch command can produce) is the first block after them. Every
+// block between the command's own reply and that one takes no ordinal.
+type fanout struct {
+	after uint64 // ordinal of the if-shell command itself
+	tag   string // body of the barrier's reply
+}
+
+// expandsReplies reports whether cmd runs further commands of its own.
+func expandsReplies(cmd string) bool {
+	verb, _, _ := strings.Cut(cmd, " ")
+	return verb == "if-shell" || verb == "if"
 }
 
 func newStream(w io.Writer) *stream { return &stream{w: bufio.NewWriter(w)} }
@@ -473,6 +501,12 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 		fmt.Fprintf(s.w, "%s\n", cmd)
 		s.sent++
 		seqs = append(seqs, s.sent)
+		if expandsReplies(cmd) {
+			f := fanout{after: s.sent, tag: fmt.Sprintf("og-fanout-%d", s.sent)}
+			fmt.Fprintf(s.w, "display-message -p %s\n", f.tag)
+			s.sent++
+			s.fans = append(s.fans, f)
+		}
 	}
 	// bufio.Writer latches its first write error and no-ops every later write,
 	// so a half-closed ssh stdin mid-batch has to fail the whole batch: s.sent
@@ -498,11 +532,18 @@ func (s *stream) send(cmds ...string) bool {
 	return ok
 }
 
-// claim consumes one client-flagged reply block and returns the ordinal of the
-// command it answers.
-func (s *stream) claim() uint64 {
+// claim consumes one client-flagged reply block, whose body is body, and
+// returns the ordinal of the command it answers — 0 for a block that answers
+// none of ours, which is what the branch of an if-shell does (see fanout).
+func (s *stream) claim(body []byte) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.fans) > 0 && s.seen == s.fans[0].after {
+		if string(body) != s.fans[0].tag {
+			return 0
+		}
+		s.fans = s.fans[1:]
+	}
 	s.seen++
 	return s.seen
 }
@@ -1577,7 +1618,7 @@ func (p *ctlPump) Next() (controlmode.Line, bool) {
 func claimSeq(l controlmode.Line, st *stream) uint64 {
 	// A block flagged 0 answers a command we never sent, so it takes no ordinal.
 	if (l.Kind == controlmode.End || l.Kind == controlmode.Error) && l.Flags == controlmode.ClientCommandFlag {
-		return st.claim()
+		return st.claim(l.Data)
 	}
 	return 0
 }

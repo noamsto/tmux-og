@@ -191,7 +191,7 @@ func TestWaitHellosKeepsReplyOrdinalsInIssueOrder(t *testing.T) {
 	}
 	// The next block off the stream must answer command 2 — the one whose reply
 	// has not been consumed yet.
-	if got := st.claim(); got != seq2 {
+	if got := st.claim(nil); got != seq2 {
 		t.Errorf("next claim = %d, want %d: the wait must advance seen by exactly one per client-flagged block", got, seq2)
 	}
 }
