@@ -1870,7 +1870,12 @@
               # grep makes that guard fail closed and the suite would pass or
               # fail for the wrong reason. util-linux supplies `script`, which
               # case 5 uses to give a real attach a pty.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep pkgs.ps pkgs.util-linux (mkTmux pkgs)];
+              nativeBuildInputs =
+                [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux (mkTmux pkgs)]
+                # darwin only: the stand-in ps case 5 installs there needs gawk and the store
+                # ps. Linux must keep NO ps on PATH, so a regression of the poller's linked
+                # psBin still fails case 5 instead of finding one.
+                ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.gawk pkgs.ps];
               TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";

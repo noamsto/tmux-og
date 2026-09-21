@@ -31,7 +31,8 @@ setup() {
 		# memory figure.
 		cat >"$BATS_TEST_TMPDIR/ps" <<-EOF
 			#!$(command -v bash)
-			ps -Ao pid,ppid,pcpu,comm | awk 'NR == 1 { print "PID PPID %CPU RSS COMM"; next }
+			set -o pipefail
+			$(command -v ps) -Ao pid,ppid,pcpu,comm | awk 'NR == 1 { print "PID PPID %CPU RSS COMM"; next }
 				{ pid = \$1; ppid = \$2; cpu = \$3; \$1 = \$2 = \$3 = ""; sub(/^ +/, ""); print pid, ppid, cpu, 1024, \$0 }'
 		EOF
 		chmod +x "$BATS_TEST_TMPDIR/ps"
