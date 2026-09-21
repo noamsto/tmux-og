@@ -21,6 +21,11 @@ import (
 
 const resOption = "@og_session_res"
 
+// psBin is set at link time to a store path (picker/default.nix): the monitor
+// hook this runs from inherits the server's PATH, which a headless
+// tmux-startup.service leaves empty. "ps" is the go-build fallback.
+var psBin = "ps"
+
 func main() {
 	if len(os.Args) != 2 || os.Args[1] != "--tick" {
 		fmt.Fprintln(os.Stderr, "usage: tmux-session-resources --tick")
@@ -44,7 +49,7 @@ func main() {
 		return
 	}
 
-	ps, err := exec.Command("ps", proctree.PSArgs...).Output()
+	ps, err := exec.Command(psBin, proctree.PSArgs...).Output()
 	if err != nil {
 		return
 	}

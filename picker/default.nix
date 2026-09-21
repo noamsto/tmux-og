@@ -70,7 +70,11 @@ in
     inherit src;
     vendorHash = "sha256-Z72w5oQsXFFqvkK1ndOTtu7AonXtxAM55JhzgJV5Usc=";
     subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "sessionres" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl"];
-    ldflags = ["-s" "-w"]; # strip debug info for smaller binary + faster startup
+    # -s -w strip debug info for a smaller binary + faster startup. psBin pins
+    # tmux-session-resources' ps: it runs from a monitor hook, whose PATH is the
+    # server's own — a headless tmux-startup.service sets none, and the nix
+    # sandbox has no ps at all.
+    ldflags = ["-s" "-w" "-X main.psBin=${pkgs.ps}/bin/ps"];
     # Binary name matches pname (Go module produces "picker" by default)
     postInstall = ''
       mv $out/bin/picker $out/bin/tmux-picker-generate
