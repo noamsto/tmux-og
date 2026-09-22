@@ -195,6 +195,8 @@ func main() {
 	testLocal := flag.Bool("test-local", false, "test only: mirror --session:--window from a local tmux -L --src-socket instead of ssh")
 	srcSocket := flag.String("src-socket", "", "test-local: tmux -L socket name standing in for the remote server")
 	dstSocket := flag.String("dst-socket", "", "test-local: tmux -L socket name standing in for the local server")
+	retryMaxElapsed := flag.Duration("retry-max-elapsed", envDurationDefault("OG_DAEMON_RETRY_MAX_ELAPSED", 0), "test only: bound the reattach retry schedule's MaxElapsed (0 = production schedule)")
+	wakeMaxElapsed := flag.Duration("wake-max-elapsed", envDurationDefault("OG_DAEMON_WAKE_MAX_ELAPSED", 0), "test only: bound the parked-wake retry schedule's MaxElapsed (0 = production schedule)")
 	flag.Parse()
 
 	if *localSess == "" {
@@ -397,6 +399,16 @@ func main() {
 		PasteUpload:    pasteUpload,
 		View:           view,
 		NewGraphics:    newGraphics(ctlSock, tr.currentPath, *host, *cacheDir, *gfxMax, view.Relay, *gfxRelayMaxBytes),
+	}
+	if *retryMaxElapsed > 0 {
+		b := daemon.DefaultBackoff(time.Now)
+		b.MaxElapsed = *retryMaxElapsed
+		cfg.Retry = &b
+	}
+	if *wakeMaxElapsed > 0 {
+		b := daemon.WakeBackoff(time.Now)
+		b.MaxElapsed = *wakeMaxElapsed
+		cfg.WakeRetry = &b
 	}
 
 	err := daemon.Run(cfg)
@@ -871,6 +883,15 @@ func envIntDefault(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func envDurationDefault(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
 		}
 	}
 	return fallback

@@ -211,7 +211,9 @@ func sessionSegment(a args, prefixActive bool) string {
 		}
 		// Additive, like @pr_draft on a PR badge: names the mirror's own frozen
 		// state without touching the host badge above it.
-		if a.bridgeState != "" {
+		if a.bridgeState == "parked" {
+			b.WriteString("#[fg=" + a.thmOverlay1 + "]" + bridgeParkedGlyph + " offline — press a key  ")
+		} else if a.bridgeState != "" {
 			b.WriteString("#[fg=" + a.thmRed + "]" + bridgeDisconnectedGlyph + "  ")
 		}
 		if a.bridgeCrewName != "" {
@@ -265,6 +267,11 @@ func sessionSegment(a args, prefixActive bool) string {
 // daemon is retrying, but the panes on screen are frozen, not live — the badge
 // says so before the user mistakes a stale screen for a working one.
 const bridgeDisconnectedGlyph = "󰲛" // nerd: nf-md-lan_disconnect
+
+// bridgeParkedGlyph flags a parked mirror: the daemon has given up retrying
+// and is waiting for a keypress or focus before it tries the connection
+// again, distinct from bridgeDisconnectedGlyph's still-retrying state.
+const bridgeParkedGlyph = "\U000f092e" // nerd: nf-md-wifi_off
 
 var wrappedRe = regexp.MustCompile(`^\.(.*)-wrapped$`)
 

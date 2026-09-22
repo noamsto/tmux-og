@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -97,7 +98,7 @@ func TestReattachDropsOutputFromAnUnverifiedConnection(t *testing.T) {
 		"%begin 1 1 1\n9999|1788283304|$1\n%end 1 1 1\n")
 	cfg := reattachCfg(func() (io.ReadWriteCloser, error) { return conn, nil }, 2)
 
-	if c := reattach(cfg, router, &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }); c != nil {
+	if c := reattach(cfg, router, &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, nil); c != nil {
 		t.Fatal("reattach onto a different tmux server should tear down")
 	}
 	if sink.Len() != 0 {
@@ -120,7 +121,7 @@ func TestReattachBindsTheRouterOnlyAfterIdentityMatches(t *testing.T) {
 	cfg := reattachCfg(func() (io.ReadWriteCloser, error) { return conn, nil }, 2)
 	cfg.View.SetDesired("foot")
 
-	c := reattach(cfg, router, &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true })
+	c := reattach(cfg, router, &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, nil)
 	if c == nil {
 		t.Fatal("reattach onto the same server should return a connection")
 	}
@@ -163,7 +164,7 @@ func TestReattachStopRaisedDuringTheDialTearsDown(t *testing.T) {
 	if c := reattach(cfg, NewRouter(), hold, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool {
 		repaired = true
 		return true
-	}); c != nil {
+	}, nil); c != nil {
 		t.Fatal("a stop raised during the dial should tear down, not reconnect")
 	}
 	if repaired {
@@ -194,7 +195,7 @@ func TestReattachIdentityDeadlineRetriesRatherThanTearingDown(t *testing.T) {
 	}, 2)
 	cfg.IdentityTimeout = 20 * time.Millisecond
 
-	if c := reattach(cfg, NewRouter(), &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }); c != nil {
+	if c := reattach(cfg, NewRouter(), &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, nil); c != nil {
 		t.Fatal("a silent endpoint should never be reattached to")
 	}
 	if len(conns) != 2 {
@@ -230,5 +231,118 @@ func TestArmIdentityDeadlineDisarmReportsTheRace(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if beat.isClosed() {
 		t.Error("a disarmed deadline closed the connection anyway")
+	}
+}
+
+// parkCfg is reattachCfg with a wake schedule of its own and a dial that fails
+// until conn (if any) is handed out on dial number connAt. dials counts every
+// dial, failed or not.
+func parkCfg(retry, wake int, dials *int, connAt int, conn func() io.ReadWriteCloser) Config {
+	cfg := reattachCfg(func() (io.ReadWriteCloser, error) {
+		*dials++
+		if conn != nil && *dials == connAt {
+			return conn(), nil
+		}
+		return nil, errors.New("unreachable")
+	}, retry)
+	cfg.WakeRetry = &Backoff{
+		MaxAttempts: wake,
+		Now:         time.Now,
+		Jitter:      func() float64 { return 0 },
+	}
+	return cfg
+}
+
+func TestReattachExhaustionWithoutParkTearsDown(t *testing.T) {
+	dials := 0
+	cfg := parkCfg(3, 2, &dials, 0, nil)
+	if c := reattach(cfg, NewRouter(), &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, nil); c != nil {
+		t.Fatal("an exhausted schedule with no park should tear down")
+	}
+	if dials != 3 {
+		t.Errorf("dials = %d, want 3", dials)
+	}
+}
+
+// TestReattachExhaustionParksOnceAndStopsWhenParkDeclines: park answering false
+// is a stop or a gone session while parked — the teardown exhaustion used to
+// be, and no further dial.
+func TestReattachExhaustionParksOnceAndStopsWhenParkDeclines(t *testing.T) {
+	dials, parks := 0, 0
+	cfg := parkCfg(2, 3, &dials, 0, nil)
+	park := func() bool {
+		parks++
+		return false
+	}
+	if c := reattach(cfg, NewRouter(), &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, park); c != nil {
+		t.Fatal("a declined park should tear down")
+	}
+	if parks != 1 {
+		t.Errorf("parks = %d, want 1", parks)
+	}
+	if dials != 2 {
+		t.Errorf("dials = %d, want 2 — a declined park must not dial again", dials)
+	}
+}
+
+// TestReattachWakeRunsOneWakeRetryCycle: a wake buys exactly one cycle on
+// WakeRetry, not a fresh Retry budget, and exhausting it parks again.
+func TestReattachWakeRunsOneWakeRetryCycle(t *testing.T) {
+	dials := 0
+	var dialsAtPark []int
+	cfg := parkCfg(2, 3, &dials, 0, nil)
+	park := func() bool {
+		dialsAtPark = append(dialsAtPark, dials)
+		return len(dialsAtPark) < 2
+	}
+	if c := reattach(cfg, NewRouter(), &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, park); c != nil {
+		t.Fatal("an unreachable remote should never be reattached to")
+	}
+	if len(dialsAtPark) != 2 || dialsAtPark[0] != 2 || dialsAtPark[1] != 5 {
+		t.Errorf("dials at each park = %v, want [2 5] — Retry's 2, then WakeRetry's 3", dialsAtPark)
+	}
+}
+
+func TestReattachWakeCycleConnects(t *testing.T) {
+	dials, parks := 0, 0
+	cfg := parkCfg(2, 3, &dials, 3, func() io.ReadWriteCloser { return newScriptConn(identityMatch) })
+	park := func() bool {
+		parks++
+		return true
+	}
+	hold := &connHolder{}
+	c := reattach(cfg, NewRouter(), hold, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, park)
+	if c == nil {
+		t.Fatal("a wake cycle that reaches the same server should return its connection")
+	}
+	defer c.close()
+	if hold.get() != c {
+		t.Error("the woken connection was not published")
+	}
+	if parks != 1 || dials != 3 {
+		t.Errorf("parks = %d, dials = %d, want 1 and 3", parks, dials)
+	}
+}
+
+// TestReattachWakeCycleIdentityMismatchIsTerminal: a wake does not soften the
+// correctness cliff — a different server on the far end tears down rather than
+// parking again.
+func TestReattachWakeCycleIdentityMismatchIsTerminal(t *testing.T) {
+	dials, parks := 0, 0
+	cfg := parkCfg(2, 3, &dials, 3, func() io.ReadWriteCloser {
+		return newScriptConn(newLayoutsFlagAck + "%begin 1 1 1\n9999|1788283304|$1\n%end 1 1 1\n")
+	})
+	park := func() bool {
+		parks++
+		return true
+	}
+	if c := reattach(cfg, NewRouter(), &connHolder{}, mustIdentity(t, "A", "2151|1788283304|$1"), func() bool { return true }, park); c != nil {
+		t.Fatal("a mismatched identity on a wake cycle should tear down")
+	}
+	if parks != 1 {
+		t.Errorf("parks = %d, want 1 — a mismatch is terminal, not another park", parks)
+	}
+	if dials != 3 {
+		t.Errorf("dials = %d, want 3", dials)
 	}
 }

@@ -318,6 +318,34 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 	}
 }
 
+// TestRenderLineBridgeStateParked: a parked mirror (daemon stopped retrying,
+// waiting for a keypress) gets its own glyph and "press a key" hint instead
+// of the disconnected badge.
+func TestRenderLineBridgeStateParked(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/panes", 0o755)
+
+	a := args{
+		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "parked",
+		iconSession: "S", iconRemote: "R",
+		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
+		thmPeach: "#fab", thmRed: "#f00",
+		paneIcon: "I", paneCmd: "zsh",
+	}
+
+	got := renderLine(a, dir, "dark", false, 9000, "")
+	want := "#[align=left,bg=#000]" +
+		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
+		"#[fg=#fab]R g6  " +
+		"#[fg=#777]" + bridgeParkedGlyph + " offline — press a key  " +
+		"  #[fg=#777]" +
+		" #[align=right]" +
+		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
+	if got != want {
+		t.Fatalf("renderLine bridge parked\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestPaneSlot(t *testing.T) {
 	got := paneSlot("I", "nvim", false)
 	want := "#{p-17:#{=/16/…:#{l:I nvim}}}"
