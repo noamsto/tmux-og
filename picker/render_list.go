@@ -4,6 +4,7 @@ package main
 // separator, hint line), split out of tui.go (#286).
 
 import (
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -20,6 +21,10 @@ func (m tuiModel) renderList() string {
 	// ANSI reset (\033[0m) inside display strings kills the background.
 	// Replace resets with "reset fg + re-apply bg" so background persists.
 	selResetKeepBg := "\033[39m" + ansiBg(selBgHex) // reset fg only, re-set bg
+
+	markGlyph := lipgloss.NewStyle().
+		Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b")).
+		Render("✓")
 
 	// One pinned line carries whichever header governs the rows beneath it: the
 	// column glyphs through the session list, the divider once inside Remote or
@@ -45,13 +50,20 @@ func (m tuiModel) renderList() string {
 	}
 	for i := start; i < start+bodyH && i < len(m.visible); i++ {
 		item := m.visible[i]
+		marked := m.isMarked(item)
 		switch {
 		case item.headerLabel != "":
 			lines = append(lines, fitVisibleWidth("  "+m.renderHeaderItem(item, w), w))
 		case i == m.cursor:
+			prefix := "▶ "
+			if marked {
+				prefix = "▶" + markGlyph
+			}
 			patched := strings.ReplaceAll(item.display, "\033[0m", selResetKeepBg)
-			line := fitVisibleWidth("▶ "+patched, w)
+			line := fitVisibleWidth(prefix+patched, w)
 			lines = append(lines, selStyle.Render(line))
+		case marked:
+			lines = append(lines, fitVisibleWidth(" "+markGlyph+item.display, w))
 		default:
 			lines = append(lines, fitVisibleWidth("  "+item.display, w))
 		}
@@ -202,8 +214,11 @@ func (m tuiModel) renderHints() string {
 	// Emit mode never switches or creates — enter only writes the pick back to
 	// the wrapper (spec D8) — and inherits no session/window to kill or forget.
 	enterLabel := "open"
-	if m.emitPath != "" {
+	switch {
+	case m.emitPath != "":
 		enterLabel = "pick"
+	case len(m.marked) > 0:
+		enterLabel = "open " + strconv.Itoa(len(m.marked))
 	}
 
 	parts := []string{
@@ -228,6 +243,13 @@ func (m tuiModel) renderHints() string {
 		if _, ok := remotePickHost(item, m.windowMode); ok {
 			parts = append(parts, hint("^o", "browse"))
 		}
+	}
+	if (hasItem && m.markable(item)) || len(m.marked) > 0 {
+		markLabel := "mark"
+		if len(m.marked) > 0 {
+			markLabel = highlight.Render(markLabel)
+		}
+		parts = append(parts, hint("^t", markLabel))
 	}
 	parts = append(parts,
 		hint("^/", toggleLabel),

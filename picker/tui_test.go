@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -1529,6 +1530,191 @@ func TestRestoreCursorLeavesHeaderWhenRemoteRowsArriveLate(t *testing.T) {
 	}
 	if got := m.visible[m.cursor].remoteSess; got != "other" {
 		t.Errorf("cursor landed on %q, want the matching remote row %q", got, "other")
+	}
+}
+
+// findVisible returns the index of the first row in m.visible matching pred,
+// failing the test if none does.
+func findVisible(t *testing.T, m tuiModel, pred func(listItem) bool) int {
+	t.Helper()
+	for i, it := range m.visible {
+		if pred(it) {
+			return i
+		}
+	}
+	t.Fatalf("no matching row in visible: %+v", m.visible)
+	return -1
+}
+
+// ^t toggles a mark on a resolvable Remote-section session row, and only
+// that: a second press clears it.
+func TestCtrlTTogglesMarkOnRemoteSessionRow(t *testing.T) {
+	m := tuiModel{allItems: remoteFixture()}
+	m = m.withFilter()
+	m.cursor = findVisible(t, m, func(it listItem) bool {
+		return it.remoteHost == "lab" && it.remoteSess == "mono"
+	})
+	target := m.visible[m.cursor].target
+
+	next, _ := m.handleKey(wallKey("ctrl+t"))
+	nm := next.(tuiModel)
+	if !nm.marked[target] {
+		t.Fatalf("first ^t did not mark %q: %v", target, nm.marked)
+	}
+	if !nm.isMarked(nm.visible[nm.cursor]) {
+		t.Errorf("isMarked false for a row just marked")
+	}
+
+	next, _ = nm.handleKey(wallKey("ctrl+t"))
+	nm2 := next.(tuiModel)
+	if nm2.marked[target] {
+		t.Fatalf("second ^t did not clear the mark: %v", nm2.marked)
+	}
+}
+
+// Marking is a no-op — no entry in m.marked — on every row Enter itself
+// can't act on, or that isn't a Remote session row at all.
+func TestCtrlTNoOpOnInertRows(t *testing.T) {
+	cases := []struct {
+		name string
+		item listItem
+	}{
+		{"host row", listItem{isRemoteRow: true, target: "remote:lab", remoteHost: "lab"}},
+		{"local session", listItem{target: "tmux-og", searchText: "tmux-og"}},
+		{"zoxide suggestion", listItem{target: "/git/alpha", createPath: "/git/alpha", createName: "alpha", searchText: "alpha"}},
+		{"needs auth", listItem{isRemoteRow: true, target: "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteNeedsAuth: true}},
+		{"host key changed", listItem{isRemoteRow: true, target: "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteInert: true}},
+		{"tailscale check", listItem{isRemoteRow: true, target: "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteTailscaleCheck: true}},
+		{"cached row of unreachable host", listItem{isRemoteRow: true, target: "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteUnreachable: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := tuiModel{allItems: []listItem{c.item}}
+			m = m.withFilter()
+			m.cursor = 0
+			next, _ := m.handleKey(wallKey("ctrl+t"))
+			nm := next.(tuiModel)
+			if len(nm.marked) != 0 {
+				t.Errorf("^t marked an inert row: %v", nm.marked)
+			}
+		})
+	}
+}
+
+// A mark is keyed by item.target, so it must survive both a query that hides
+// the marked row from m.visible, and the cached→live row replacement a
+// remoteMsg performs once the probe answers (#631) — the two things #730
+// calls out by name.
+func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "mono")
+
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	m := tuiModel{
+		sessionItems: []listItem{{target: "tmux-og", searchText: "tmux-og"}},
+		remoteItems:  pendingRemoteItems(opts, nil),
+	}
+	m = m.recombine().withFilter()
+	m.cursor = findVisible(t, m, func(it listItem) bool {
+		return it.remoteHost == "lab" && it.remoteSess == "mono"
+	})
+	target := m.visible[m.cursor].target
+
+	next, _ := m.handleKey(wallKey("ctrl+t"))
+	m = next.(tuiModel)
+	if !m.marked[target] {
+		t.Fatalf("setup: mark did not take on cached row %q: %v", target, m.marked)
+	}
+
+	// A query that hides the marked row entirely — the mark must not depend
+	// on the row being visible.
+	m.query = "nomatch-xyz"
+	m = m.withFilter()
+	for _, it := range m.visible {
+		if it.target == target {
+			t.Fatalf("setup: query should have hidden %q from visible", target)
+		}
+	}
+	if !m.marked[target] {
+		t.Errorf("mark cleared merely by filtering the row out of view")
+	}
+	m.query = ""
+	m = m.withFilter()
+
+	// The probe answers: collectRemoteItems replaces the cached row with a
+	// live one sharing the same target.
+	probe := func(string) (remoteProbeResult, error) { return probeWithSessions("mono"), nil }
+	resolved := collectRemoteItems(opts, nil, probe, noRestore)
+	next, _ = m.Update(remoteMsg{items: resolved})
+	nm, ok := next.(tuiModel)
+	if !ok {
+		t.Fatalf("Update did not return a tuiModel")
+	}
+
+	liveIdx := findVisible(t, nm, func(it listItem) bool {
+		return it.remoteHost == "lab" && it.remoteSess == "mono"
+	})
+	live := nm.visible[liveIdx]
+	if live.target != target {
+		t.Fatalf("live row's target changed: got %q, want %q", live.target, target)
+	}
+	if !nm.isMarked(live) {
+		t.Errorf("mark did not survive the cached→live swap")
+	}
+}
+
+// openMarkedRemoteWith launches every marked session but the first (list
+// order) through launch — fired, not waited on — and only the first through
+// open, the one path that also decides which session the client switches
+// to. This is the "N marks, one foreground dial" contract #730 asks for.
+func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
+	m := tuiModel{allItems: remoteFixture()}
+	m = m.withFilter()
+	for _, target := range []string{"remote:lab:mono", "remote:lab:other"} {
+		m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == target })
+		next, _ := m.handleKey(wallKey("ctrl+t"))
+		m = next.(tuiModel)
+	}
+	marked := m.markedRemoteItems()
+	if len(marked) != 2 {
+		t.Fatalf("markedRemoteItems() = %d items, want 2: %+v", len(marked), marked)
+	}
+
+	type call struct{ host, sess string }
+	var opened call
+	var launched []call
+	openCalls := 0
+	fakeOpen := func(_ map[string]string, host, sess string, _ bool) error {
+		openCalls++
+		opened = call{host, sess}
+		return nil
+	}
+	fakeLaunch := func(_ map[string]string, host, sess string, _ bool) {
+		launched = append(launched, call{host, sess})
+	}
+
+	next, cmd := m.openMarkedRemoteWith(marked, fakeOpen, fakeLaunch)
+	nm := next.(tuiModel)
+
+	if openCalls != 1 {
+		t.Fatalf("open called %d times, want exactly 1", openCalls)
+	}
+	if opened != (call{marked[0].remoteHost, marked[0].remoteSess}) {
+		t.Errorf("open() got %+v, want the first marked item %+v", opened, marked[0])
+	}
+	if len(launched) != len(marked)-1 {
+		t.Fatalf("launch called %d times, want %d", len(launched), len(marked)-1)
+	}
+	for i, it := range marked[1:] {
+		if launched[i] != (call{it.remoteHost, it.remoteSess}) {
+			t.Errorf("launch()[%d] = %+v, want %+v", i, launched[i], it)
+		}
+	}
+	if len(nm.marked) != 0 {
+		t.Errorf("marks not cleared after opening: %v", nm.marked)
+	}
+	if cmd == nil {
+		t.Error("expected tea.Quit, got nil cmd")
 	}
 }
 
