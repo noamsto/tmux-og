@@ -36,19 +36,9 @@ Factual map for `EVIDENCE_REVIEW.md`. Mark each edge **compatible** unless a lat
 | Validator | `tests/remote-m2-integration.bats` cases at ~1835 (stamp), ~1932 (subscription), ~2811 (reconnect); `picker/remotebridge/daemon/windowlabels_test.go` | extend only if a new failing production path is found |
 | Absent | houston SSH probe | absent by constraint |
 
-## Houston version-check command (ship in the PR body verbatim)
+## Houston version-check
 
-Run **on houston**, in fish. Compare the store path and the baked conf against this machine (`readlink -f (command -v tmux)` here).
-
-```fish
-set tmux_bin (readlink -f (command -v tmux))
-echo $tmux_bin
-set conf (nix-store -q --references $tmux_bin | string match -r '.*tmux.conf$')
-echo $conf
-rg -n '@bridge_crew_name|@bridge_crew_color|crew-badge' $conf
-```
-
-A houston build that predates window-label shipping has no `@bridge_crew_name` in that conf. A build that ships labels but predates the `#671` bridge bypass will grep `@bridge_crew_name` but miss the flake-asserted fragment `#{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},#{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}},`.
+Pass/fail is the "bare mirror is a viewer-build check" paragraph under Remote Window Labels in `docs/agents/bridge-shipped-state.md`. Run that snippet on houston. Do not copy the command or the criteria here.
 
 ---
 

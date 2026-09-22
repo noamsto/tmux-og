@@ -233,18 +233,34 @@ ships the remote window's own label state across instead.
   shipper whose recorded generation is stale re-reads at once instead of waiting
   out its backstop. Dropping the poll without this is the one way to get a
   permanently bare mirror.
-- **A bare mirror is a viewer-build check before it is a shipper bug.** First
-  check the *viewer's* baked `tmux.conf` for `@bridge_crew_name`. A
-  houston-class host cannot be reached over SSH from the source, so the check runs on the
-  viewer, in fish:
+- **A bare mirror is a viewer-build check before it is a shipper bug.** The
+  binary to read is the tmux-og wrapper: the file that contains
+  `-f /nix/store/…-tmux.conf`. A houston-class host cannot be reached over SSH
+  from the source, so the check runs on the viewer, in fish. Resolve `tmux` on
+  PATH, extract the baked conf the way `tests/test-display.sh` does (`grep -o`
+  of that `-f` argument, then `cut`), and require a non-empty `$conf` before
+  `rg`. An empty extract is the failure: this tmux is not the tmux-og wrapper,
+  and there is no conf to search.
 
   ```fish
   set tmux_bin (readlink -f (command -v tmux))
-  echo $tmux_bin
-  set conf (nix-store -q --references $tmux_bin | string match -r '.*tmux.conf$')
-  echo $conf
-  rg -n '@bridge_crew_name|@bridge_crew_color|crew-badge' $conf
+  set conf (grep -o -- '-f /nix/store/[a-z0-9]*-tmux[.]conf' $tmux_bin | head -1 | cut -d' ' -f2)
+  if test -z "$conf"
+      echo "this tmux is not the tmux-og wrapper: $tmux_bin"
+  else
+      echo $tmux_bin
+      echo $conf
+      rg -n '@bridge_crew_name|@bridge_crew_color' $conf
+      rg -n -F '#{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},#{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}},' $conf
+  end
   ```
+
+  Empty baked conf means this tmux is not the tmux-og wrapper. A conf with no
+  `@bridge_crew_name` means the viewer predates window-label shipping. A conf
+  that has `@bridge_crew_name` but lacks the #671 fragment
+  `#{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},#{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}},`
+  means the viewer predates the bridge crew-badge bypass. Both present means
+  the viewer has the render path.
 
 - **Queued rows are applied by the loop, not by the dispatch that received
   them.** Re-subscribing under an existing name re-reports *every* object — which
