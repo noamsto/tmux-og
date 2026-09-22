@@ -802,6 +802,29 @@ func openRemoteBridge(tmuxOpts map[string]string, host, sess string, restore boo
 	return nil
 }
 
+// launchRemoteBridgeDetached fires the same launcher openRemoteBridge runs,
+// without waiting for it. Setsid so tmux tearing down this popup's pane
+// doesn't take the launcher (and the daemon it backgrounds) with it — the
+// same reason og-remote-open.sh setsids the daemon it starts.
+func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, restore bool) {
+	args := []string{host}
+	if sess != "" {
+		args = append(args, sess)
+	}
+	bin := envOrMap("REMOTE_OPEN_BIN", tmuxOpts, "@remote_open_bin", "og-remote-open")
+	cmd := exec.Command(bin, args...)
+	if restore {
+		cmd.Env = append(os.Environ(), "OG_REMOTE_RESTORE=1")
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// Nothing left to report to once the popup has quit, but a spawn failure
+	// (bad @remote_open_bin, PATH) must not vanish silently — it would
+	// otherwise look identical to "still dialing" for this session.
+	if err := cmd.Start(); err != nil {
+		logEvent("picker", "event", "open_marked_launch_failed", "host", host, "sess", sess, "error", err.Error())
+	}
+}
+
 // lastNonEmptyLine picks the launcher's most specific complaint: ssh and
 // systemctl noise comes first, the script's own message last.
 func lastNonEmptyLine(s string) string {
@@ -973,7 +996,7 @@ func pendingRemoteItems(tmuxOpts map[string]string, bridges map[string]bool) []l
 	for _, h := range hosts {
 		items = append(items, remoteHostRowItem(tmuxOpts, h, remotePendingNote))
 		if c, ok := readRemoteSessionCache(h); ok {
-			items = append(items, cachedRemoteSessionRows(c, bridges, remoteCacheStale(c, now), now, hostColor(h), cDim)...)
+			items = append(items, cachedRemoteSessionRows(c, bridges, remoteCacheStale(c, now), false, now, hostColor(h), cDim)...)
 		}
 	}
 	return items
@@ -1008,8 +1031,11 @@ func remoteSessionRowItem(host, sess, note, cHost, cDim string, dim bool) listIt
 }
 
 // cachedRemoteSessionRows renders a cache's unbridged sessions; stale rows are
-// dimmed and carry the cache's age.
-func cachedRemoteSessionRows(c remoteSessionCache, bridges map[string]bool, stale bool, now time.Time, cHost, cDim string) []listItem {
+// dimmed and carry the cache's age. unreachable marks every row inert for
+// picker/tui.go's markable — set only once a probe has actually confirmed the
+// host down, never for the pre-probe first-paint call, where reachability is
+// still unknown and the row may resolve live a moment later.
+func cachedRemoteSessionRows(c remoteSessionCache, bridges map[string]bool, stale, unreachable bool, now time.Time, cHost, cDim string) []listItem {
 	note := ""
 	if stale {
 		note = "(cached " + formatSnapshotAge(c.SavedAt, now) + ")"
@@ -1019,7 +1045,9 @@ func cachedRemoteSessionRows(c remoteSessionCache, bridges map[string]bool, stal
 		if sess == "" || bridgeSessionPresent(bridges, c.Host, sess) {
 			continue
 		}
-		rows = append(rows, remoteSessionRowItem(c.Host, sess, note, cHost, cDim, stale))
+		row := remoteSessionRowItem(c.Host, sess, note, cHost, cDim, stale)
+		row.remoteUnreachable = unreachable
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -1087,7 +1115,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 				// The auth/host-key/tailscale states get none: those rows must
 				// stay the only thing Enter can reach for that host.
 				if c, ok := readRemoteSessionCache(h); ok {
-					res.cached = cachedRemoteSessionRows(c, bridges, true, now, hostColor(h), cDim)
+					res.cached = cachedRemoteSessionRows(c, bridges, true, true, now, hostColor(h), cDim)
 				}
 			case remoteProbeTailscaleCheck:
 				res.tailscaleURL = tailscaleCheckURL(err)

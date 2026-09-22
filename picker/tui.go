@@ -52,6 +52,7 @@ type listItem struct {
 	remoteInert          bool   // remote host row: host key changed — Enter must refuse to act, never offer to connect
 	remoteTailscaleCheck bool   // remote host row: a Tailscale ACL "check" blocked the probe — Enter must refuse to act, like remoteInert; og-remote-auth cannot clear this
 	remoteTailscaleURL   string // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
+	remoteUnreachable    bool   // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
 }
 
 // pickerMode selects which renderer draws the body. One model, three
@@ -130,6 +131,13 @@ type tuiModel struct {
 	// is attached to (OG_PICKER_CURRENT_SESSION), used to sink it below a
 	// same-display-name peer on another host.
 	currentSession string
+
+	// marked holds ^t-toggled Remote-section session rows, keyed by
+	// item.target ("remote:<host>:<sess>") — the same key restoreCursor
+	// matches a cached row against its live replacement by (#631), so a mark
+	// set before the probe answers survives the swap. nil until the first
+	// mark.
+	marked map[string]bool
 }
 
 // --- Catppuccin palette (dark/light) ---
@@ -505,7 +513,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 
-	case "q", "esc":
+	case "esc":
+		if len(m.marked) > 0 {
+			m.marked = nil
+			return m, nil
+		}
+		fallthrough
+
+	case "q":
 		if m.query != "" {
 			m.query = ""
 			m = m.withFilter()
@@ -571,6 +586,23 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.refreshDataCmd()
 		}
+
+	case "ctrl+t":
+		// Not Tab: Tab is reserved for an upcoming host-scope filter, and a
+		// printable key belongs to the query, not a mark.
+		item, ok := m.currentItem()
+		if !ok || !m.markable(item) {
+			return m, nil
+		}
+		if m.marked == nil {
+			m.marked = map[string]bool{}
+		}
+		if m.marked[item.target] {
+			delete(m.marked, item.target)
+		} else {
+			m.marked[item.target] = true
+		}
+		return m, nil
 
 	case "ctrl+o":
 		item, ok := m.currentItem()
@@ -1161,6 +1193,37 @@ func (m tuiModel) isSelectable(item listItem) bool {
 	return !item.isHeader || !m.windowMode
 }
 
+// markable reports whether item can hold a ^t mark: a resolvable Remote-
+// section session row on a host the probe hasn't ruled out. Host rows,
+// local sessions and zoxide rows are never markable — none of them set
+// remoteSess.
+func (m tuiModel) markable(item listItem) bool {
+	return item.isRemoteRow && item.remoteSess != "" &&
+		!item.remoteInert && !item.remoteNeedsAuth && !item.remoteTailscaleCheck && !item.remoteUnreachable
+}
+
+func (m tuiModel) isMarked(item listItem) bool {
+	return item.target != "" && m.marked[item.target]
+}
+
+// markedRemoteItems resolves every marked target against m.allItems, not
+// m.visible — a mark is a global selection independent of the query filter,
+// so a session filtered out of view still opens — in list order, dropping
+// any target whose row is no longer markable (its host went inert after it
+// was marked).
+func (m tuiModel) markedRemoteItems() []listItem {
+	if len(m.marked) == 0 {
+		return nil
+	}
+	var out []listItem
+	for _, item := range m.allItems {
+		if m.marked[item.target] && m.markable(item) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func (m tuiModel) firstSelectable(from int) int {
 	for i := from; i < len(m.visible); i++ {
 		if m.isSelectable(m.visible[i]) {
@@ -1212,7 +1275,15 @@ func (m tuiModel) restoreCursor(keep string) tuiModel {
 }
 
 // activateCurrent switches to (or creates) the highlighted target and quits.
+// With ≥1 mark, Enter opens every marked session instead — regardless of
+// which row the cursor is on — and the current row's own state is never
+// consulted.
 func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
+	if m.emitPath == "" {
+		if marked := m.markedRemoteItems(); len(marked) > 0 {
+			return m.openMarkedRemote(marked)
+		}
+	}
 	item, ok := m.currentItem()
 	if !ok || (item.target == "" && item.remoteHost == "") {
 		return m, nil
@@ -1270,6 +1341,36 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		logEvent("picker", "event", "switch", "target", item.target)
 		exec.Command("tmux", "switch-client", "-t", item.target).Run() //nolint:errcheck
 	}
+	return m, tea.Quit
+}
+
+// openMarkedRemote opens every marked session, via the real launchers.
+func (m tuiModel) openMarkedRemote(marked []listItem) (tea.Model, tea.Cmd) {
+	return m.openMarkedRemoteWith(marked, openRemoteBridge, launchRemoteBridgeDetached)
+}
+
+// openMarkedRemoteWith does the work, with the two launchers passed in so
+// tests can record calls instead of exec'ing og-remote-open. All but the
+// first item launch via launch — fired and not waited on — so N marks cost
+// one foreground ssh probe (open's, exactly what a single Enter pays today)
+// rather than N serialized ones; the popup can quit while the rest still
+// dial. The client switches to the first marked session in list order: not
+// the cursor row, which need not itself be marked when Enter fires.
+func (m tuiModel) openMarkedRemoteWith(
+	marked []listItem,
+	open func(tmuxOpts map[string]string, host, sess string, restore bool) error,
+	launch func(tmuxOpts map[string]string, host, sess string, restore bool),
+) (tea.Model, tea.Cmd) {
+	logEvent("picker", "event", "open_marked", "count", strconv.Itoa(len(marked)))
+	for _, it := range marked[1:] {
+		launch(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
+	}
+	first := marked[0]
+	if err := open(m.tmuxOpts, first.remoteHost, first.remoteSess, first.remoteRestore); err != nil {
+		m.statusMsg = err.Error()
+		return m, nil
+	}
+	m.marked = nil
 	return m, tea.Quit
 }
 
