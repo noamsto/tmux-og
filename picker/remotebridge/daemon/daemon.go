@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -268,6 +269,9 @@ type helloWaiter func(want []string) (map[string]net.Conn, error)
 // resizePollInterval is how often the resize watcher re-checks the nudge
 // file's mtime (an os.Stat, not a fork). It only forks LocalArea's
 // display-message/list-clients calls when that mtime has advanced (#433).
+// The reveal watcher ticks on the same interval but forks its list-clients
+// every tick (see watchReveal), so a daemon's steady state is one fork a
+// second, not one stat.
 const resizePollInterval = time.Second
 
 // resizeNudgeSuffix names the per-bridge file a session-scoped client-resized
@@ -814,6 +818,8 @@ func Run(cfg Config) error {
 	// Declared here so teardown can close it; teardown runs exactly once per
 	// Run return path, so a plain close is safe.
 	stopWatch := make(chan struct{})
+	// reveals is filled by the reveal watcher and drained by reseedRevealed.
+	reveals := &revealQueue{}
 	// sessionGone counts consecutive definite negatives from the local-session
 	// probe the coarse tick runs. Session-lifetime, like the registry: a
 	// reconnect does not bring a gone session back, so the count survives one.
@@ -964,6 +970,23 @@ func Run(cfg Config) error {
 		defer ticker.Stop()
 		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, cfg.RemoteSession, reg, cv, sendCtl, stopWatch, ticker.C)
 	}()
+
+	// Re-seed mirror panes a local client starts displaying (see watchReveal).
+	if cfg.LocalSess != "" {
+		isMirror := func(localWin string) bool {
+			for _, mw := range reg.all() {
+				if mw.localWin == localWin {
+					return true
+				}
+			}
+			return false
+		}
+		revealTicker := time.NewTicker(resizePollInterval)
+		go func() {
+			defer revealTicker.Stop()
+			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, stopWatch, revealTicker.C)
+		}()
+	}
 
 	// Ship the remote's agent state into the local claude-status tree, its
 	// window labels onto the mirror windows as @bridge_* options, and the remote
@@ -1122,6 +1145,7 @@ func Run(cfg Config) error {
 			sweeper.sweep(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
 			reseedDropped(router, rt)
 			reseedReshaped(router, rt)
+			reseedRevealed(reg, router, rt, reveals)
 			// Enable pause-after only now that every window is set up. Setup does
 			// drain the stream (its round-trips route, and so does the hello wait),
 			// but only dispatch runs handlePause — so a %pause arriving mid-setup is
@@ -2160,6 +2184,10 @@ type outputSink struct {
 	// reshaped tracks the confirmation re-seed a pane is owed after its
 	// geometry moved; see markReshaped.
 	reshaped reshapeState
+	// hasImages mirrors gfx.Retained(), written only by the pump after every
+	// gfx.Filter call; the main loop's reveal pass reads it to decide whether
+	// a revealed pane is worth re-seeding.
+	hasImages atomic.Bool
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2246,10 +2274,18 @@ func (s *outputSink) start(conn net.Conn) {
 				buf = kn.Feed(buf)
 				if gfx != nil {
 					buf = gfx.Filter(buf)
+					s.hasImages.Store(gfx.Retained())
 				}
 				f.payload = buf
 				if len(f.payload) == 0 {
 					continue
+				}
+			}
+			if f.typ == wire.FrameSeed && gfx != nil {
+				if replay := gfx.Replay(); len(replay) > 0 {
+					if err := wire.WriteStream(conn, wire.FrameOutput, replay); err != nil {
+						return
+					}
 				}
 			}
 			write := wire.WriteFrame
@@ -2258,13 +2294,6 @@ func (s *outputSink) start(conn net.Conn) {
 			}
 			if err := write(conn, f.typ, f.payload); err != nil {
 				return
-			}
-			if f.typ == wire.FrameSeed && gfx != nil {
-				if replay := gfx.Replay(); len(replay) > 0 {
-					if err := wire.WriteStream(conn, wire.FrameOutput, replay); err != nil {
-						return
-					}
-				}
 			}
 		}
 	}()
@@ -2335,8 +2364,8 @@ func (s *outputSink) enqueue(typ wire.FrameType, payload []byte) {
 	}
 }
 
-// enqueueSeedWithReplay enqueues a FrameSeed; the sink pump appends any
-// retained kitty stores immediately after writing the seed (same goroutine as
+// enqueueSeedWithReplay enqueues a FrameSeed; the sink pump writes any
+// retained kitty stores immediately before the seed (same goroutine as
 // gfx.Filter, so Replay stays race-free).
 func enqueueSeedWithReplay(s *outputSink, seed []byte) {
 	if s == nil {

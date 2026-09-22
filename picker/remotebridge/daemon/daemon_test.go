@@ -407,10 +407,11 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 	}
 }
 
-// TestPauseContinueReplaysRetainedKittyStoreAfterSeed pins #465: a re-seed
-// restores placeholders but not kitty stores, so the retained localised store
-// must land as FrameOutput immediately after the FrameSeed.
-func TestPauseContinueReplaysRetainedKittyStoreAfterSeed(t *testing.T) {
+// TestPauseContinueReplaysRetainedKittyStoreBeforeSeed pins #465/#731: a
+// re-seed restores placeholders but not kitty stores, and a placeholder
+// resolves its image only when painted, so the retained localised store must
+// land as FrameOutput immediately BEFORE the FrameSeed that repaints it.
+func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	oneLocal, onePeer := net.Pipe()
 	defer oneLocal.Close()
 	defer onePeer.Close()
@@ -461,18 +462,18 @@ func TestPauseContinueReplaysRetainedKittyStoreAfterSeed(t *testing.T) {
 		t.Fatalf("initial store = %v %q", store.Type, store.Payload)
 	}
 
-	seed, replay := seedThenReplayFrames(t, onePeer)
-	if seed.Type != wire.FrameSeed {
-		t.Fatalf("first frame = %v, want FrameSeed", seed.Type)
-	}
-	if !bytes.Contains(seed.Payload, []byte("FRESH-CAPTURE")) {
-		t.Fatalf("seed = %q, want FRESH-CAPTURE", seed.Payload)
-	}
+	replay, seed := replayThenSeedFrames(t, onePeer)
 	if replay.Type != wire.FrameOutput {
-		t.Fatalf("second frame = %v, want FrameOutput replay", replay.Type)
+		t.Fatalf("first frame = %v, want FrameOutput replay", replay.Type)
 	}
 	if !bytes.Contains(replay.Payload, []byte(kittyLocalisedMarker)) {
 		t.Fatalf("replay = %q, want retained localised store", replay.Payload)
+	}
+	if seed.Type != wire.FrameSeed {
+		t.Fatalf("second frame = %v, want FrameSeed", seed.Type)
+	}
+	if !bytes.Contains(seed.Payload, []byte("FRESH-CAPTURE")) {
+		t.Fatalf("seed = %q, want FRESH-CAPTURE", seed.Payload)
 	}
 }
 
@@ -962,18 +963,18 @@ func testKittyStore(id string) []byte {
 	return []byte("\x1b_Gi=" + id + ",a=T,t=f;L3RtcC94LnBuZw==\x1b\\")
 }
 
-func seedThenReplayFrames(t *testing.T, peer net.Conn) (seed, replay wire.Frame) {
+func replayThenSeedFrames(t *testing.T, peer net.Conn) (replay, seed wire.Frame) {
 	t.Helper()
 	var err error
-	seed, err = wire.ReadFrame(peer)
-	if err != nil {
-		t.Fatalf("read seed: %v", err)
-	}
 	replay, err = wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read replay: %v", err)
 	}
-	return seed, replay
+	seed, err = wire.ReadFrame(peer)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+	return replay, seed
 }
 
 // readAllFrames reads frames off conn until it goes quiet for the deadline and
