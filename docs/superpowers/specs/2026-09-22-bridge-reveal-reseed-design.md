@@ -167,3 +167,13 @@ cooperation (the fix must work for any kitty-placeholder app, not just aeye).
 - **Doc debts from D3:** `enqueueSeedWithReplay` doc, `graphics.Proxy` type doc
   ("Replay immediately after each FrameSeed") and `Replay` doc, the pump's
   ordering comments.
+
+## Review amendment
+
+Code review found that a session-scoped `session-window-changed` hook, indexed
+or not, shadows every global `session-window-changed` hook (reflow, `mark-seen`,
+the carousel's `--reconcile`) inside the mirror session (measured on a scratch
+server, same trap as `pane-died` in #647). `session-window-changed` is therefore
+**not** added to `resizeHookEvents`, and `watchReveal` is not nudge-gated: it
+runs one local `list-clients` every poll tick (1s). That also sees a client
+leaving the session and returning to the same window as a reveal.

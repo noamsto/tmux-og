@@ -110,9 +110,16 @@ func wakeCmd(remoteSession string) string {
 	return "has-session -t " + tmuxQuote(remoteSession)
 }
 
-// watchReveal polls the mirror session's own clients (same shape as
-// watchLocalClient: a nudge-gated tick, no fork when nothing touched the
-// nudge file) and queues, onto q, the local mirror windows a reveal exposed.
+// watchReveal polls the mirror session's own clients every tick and queues,
+// onto q, the local mirror windows a reveal exposed.
+//
+// Unlike watchLocalClient it is not gated on the resize nudge. A window switch
+// inside the mirror session raises only session-window-changed, and hooking
+// that per session would shadow every global session-window-changed hook
+// (reflow, mark-seen, the carousel's own reconcile) inside every mirror
+// session — the same trap pane-died hit (#647). One local list-clients fork a
+// tick is the price of seeing every attach, switch-client and window switch
+// without a hook of its own.
 //
 // query is cfg.LocalTmuxOut bound to clientViewsArgs in production; a query
 // error is skipped (prev is kept, not reset), so one failed poll does not
@@ -122,22 +129,15 @@ func wakeCmd(remoteSession string) string {
 // not own. Every window isMirror accepts is queued, then wake is called once
 // per tick that queued at least one, so the main loop's next pass picks the
 // batch up together rather than being woken once per window.
-func watchReveal(nudged func() (time.Time, bool), query func() (string, error),
-	isMirror func(localWin string) bool, q *revealQueue, wake func() bool,
-	stop <-chan struct{}, tick <-chan time.Time,
+func watchReveal(query func() (string, error), isMirror func(localWin string) bool,
+	q *revealQueue, wake func() bool, stop <-chan struct{}, tick <-chan time.Time,
 ) {
-	var lastNudge time.Time
 	var prev map[string]string
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tick:
-			mtime, ok := nudged()
-			if !ok || !mtime.After(lastNudge) {
-				continue
-			}
-			lastNudge = mtime
 			out, err := query()
 			if err != nil {
 				continue

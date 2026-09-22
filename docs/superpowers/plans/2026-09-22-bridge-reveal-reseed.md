@@ -166,3 +166,13 @@ Steps 1+2 are one subagent; 3+4 one subagent; 5 one subagent after.
 - [ ] Watcher tests cover control-mode skip, re-attach via `client_created`, non-mirror windows.
 - [ ] `go test -race` clean for the daemon package.
 - [ ] Doc updated; three nix gates green.
+
+## Review amendment
+
+Code review found that a session-scoped `session-window-changed` hook, indexed
+or not, shadows every global `session-window-changed` hook (reflow, `mark-seen`,
+the carousel's `--reconcile`) inside the mirror session (measured on a scratch
+server, same trap as `pane-died` in #647). `session-window-changed` is therefore
+**not** added to `resizeHookEvents`, and `watchReveal` is not nudge-gated: it
+runs one local `list-clients` every poll tick (1s). That also sees a client
+leaving the session and returning to the same window as a reveal.

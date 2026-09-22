@@ -360,15 +360,11 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 // between launcher switches — #433's own reproduction resizes it that way),
 // client-session-changed for a client switching onto or off this session
 // (measured redundant with client-attached on a fresh attach too, so that one
-// is left out), client-detached for the last client leaving, and
-// session-window-changed for a window switch inside the mirror session
-// itself (next/prev/select-window) — the event the reveal watcher (watchReveal)
-// needs to notice a local client has started displaying a different mirror
-// window. Every one of these now also runs watchLocalClient's area() fork and
-// a re-resolve of the viewing identity (R10) — cv.need and the Relay
-// comparison dedupe the actual sends, so a session switch or detach is cheap
-// but no longer free.
-var resizeHookEvents = [...]string{"client-resized", "window-resized", "client-session-changed", "client-detached", "session-window-changed"}
+// is left out), and client-detached for the last client leaving. Every one of
+// these now also runs watchLocalClient's area() fork and a re-resolve of the
+// viewing identity (R10) — cv.need and the Relay comparison dedupe the actual
+// sends, so a session switch or detach is cheap but no longer free.
+var resizeHookEvents = [...]string{"client-resized", "window-resized", "client-session-changed", "client-detached"}
 
 // localActiveWindow reports the mirror session's current window — the one the
 // local client is looking at — or "" when it can't be learned (detached
@@ -973,7 +969,7 @@ func Run(cfg Config) error {
 		revealTicker := time.NewTicker(resizePollInterval)
 		go func() {
 			defer revealTicker.Stop()
-			watchReveal(nudged, func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, stopWatch, revealTicker.C)
+			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, stopWatch, revealTicker.C)
 		}()
 	}
 

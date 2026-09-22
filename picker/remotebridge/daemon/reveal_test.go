@@ -50,15 +50,13 @@ func TestRevealedWindows(t *testing.T) {
 }
 
 // TestWatchRevealQueuesMirrorWindowsAndWakes drives watchReveal the same way
-// TestWatchLocalClientReconvergesOnChange drives watchLocalClient: nudged and
-// query read from channels the test controls, and each unbuffered send is a
-// barrier proving the previous tick fully completed before the next begins.
+// TestWatchLocalClientReconvergesOnChange drives watchLocalClient: query reads
+// from a channel the test controls, and each unbuffered send is a barrier
+// proving the previous tick fully completed before the next begins.
 func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 	tick := make(chan time.Time)
 	stop := make(chan struct{})
-	nudgeCh := make(chan nudgeResult)
 	queryCh := make(chan string)
-	nudged := func() (time.Time, bool) { n := <-nudgeCh; return n.t, n.ok }
 	query := func() (string, error) { return <-queryCh, nil }
 
 	q := &revealQueue{}
@@ -74,57 +72,52 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchReveal(nudged, query, isMirror, q, wake, stop, tick)
+		watchReveal(query, isMirror, q, wake, stop, tick)
 		close(done)
 	}()
+	step := func(out string) {
+		t.Helper()
+		tick <- time.Now()
+		queryCh <- out
+	}
+	drain := func(view string, want []string, wantWakes int) {
+		t.Helper()
+		// One more tick repeating the current view proves the previous tick's
+		// queueing and wake completed, without itself revealing anything.
+		tick <- time.Now()
+		queryCh <- view
+		if got := q.take(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("queued = %v, want %v", got, want)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if wakes != wantWakes {
+			t.Fatalf("wakes = %d, want %d", wakes, wantWakes)
+		}
+	}
 
-	// Tick 1 — nudge file not yet touched: no due, so query must not be
-	// called (nothing sent on queryCh; a wrongly-issued query would deadlock
-	// here rather than race silently).
-	tick <- time.Now()
-	nudgeCh <- nudgeResult{ok: false}
+	// No clients attached at all: an empty read reveals nothing.
+	step("")
+	// A control-mode client and a non-mirror window queue nothing and don't wake.
+	step(strings.Join([]string{"1|ctl|1|@9", "0|tty0|1|@3"}, "\n") + "\n")
+	// The same client switches onto @7, a mirror window: queued once, one wake.
+	step("0|tty0|1|@7\n")
+	// Unchanged view set: nothing new.
+	step("0|tty0|1|@7\n")
+	drain("0|tty0|1|@7\n", []string{"@7"}, 1)
 
-	t1 := time.Now()
-	// Tick 2 — first touch, but no clients attached at all: an empty read
-	// reveals nothing.
-	tick <- time.Now()
-	nudgeCh <- nudgeResult{t: t1, ok: true}
-	queryCh <- ""
-
-	t2 := t1.Add(time.Second)
-	// Tick 3 — mtime advanced: a control-mode client and a non-mirror window
-	// are both present, but neither queues anything or wakes.
-	tick <- time.Now()
-	nudgeCh <- nudgeResult{t: t2, ok: true}
-	queryCh <- strings.Join([]string{"1|ctl|1|@9", "0|tty0|1|@3"}, "\n") + "\n"
-
-	t3 := t2.Add(time.Second)
-	// Tick 4 — the same client switches onto @7, a mirror window: queued
-	// once, wake called once.
-	tick <- time.Now()
-	nudgeCh <- nudgeResult{t: t3, ok: true}
-	queryCh <- "0|tty0|1|@7\n"
-
-	t4 := t3.Add(time.Second)
-	// Tick 5 — unchanged view set: nothing new queued, no further wake.
-	tick <- time.Now()
-	nudgeCh <- nudgeResult{t: t4, ok: true}
-	queryCh <- "0|tty0|1|@7\n"
+	// The client leaves the mirror session and comes back to the same window.
+	// No hook need fire for either move: polling every tick sees the view
+	// disappear and reappear, which is a reveal.
+	step("")
+	step("0|tty0|1|@7\n")
+	drain("0|tty0|1|@7\n", []string{"@7"}, 2)
 
 	close(stop)
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchReveal did not return after stop was closed")
-	}
-
-	if got := q.take(); !reflect.DeepEqual(got, []string{"@7"}) {
-		t.Fatalf("queued = %v, want [@7]", got)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if wakes != 1 {
-		t.Fatalf("wakes = %d, want 1", wakes)
 	}
 }
 
