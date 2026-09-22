@@ -57,7 +57,7 @@ func (m tuiModel) renderList() string {
 		case i == m.cursor:
 			prefix := "▶ "
 			if marked {
-				prefix = "▶" + markGlyph
+				prefix = "▶" + strings.ReplaceAll(markGlyph, "\033[0m", selResetKeepBg)
 			}
 			patched := strings.ReplaceAll(item.display, "\033[0m", selResetKeepBg)
 			line := fitVisibleWidth(prefix+patched, w)

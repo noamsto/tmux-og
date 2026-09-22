@@ -1667,10 +1667,15 @@ func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
 // order) through launch — fired, not waited on — and only the first through
 // open, the one path that also decides which session the client switches
 // to. This is the "N marks, one foreground dial" contract #730 asks for.
+//
+// Marked in reverse of list order ("other" before "mono") deliberately: if
+// markedRemoteItems returned marks in toggle order instead of m.allItems
+// order, this would catch it — marking in list order wouldn't, since the two
+// orders would coincide.
 func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
 	m := tuiModel{allItems: remoteFixture()}
 	m = m.withFilter()
-	for _, target := range []string{"remote:lab:mono", "remote:lab:other"} {
+	for _, target := range []string{"remote:lab:other", "remote:lab:mono"} {
 		m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == target })
 		next, _ := m.handleKey(wallKey("ctrl+t"))
 		m = next.(tuiModel)
@@ -1678,6 +1683,10 @@ func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
 	marked := m.markedRemoteItems()
 	if len(marked) != 2 {
 		t.Fatalf("markedRemoteItems() = %d items, want 2: %+v", len(marked), marked)
+	}
+	if marked[0].target != "remote:lab:mono" || marked[1].target != "remote:lab:other" {
+		t.Fatalf("markedRemoteItems() order = %q, %q — want list order (mono, other), not mark order (other, mono)",
+			marked[0].target, marked[1].target)
 	}
 
 	type call struct{ host, sess string }
@@ -1715,6 +1724,66 @@ func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected tea.Quit, got nil cmd")
+	}
+}
+
+// The real wiring — activateCurrent through the production openMarkedRemote,
+// not the injected fakes above — must open every marked session and ignore
+// the cursor's own row entirely once any mark exists. @remote_open_bin points
+// both openRemoteBridge and launchRemoteBridgeDetached at a fake launcher
+// that logs its argv, so this never execs the real og-remote-open or touches
+// a real tmux session (the launcher never reaches PATH, matching
+// TestOpenRemoteBridgeUsesConfiguredBin's precedent in remote_test.go).
+func TestActivateCurrentOpensAllMarkedIgnoringCursorRow(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "calls")
+	bin := filepath.Join(dir, "fake-open")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logFile + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m := tuiModel{allItems: remoteFixture(), tmuxOpts: map[string]string{"@remote_open_bin": bin}}
+	m = m.withFilter()
+	for _, target := range []string{"remote:lab:mono", "remote:lab:other"} {
+		m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == target })
+		next, _ := m.handleKey(wallKey("ctrl+t"))
+		m = next.(tuiModel)
+	}
+	// Cursor sits on the unrelated local session row, not on either mark —
+	// activateCurrent must still open the marks, not this row.
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == "tmux-og" })
+
+	next, cmd := m.activateCurrent()
+	if cmd == nil {
+		t.Fatal("expected tea.Quit")
+	}
+	nm, ok := next.(tuiModel)
+	if !ok {
+		t.Fatalf("activateCurrent did not return a tuiModel")
+	}
+	if len(nm.marked) != 0 {
+		t.Errorf("marks not cleared: %v", nm.marked)
+	}
+
+	// The detached launch races the test goroutine; give it a moment to run
+	// the (trivial, local) fake script and flush its line.
+	deadline := time.Now().Add(2 * time.Second)
+	seen := map[string]bool{}
+	for time.Now().Before(deadline) && len(seen) < 2 {
+		b, _ := os.ReadFile(logFile)
+		seen = map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if line != "" {
+				seen[line] = true
+			}
+		}
+		if len(seen) < 2 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if !seen["lab mono"] || !seen["lab other"] {
+		t.Fatalf("launcher invocations = %v, want both %q and %q", seen, "lab mono", "lab other")
 	}
 }
 

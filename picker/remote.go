@@ -820,7 +820,12 @@ func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, r
 		cmd.Env = append(os.Environ(), "OG_REMOTE_RESTORE=1")
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Start() //nolint:errcheck
+	// Nothing left to report to once the popup has quit, but a spawn failure
+	// (bad @remote_open_bin, PATH) must not vanish silently — it would
+	// otherwise look identical to "still dialing" for this session.
+	if err := cmd.Start(); err != nil {
+		logEvent("picker", "event", "open_marked_launch_failed", "host", host, "sess", sess, "error", err.Error())
+	}
 }
 
 // lastNonEmptyLine picks the launcher's most specific complaint: ssh and
