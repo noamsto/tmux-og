@@ -147,7 +147,7 @@ func (m tuiModel) renderSearch() string {
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
 		BorderForeground(m.thmColor("@thm_surface_1", "#45475a", "#9ca0b0")).
-		Render(m.withHostBadge(icon + queryStr))
+		Render(m.withHostBadge(m.withScopeBadge(icon + queryStr)))
 }
 
 // withHostBadge right-aligns the remote host on the search row, so a picker
@@ -161,6 +161,29 @@ func (m tuiModel) withHostBadge(row string) string {
 	badge := lipgloss.NewStyle().
 		Foreground(m.thmColor("@thm_mauve", "#cba6f7", "#8839ef")).
 		Render(" " + m.emitHost + " ")
+	gap := m.width - visibleWidth(row) - visibleWidth(badge)
+	if gap < 1 {
+		return row
+	}
+	return row + strings.Repeat(" ", gap) + badge
+}
+
+// withScopeBadge right-aligns the active Tab host scope on the search row, so
+// a host/all-hosts view says whose sessions it lists. scopeLocal renders
+// nothing — today's exact search row. Dropped, never truncated, when the row
+// is too narrow: the query being typed outranks it.
+func (m tuiModel) withScopeBadge(row string) string {
+	var badge string
+	switch m.scope.kind {
+	case scopeLocal:
+		return row
+	case scopeHost:
+		cHost := hostColorFunc(m.tmuxOpts)(m.scope.host)
+		badge = " " + cHost + m.scope.host + "\033[0m" + " "
+	case scopeAll:
+		highlight := lipgloss.NewStyle().Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b"))
+		badge = " " + highlight.Render("all hosts") + " "
+	}
 	gap := m.width - visibleWidth(row) - visibleWidth(badge)
 	if gap < 1 {
 		return row
@@ -238,6 +261,13 @@ func (m tuiModel) renderHints() string {
 			groupLabel = highlight.Render(groupLabel)
 		}
 		parts = append(parts, hint("^g", groupLabel))
+	}
+	if len(configuredHosts(m.tmuxOpts)) > 0 {
+		scopeLabel := "scope"
+		if m.scope.kind != scopeLocal {
+			scopeLabel = highlight.Render(scopeLabel)
+		}
+		parts = append(parts, hint("⇥", scopeLabel))
 	}
 	if hasItem {
 		if _, ok := remotePickHost(item, m.windowMode); ok {

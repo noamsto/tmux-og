@@ -53,6 +53,23 @@ type listItem struct {
 	remoteTailscaleCheck bool   // remote host row: a Tailscale ACL "check" blocked the probe — Enter must refuse to act, like remoteInert; og-remote-auth cannot clear this
 	remoteTailscaleURL   string // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
 	remoteUnreachable    bool   // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
+	remoteMirrorTarget   string // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
+}
+
+// scopeKind selects which sessions Tab's host scope shows.
+type scopeKind int8
+
+const (
+	scopeLocal scopeKind = iota
+	scopeHost
+	scopeAll
+)
+
+// hostScope is the current Tab-cycled scope: today's local-only list, one
+// host's sessions, or every configured host's sessions.
+type hostScope struct {
+	kind scopeKind
+	host string // set only when kind == scopeHost
 }
 
 // pickerMode selects which renderer draws the body. One model, three
@@ -67,12 +84,18 @@ const (
 // tuiModel is the bubbletea model for the picker.
 type tuiModel struct {
 	// Data
-	allItems     []listItem // unfiltered: sessionItems + remoteItems + zoxideItems
-	sessionItems []listItem // session/window rows (base for recombination)
-	remoteItems  []listItem // remote host/session rows, loaded async after first paint
-	zoxideItems  []listItem // zoxide suggestions, loaded async after first paint
-	visible      []listItem // after query + mode filter
+	allItems     []listItem     // unfiltered: sessionItems + remoteItems + zoxideItems
+	sessionItems []listItem     // session/window rows (base for recombination)
+	remoteItems  []listItem     // remote host/session rows, loaded async after first paint
+	zoxideItems  []listItem     // zoxide suggestions, loaded async after first paint
+	mirrors      []bridgeMirror // local sessions mirroring a remote host+session, refreshed on the data-refresh tick
+	visible      []listItem     // after query + mode filter
 	cursor       int
+
+	// scope is Tab's host-scope cycle (local -> hosts... -> all -> local).
+	// Zero value is scopeLocal, today's exact behavior when Tab is never
+	// pressed.
+	scope hostScope
 
 	// Modes
 	mode pickerMode
@@ -169,7 +192,8 @@ type previewTickMsg struct{}
 type wallTickMsg struct{}
 
 type refreshMsg struct {
-	items []listItem
+	items   []listItem
+	mirrors []bridgeMirror
 }
 
 // zoxideMsg carries the suggestion rows collected off the first-paint path.
@@ -372,6 +396,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Read the selection before the rebuild invalidates its index.
 		keep := m.currentTarget()
 		m.sessionItems = msg.items
+		m.mirrors = msg.mirrors
 		m = m.recombine().withFilter()
 		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
@@ -484,6 +509,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.preview, cmd = m.preview.Update(msg)
 	return m, cmd
+}
+
+// nextScope advances Tab's cycle: local → each configured host in
+// @remote_bridge_hosts order → all hosts → local. hosts must be non-empty.
+func nextScope(cur hostScope, hosts []string) hostScope {
+	switch cur.kind {
+	case scopeLocal:
+		return hostScope{kind: scopeHost, host: hosts[0]}
+	case scopeAll:
+		return hostScope{}
+	}
+	for i, h := range hosts {
+		if h != cur.host {
+			continue
+		}
+		if i+1 < len(hosts) {
+			return hostScope{kind: scopeHost, host: hosts[i+1]}
+		}
+		return hostScope{kind: scopeAll}
+	}
+	// The configured list changed under a live host scope; restart the cycle
+	// rather than strand it on a host that is gone.
+	return hostScope{kind: scopeHost, host: hosts[0]}
 }
 
 func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -627,6 +675,22 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+s":
 		m = m.toggleScratchOnly()
+		return m, m.loadPreviewCmd()
+
+	case "tab":
+		// Window mode's rows carry no remote data and emit mode skips the
+		// remote probe, so neither has anything to scope. In wall mode this
+		// case is unreachable — handleWallKey owns tab there.
+		if m.windowMode || m.emitPath != "" {
+			return m, nil
+		}
+		hosts := configuredHosts(m.tmuxOpts)
+		if len(hosts) == 0 {
+			return m, nil
+		}
+		m.scope = nextScope(m.scope, hosts)
+		m = m.recombine().withFilter()
+		m.cursor = m.firstSelectable(0)
 		return m, m.loadPreviewCmd()
 
 	case "ctrl+/", "ctrl+_":
@@ -1199,24 +1263,32 @@ func (m tuiModel) isSelectable(item listItem) bool {
 // remoteSess.
 func (m tuiModel) markable(item listItem) bool {
 	return item.isRemoteRow && item.remoteSess != "" &&
-		!item.remoteInert && !item.remoteNeedsAuth && !item.remoteTailscaleCheck && !item.remoteUnreachable
+		!item.remoteInert && !item.remoteNeedsAuth && !item.remoteTailscaleCheck && !item.remoteUnreachable &&
+		item.remoteMirrorTarget == ""
 }
 
 func (m tuiModel) isMarked(item listItem) bool {
 	return item.target != "" && m.marked[item.target]
 }
 
-// markedRemoteItems resolves every marked target against m.allItems, not
-// m.visible — a mark is a global selection independent of the query filter,
-// so a session filtered out of view still opens — in list order, dropping
-// any target whose row is no longer markable (its host went inert after it
-// was marked).
+// markedRemoteItems resolves every marked target against
+// m.sessionItems+m.remoteItems, not m.allItems — host/all scope shrinks
+// m.allItems to one (or all-but-local) host's rows, and a mark is a global
+// selection independent of both the query filter and the current scope, so
+// a session filtered out of view or scoped out of the current host still
+// opens — in list order, dropping any target whose row is no longer
+// markable (its host went inert after it was marked).
 func (m tuiModel) markedRemoteItems() []listItem {
 	if len(m.marked) == 0 {
 		return nil
 	}
 	var out []listItem
-	for _, item := range m.allItems {
+	for _, item := range m.sessionItems {
+		if m.marked[item.target] && m.markable(item) {
+			out = append(out, item)
+		}
+	}
+	for _, item := range m.remoteItems {
 		if m.marked[item.target] && m.markable(item) {
 			out = append(out, item)
 		}
@@ -1274,6 +1346,11 @@ func (m tuiModel) restoreCursor(keep string) tuiModel {
 	return m
 }
 
+// switchClient switches the attached client to target, seamed for tests.
+var switchClient = func(target string) error {
+	return exec.Command("tmux", "switch-client", "-t", target).Run()
+}
+
 // activateCurrent switches to (or creates) the highlighted target and quits.
 // With ≥1 mark, Enter opens every marked session instead — regardless of
 // which row the cursor is on — and the current row's own state is never
@@ -1299,6 +1376,13 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		if err := writeEmitPayload(m.emitPath, payload); err != nil {
 			m.statusMsg = err.Error()
 			return m, tea.Quit
+		}
+		return m, tea.Quit
+	}
+	if item.remoteMirrorTarget != "" {
+		logEvent("picker", "event", "switch_to_mirror", "target", item.remoteMirrorTarget)
+		if err := switchClient(item.remoteMirrorTarget); err != nil {
+			m.statusMsg = err.Error()
 		}
 		return m, tea.Quit
 	}
@@ -1339,7 +1423,7 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		}
 	} else {
 		logEvent("picker", "event", "switch", "target", item.target)
-		exec.Command("tmux", "switch-client", "-t", item.target).Run() //nolint:errcheck
+		switchClient(item.target) //nolint:errcheck
 	}
 	return m, tea.Quit
 }
@@ -1731,13 +1815,20 @@ func (m tuiModel) refreshDataCmd() tea.Cmd {
 		snap := collectPanesSnapshot()
 		panes := collectAgentPanes(snap)
 		var items []listItem
+		var mirrors []bridgeMirror
 		if wm {
 			items = buildWindowItems(opts, panes, theme, lw, sg)
 		} else {
 			items = buildSessionItems(opts, snap, panes, theme, true, cur)
+			// Only the session picker cycles host scope, so window mode would
+			// pay for this fork every tick and never read the result — and with
+			// no hosts configured there's no scope to populate either.
+			if len(configuredHosts(opts)) > 0 {
+				mirrors = collectBridgeMirrors()
+			}
 		}
 		// Always send — spinners need to animate even without structural changes.
-		return refreshMsg{items: items}
+		return refreshMsg{items: items, mirrors: mirrors}
 	}
 }
 
@@ -1763,6 +1854,18 @@ func (m tuiModel) remoteCmd() tea.Cmd {
 // recombine rebuilds allItems from the session base plus the async suggestion
 // rows, so a 1s refresh (sessions only) doesn't drop loaded remote/zoxide entries.
 func (m tuiModel) recombine() tuiModel {
+	switch m.scope.kind {
+	case scopeHost:
+		m.allItems = m.scopedItems(func(h string) bool { return h == m.scope.host })
+		return m
+	case scopeAll:
+		// Membership in configuredHosts, not merely a non-empty host: "all
+		// hosts" means exactly the hosts Tab can land on individually, so an
+		// ad-hoc bridge to an unconfigured host is out of scope everywhere.
+		configured := hostSet(configuredHosts(m.tmuxOpts))
+		m.allItems = m.scopedItems(func(h string) bool { return configured[h] })
+		return m
+	}
 	all := make([]listItem, 0, len(m.sessionItems)+len(m.remoteItems)+len(m.zoxideItems)+1)
 	all = append(all, m.sessionItems...)
 	all = append(all, m.remoteItems...)
@@ -1776,6 +1879,83 @@ func (m tuiModel) recombine() tuiModel {
 	}
 	m.allItems = all
 	return m
+}
+
+func hostSet(hosts []string) map[string]bool {
+	set := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		set[h] = true
+	}
+	return set
+}
+
+// scopedItems builds the list for a host scope: the local sessions that mirror
+// a matching host, then the Remote section assembled one host block at a time.
+// Zoxide rows are local-scope only — a "create a session here" suggestion has
+// no host to be scoped to.
+func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
+	var out []listItem
+	for _, item := range m.sessionItems {
+		if hostMatches(item.bridgeHost) {
+			out = append(out, item)
+		}
+	}
+	hostColor := hostColorFunc(m.tmuxOpts)
+	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", m.tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	header := false
+	for _, host := range configuredHosts(m.tmuxOpts) {
+		if !hostMatches(host) {
+			continue
+		}
+		block, seen := m.remoteHostBlock(host)
+		// configuredHosts and m.remoteItems can disagree — collectRemoteItems
+		// drops a host its live self-check caught that dropCachedSelfAliases
+		// didn't — and a mirror row without its host row above it would be an
+		// orphan, so the whole block is skipped.
+		if len(block) == 0 {
+			continue
+		}
+		if !header {
+			out = append(out, remoteHeaderItem(m.tmuxOpts))
+			header = true
+		}
+		out = append(out, block...)
+		for _, bm := range m.mirrors {
+			if bm.host != host || seen[bm.sess] {
+				continue
+			}
+			// Appended whatever the host's probe state, inert hosts included:
+			// Enter on a mirror row is a local switch-client, so it never acts
+			// on the host the probe called unreachable or needing auth.
+			row := remoteSessionRowItem(host, bm.sess, "(mirrored)", hostColor(host), cDim, false)
+			row.remoteMirrorTarget = bm.target
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// remoteHostBlock returns host's row plus the children that follow it in
+// m.remoteItems, verbatim and in order, along with the session names among
+// them — every probe-state invariant (down to a needs-auth host having no
+// children at all) carries over because nothing here is rebuilt.
+func (m tuiModel) remoteHostBlock(host string) ([]listItem, map[string]bool) {
+	for i, item := range m.remoteItems {
+		if item.remoteHost != host || item.remoteSess != "" {
+			continue
+		}
+		block := []listItem{item}
+		seen := map[string]bool{}
+		for _, child := range m.remoteItems[i+1:] {
+			if child.remoteHost != host || child.remoteSess == "" {
+				break
+			}
+			block = append(block, child)
+			seen[child.remoteSess] = true
+		}
+		return block, seen
+	}
+	return nil, nil
 }
 
 func (m tuiModel) loadPreviewCmd() tea.Cmd {
@@ -1802,9 +1982,16 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 		host, sess := item.remoteHost, item.remoteSess
 		inert, needsAuth := item.remoteInert, item.remoteNeedsAuth
 		tailscaleCheck, tailscaleURL := item.remoteTailscaleCheck, item.remoteTailscaleURL
+		mirrorTarget := item.remoteMirrorTarget
 		return func() tea.Msg {
 			var msg string
 			switch {
+			case mirrorTarget != "":
+				msg = "remote bridge → " + host
+				if sess != "" {
+					msg += "/" + sess
+				}
+				msg += "\n\nAlready mirrored locally — Enter switches to " + mirrorTarget + "."
 			case inert:
 				msg = "remote bridge → " + host +
 					"\n\nThe host key changed since it was last accepted. That is what a" +

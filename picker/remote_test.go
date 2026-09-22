@@ -94,6 +94,27 @@ func TestParseBridgeSessionsIgnoresOrdinaryLocalNames(t *testing.T) {
 	}
 }
 
+func TestParseBridgeMirrors(t *testing.T) {
+	raw := "nix-config-remote|nix|config\n" + // pair-keyed
+		"lab-work|lab|\n" + // legacy convention: name = host-sess
+		"nix-config||\n" + // ordinary local session, no @bridge_host
+		"weird|lab|\n" // legacy-named without the host- prefix, unresolvable
+
+	got := parseBridgeMirrors(raw)
+	want := []bridgeMirror{
+		{host: "nix", sess: "config", target: "nix-config-remote"},
+		{host: "lab", sess: "work", target: "lab-work"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d]=%+v want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestCollectRemoteItemsKeepsOrdinaryLocalCollision(t *testing.T) {
 	opts := map[string]string{"@remote_bridge_hosts": "nix"}
 	probe := func(string) (remoteProbeResult, error) { return probeWithSessions("config"), nil }

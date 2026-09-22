@@ -1671,7 +1671,7 @@ func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
 // order, this would catch it — marking in list order wouldn't, since the two
 // orders would coincide.
 func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
-	m := tuiModel{allItems: remoteFixture()}
+	m := tuiModel{allItems: remoteFixture(), sessionItems: remoteFixture()[:1], remoteItems: remoteFixture()[1:]}
 	m = m.withFilter()
 	for _, target := range []string{"remote:lab:other", "remote:lab:mono"} {
 		m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == target })
@@ -1741,7 +1741,10 @@ func TestActivateCurrentOpensAllMarkedIgnoringCursorRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := tuiModel{allItems: remoteFixture(), tmuxOpts: map[string]string{"@remote_open_bin": bin}}
+	m := tuiModel{
+		allItems: remoteFixture(), sessionItems: remoteFixture()[:1], remoteItems: remoteFixture()[1:],
+		tmuxOpts: map[string]string{"@remote_open_bin": bin},
+	}
 	m = m.withFilter()
 	for _, target := range []string{"remote:lab:mono", "remote:lab:other"} {
 		m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == target })

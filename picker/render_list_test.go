@@ -81,6 +81,61 @@ func TestWithHostBadgeAbsentLocally(t *testing.T) {
 	}
 }
 
+func TestWithScopeBadgeAbsentLocally(t *testing.T) {
+	m := tuiModel{width: 40}
+	if got := m.withScopeBadge("  q"); got != "  q" {
+		t.Errorf("row = %q, want no badge in scopeLocal", got)
+	}
+}
+
+func TestWithScopeBadgeHost(t *testing.T) {
+	m := tuiModel{width: 40, scope: hostScope{kind: scopeHost, host: "tp-g6"}}
+	row := stripANSI(m.withScopeBadge("  q"))
+	if !strings.HasSuffix(row, "tp-g6 ") {
+		t.Errorf("row = %q, want the host name right-aligned", row)
+	}
+	if got := visibleWidth(row); got != 40 {
+		t.Errorf("visibleWidth = %d, want 40", got)
+	}
+}
+
+func TestWithScopeBadgeAll(t *testing.T) {
+	m := tuiModel{width: 40, scope: hostScope{kind: scopeAll}}
+	row := stripANSI(m.withScopeBadge("  q"))
+	if !strings.HasSuffix(row, "all hosts ") {
+		t.Errorf("row = %q, want the all-hosts label right-aligned", row)
+	}
+}
+
+func TestWithScopeBadgeDroppedWhenNarrow(t *testing.T) {
+	m := tuiModel{width: 8, scope: hostScope{kind: scopeHost, host: "tp-g6"}}
+	if got := m.withScopeBadge("  query"); got != "  query" {
+		t.Errorf("row = %q, want the badge dropped rather than overflowing", got)
+	}
+}
+
+func TestRenderHintsScopeHintGatedOnConfiguredHosts(t *testing.T) {
+	m := tuiModel{width: 200, visible: []listItem{{target: "tmux-og"}}, cursor: 0}
+	hints := stripANSI(m.renderHints())
+	if strings.Contains(hints, "scope") {
+		t.Errorf("hints = %q, must not advertise scope with no configured hosts", hints)
+	}
+}
+
+func TestRenderHintsScopeHintHighlightedWhenActive(t *testing.T) {
+	m := tuiModel{
+		width:    200,
+		visible:  []listItem{{target: "tmux-og"}},
+		cursor:   0,
+		tmuxOpts: map[string]string{"@remote_bridge_hosts": "tp-g6"},
+		scope:    hostScope{kind: scopeHost, host: "tp-g6"},
+	}
+	hints := m.renderHints()
+	if !strings.Contains(hints, "⇥") {
+		t.Errorf("hints = %q, want the scope hint advertised with hosts configured", hints)
+	}
+}
+
 func TestHintsNameTheRemoteKill(t *testing.T) {
 	// ^x on a mirror row is unconfirmed and lands on another machine, so the
 	// footer has to say so while the row is merely selected (#393).
