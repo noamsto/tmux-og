@@ -798,10 +798,7 @@ func Run(cfg Config) error {
 	// Declared here so teardown can close it; teardown runs exactly once per
 	// Run return path, so a plain close is safe.
 	stopWatch := make(chan struct{})
-	// reveals collects the local mirror windows a local attach, switch-client
-	// or window switch just started displaying, for reseedRevealed to re-seed
-	// on the main loop. Declared here, beside stopWatch, for the same reason:
-	// the watcher goroutine that fills it starts below, before the main loop.
+	// reveals is filled by the reveal watcher and drained by reseedRevealed.
 	reveals := &revealQueue{}
 	// sessionGone counts consecutive definite negatives from the local-session
 	// probe the coarse tick runs. Session-lifetime, like the registry: a
@@ -954,12 +951,7 @@ func Run(cfg Config) error {
 		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, cfg.RemoteSession, reg, cv, sendCtl, stopWatch, ticker.C)
 	}()
 
-	// The reveal watcher polls this session's own clients for a window a
-	// local attach, switch-client or window switch just started displaying,
-	// so reseedRevealed (main loop) can re-seed a mirror pane whose retained
-	// kitty store never survives tmux's own reveal repaint (#731) — see
-	// reveal.go. Skipped when there is no local session to poll, same as
-	// registerResizeHook above.
+	// Re-seed mirror panes a local client starts displaying (see watchReveal).
 	if cfg.LocalSess != "" {
 		isMirror := func(localWin string) bool {
 			for _, mw := range reg.all() {

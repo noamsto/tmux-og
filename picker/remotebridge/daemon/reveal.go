@@ -80,11 +80,8 @@ func clientViews(out string) map[string]string {
 }
 
 // revealedWindows returns, sorted and deduped, the window ids of views in cur
-// whose window differs from what that same view (by "<name>|<created>" key)
-// showed in prev — a fresh view (key absent from prev), a re-attach (same
-// name, new created), or a window switch (same view, new window_id). A view
-// present only in prev (one that left) contributes nothing: leaving reveals
-// nothing.
+// that were absent from prev or showed a different window there. A view that
+// left reveals nothing.
 func revealedWindows(prev, cur map[string]string) []string {
 	seen := map[string]struct{}{}
 	var out []string
@@ -169,14 +166,10 @@ func (s *outputSink) revealable() bool {
 	return !s.closed && !s.paused
 }
 
-// reseedRevealed repaints every retained-store pane in a window a local
-// client just started displaying. Called from the main loop beside
-// reseedReshaped, which is the only place a round-trip may run: q.take()
-// drains the windows the watcher goroutine queued (main-loop owned reg and
-// router are never touched off this goroutine — mw.allRemotePanes() walks the
-// registry's pane lists here, not in the watcher), and only a pane whose sink
-// is revealable and still holds a retained kitty store is worth the
-// round-trip.
+// reseedRevealed re-seeds every pane holding a retained kitty store in the
+// windows the watcher queued. It runs on the main loop, beside reseedReshaped,
+// because that is the only place a round-trip may run and the only goroutine
+// that may walk a mirror window's pane lists.
 func reseedRevealed(reg *registry, router *Router, rt roundTrip, q *revealQueue) {
 	wins := q.take()
 	if len(wins) == 0 {

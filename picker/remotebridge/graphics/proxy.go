@@ -24,12 +24,8 @@ const retainMaxIDs = 32
 
 // Proxy filters one pane's output stream. It is owned by that pane's output
 // sink and called only from the sink's pump goroutine — Filter on every
-// output batch, Replay written immediately before each FrameSeed, Close on
-// teardown — so retain needs no locking. Replay precedes the seed because a
-// placeholder (U=1 virtual) store only resolves its image once the cell
-// carrying it is painted, so the store must already be in the terminal's
-// cache before the seed repaints those cells. That confinement outlives
-// Close: the pump may
+// output batch, Replay immediately before each FrameSeed, Close on teardown —
+// so retain needs no locking. That confinement outlives Close: the pump may
 // needs to inspect retain state from outside the pump — a test, typically —
 // must wait for the pump to actually exit (outputSink.Wait) rather than
 // racing that flush. Filter may block there, bounded by timeout: holding one
