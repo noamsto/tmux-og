@@ -200,7 +200,7 @@ func armIdentityDeadline(c *ctlConn, d time.Duration) (disarm func() (live bool)
 // the mirror until the user comes back to it and reports whether to try again,
 // which buys one short wakeSchedule cycle rather than the full retry budget. A
 // nil park, or one that answers false (a stop, the local session gone), tears
-// down as exhaustion always did.
+// down.
 //
 // Package-level rather than a closure over Run's locals so the endings it has
 // to tell apart — a drop that retries, a different server that tears down, a

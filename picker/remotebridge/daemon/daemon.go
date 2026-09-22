@@ -55,10 +55,8 @@ type Config struct {
 	// Config{} directly, and any call path that predates this field.
 	RendererDied func()
 	// InputSeen is parkWaker.poke, stamped onto cfg once per Run like
-	// RendererDied — pumpInput calls it on every FrameInput so a keypress can
-	// wake the main loop out of park without threading a parameter through
-	// the whole reconcile call chain. nil is legal — every test that builds a
-	// bare Config{} directly, and any call path that predates park.
+	// RendererDied: pumpInput calls it on every FrameInput so a keypress can
+	// wake a parked mirror. nil is legal, as for RendererDied.
 	InputSeen func()
 	// SendCtl is Run's sendCtl, the bool-reporting form of send, stamped onto
 	// cfg once per Run so paster() can hand it to pasteHandler without

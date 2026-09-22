@@ -60,9 +60,8 @@ func (w *parkWaker) arm() {
 	w.armed.Store(true)
 }
 
-// disarm is called on park exit, so a poke arriving after the wait has
-// already woken (on focus, shutdown, or session-gone) costs nothing and
-// leaves nothing queued for the next park's arm to have to drain.
+// disarm is called on park exit; a poke that slipped in before it is drained
+// by the next arm.
 func (w *parkWaker) disarm() { w.armed.Store(false) }
 
 // focusEdge detects the moment a client starts looking at the mirror while
@@ -71,9 +70,8 @@ func (w *parkWaker) disarm() { w.armed.Store(false) }
 // again by every reflow-driven touch of the resize-nudge file — they press a
 // key instead.
 type focusEdge struct {
-	// nudged is the resize-nudge mtime reader watchLocalClient already polls
-	// with (daemon.go) — reused here so the parked wait needs no new hook and
-	// no fork of its own to notice a resize/focus change.
+	// nudged reads the resize-nudge mtime; the session hooks behind it already
+	// fire on client-session-changed, which is the focus change.
 	nudged  func() (time.Time, bool)
 	viewing func() bool
 	last    time.Time
@@ -106,9 +104,8 @@ func (f *focusEdge) poll() bool {
 }
 
 // localViewing reports whether any local client is attached to cfg.LocalSess.
-// False on any read failure or on a Config with no local session to ask
-// about — the same positive-evidence-only rule localSessionGone documents:
-// a transient read must not read as "nobody is looking".
+// A failed read answers false, which can only miss a focus wake, never cause
+// one.
 func localViewing(cfg Config) bool {
 	if cfg.LocalTmuxOut == nil || cfg.LocalSess == "" {
 		return false
@@ -148,10 +145,9 @@ func dimMirror(cfg Config, reg *registry) {
 	}
 }
 
-// undimMirror unsets both style options on every window in the registry,
-// falling back to the global theme value exactly. Unsetting an option that
-// was never set (a window the repair created after park) is harmless, so this
-// needs no filtering against which windows were actually dimmed.
+// undimMirror unsets both style options on every window in the registry, so
+// they inherit the global theme value again. A window the repair created was
+// never dimmed; unsetting it is harmless.
 func undimMirror(cfg Config, reg *registry) {
 	if cfg.LocalSess == "" {
 		return
