@@ -70,16 +70,16 @@ path, which every caller already handles.
   `%exit`; only killing the transport process gives the bare EOF. That is why
   the offline reconnect tests SIGKILL the transport child rather than
   detaching it — a test built on `detach-client` asserts teardown and fails a
-  correct daemon. The same tests make the outage itself by moving the SRC
-  session's socket aside rather than killing its server (a dial then fails
-  with ENOENT); moving it back restores the *same* server pid, so the identity
+  correct daemon. The park tests (#729, `outage_start`) additionally make the
+  outage itself by moving the SRC session's socket aside rather than killing
+  its server (a dial then fails with ENOENT); moving it back restores the *same* server pid, so the identity
   check a re-dial runs still matches, and anything the test needs to write to
   SRC during the outage goes through `tmux -S <moved-path>` rather than the
   now-absent live path. An exhausted retry budget is no longer terminal on its
   own (#729): it parks instead (below), and only reaches teardown if the park
   wait itself answers false — `Shutdown` or the local mirror session gone.
-- **The local mirror session is a fifth ending** (#680). A session that is gone
-  is none of the four above — the registry's window ids are remote and all still
+- **The local mirror session is another ending** (#680). A session that is gone
+  is none of the above — the registry's window ids are remote and all still
   there, and the control connection is healthy — so the orphan kept its control
   client, and with it the per-window size clamp it had asserted
   (`refresh-client -C`, released only when the client goes, #201), in force on
@@ -192,8 +192,8 @@ path, which every caller already handles.
   itself. `cmd/daemon` exposes `--retry-max-elapsed`/`--wake-max-elapsed`
   (env `OG_DAEMON_RETRY_MAX_ELAPSED`/`OG_DAEMON_WAKE_MAX_ELAPSED`) purely so
   the bats suite can exhaust either budget in seconds instead of the
-  production 10 minutes / 30s; those tests drive the outage itself the same
-  SIGKILL-plus-socket-move way the drop tests above do.
+  production 10 minutes / 30s; those tests drive the outage itself by
+  SIGKILLing the transport and moving SRC's socket aside (above).
 - **The `ControlMaster` path is per-dial, not pid-derived-and-fixed** (#574),
   owned by the `child` that dialled it rather than captured in a closure: the
   graphics fetcher and the paste upload both read it through

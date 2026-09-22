@@ -2865,8 +2865,10 @@ wake_parked_mirror() {
 
 	dimmed=yes
 	while IFS= read -r win_id; do
-		style="$($DST show-options -w -v -t "$win_id" window-style 2>/dev/null || true)"
-		[ "$style" = "$PARK_DIM_STYLE" ] || dimmed=no
+		for opt in window-style window-active-style; do
+			style="$($DST show-options -w -v -t "$win_id" "$opt" 2>/dev/null || true)"
+			[ "$style" = "$PARK_DIM_STYLE" ] || dimmed=no
+		done
 	done < <($DST list-windows -t host-sess -F '#{window_id}')
 
 	kill "$daemon_pid" 2>/dev/null || true
@@ -2896,8 +2898,10 @@ wake_parked_mirror() {
 
 	undimmed=yes
 	while IFS= read -r win_id; do
-		style="$($DST show-options -w -t "$win_id" -qv window-style 2>/dev/null || true)"
-		[ -z "$style" ] || undimmed=no
+		for opt in window-style window-active-style; do
+			style="$($DST show-options -w -t "$win_id" -qv "$opt" 2>/dev/null || true)"
+			[ -z "$style" ] || undimmed=no
+		done
 	done < <($DST list-windows -t host-sess -F '#{window_id}')
 
 	painted=no
@@ -3007,6 +3011,8 @@ wake_parked_mirror() {
 		fi
 		sleep 0.1
 	done
+	# A daemon that ignored the SIGTERM would hang this wait, not fail it.
+	[ "$exited" = yes ] || kill -9 "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
 
 	[ "$exited" = yes ]
