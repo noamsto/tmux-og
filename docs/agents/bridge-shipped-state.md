@@ -233,6 +233,19 @@ ships the remote window's own label state across instead.
   shipper whose recorded generation is stale re-reads at once instead of waiting
   out its backstop. Dropping the poll without this is the one way to get a
   permanently bare mirror.
+- **A bare mirror is a viewer-build check before it is a shipper bug.** First
+  check the *viewer's* baked `tmux.conf` for `@bridge_crew_name`. A
+  houston-class host cannot be reached over SSH from the source, so the check runs on the
+  viewer, in fish:
+
+  ```fish
+  set tmux_bin (readlink -f (command -v tmux))
+  echo $tmux_bin
+  set conf (nix-store -q --references $tmux_bin | string match -r '.*tmux.conf$')
+  echo $conf
+  rg -n '@bridge_crew_name|@bridge_crew_color|crew-badge' $conf
+  ```
+
 - **Queued rows are applied by the loop, not by the dispatch that received
   them.** Re-subscribing under an existing name re-reports *every* object — which
   is how a reattach gets back to ground truth in one command — and the loop runs
