@@ -116,6 +116,12 @@ func parseRemoteHosts(raw string) []string {
 	return out
 }
 
+// configuredHosts is the @remote_bridge_hosts list with cached self-aliases
+// dropped — the host list Tab's cycle and scopeAll's membership check share.
+func configuredHosts(tmuxOpts map[string]string) []string {
+	return dropCachedSelfAliases(parseRemoteHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", "")))
+}
+
 // remoteIdentity is a host's machine-id (or uuid/hostname fallback) plus the
 // username the ssh probe ran as.
 type remoteIdentity struct {
@@ -379,6 +385,11 @@ func localBridgeSession(host, sess string) string {
 	return host + "-" + sess
 }
 
+// bridgeMirror is one local session already mirroring a remote host+session.
+type bridgeMirror struct {
+	host, sess, target string // target = the local mirror's session name
+}
+
 func bridgeSessionKey(host, sess string) string {
 	return "pair\x00" + host + "\x00" + sess
 }
@@ -417,6 +428,45 @@ func collectBridgeSessions() map[string]bool {
 
 func bridgeSessionPresent(bridges map[string]bool, host, sess string) bool {
 	return bridges[bridgeSessionKey(host, sess)] || bridges[bridgeSessionLegacyKey(localBridgeSession(host, sess))]
+}
+
+// parseBridgeMirrors is the pure parse of `tmux list-sessions -F
+// "#{session_name}|#{@bridge_host}|#{@bridge_session}"` output into the
+// mirrors it describes. A row with no @bridge_host isn't a mirror. A row
+// with @bridge_session empty (legacy bridge, no option set) derives sess by
+// stripping the "<host>-" prefix off the session name — same convention
+// localBridgeSession assumes; a name that doesn't carry the prefix is
+// skipped (nothing to resolve).
+func parseBridgeMirrors(raw string) []bridgeMirror {
+	var mirrors []bridgeMirror
+	for _, line := range strings.Split(strings.TrimRight(raw, "\n"), "\n") {
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 2 || parts[1] == "" {
+			continue
+		}
+		name, host := parts[0], parts[1]
+		if len(parts) == 3 && parts[2] != "" {
+			mirrors = append(mirrors, bridgeMirror{host: host, sess: parts[2], target: name})
+			continue
+		}
+		prefix := host + "-"
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		mirrors = append(mirrors, bridgeMirror{host: host, sess: strings.TrimPrefix(name, prefix), target: name})
+	}
+	return mirrors
+}
+
+// collectBridgeMirrors runs the tmux call. Off-thread only — see tui.go's
+// refreshDataCmd, the same rule as every other tmux/ps fork here.
+func collectBridgeMirrors() []bridgeMirror {
+	out, err := exec.Command("tmux", "list-sessions", "-F",
+		"#{session_name}|#{@bridge_host}|#{@bridge_session}").Output()
+	if err != nil {
+		return nil
+	}
+	return parseBridgeMirrors(string(out))
 }
 
 // remoteSessionsForHost probes one host for live tmux session names. On
@@ -984,7 +1034,7 @@ const remotePendingNote = "…"
 // match them before any probe answers. remoteMsg (collectRemoteItems's
 // result) replaces this slice wholesale once every host's probe returns.
 func pendingRemoteItems(tmuxOpts map[string]string, bridges map[string]bool) []listItem {
-	hosts := dropCachedSelfAliases(parseRemoteHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", "")))
+	hosts := configuredHosts(tmuxOpts)
 	if len(hosts) == 0 {
 		return nil
 	}
