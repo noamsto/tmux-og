@@ -33,9 +33,12 @@ HEIGHT=85%
 [[ ${OPTS#*|} == list ]] && HEIGHT=60%
 # Pin the client: unpinned, tmux re-resolves to the session's most-recently-active
 # client, which on a bridged host can be the tty-less control client (#346,
-# reported upstream as tmux/tmux#5551 — drop the pin once that ships).
+# reported upstream as tmux/tmux#5551 — drop the pin once that ships). Also pin
+# -t "$CLIENT:": display-popup opens a float in the -t window, and -c only
+# picks the client, not the window — unpinned, tmux resolves -t to its "best"
+# session rather than the client's (measured: landed in an unrelated newer session).
 POPUP_CLIENT=()
-[[ -n $CLIENT ]] && POPUP_CLIENT=(-c "$CLIENT")
+[[ -n $CLIENT ]] && POPUP_CLIENT=(-c "$CLIENT" -t "$CLIENT:")
 POPUP_ENV=()
 [[ -n $CURRENT ]] && POPUP_ENV=(-e "OG_PICKER_CURRENT_SESSION=$CURRENT")
 tmux display-popup "${POPUP_CLIENT[@]}" "${POPUP_ENV[@]}" -E -w 90% -h "$HEIGHT" -b rounded -T " Sessions " \

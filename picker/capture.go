@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -233,4 +234,109 @@ func sendKeys(target string, args []string, run captureRunner) error {
 	full := append([]string{"send-keys", "-t", target}, args...)
 	_, err := run(full...)
 	return err
+}
+
+// --- Never capture the picker's own popup-float (#725) ---
+
+// selfTargets maps the picker's own session ("sess") and window ("sess:idx")
+// targets to the pane under its float: while the float is open it is the
+// window's active pane, so capturing those targets would capture the picker.
+// A nil map means no redirect (no float, e.g. a picker run by hand in a plain
+// pane); an error is only a failed tmux call, which is worth retrying.
+func selfTargets(pane string, run captureRunner) (map[string]string, error) {
+	if pane == "" {
+		return nil, nil
+	}
+	if run == nil {
+		run = defaultCaptureRunner
+	}
+	out, err := run("display-message", "-p", "-t", pane,
+		"#{window_index}|#{?window_modal_pane,#{P:#{?pane_last,#{pane_id},}},}|#{session_name}")
+	if err != nil {
+		return nil, err
+	}
+	// session_name is last: it is the only field of the three that may itself
+	// contain a "|".
+	fields := strings.SplitN(strings.TrimRight(string(out), "\n"), "|", 3)
+	if len(fields) != 3 {
+		return nil, nil
+	}
+	idx, id, sess := fields[0], fields[1], fields[2]
+	if !strings.HasPrefix(id, "%") {
+		return nil, nil
+	}
+	return map[string]string{
+		sess:             id,
+		sess + ":" + idx: id,
+	}, nil
+}
+
+// selfCaptureCache memoizes selfTargets, but only a definitive answer: a
+// runner error must not stick, so the next resolve retries instead of
+// caching "no float" forever.
+type selfCaptureCache struct {
+	mu       sync.Mutex
+	resolved bool
+	targets  map[string]string
+}
+
+func (c *selfCaptureCache) resolve(pane string, run captureRunner) (map[string]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.resolved {
+		return c.targets, nil
+	}
+	targets, err := selfTargets(pane, run)
+	if err != nil {
+		return nil, err
+	}
+	c.targets = targets
+	c.resolved = true
+	return targets, nil
+}
+
+// selfCaptureTargetCache caches selfTargets for the process's lifetime:
+// TMUX_PANE and the picker's own window don't move while it runs.
+var selfCaptureTargetCache selfCaptureCache
+
+// selfCaptureTarget maps t to the pane under the picker's own float when t is
+// one of the picker's own session/window targets, else returns t unchanged.
+func selfCaptureTarget(t string) string {
+	targets, err := selfCaptureTargetCache.resolve(os.Getenv("TMUX_PANE"), nil)
+	if err != nil {
+		return t
+	}
+	if id, ok := targets[t]; ok {
+		return id
+	}
+	return t
+}
+
+// captureViaSelf captures each target through resolve, then re-keys the
+// result — and a captureErr's Target — back to the original targets, which is
+// what wallContent and wallBad are keyed by.
+func captureViaSelf(targets []string, resolve func(string) string, run captureRunner) (map[string]string, error) {
+	resolved := make([]string, len(targets))
+	resolvedToOriginal := make(map[string]string, len(targets))
+	for i, t := range targets {
+		r := resolve(t)
+		resolved[i] = r
+		resolvedToOriginal[r] = t
+	}
+
+	content, err := captureTargets(resolved, run)
+	out := make(map[string]string, len(targets))
+	for i, t := range targets {
+		if c, ok := content[resolved[i]]; ok {
+			out[t] = c
+		}
+	}
+
+	var cErr *captureErr
+	if errors.As(err, &cErr) {
+		if orig, ok := resolvedToOriginal[cErr.Target]; ok {
+			err = &captureErr{Target: orig, Err: cErr.Err}
+		}
+	}
+	return out, err
 }

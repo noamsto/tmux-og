@@ -912,6 +912,13 @@
       license = licenses.mit;
       platforms = platforms.all;
     };
+    # popup-* options are gone upstream (tmux 34cd5da4); -q keeps them on a
+    # resident older server and silent on the pinned one.
+    postPatch = ''
+      substituteInPlace catppuccin_tmux.conf \
+        --replace-fail 'set -gF popup-style' 'set -gqF popup-style' \
+        --replace-fail 'set -gF popup-border-style' 'set -gqF popup-border-style'
+    '';
   };
 
   pathsToml = tomlFormat.generate "paths.toml" ({

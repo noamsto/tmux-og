@@ -214,10 +214,11 @@ func listKeysRaw() ([]string, error) {
 //
 // Measured on a scratch server with a real client: a `run-shell -b -C` issued
 // from inside the popup with no delay fired 0/5 times for a bind whose command
-// is a display-popup — tmux silently no-ops a popup raised while another is
-// open, which is most of this repo's binds. At 0.05s it was 5/5, and tmux
-// honours a fractional delay (a -d 0.5 fired at 0.532s). 0.1s is that floor
-// with margin, and stays under the threshold of notice.
+// is a display-popup: display-popup opens a modal float, a window holds one
+// modal pane, and the command silently no-ops while the which-key float is
+// still being torn down. At 0.05s it was 5/5, and tmux honours a fractional
+// delay (a -d 0.5 fired at 0.532s). 0.1s is that floor with margin, and stays
+// under the threshold of notice (re-measured 5/5 on tmux 3a6c2e78).
 const whichKeyReplayDelay = "0.1"
 
 // replayBind runs the picked bind's own command against the pane that invoked

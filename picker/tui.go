@@ -1591,7 +1591,9 @@ func (m tuiModel) captureWallCmd() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		content, err := captureTargets(targets, nil)
+		// captureViaSelf: never capture the picker's own popup pane over the
+		// window/session it covers.
+		content, err := captureViaSelf(targets, selfCaptureTarget, nil)
 		msg := wallMsg{content: content}
 		var cErr *captureErr
 		if errors.As(err, &cErr) {
@@ -1733,7 +1735,9 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
-		out, err := exec.Command("tmux", "capture-pane", "-t", t, "-p", "-e").Output()
+		// selfCaptureTarget: never capture the picker's own popup pane over
+		// the window/session it covers.
+		out, err := exec.Command("tmux", "capture-pane", "-t", selfCaptureTarget(t), "-p", "-e").Output()
 		if err != nil {
 			return previewMsg{content: "(no preview available)", target: t}
 		}

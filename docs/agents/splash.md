@@ -5,8 +5,9 @@ module) renders a sleeping-cat mascot as an animated braille frame deck —
 breathing + drifting sleep `z`s baked into the source — with a dissolve-in
 intro (braille static settling into the art) and a plasma-field shimmer (summed
 sines drive both gradient color and per-cell brightness), plus a keybind
-cheatsheet — shown once per tmux server via `display-popup`. Enabled by
-default through `programs.tmux-og.splash.enable`.
+cheatsheet — shown once per tmux server via `display-popup`, the compat
+command that opens a modal floating pane rather than an actual popup (#725,
+`floats.md`). Enabled by default through `programs.tmux-og.splash.enable`.
 
 - **Art:** `assets/frames.txt` is the loop (one braille frame per form-feed
   `\f`, uniform height) and `cat-small.txt` is a single static frame for small
