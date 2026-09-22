@@ -1310,6 +1310,10 @@ func Run(cfg Config) error {
 	// running off the empty connHolder slot.
 	dimmed := false
 	park := func() bool {
+		// Armed before the badge goes up: a key pressed the instant it says
+		// "press a key" must not land in a disarmed waker and vanish.
+		waker.arm()
+		defer waker.disarm()
 		setBridgeState(cfg, bridgeStateParked)
 		dimMirror(cfg, reg)
 		dimmed = true
@@ -1321,8 +1325,6 @@ func Run(cfg Config) error {
 		fmt.Fprintf(os.Stderr, "daemon: %s unreachable; parked until the mirror is focused or typed into\n", cfg.RemoteHost)
 		focus := focusEdge{nudged: nudged, viewing: func() bool { return localViewing(cfg) }}
 		focus.reset()
-		waker.arm()
-		defer waker.disarm()
 		ft := time.NewTicker(parkFocusInterval)
 		defer ft.Stop()
 		for {

@@ -34,6 +34,11 @@ setup() {
 	printf 'set -g base-index 1\nset -g pane-base-index 1\nset -g status on\nset -g pane-border-status top\nset -g window-size latest\nset -g aggressive-resize on\n' >"$SRC_CONF"
 	SRC="tmux -L m2src -f $SRC_CONF" # stands in for the "remote", full render config
 	DST="tmux -L m2dst -f $DST_CONF" # the local mirror target
+	# src_sock is SRC's own listening socket path — the park tests' outage_start
+	# renames it aside so a reattach dial gets ENOENT instead of reconnecting to
+	# the still-live SRC server (see outage_start below). teardown() needs this
+	# set even when a test aborts before reaching outage_end.
+	src_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2src"
 
 	if [[ -z ${DAEMON:-} ]]; then
 		DAEMON="$BATS_TEST_TMPDIR/daemon"
@@ -60,6 +65,9 @@ setup() {
 }
 
 teardown() {
+	# A park case that ends mid-outage leaves SRC's socket moved aside — kill
+	# that server too, or its process (and the tmpdir entry below) leaks.
+	[ -S "$src_sock.away" ] && tmux -S "$src_sock.away" kill-server 2>/dev/null || true
 	$SRC kill-server 2>/dev/null || true
 	$DST kill-server 2>/dev/null || true
 	tmux -L m2obs kill-server 2>/dev/null || true # pty host for the attached-client test
@@ -2441,6 +2449,66 @@ transport_child() {
 		awk -v parent="$daemon_pid" '$2 == parent && /attach-session/ {print $1; exit}'
 }
 
+# #729: park helpers. outage_start makes the remote unreachable in a way the
+# reattach loop cannot warm-reconnect from within one retry cycle — SIGKILL
+# the transport (the #482 drop) AND rename SRC's socket aside, so every dial
+# in the cycle gets ENOENT instead of finding the still-live SRC server.
+# Writes to SRC while the socket is aside must go through
+# `tmux -S "$src_sock.away" ...`; $SRC resolves the moved-away path and would
+# hit ENOENT itself.
+outage_start() {
+	kill -9 "$(transport_child)"
+	mv "$src_sock" "$src_sock.away"
+}
+
+outage_end() {
+	mv "$src_sock.away" "$src_sock"
+}
+
+# PARK_DIM_STYLE mirrors daemon/park.go's parkDimStyle byte-for-byte.
+PARK_DIM_STYLE='fg=#{@thm_overlay_0},bg=#{@thm_mantle}'
+
+# The park cases below run with OG_DAEMON_RETRY_MAX_ELAPSED/OG_DAEMON_WAKE_MAX_ELAPSED
+# set to 2s, so a full exhaust-then-park (or wake-then-reexhaust) cycle is
+# bounded near 2s of dials plus scheduling — this budget is generous CI
+# headroom on top of that, not a stall detector tuned tight like bridge_up's.
+PARK_WAIT_BUDGET_SECS=15
+
+# wait_bridge_state polls @bridge_state for an exact value ("" means unset,
+# matching show-options -q's empty-on-unknown-option behaviour).
+wait_bridge_state() {
+	local want="$1" tag="$2" log="${3:-}"
+	local state="" deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		state="$($DST show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+		[ "$state" = "$want" ] && return 0
+		sleep 0.05
+	done
+	printf 'wait_bridge_state(%s): want=%q last=%q\n--- daemon log ---\n' "$tag" "$want" "$state" >&3
+	[ -n "$log" ] && tail -60 "$log" >&3 2>/dev/null || true
+	return 1
+}
+
+# wake_parked_mirror presses a key into the mirror pane until the mirror
+# reconnects (empty @bridge_state) or the budget runs out, retrying the press
+# rather than asserting the first one always lands: a wake cycle runs on the
+# test's shrunk wake budget, and one whose early dials fail under load can
+# re-park before the mirror is back, which a real user answers the same way —
+# by pressing again.
+wake_parked_mirror() {
+	local tag="$1" log="$2" state=""
+	local deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		$DST send-keys -t host-sess:1 x
+		sleep 0.3
+		state="$($DST show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+		[ -z "$state" ] && return 0
+	done
+	printf 'wake_parked_mirror(%s): last @bridge_state=%q\n--- daemon log ---\n' "$tag" "$state" >&3
+	[ -n "$log" ] && tail -60 "$log" >&3 2>/dev/null || true
+	return 1
+}
+
 @test "a control-connection drop leaves the mirror standing and reattaches to the same remote server" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
@@ -2776,6 +2844,219 @@ transport_child() {
 	wait "$daemon_pid" 2>/dev/null || true
 
 	[ "$crew" = pine ]
+}
+
+# #729: unlike the #482 cases above, an outage here never clears — SRC's
+# socket stays moved aside until outage_end, so the reattach loop exhausts its
+# retry budget (OG_DAEMON_RETRY_MAX_ELAPSED=2s) rather than warm-reconnecting.
+@test "an outage that exhausts the retry budget parks the mirror and dims every window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
+	bridge_up 1 opk
+
+	outage_start
+	wait_bridge_state parked opk "$BATS_TEST_TMPDIR/opk.log"
+
+	run $DST has-session -t =host-sess
+	[ "$status" -eq 0 ]
+	win_count="$($DST list-windows -t host-sess | wc -l)"
+	pane_count="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+
+	dimmed=yes
+	while IFS= read -r win_id; do
+		style="$($DST show-options -w -v -t "$win_id" window-style 2>/dev/null || true)"
+		[ "$style" = "$PARK_DIM_STYLE" ] || dimmed=no
+	done < <($DST list-windows -t host-sess -F '#{window_id}')
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$win_count" -eq 1 ]
+	[ "$pane_count" -eq 1 ]
+	[ "$dimmed" = yes ]
+}
+
+@test "a keypress on a parked mirror wakes it and reconnects, undimming the windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
+	bridge_up 1 wpk
+
+	outage_start
+	wait_bridge_state parked wpk "$BATS_TEST_TMPDIR/wpk.log"
+
+	# Same reseed proof the #482 drop tests use: content produced on SRC while
+	# unreachable lands on the pane's own screen regardless of any connection,
+	# so this is only picked up once the wake's reattach repair actually runs.
+	tmux -S "$src_sock.away" send-keys -t rem 'echo PARK_WAKE_7Q' Enter
+	outage_end
+
+	wake_parked_mirror wpk "$BATS_TEST_TMPDIR/wpk.log"
+
+	undimmed=yes
+	while IFS= read -r win_id; do
+		style="$($DST show-options -w -t "$win_id" -qv window-style 2>/dev/null || true)"
+		[ -z "$style" ] || undimmed=no
+	done < <($DST list-windows -t host-sess -F '#{window_id}')
+
+	painted=no
+	for _ in $(seq 1 60); do
+		mirror_contains 1 PARK_WAKE_7Q && {
+			painted=yes
+			break
+		}
+		sleep 0.15
+	done
+
+	new_transport="$(transport_child)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$undimmed" = yes ]
+	[ "$painted" = yes ]
+	[ -n "$new_transport" ]
+}
+
+@test "a keypress on a parked mirror during a still-down outage cycles back to parked" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
+	bridge_up 1 spd
+
+	outage_start
+	wait_bridge_state parked spd "$BATS_TEST_TMPDIR/spd.log"
+
+	# A dial into a moved-aside socket fails instantly, so with a 2s budget
+	# the whole wake-and-reexhaust round trip can complete faster than any
+	# poll built on a forked tmux CLI can sample it (measured: @bridge_state
+	# is back to "parked" before a show-options poll's first iteration ever
+	# runs). The daemon's own log is written synchronously as each event
+	# happens and keeps the whole history, so grep it for the "woke, then
+	# re-parked" evidence instead of racing a transient option value.
+	$DST send-keys -t host-sess:1 x
+
+	# The ctl accept loop and the mirror pane's renderer both run off the
+	# empty connHolder slot, independent of the wake cycle blocking Run's own
+	# goroutine — neither should be affected by it, whatever point in the
+	# cycle this lands at.
+	run "$CTL" --sock "$sock" ping _
+	[ "$status" -eq 0 ]
+	pane_dead="$($DST display-message -p -t host-sess:1 -F '#{pane_dead}')"
+
+	# grep -c already prints "0" and exits 1 on no match. An `|| echo 0`
+	# inside the substitution would append a SECOND "0" line to that, breaking
+	# -ge below — so the fallback goes on the assignment itself instead, which
+	# never runs since grep already printed a value either way.
+	# A press landing before park() finishes arming its waker is a no-op by
+	# design (parkWaker.poke while disarmed) — keep pressing until one
+	# actually lands, same as wake_parked_mirror above; stop pressing once it
+	# has, so this doesn't also inject the SECOND wake the next block checks
+	# for on its own press.
+	rewoke=no
+	for _ in $(seq 1 "$((PARK_WAIT_BUDGET_SECS * 10))"); do
+		woke="$(grep -c 'waking on input' "$BATS_TEST_TMPDIR/spd.log" 2>/dev/null)" || true
+		reparked="$(grep -c 'unreachable; parked' "$BATS_TEST_TMPDIR/spd.log" 2>/dev/null)" || true
+		[ "${woke:-0}" -ge 1 ] && [ "${reparked:-0}" -ge 2 ] && {
+			rewoke=yes
+			break
+		}
+		[ "${woke:-0}" -ge 1 ] || $DST send-keys -t host-sess:1 x
+		sleep 0.1
+	done
+	wait_bridge_state parked spd "$BATS_TEST_TMPDIR/spd.log"
+
+	# A second keypress must wake it again — proof park re-arms the waker on
+	# every entry rather than leaving it disarmed after the first wake. Same
+	# drop risk, so the same retry.
+	rewoke2=no
+	for _ in $(seq 1 "$((PARK_WAIT_BUDGET_SECS * 10))"); do
+		woke="$(grep -c 'waking on input' "$BATS_TEST_TMPDIR/spd.log" 2>/dev/null)" || true
+		[ "${woke:-0}" -ge 2 ] && {
+			rewoke2=yes
+			break
+		}
+		$DST send-keys -t host-sess:1 x
+		sleep 0.1
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$rewoke" = yes ]
+	[ "$pane_dead" = 0 ]
+	[ "$rewoke2" = yes ]
+}
+
+@test "a SIGTERM while parked exits cleanly and tears down the mirror" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
+	bridge_up 1 spk
+
+	outage_start
+	wait_bridge_state parked spk "$BATS_TEST_TMPDIR/spk.log"
+
+	kill -TERM "$daemon_pid"
+	exited=no
+	for _ in $(seq 1 20); do
+		if ! kill -0 "$daemon_pid" 2>/dev/null; then
+			exited=yes
+			break
+		fi
+		sleep 0.1
+	done
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$exited" = yes ]
+	[ ! -e "$sock" ]
+	[ ! -e "$sock.pid" ]
+	run $DST has-session -t =host-sess
+	[ "$status" -ne 0 ]
+}
+
+@test "a keypress that wakes a parked mirror into a different tmux server tears the mirror down" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
+	bridge_up 1 mpk
+
+	outage_start
+	wait_bridge_state parked mpk "$BATS_TEST_TMPDIR/mpk.log"
+
+	outage_end
+	# Recreate rem on a FRESH server before the wake dials it — same
+	# identity-mismatch setup as "a control-connection drop into a different
+	# tmux server tears the mirror down" above, just reached via a wake.
+	$SRC kill-server 2>/dev/null || true
+	$SRC new-session -d -s rem -x 100 -y 30
+
+	# A single press is not enough to rely on here either (see
+	# wake_parked_mirror above: the waker arms a beat after @bridge_state
+	# turns "parked", and a wake cycle's own first dial can fail and re-park
+	# before this fresh, same-named server is ever reached) — keep pressing
+	# until the mismatch lands in the log, or the daemon has already torn
+	# down and pressing is moot.
+	mismatch=no
+	for _ in $(seq 1 "$((PARK_WAIT_BUDGET_SECS * 10))"); do
+		grep -q "different tmux server" "$BATS_TEST_TMPDIR/mpk.log" 2>/dev/null && {
+			mismatch=yes
+			break
+		}
+		if kill -0 "$daemon_pid" 2>/dev/null; then
+			$DST send-keys -t host-sess:1 x 2>/dev/null || true
+		fi
+		sleep 0.1
+	done
+
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$mismatch" = yes ]
+	[ ! -e "$sock" ]
+	[ ! -e "$sock.pid" ]
+	run $DST has-session -t =host-sess
+	[ "$status" -ne 0 ]
 }
 
 # The zoom test above asserts the flag and the pane dims agree; this one
