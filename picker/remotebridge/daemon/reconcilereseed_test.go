@@ -79,9 +79,9 @@ func TestStructuralReconcileReseedsTheSurvivor(t *testing.T) {
 	}
 }
 
-// TestStructuralReconcileReplaysRetainedKittyStoreAfterSeed pins #465 on the
-// layout-reshape re-seed path.
-func TestStructuralReconcileReplaysRetainedKittyStoreAfterSeed(t *testing.T) {
+// TestStructuralReconcileReplaysRetainedKittyStoreBeforeSeed pins #465/#731
+// on the layout-reshape re-seed path.
+func TestStructuralReconcileReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	local, peer := net.Pipe()
 	defer local.Close()
 	defer peer.Close()
@@ -139,11 +139,11 @@ func TestStructuralReconcileReplaysRetainedKittyStoreAfterSeed(t *testing.T) {
 	if resize.Type != wire.FrameResize {
 		t.Fatalf("first frame = %v, want FrameResize", resize.Type)
 	}
-	seed, replay := seedThenReplayFrames(t, peer)
+	replay, seed := replayThenSeedFrames(t, peer)
+	if replay.Type != wire.FrameOutput || !strings.Contains(string(replay.Payload), kittyLocalisedMarker) {
+		t.Fatalf("replay = %v %q, want localised store before seed", replay.Type, replay.Payload)
+	}
 	if seed.Type != wire.FrameSeed || !strings.Contains(string(seed.Payload), "SURVIVOR-REPAINT") {
 		t.Fatalf("seed = %v %q", seed.Type, seed.Payload)
-	}
-	if replay.Type != wire.FrameOutput || !strings.Contains(string(replay.Payload), kittyLocalisedMarker) {
-		t.Fatalf("replay = %v %q, want localised store after seed", replay.Type, replay.Payload)
 	}
 }

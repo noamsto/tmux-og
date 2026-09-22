@@ -168,6 +168,31 @@ option.
   position-independent, while a sixel is painted at the cursor the sender
   left, so replaying one after a reseed would paint it in the wrong place.
   The image returns on the viewer's next repaint.
+- **A local attach, switch-client or window switch re-seeds the revealed
+  panes that hold kitty stores (#731).** Measured on a scratch server: a
+  passthrough store written to a pane of session `mirror` while the only
+  client viewed a different session never reached that client after
+  `switch-client` onto `mirror`; one written after did — tmux drops the store
+  for a pane no client displays, while the placeholder's `U+10EEEE` cells are
+  grid text and redraw anyway, so attach leaves blank boxes. aeye's own
+  recovery (re-store on the hidden→visible edge / focus-in) runs on the
+  *remote*, where the daemon's control client never changes and local window
+  selection isn't mirrored, so it never fires. `watchReveal`
+  (`daemon/reveal.go`) covers it locally: polls this session's `list-clients`
+  (view keyed by client name + `client_created`, so a same-tty re-attach still
+  counts), driven by the resize nudge, now also fired by
+  `session-window-changed` on `resizeHookEvents`. It queues revealed mirror
+  windows; the main loop's `reseedRevealed` re-seeds only panes whose sink
+  still `Retained()` a store, woken by an output-less `has-session`. The pump
+  now writes the replay *before* the seed — a `U=1` placeholder resolves its
+  image only when the cell is painted, so seed-then-replay left a revealed
+  pane blank (a non-virtual `a=T` put was already misplaced by the old
+  replay-after-seed order too, just invisibly). `retainMaxIDs` rose 8 → 32: a
+  wide carousel uses one id for the preview plus one per filmstrip thumbnail,
+  and the old LRU evicted the preview first. Residual: a B→A→B flip inside
+  one poll interval (or two nudges in one coarse-mtime bucket) produces no
+  edge; relay-only mode (`--test-local`) retains nothing, so reveal is a
+  no-op; a replayed store whose cache file was pruned stays blank.
 - **Sixel over the bridge is megabytes per repaint**, not the short path
   kitty's `t=f` sends — a real cost, not parity with kitty. A sink frame
   dropped under that burst truncates the sequence, which the

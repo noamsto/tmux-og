@@ -97,9 +97,10 @@ func TestReseedDroppedRepaintsFromCapture(t *testing.T) {
 	}
 }
 
-// TestReseedDroppedReplaysRetainedKittyStoreAfterSeed pins #465 on the
-// drop-recovery path: seed first, then the last localised store for each id.
-func TestReseedDroppedReplaysRetainedKittyStoreAfterSeed(t *testing.T) {
+// TestReseedDroppedReplaysRetainedKittyStoreBeforeSeed pins #465/#731 on the
+// drop-recovery path: the last localised store for each id lands first, then
+// the seed that repaints the placeholders referencing it.
+func TestReseedDroppedReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	local, peer := net.Pipe()
 	defer local.Close()
 	defer peer.Close()
@@ -133,11 +134,11 @@ func TestReseedDroppedReplaysRetainedKittyStoreAfterSeed(t *testing.T) {
 
 	go reseedDropped(router, rt)
 
-	seed, replay := seedThenReplayFrames(t, peer)
+	replay, seed := replayThenSeedFrames(t, peer)
+	if replay.Type != wire.FrameOutput || !strings.Contains(string(replay.Payload), kittyLocalisedMarker) {
+		t.Fatalf("replay = %v %q, want localised store before seed", replay.Type, replay.Payload)
+	}
 	if seed.Type != wire.FrameSeed || !strings.Contains(string(seed.Payload), "FRESH-CAPTURE") {
 		t.Fatalf("seed = %v %q", seed.Type, seed.Payload)
-	}
-	if replay.Type != wire.FrameOutput || !strings.Contains(string(replay.Payload), kittyLocalisedMarker) {
-		t.Fatalf("replay = %v %q, want localised store after seed", replay.Type, replay.Payload)
 	}
 }

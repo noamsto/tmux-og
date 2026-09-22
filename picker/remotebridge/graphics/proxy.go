@@ -17,14 +17,19 @@ import (
 const fetchTimeout = 2 * time.Second
 
 // retainMaxIDs caps how many distinct kitty image ids one pane's proxy keeps
-// for post-reseed replay. Each id holds only its newest localised store.
-const retainMaxIDs = 8
+// for post-reseed replay. Each id holds only its newest localised store. Set
+// high enough for the aeye carousel: one preview id plus one id per visible
+// filmstrip thumbnail — an LRU cap any tighter would evict the preview first.
+const retainMaxIDs = 32
 
 // Proxy filters one pane's output stream. It is owned by that pane's output
 // sink and called only from the sink's pump goroutine — Filter on every
-// output batch, Replay immediately after each FrameSeed, Close on teardown —
-// so retain needs no locking. That confinement outlives Close: the pump may
-// still be flushing (Filter then Close) when Close returns, so a caller that
+// output batch, Replay written immediately before each FrameSeed, Close on
+// teardown — so retain needs no locking. Replay precedes the seed because a
+// placeholder (U=1 virtual) store only resolves its image once the cell
+// carrying it is painted, so the store must already be in the terminal's
+// cache before the seed repaints those cells. That confinement outlives
+// Close: the pump may
 // needs to inspect retain state from outside the pump — a test, typically —
 // must wait for the pump to actually exit (outputSink.Wait) rather than
 // racing that flush. Filter may block there, bounded by timeout: holding one
@@ -278,7 +283,10 @@ func (p *Proxy) fetchBatch(ctx context.Context, chunks []Chunk) map[string]fetch
 }
 
 // Replay returns the retained localised stores in oldest-to-newest id order,
-// ready to append after a FrameSeed without another fetch or round-trip.
+// ready to write immediately before a FrameSeed without another fetch or
+// round-trip. It must precede the seed: a placeholder (U=1 virtual) store
+// only resolves its image once the cell carrying it is painted, so the store
+// needs to already be in the terminal's cache when the seed repaints.
 func (p *Proxy) Replay() []byte {
 	var out []byte
 	for _, id := range p.order {
@@ -287,6 +295,12 @@ func (p *Proxy) Replay() []byte {
 		}
 	}
 	return out
+}
+
+// Retained reports whether any store is currently retained for replay.
+// Pump-confined like Replay.
+func (p *Proxy) Retained() bool {
+	return len(p.order) > 0
 }
 
 func (p *Proxy) retainStore(id string, wrapped []byte) {

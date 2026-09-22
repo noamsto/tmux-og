@@ -205,6 +205,26 @@ func TestProxyBulkDeleteClearsReplayState(t *testing.T) {
 	}
 }
 
+func TestProxyRetainedTracksStores(t *testing.T) {
+	p := New(&fakeLocalizer{local: "/local/a.bin"}, nil)
+	if p.Retained() {
+		t.Fatal("Retained() true before any store")
+	}
+	p.Filter([]byte("\x1b_Gi=5,a=T,t=f;L3RtcC94LnBuZw==\x1b\\"))
+	if !p.Retained() {
+		t.Fatal("Retained() false after a store was retained")
+	}
+	p.Filter([]byte("\x1b_Ga=d,d=I,i=5\x1b\\"))
+	if p.Retained() {
+		t.Fatal("Retained() true after the only store was deleted")
+	}
+	p.Filter([]byte("\x1b_Gi=5,a=T,t=f;L3RtcC94LnBuZw==\x1b\\"))
+	p.Filter([]byte("\x1b_Ga=d,d=A\x1b\\"))
+	if p.Retained() {
+		t.Fatal("Retained() true after a bulk delete")
+	}
+}
+
 func TestProxySameIDKeepsNewestForReplay(t *testing.T) {
 	loc := &seqLocalizer{locals: []string{"/local/old.bin", "/local/new.bin"}}
 	p := New(loc, nil)

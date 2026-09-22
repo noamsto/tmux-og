@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -359,11 +360,15 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 // between launcher switches — #433's own reproduction resizes it that way),
 // client-session-changed for a client switching onto or off this session
 // (measured redundant with client-attached on a fresh attach too, so that one
-// is left out), and client-detached for the last client leaving. Every one of
-// these now also runs watchLocalClient's area() fork and a re-resolve of the
-// viewing identity (R10) — cv.need and the Relay comparison dedupe the actual
-// sends, so a session switch or detach is cheap but no longer free.
-var resizeHookEvents = [...]string{"client-resized", "window-resized", "client-session-changed", "client-detached"}
+// is left out), client-detached for the last client leaving, and
+// session-window-changed for a window switch inside the mirror session
+// itself (next/prev/select-window) — the event the reveal watcher (watchReveal)
+// needs to notice a local client has started displaying a different mirror
+// window. Every one of these now also runs watchLocalClient's area() fork and
+// a re-resolve of the viewing identity (R10) — cv.need and the Relay
+// comparison dedupe the actual sends, so a session switch or detach is cheap
+// but no longer free.
+var resizeHookEvents = [...]string{"client-resized", "window-resized", "client-session-changed", "client-detached", "session-window-changed"}
 
 // localActiveWindow reports the mirror session's current window — the one the
 // local client is looking at — or "" when it can't be learned (detached
@@ -794,6 +799,11 @@ func Run(cfg Config) error {
 	// Declared here so teardown can close it; teardown runs exactly once per
 	// Run return path, so a plain close is safe.
 	stopWatch := make(chan struct{})
+	// reveals collects the local mirror windows a local attach, switch-client
+	// or window switch just started displaying, for reseedRevealed to re-seed
+	// on the main loop. Declared here, beside stopWatch, for the same reason:
+	// the watcher goroutine that fills it starts below, before the main loop.
+	reveals := &revealQueue{}
 	// sessionGone counts consecutive definite negatives from the local-session
 	// probe the coarse tick runs. Session-lifetime, like the registry: a
 	// reconnect does not bring a gone session back, so the count survives one.
@@ -944,6 +954,28 @@ func Run(cfg Config) error {
 		defer ticker.Stop()
 		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, cfg.RemoteSession, reg, cv, sendCtl, stopWatch, ticker.C)
 	}()
+
+	// The reveal watcher polls this session's own clients for a window a
+	// local attach, switch-client or window switch just started displaying,
+	// so reseedRevealed (main loop) can re-seed a mirror pane whose retained
+	// kitty store never survives tmux's own reveal repaint (#731) — see
+	// reveal.go. Skipped when there is no local session to poll, same as
+	// registerResizeHook above.
+	if cfg.LocalSess != "" {
+		isMirror := func(localWin string) bool {
+			for _, mw := range reg.all() {
+				if mw.localWin == localWin {
+					return true
+				}
+			}
+			return false
+		}
+		revealTicker := time.NewTicker(resizePollInterval)
+		go func() {
+			defer revealTicker.Stop()
+			watchReveal(nudged, func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, stopWatch, revealTicker.C)
+		}()
+	}
 
 	// Ship the remote's agent state into the local claude-status tree, its
 	// window labels onto the mirror windows as @bridge_* options, and the remote
@@ -1102,6 +1134,7 @@ func Run(cfg Config) error {
 			sweeper.sweep(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
 			reseedDropped(router, rt)
 			reseedReshaped(router, rt)
+			reseedRevealed(reg, router, rt, reveals)
 			// Enable pause-after only now that every window is set up. Setup does
 			// drain the stream (its round-trips route, and so does the hello wait),
 			// but only dispatch runs handlePause — so a %pause arriving mid-setup is
@@ -2085,6 +2118,10 @@ type outputSink struct {
 	// reshaped tracks the confirmation re-seed a pane is owed after its
 	// geometry moved; see markReshaped.
 	reshaped reshapeState
+	// hasImages mirrors gfx.Retained(), written only by the pump after every
+	// gfx.Filter call; the main loop's reveal pass reads it to decide whether
+	// a revealed pane is worth re-seeding.
+	hasImages atomic.Bool
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2171,10 +2208,18 @@ func (s *outputSink) start(conn net.Conn) {
 				buf = kn.Feed(buf)
 				if gfx != nil {
 					buf = gfx.Filter(buf)
+					s.hasImages.Store(gfx.Retained())
 				}
 				f.payload = buf
 				if len(f.payload) == 0 {
 					continue
+				}
+			}
+			if f.typ == wire.FrameSeed && gfx != nil {
+				if replay := gfx.Replay(); len(replay) > 0 {
+					if err := wire.WriteStream(conn, wire.FrameOutput, replay); err != nil {
+						return
+					}
 				}
 			}
 			write := wire.WriteFrame
@@ -2183,13 +2228,6 @@ func (s *outputSink) start(conn net.Conn) {
 			}
 			if err := write(conn, f.typ, f.payload); err != nil {
 				return
-			}
-			if f.typ == wire.FrameSeed && gfx != nil {
-				if replay := gfx.Replay(); len(replay) > 0 {
-					if err := wire.WriteStream(conn, wire.FrameOutput, replay); err != nil {
-						return
-					}
-				}
 			}
 		}
 	}()
@@ -2260,8 +2298,8 @@ func (s *outputSink) enqueue(typ wire.FrameType, payload []byte) {
 	}
 }
 
-// enqueueSeedWithReplay enqueues a FrameSeed; the sink pump appends any
-// retained kitty stores immediately after writing the seed (same goroutine as
+// enqueueSeedWithReplay enqueues a FrameSeed; the sink pump writes any
+// retained kitty stores immediately before the seed (same goroutine as
 // gfx.Filter, so Replay stays race-free).
 func enqueueSeedWithReplay(s *outputSink, seed []byte) {
 	if s == nil {
