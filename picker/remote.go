@@ -803,12 +803,9 @@ func openRemoteBridge(tmuxOpts map[string]string, host, sess string, restore boo
 }
 
 // launchRemoteBridgeDetached fires the same launcher openRemoteBridge runs,
-// without waiting for it: used for every marked session but the one Enter
-// switches to, so their ssh probes happen off the popup's critical path
-// instead of serializing before it can quit (#730). Setsid so tmux tearing
-// down this popup's pane doesn't take the launcher (and the daemon it
-// itself backgrounds) with it — the same reason og-remote-open.sh setsids
-// the daemon it starts.
+// without waiting for it. Setsid so tmux tearing down this popup's pane
+// doesn't take the launcher (and the daemon it backgrounds) with it — the
+// same reason og-remote-open.sh setsids the daemon it starts.
 func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, restore bool) {
 	args := []string{host}
 	if sess != "" {

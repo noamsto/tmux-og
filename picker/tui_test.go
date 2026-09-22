@@ -1603,8 +1603,7 @@ func TestCtrlTNoOpOnInertRows(t *testing.T) {
 
 // A mark is keyed by item.target, so it must survive both a query that hides
 // the marked row from m.visible, and the cached→live row replacement a
-// remoteMsg performs once the probe answers (#631) — the two things #730
-// calls out by name.
+// remoteMsg performs once the probe answers (#631).
 func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
 	useRemoteCache(t)
 	seedRemoteCache(t, "lab", time.Now(), "mono")
@@ -1665,8 +1664,7 @@ func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
 
 // openMarkedRemoteWith launches every marked session but the first (list
 // order) through launch — fired, not waited on — and only the first through
-// open, the one path that also decides which session the client switches
-// to. This is the "N marks, one foreground dial" contract #730 asks for.
+// open, the one path that also decides which session the client switches to.
 //
 // Marked in reverse of list order ("other" before "mono") deliberately: if
 // markedRemoteItems returned marks in toggle order instead of m.allItems
