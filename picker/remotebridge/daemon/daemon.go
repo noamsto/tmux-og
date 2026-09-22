@@ -54,6 +54,10 @@ type Config struct {
 	// reconcile call chain. nil is legal — every test that builds a bare
 	// Config{} directly, and any call path that predates this field.
 	RendererDied func()
+	// InputSeen is parkWaker.poke, stamped onto cfg once per Run like
+	// RendererDied: pumpInput calls it on every FrameInput so a keypress can
+	// wake a parked mirror. nil is legal, as for RendererDied.
+	InputSeen func()
 	// SendCtl is Run's sendCtl, the bool-reporting form of send, stamped onto
 	// cfg once per Run so paster() can hand it to pasteHandler without
 	// threading a parameter through the whole reconcile call chain. Unset in
@@ -78,6 +82,9 @@ type Config struct {
 	// so "unset" stays distinguishable from a deliberately tiny schedule — the
 	// Go tests shrink it rather than paying the real backoff.
 	Retry *Backoff
+	// WakeRetry bounds the schedule a wake from parked runs on; nil takes
+	// WakeBackoff. Same pointer-for-"unset" reasoning as Retry.
+	WakeRetry *Backoff
 	// IdentityTimeout bounds one attach's identity read; 0 takes
 	// defaultIdentityTimeout. See armIdentityDeadline.
 	IdentityTimeout time.Duration
@@ -105,7 +112,7 @@ type Config struct {
 // as the display-message round-trip — seconds, legitimately, on a slow link or
 // a cold ControlMaster. Far above that, and far below the reconnect budget
 // (DefaultBackoff's 10 minutes), so a wedged remote burns retry attempts and
-// then tears down like any other unreachable one.
+// then parks like any other unreachable one.
 const defaultIdentityTimeout = 30 * time.Second
 
 // identityTimeout is the identity-read deadline this Config asks for.
@@ -122,6 +129,14 @@ func (c Config) retrySchedule() Backoff {
 		return *c.Retry
 	}
 	return DefaultBackoff(time.Now)
+}
+
+// wakeSchedule is the schedule a wake from parked runs on this Config.
+func (c Config) wakeSchedule() Backoff {
+	if c.WakeRetry != nil {
+		return *c.WakeRetry
+	}
+	return WakeBackoff(time.Now)
 }
 
 func (c Config) graphicsFor(paneID string) *graphics.Proxy {
@@ -584,8 +599,9 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 
 // Run mirrors every window of the bridged remote session, each into its own
 // local window, over a -CC connection, until %exit, an emptied mirror, the
-// local mirror session going away, or a drop the reconnect budget cannot
-// outlast.
+// local mirror session going away, a stop, or a reconnect onto a different
+// tmux server. A drop the reconnect budget cannot outlast parks the mirror
+// instead of ending it; see reattach.
 //
 // Two lifetimes live here and they only look like one (#482). The session
 // lifetime — listener, pidfile, registry, renderer panes and their sinks, the
@@ -735,6 +751,10 @@ func Run(cfg Config) error {
 	// receives a copy of it carries the field once it is set here.
 	death := newDeathNudge()
 	cfg.RendererDied = death.wake
+	// Stamped here for the same reason as RendererDied: every pumpInput is
+	// started from a copy of cfg taken after this point.
+	waker := newParkWaker()
+	cfg.InputSeen = waker.poke
 	// The listener outlives a drop, so a keybind pressed mid-outage reaches
 	// here and gets nacked by the closed stream rather than hanging. The nack
 	// must carry a non-empty error or the keybind claims a gesture landed that
@@ -1281,6 +1301,53 @@ func Run(cfg Config) error {
 	// handle it can see.
 	loopTick = time.NewTicker(mainLoopTickInterval)
 
+	// park holds an unreachable mirror open until the user comes back to it,
+	// reporting true to buy one more reattach cycle and false to tear down. It
+	// blocks this goroutine — nothing else may round-trip while parked anyway,
+	// and every other goroutine (renderers, ctl, the resize watcher) keeps
+	// running off the empty connHolder slot.
+	dimmed := false
+	park := func() bool {
+		// Armed before the badge goes up: a key pressed the instant it says
+		// "press a key" must not land in a disarmed waker and vanish.
+		waker.arm()
+		defer waker.disarm()
+		setBridgeState(cfg, bridgeStateParked)
+		dimMirror(cfg, reg)
+		dimmed = true
+		// waiting/error/denied never fade on their own, so an unbounded park
+		// would otherwise report a remote agent needing input indefinitely.
+		// The repair's re-subscribe re-stamps every row, since clear forgets
+		// what was written.
+		agents.clear()
+		fmt.Fprintf(os.Stderr, "daemon: %s unreachable; parked until the mirror is focused or typed into\n", cfg.RemoteHost)
+		focus := focusEdge{nudged: nudged, viewing: func() bool { return localViewing(cfg) }}
+		focus.reset()
+		ft := time.NewTicker(parkFocusInterval)
+		defer ft.Stop()
+		for {
+			select {
+			case <-waker.C():
+				fmt.Fprintf(os.Stderr, "daemon: %s: waking on input\n", cfg.RemoteHost)
+				return true
+			case <-cfg.Shutdown:
+				return false
+			case <-ft.C:
+				if focus.poll() {
+					fmt.Fprintf(os.Stderr, "daemon: %s: waking on focus\n", cfg.RemoteHost)
+					return true
+				}
+			case <-loopTick.C:
+				// runConn's tick is not running while parked, and a park is
+				// unbounded, so the #680 probe has to run here too.
+				if sessionGone.observe(localSessionGone(cfg)) {
+					localSessionVanished = true
+					return false
+				}
+			}
+		}
+	}
+
 attach:
 	for {
 		switch runConn(c) {
@@ -1308,8 +1375,16 @@ attach:
 			if !reconnect {
 				break attach
 			}
-			if c = reattach(cfg, router, hold, pin.identity, repair); c == nil {
+			if c = reattach(cfg, router, hold, pin.identity, repair, park); c == nil {
 				break attach
+			}
+			// The dial that just succeeded read View.Desired, so a raise that
+			// landed while parked or reconnecting would only cost a second dial
+			// and repair for nothing.
+			replacer.cancel()
+			if dimmed {
+				undimMirror(cfg, reg)
+				dimmed = false
 			}
 		default:
 			// connEnd: the remote ended this control client, the local mirror
@@ -1426,7 +1501,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 
 	for i, remotePane := range paneIDs {
 		if wired[i] {
-			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied)
+			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
 			continue
 		}
 		// A sole pane's failure is fatal: this error is what makes addWindow /
@@ -1438,7 +1513,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
-		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied)
+		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
 	}
 
 	// A window that already holds a float when the bridge opens mirrors it now
@@ -1994,7 +2069,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
 	seedRenderer(rt, router, hc.conn, hc.paneID, rendererDims(mw, hc.paneID), cfg.graphicsFor(hc.paneID))
-	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied)
+	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
 }
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
@@ -2368,7 +2443,11 @@ func (s *outputSink) Close() {
 // (sweeper.sweep, once the debounced timer forces it) re-derives which
 // window is actually dead, so a spurious wake costs one no-op forced sweep
 // pass, never a wrong repair.
-func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func()) {
+//
+// seen fires for every input frame, before it is forwarded: it is what wakes a
+// parked mirror (Config.InputSeen). The keystroke itself is not held for the
+// reconnect — send fails closed with no connection, as it does for any outage.
+func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func()) {
 	for {
 		f, err := wire.ReadFrame(conn)
 		if err != nil {
@@ -2379,6 +2458,9 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		}
 		if f.Type != wire.FrameInput {
 			continue
+		}
+		if seen != nil {
+			seen()
 		}
 		payload := f.Payload
 		if paste != nil {

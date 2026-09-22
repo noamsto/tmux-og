@@ -55,22 +55,31 @@ path, which every caller already handles.
 - **Two callers replace the control client, and only one of them is a
   reconnect.** `reattach` is involuntary: it runs off a connection drop,
   closes the dead one *before* it dials, sets `@bridge_state disconnected`
-  for the outage, and tears the whole mirror down (`kill-session`) if it
-  cannot re-dial. `replaceConn` (#574) is voluntary: it runs off the
+  for the outage, and — since #729 — parks rather than tearing the mirror
+  down when it cannot re-dial (below); only a stop, a mismatched or malformed
+  identity, or a `repair()` that empties the registry still runs
+  `kill-session`. `replaceConn` (#574) is voluntary: it runs off the
   `prefix + I` carousel gesture wanting a fresher termname, dials, verifies
   and primes the new client *before* touching the old one, never sets the
   disconnected badge (the mirror is never actually down), and — unlike
   `reattach` — abandons the attempt with the old connection still live and
   published rather than risk the mirror over a nicety.
 - **Only a bare EOF is a drop.** `%exit` is the remote deliberately ending the
-  client and is terminal, as is an emptied registry, a raised stop, and an
-  exhausted retry budget. Measured: `detach-client` and `kill-server` both make
-  the control client see `%exit`; only killing the transport process gives the
-  bare EOF. That is why the offline reconnect tests SIGKILL the transport child
-  rather than detaching it — a test built on `detach-client` asserts teardown
-  and fails a correct daemon.
-- **The local mirror session is a fifth ending** (#680). A session that is gone
-  is none of the four above — the registry's window ids are remote and all still
+  client and is terminal, as is an emptied registry and a raised stop.
+  Measured: `detach-client` and `kill-server` both make the control client see
+  `%exit`; only killing the transport process gives the bare EOF. That is why
+  the offline reconnect tests SIGKILL the transport child rather than
+  detaching it — a test built on `detach-client` asserts teardown and fails a
+  correct daemon. The park tests (#729, `outage_start`) additionally make the
+  outage itself by moving the SRC session's socket aside rather than killing
+  its server (a dial then fails with ENOENT); moving it back restores the *same* server pid, so the identity
+  check a re-dial runs still matches, and anything the test needs to write to
+  SRC during the outage goes through `tmux -S <moved-path>` rather than the
+  now-absent live path. An exhausted retry budget is no longer terminal on its
+  own (#729): it parks instead (below), and only reaches teardown if the park
+  wait itself answers false — `Shutdown` or the local mirror session gone.
+- **The local mirror session is another ending** (#680). A session that is gone
+  is none of the above — the registry's window ids are remote and all still
   there, and the control connection is healthy — so the orphan kept its control
   client, and with it the per-window size clamp it had asserted
   (`refresh-client -C`, released only when the client goes, #201), in force on
@@ -133,10 +142,58 @@ path, which every caller already handles.
   only stop the handle it can see. The shippers' own rows survive a reattach
   untouched; what does not is the subscription, which is why repair re-sends it.
 - **`@bridge_state`** is a session option the daemon alone writes:
-  `disconnected` while a re-dial is pending, unset otherwise. Stamped before the
+  `disconnected` while a retry cycle is running — the initial drop or a wake —
+  `parked` once that cycle's schedule is exhausted and the daemon is waiting on
+  the user instead of dialing (#729), unset otherwise. Stamped before the
   first dial so the badge appears within a status tick, cleared only after the
   reseed — a stale screen the user knows is stale is a paused mirror; one they
-  don't is a lie. `tmux-statusline` renders it in red beside `@bridge_host`.
+  don't is a lie. `tmux-statusline` still renders `disconnected` in red beside
+  `@bridge_host`; `parked` renders in the theme's overlay colour as "offline —
+  press a key" so it reads as a waiting state rather than an error in
+  progress, and a wake re-stamps `disconnected` for its own cycle before the
+  next park (or a live connection) overwrites it.
+- **Budget exhaustion parks the mirror instead of tearing it down** (#729).
+  `reattach` is a loop of `attemptCycle`s on a shared dial/verify/repair body;
+  on `cycleExhausted` it calls `park`, which stamps `@bridge_state parked`,
+  dims every mirror window, and withdraws the remote's shipped agent state
+  (`agents.clear()`, the same call `teardown` makes) so a `waiting`/`error`/
+  `denied` icon does not stand in the global indicator forever — `clear`
+  forgets what was written, so the repair's re-subscribe on un-park re-stamps
+  every row for free. `@bridge_crew_*` and `@bridge_proc` are untouched by
+  this: they are window/pane options `windowlabels.go`/`agentstatus.go`'s
+  stamp path writes, not the agent-status files `clear` removes, so a parked
+  mirror keeps showing its last-known role/proc labels frozen until the next
+  reseed overwrites them. The dim is a per-window `window-style` and
+  `window-active-style` (replacing the inherited global value, since a
+  per-window value merges with nothing) painted in the theme's overlay-on-
+  mantle colours, restored with `set-option -w -u` on both once `reattach`
+  returns live again — unsetting an option a window never had (one the repair
+  created or retired while parked) is harmless, so nothing needs filtering.
+  `park` then blocks the main goroutine — no goroutine spawned — in one
+  `select` on: a keypress (`pumpInput` calls `cfg.InputSeen`, a
+  `parkWaker.poke` armed only while parked so the live hot path pays one
+  atomic load per frame; the keystroke itself is dropped, not queued, since
+  `hold.close()` already ran at reattach entry and `hold.send` fails closed on
+  the empty slot same as any other outage), a focus edge (a 1s ticker rereads
+  the resize-nudge file's mtime the existing session hooks already touch, and
+  only the false→true transition on "is any local client's `client_session`
+  this mirror" wakes it — a user already looking at it when it parks is not
+  re-woken by reflow's own touches of that file), `cfg.Shutdown`, and the
+  session-lifetime `loopTick`'s `sessionGoneTracker` observation (#680) —
+  parked is unbounded and `runConn`'s own tick is not running, so the
+  local-session-gone probe has to run here too. A wake restamps
+  `disconnected` and retries on a short `WakeBackoff` (500ms/5s ceiling/30s
+  budget/10 attempts) rather than the full retry schedule; exhausting that
+  re-parks, uncapped, since each cycle is user-triggered. Only `Shutdown` or
+  the session going away make `park` answer false and fall through to the
+  same teardown exhaustion ran unconditionally before #729 — every other
+  ending (mismatched/malformed identity, a `repair()` that empties the
+  registry) is still reached from inside the next dial, never from parking
+  itself. `cmd/daemon` exposes `--retry-max-elapsed`/`--wake-max-elapsed`
+  (env `OG_DAEMON_RETRY_MAX_ELAPSED`/`OG_DAEMON_WAKE_MAX_ELAPSED`) purely so
+  the bats suite can exhaust either budget in seconds instead of the
+  production 10 minutes / 30s; those tests drive the outage itself by
+  SIGKILLing the transport and moving SRC's socket aside (above).
 - **The `ControlMaster` path is per-dial, not pid-derived-and-fixed** (#574),
   owned by the `child` that dialled it rather than captured in a closure: the
   graphics fetcher and the paste upload both read it through

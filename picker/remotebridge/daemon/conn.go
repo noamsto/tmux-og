@@ -73,8 +73,7 @@ func (c *ctlConn) close() {
 // they were started on, so they reach it through here rather than capturing it.
 //
 // An empty slot is a normal state, not a bug: it is what the holder is between
-// a drop and the next successful dial, and what it stays as once the retry
-// budget is exhausted.
+// a drop and the next successful dial, including the whole of a parked wait.
 type connHolder struct {
 	mu sync.Mutex
 	c  *ctlConn
@@ -93,8 +92,8 @@ func (h *connHolder) get() *ctlConn {
 }
 
 // close ends the current connection and empties the slot. Idempotent, because
-// both the drop path and teardown call it, and because after an exhausted retry
-// budget there is nothing left in the slot to close.
+// both the drop path and teardown call it, and because a teardown after a
+// failed reattach finds nothing left in the slot to close.
 func (h *connHolder) close() {
 	h.mu.Lock()
 	c := h.c
@@ -197,10 +196,16 @@ func armIdentityDeadline(c *ctlConn, d time.Duration) (disarm func() (live bool)
 // brings the mirror back to remote ground truth and reports whether it still
 // stands.
 //
+// An exhausted schedule is not an ending in itself: park, when non-nil, holds
+// the mirror until the user comes back to it and reports whether to try again,
+// which buys one short wakeSchedule cycle rather than the full retry budget. A
+// nil park, or one that answers false (a stop, the local session gone), tears
+// down.
+//
 // Package-level rather than a closure over Run's locals so the endings it has
 // to tell apart — a drop that retries, a different server that tears down, a
 // detach raised mid-dial — are reachable from a test without a live mirror.
-func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool) *ctlConn {
+func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool, park func() bool) *ctlConn {
 	// Every send fails closed from this instant, rather than from whenever a
 	// write happens to hit EPIPE.
 	hold.close()
@@ -212,21 +217,57 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 	// condition from the absent stamp rather than from reading a second option.
 	clearBridgeRes(cfg)
 	bo := cfg.retrySchedule()
+	for {
+		conn, result := attemptCycle(cfg, router, hold, want, repair, bo)
+		switch result {
+		case cycleConnected:
+			return conn
+		case cycleTerminal:
+			return nil
+		}
+		if park == nil || !park() {
+			return nil
+		}
+		// park stamped parked; the wake cycle is a re-dial pending like any
+		// other, so the badge goes back to the one that says so.
+		setBridgeState(cfg, bridgeStateDisconnected)
+		bo = cfg.wakeSchedule()
+	}
+}
+
+// cycleResult is how one attemptCycle ended.
+type cycleResult int
+
+const (
+	// cycleConnected — a dial matched identity and repair() kept the mirror.
+	cycleConnected cycleResult = iota
+	// cycleTerminal — the daemon tears down: a stop, a different or malformed
+	// identity, or a repair that emptied the registry.
+	cycleTerminal
+	// cycleExhausted — bo ran out with the remote still unreachable. The only
+	// result a further cycle can change.
+	cycleExhausted
+)
+
+// attemptCycle runs reattach's dial/verify/repair attempts on one schedule.
+// start is taken per cycle, so a wake cycle's MaxElapsed is measured from the
+// wake rather than from the original drop.
+func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool, bo Backoff) (*ctlConn, cycleResult) {
 	start := bo.Now()
 	for attempt := 1; ; attempt++ {
 		// SIGTERM works by dropping the transport, so only the stop signal
 		// tells a detach from a link failure (see Config.Shutdown). Consulted
 		// before any retry is scheduled.
 		if stopped(cfg.Shutdown) {
-			return nil
+			return nil, cycleTerminal
 		}
 		d, ok := bo.Next(attempt, start)
 		if !ok {
-			fmt.Fprintf(os.Stderr, "daemon: giving up on %s after %d reconnect attempt(s)\n", cfg.RemoteHost, attempt-1)
-			return nil
+			fmt.Fprintf(os.Stderr, "daemon: %s still unreachable after %d reconnect attempt(s)\n", cfg.RemoteHost, attempt-1)
+			return nil, cycleExhausted
 		}
 		if Wait(d, cfg.Shutdown) {
-			return nil
+			return nil, cycleTerminal
 		}
 		// Snapshotted per attempt, immediately before the dial whose argv reads
 		// it, so a retry that dials later records what IT dialled. Published
@@ -248,7 +289,7 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 		// transport child.
 		if stopped(cfg.Shutdown) {
 			next.close()
-			return nil
+			return nil, cycleTerminal
 		}
 		// The identity read comes before anything touches the mirror: this
 		// connection is still unbound (see newCtlConn), so a far end that is not
@@ -271,7 +312,7 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "daemon: %v; tearing the mirror down\n", err)
-			return nil
+			return nil, cycleTerminal
 		}
 		if !live {
 			// The reply parsed, but only after the deadline had already closed
@@ -283,19 +324,19 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 			fmt.Fprintf(os.Stderr, "daemon: %s now hosts %s on a different tmux server (was pid %d %s, now pid %d %s); tearing the mirror down\n",
 				cfg.RemoteHost, cfg.RemoteSession, want.pid, want.sessionID, id.pid, id.sessionID)
 			next.close()
-			return nil
+			return nil, cycleTerminal
 		}
 		next.bind(router)
 		hold.set(next)
 		cfg.View.setAdvertised(term)
 		if !repair() {
-			return nil
+			return nil, cycleTerminal
 		}
 		// Cleared once the panes show live content again, not on the bare
 		// re-attach: a stale screen the user knows is stale is a paused
 		// mirror, one they don't is a lie.
 		clearBridgeState(cfg)
-		return next
+		return next, cycleConnected
 	}
 }
 

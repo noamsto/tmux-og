@@ -25,8 +25,9 @@ type Backoff struct {
 // DefaultBackoff sizes the schedule to outlast an ordinary laptop lid-close,
 // wifi/LTE hop, or VPN reconnect — all comfortably past the 60s the existing
 // ssh keepalives (ServerAliveInterval x ServerAliveCountMax) take to even
-// notice the drop — while still giving up: unbounded retrying would leave a
-// dead daemon spinning long after the user has moved on. At this Ceiling
+// notice the drop — while still stopping: unbounded retrying would leave a
+// daemon dialing a dead host long after the user has moved on, so exhaustion
+// parks the mirror and waits for the user instead. At this Ceiling
 // MaxElapsed is the bound that governs; MaxAttempts only ever fires as the
 // backstop the type documents.
 func DefaultBackoff(now func() time.Time) Backoff {
@@ -35,6 +36,22 @@ func DefaultBackoff(now func() time.Time) Backoff {
 		Ceiling:     30 * time.Second,
 		MaxAttempts: 40,
 		MaxElapsed:  10 * time.Minute,
+		Now:         now,
+		Jitter:      rand.Float64,
+	}
+}
+
+// WakeBackoff sizes the one short cycle a wake from parked buys. A user who
+// pressed a key or focused the mirror is watching, so this schedule spends at
+// most 30s of dialing before re-parking rather than the full DefaultBackoff
+// budget — the outage that exhausted the retry schedule in the first place
+// hasn't necessarily cleared just because the user came back.
+func WakeBackoff(now func() time.Time) Backoff {
+	return Backoff{
+		Base:        500 * time.Millisecond,
+		Ceiling:     5 * time.Second,
+		MaxAttempts: 10,
+		MaxElapsed:  30 * time.Second,
 		Now:         now,
 		Jitter:      rand.Float64,
 	}

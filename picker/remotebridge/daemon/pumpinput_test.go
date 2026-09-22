@@ -22,7 +22,7 @@ func TestPumpInputCallsDiedOnceOnReadError(t *testing.T) {
 	var diedCount int32
 	done := make(chan struct{})
 	go func() {
-		pumpInput(conn, "%7", func(string) {}, nil, func() { atomic.AddInt32(&diedCount, 1) })
+		pumpInput(conn, "%7", func(string) {}, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil)
 		close(done)
 	}()
 
@@ -49,7 +49,7 @@ func TestPumpInputDoesNotCallDiedOnACleanFrameRead(t *testing.T) {
 
 	var diedCount int32
 	sendCh := make(chan string, 1)
-	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, func() { atomic.AddInt32(&diedCount, 1) })
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil)
 
 	peer.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
@@ -75,7 +75,7 @@ func TestPumpInputToleratesANilDiedCallback(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pumpInput(conn, "%7", func(string) {}, nil, nil)
+		pumpInput(conn, "%7", func(string) {}, nil, nil, nil)
 		close(done)
 	}()
 
@@ -85,5 +85,31 @@ func TestPumpInputToleratesANilDiedCallback(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("pumpInput did not return after its connection closed, with a nil died callback")
+	}
+}
+
+// seen is what wakes a parked mirror, so it must fire even when the keystroke
+// goes nowhere — and it does, before the send that fails closed while parked.
+func TestPumpInputCallsSeenBeforeForwarding(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+
+	var seen int32
+	sendCh := make(chan int32, 1)
+	go pumpInput(conn, "%7", func(string) { sendCh <- atomic.LoadInt32(&seen) }, nil, nil, func() { atomic.AddInt32(&seen, 1) })
+
+	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	select {
+	case n := <-sendCh:
+		if n != 1 {
+			t.Errorf("seen called %d times before the send, want 1", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no send-keys reached the sink: the frame was never forwarded")
 	}
 }
