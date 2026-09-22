@@ -254,6 +254,9 @@ type helloWaiter func(want []string) (map[string]net.Conn, error)
 // resizePollInterval is how often the resize watcher re-checks the nudge
 // file's mtime (an os.Stat, not a fork). It only forks LocalArea's
 // display-message/list-clients calls when that mtime has advanced (#433).
+// The reveal watcher ticks on the same interval but forks its list-clients
+// every tick (see watchReveal), so a daemon's steady state is one fork a
+// second, not one stat.
 const resizePollInterval = time.Second
 
 // resizeNudgeSuffix names the per-bridge file a session-scoped client-resized
