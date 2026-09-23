@@ -356,18 +356,44 @@ func claudeSegment(dir, session, theme string, now int64, liveIDs map[string]boo
 	return out
 }
 
+// screenHasStateFiles reports whether dir/screen holds any pane state file.
+// liveIDs only gate screen-only panes and a stale-hook screen override, both
+// of which require one of those files.
+func screenHasStateFiles(dir string) bool {
+	entries, err := os.ReadDir(filepath.Join(dir, "screen"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionLiveIDs is the statusline's live pane set. With no screen files the
+// set cannot change the aggregate, so tmux is not consulted.
+func sessionLiveIDs(dir, session string) (map[string]bool, bool) {
+	if !screenHasStateFiles(dir) {
+		return map[string]bool{}, true
+	}
+	return listSessionPaneIDs(session)
+}
+
 // listSessionPaneIDs returns pane ids (without the leading %) in session.
-// An empty map on any tmux error — fail closed, never invent membership.
-func listSessionPaneIDs(session string) map[string]bool {
+// ok is false when tmux errors or the call times out — an empty map then
+// means "unknown", not "no panes".
+func listSessionPaneIDs(session string) (map[string]bool, bool) {
 	ids := map[string]bool{}
 	if session == "" {
-		return ids
+		return ids, true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}").Output()
 	if err != nil {
-		return ids
+		return map[string]bool{}, false
 	}
 	for line := range strings.Lines(string(out)) {
 		id := strings.TrimPrefix(strings.TrimSpace(line), "%")
@@ -375,5 +401,5 @@ func listSessionPaneIDs(session string) map[string]bool {
 			ids[id] = true
 		}
 	}
-	return ids
+	return ids, true
 }

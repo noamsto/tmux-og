@@ -444,6 +444,14 @@ func main() {
 		return
 	}
 
+	liveIDs, panesOK := sessionLiveIDs(claudeDir, a.session)
+	// list-panes failed the same way display-message can. Caching this frame
+	// would freeze a segment built as if the session had no panes. Cold start
+	// still renders below with an empty map.
+	if !panesOK && hadLastGood {
+		return
+	}
+
 	// Usage segment: only on a successful volatile fetch — a failed fetch with
 	// no last-good frame (cold start) leaves the bridge fields empty, and a
 	// mirror would otherwise fall into the local path for that frame.
@@ -461,7 +469,7 @@ func main() {
 	// would leave just the fragment after it on line 0. Collapse before this
 	// escapes to stdout or the cache.
 	line := strings.ReplaceAll(
-		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, listSessionPaneIDs(a.session)), "\n", " ")
+		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, liveIDs), "\n", " ")
 	if ok {
 		writeLastGood(statuslineCacheDir, a.session, line)
 	}

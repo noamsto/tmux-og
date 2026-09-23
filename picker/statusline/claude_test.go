@@ -254,3 +254,47 @@ func TestAggregateSessionStaleProcessingRehomesViaLiveIDs(t *testing.T) {
 		t.Fatalf("hook session total = %d, want 0 (override does not keep session=)", stale.counts.total)
 	}
 }
+
+var _ func(string) (map[string]bool, bool) = listSessionPaneIDs
+
+func TestScreenHasStateFiles(t *testing.T) {
+	dir := t.TempDir()
+	if screenHasStateFiles(dir) {
+		t.Fatal("missing screen/ reported files")
+	}
+	if err := os.MkdirAll(dir+"/screen", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if screenHasStateFiles(dir) {
+		t.Fatal("empty screen/ reported files")
+	}
+	if err := os.MkdirAll(dir+"/screen/nested", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if screenHasStateFiles(dir) {
+		t.Fatal("directory-only screen/ reported files")
+	}
+	if err := os.WriteFile(dir+"/screen/1", []byte("state=idle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !screenHasStateFiles(dir) {
+		t.Fatal("screen file not reported")
+	}
+}
+
+func TestSessionLiveIDsSkipsTmuxWithoutScreenFiles(t *testing.T) {
+	missing := t.TempDir()
+	ids, ok := sessionLiveIDs(missing, "work")
+	if !ok || len(ids) != 0 {
+		t.Fatalf("missing screen/: ok=%v len=%d, want ok empty", ok, len(ids))
+	}
+
+	empty := t.TempDir()
+	if err := os.MkdirAll(empty+"/screen", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ids, ok = sessionLiveIDs(empty, "work")
+	if !ok || len(ids) != 0 {
+		t.Fatalf("empty screen/: ok=%v len=%d, want ok empty", ok, len(ids))
+	}
+}
