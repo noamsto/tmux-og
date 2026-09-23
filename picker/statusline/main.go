@@ -370,7 +370,7 @@ func themeFromFlavor(flavor string) string {
 	}
 }
 
-func renderLine(a args, claudeDir, theme string, prefixActive bool, now int64, usage string) string {
+func renderLine(a args, claudeDir, theme string, prefixActive bool, now int64, usage string, liveIDs map[string]bool) string {
 	var b strings.Builder
 	b.WriteString("#[align=left,bg=" + a.thmBg + "]")
 	b.WriteString(sessionSegment(a, prefixActive))
@@ -379,7 +379,7 @@ func renderLine(a args, claudeDir, theme string, prefixActive bool, now int64, u
 	if a.bridgeWin != "1" {
 		b.WriteString("  #[fg=" + a.thmSubtext0 + ",nobold]" + a.iconDir + " " + dirDisplay(a.panePath, a.gitRoot))
 	}
-	b.WriteString("  #[fg=" + a.thmOverlay1 + "]" + claudeSegment(claudeDir, a.session, theme, now))
+	b.WriteString("  #[fg=" + a.thmOverlay1 + "]" + claudeSegment(claudeDir, a.session, theme, now, liveIDs))
 	b.WriteString(" #[align=right]") // literal space mirrors `#(claude) #[align=right]` in the old format
 	b.WriteString(usage)
 	b.WriteString("#[fg=" + a.thmSubtext0 + "]" + paneSlot(a.paneIcon, paneCmdDisplay(a.paneCmd, a.bridgeProc), usage != "") + " ")
@@ -461,7 +461,7 @@ func main() {
 	// would leave just the fragment after it on line 0. Collapse before this
 	// escapes to stdout or the cache.
 	line := strings.ReplaceAll(
-		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage), "\n", " ")
+		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, listSessionPaneIDs(a.session)), "\n", " ")
 	if ok {
 		writeLastGood(statuslineCacheDir, a.session, line)
 	}

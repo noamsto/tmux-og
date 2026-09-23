@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // statePalette holds the per-state catppuccin hues for one theme, mirroring
@@ -157,45 +160,98 @@ type sessionAgg struct {
 	lastTs  int64
 }
 
-// aggregateSession scans <dir>/panes/*, filters by the session= field, and
-// tallies state + freshest fade + issue ids. No tmux call — session mode keys
-// entirely off the file's session field.
-func aggregateSession(dir, session string, now int64) sessionAgg {
-	agg := sessionAgg{minFade: 100}
-	entries, err := os.ReadDir(filepath.Join(dir, "panes"))
-	if err != nil {
-		return agg
+// screenOverrideMaxAge matches read_pane_state / picker screenOverrideMaxAge:
+// only hook states a missed completion hook can leave stuck are eligible.
+// waiting/error/denied stay hook-owned. Constants match fadePct's start table.
+func screenOverrideMaxAge(state string) int64 {
+	switch state {
+	case "compacting":
+		return 60
+	case "processing":
+		return 300
+	case "done":
+		return 60
 	}
-	seen := map[string]bool{}
-	for _, e := range entries {
-		if e.IsDir() {
+	return 0
+}
+
+type paneFile struct {
+	state, sess string
+	ts          int64
+	unseen      bool
+	ok          bool
+}
+
+func readPaneFile(path string) paneFile {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return paneFile{}
+	}
+	var pf paneFile
+	pf.ok = true
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, "panes", e.Name()))
+		switch k {
+		case "state":
+			pf.state = v
+		case "session":
+			pf.sess = v
+		case "timestamp":
+			pf.ts, _ = strconv.ParseInt(v, 10, 64)
+		case "unseen":
+			pf.unseen = v == "1"
+		}
+	}
+	return pf
+}
+
+// aggregateSession unions <dir>/panes and <dir>/screen. Hook-first, with the
+// same stale-active screen override as read_pane_state. Screen-only panes (and
+// a screen override) join this session only when liveIDs says the pane is here;
+// a fresh hook still filters on session=.
+func aggregateSession(dir, session string, now int64, liveIDs map[string]bool) sessionAgg {
+	agg := sessionAgg{minFade: 100}
+	ids := map[string]bool{}
+	for _, sub := range []string{"panes", "screen"} {
+		entries, err := os.ReadDir(filepath.Join(dir, sub))
 		if err != nil {
 			continue
 		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			ids[e.Name()] = true
+		}
+	}
+	seen := map[string]bool{}
+	for id := range ids {
+		hook := readPaneFile(filepath.Join(dir, "panes", id))
+		screen := readPaneFile(filepath.Join(dir, "screen", id))
 		var state, sess string
 		var ts int64
 		var unseen bool
-		for _, line := range strings.Split(string(data), "\n") {
-			k, v, ok := strings.Cut(line, "=")
-			if !ok {
+		if hook.ok {
+			state, ts, sess, unseen = hook.state, hook.ts, hook.sess, hook.unseen
+			if maxAge := screenOverrideMaxAge(state); maxAge > 0 && now-hook.ts > maxAge && screen.state != "" {
+				state, ts, unseen = screen.state, screen.ts, false
+				if liveIDs[id] {
+					sess = session
+				} else {
+					sess = ""
+				}
+			}
+			if state == "" || sess != session {
 				continue
 			}
-			switch k {
-			case "state":
-				state = v
-			case "session":
-				sess = v
-			case "timestamp":
-				ts, _ = strconv.ParseInt(v, 10, 64)
-			case "unseen":
-				unseen = v == "1"
+		} else {
+			if !liveIDs[id] || screen.state == "" {
+				continue
 			}
-		}
-		if state == "" || sess != session {
-			continue
+			state, ts, unseen = screen.state, screen.ts, false
 		}
 		agg.counts.tally(state)
 		if f := fadePct(state, now, ts); f < agg.minFade {
@@ -207,10 +263,10 @@ func aggregateSession(dir, session string, now int64) sessionAgg {
 		if unseen {
 			agg.unseen = true
 		}
-		for _, id := range readIssueFile(filepath.Join(dir, "issues", e.Name())) {
-			if id != "" && !seen[id] {
-				seen[id] = true
-				agg.issues = append(agg.issues, id)
+		for _, issue := range readIssueFile(filepath.Join(dir, "issues", id)) {
+			if issue != "" && !seen[issue] {
+				seen[issue] = true
+				agg.issues = append(agg.issues, issue)
 			}
 		}
 	}
@@ -278,8 +334,8 @@ func relAgo(secs int64) string {
 }
 
 // claudeSegment mirrors `claude-status --session <s> --format icon-color`.
-func claudeSegment(dir, session, theme string, now int64) string {
-	agg := aggregateSession(dir, session, now)
+func claudeSegment(dir, session, theme string, now int64, liveIDs map[string]bool) string {
+	agg := aggregateSession(dir, session, now, liveIDs)
 	if agg.counts.total == 0 {
 		return ""
 	}
@@ -298,4 +354,26 @@ func claudeSegment(dir, session, theme string, now int64) string {
 		out += "#[fg=" + pal.idle + "]" + list + "#[fg=default] "
 	}
 	return out
+}
+
+// listSessionPaneIDs returns pane ids (without the leading %) in session.
+// An empty map on any tmux error — fail closed, never invent membership.
+func listSessionPaneIDs(session string) map[string]bool {
+	ids := map[string]bool{}
+	if session == "" {
+		return ids
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}").Output()
+	if err != nil {
+		return ids
+	}
+	for line := range strings.Lines(string(out)) {
+		id := strings.TrimPrefix(strings.TrimSpace(line), "%")
+		if id != "" {
+			ids[id] = true
+		}
+	}
+	return ids
 }

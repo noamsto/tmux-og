@@ -11,7 +11,7 @@ Icon display width is computed per-icon from Unicode codepoint: nerd font PUA (U
 
 ## Status Bar Layout
 
-- **Line 0** (status-format[0]): Global — session name, git branch, directory, claude status (left); active pane icon + command (right)
+- **Line 0** (status-format[0]): Global — session name, git branch, directory, claude status (left; session agent icon is `claudeSegment` over hook+screen files — `aggregateSession` unions `panes/` and `screen/`); active pane icon + command (right)
 - **Lines 1-4** (status-format[1-4]): Window list, dynamically reflowed. Single-line mode unsets session overrides to fall back to global format. Multi-line mode sets per-session overrides with `├─`/`╰─` tree prefixes.
 
 tmux treats session-level `status-format` as all-or-nothing: setting any index at session level overrides ALL indices. That's why reflow must copy `FMT0` from global when setting session-level formats.

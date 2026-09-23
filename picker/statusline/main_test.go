@@ -224,7 +224,7 @@ func TestRenderLineFull(t *testing.T) {
 		paneIcon: "I", paneCmd: ".nvim-wrapped",
 	}
 
-	got := renderLine(a, dir, "dark", false, now, "")
+	got := renderLine(a, dir, "dark", false, now, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S work#[norange]  #[fg=#89b,bold]B feat/x" +
 		"  #[fg=#9a8,nobold]D ./" +
@@ -254,7 +254,7 @@ func TestRenderLineBridgeWinSuppressesDir(t *testing.T) {
 		paneIcon: "I", paneCmd: ".nvim-wrapped",
 	}
 
-	got := renderLine(a, dir, "dark", false, now, "")
+	got := renderLine(a, dir, "dark", false, now, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S work#[norange]  " +
 		"  #[fg=#777]" +
@@ -279,7 +279,7 @@ func TestRenderLineBridgeHost(t *testing.T) {
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
-	got := renderLine(a, dir, "dark", false, 9000, "")
+	got := renderLine(a, dir, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
 		"#[fg=#fab]R g6  " +
@@ -306,7 +306,7 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
-	got := renderLine(a, dir, "dark", false, 9000, "")
+	got := renderLine(a, dir, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
 		"#[fg=#fab]R g6  " +
@@ -334,7 +334,7 @@ func TestRenderLineBridgeStateParked(t *testing.T) {
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
-	got := renderLine(a, dir, "dark", false, 9000, "")
+	got := renderLine(a, dir, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
 		"#[fg=#fab]R g6  " +
@@ -410,7 +410,7 @@ func TestRenderLineUsageAdjacentToPaneSlot(t *testing.T) {
 	}
 	usage := "#[fg=#0f0]42%·5h  "
 
-	got := renderLine(a, dir, "dark", false, 9000, usage)
+	got := renderLine(a, dir, "dark", false, 9000, usage, nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S work#[norange]  #[fg=#89b,bold]B feat/x" +
 		"  #[fg=#9a8,nobold]D ./" +
