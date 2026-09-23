@@ -336,6 +336,7 @@
     "tmux-agent-usage-claude"
     "tmux-agent-usage-codex"
     "tmux-agent-usage-cursor"
+    "tmux-agent-usage-pi"
     "tmux-carousel-restore"
   ];
 
@@ -415,12 +416,12 @@
   # the daemonized pass must not resolve providers against the tmux server's
   # frozen PATH).
   agent-usage-provider-bins =
-    lib.genAttrs ["claude" "codex" "cursor"] (p: mkScript "tmux-agent-usage-${p}");
+    lib.genAttrs ["claude" "codex" "cursor" "pi"] (p: mkScript "tmux-agent-usage-${p}");
 
   mkScriptAgentUsage = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings
-      ["@lib_log@" "@refresh_seconds@" "@AGENT_COMMANDS@" "@usage_claude@" "@usage_codex@" "@usage_cursor@"]
+      ["@lib_log@" "@refresh_seconds@" "@AGENT_COMMANDS@" "@usage_claude@" "@usage_codex@" "@usage_cursor@" "@usage_pi@"]
       [
         "${lib-log}"
         (toString agentUsageRefreshSeconds)
@@ -428,6 +429,7 @@
         "${agent-usage-provider-bins.claude}/bin/tmux-agent-usage-claude"
         "${agent-usage-provider-bins.codex}/bin/tmux-agent-usage-codex"
         "${agent-usage-provider-bins.cursor}/bin/tmux-agent-usage-cursor"
+        "${agent-usage-provider-bins.pi}/bin/tmux-agent-usage-pi"
       ]
       (builtins.readFile ../scripts/${name}.sh)
     );
@@ -750,6 +752,7 @@
     "tmux-agent-usage-claude"
     "tmux-agent-usage-codex"
     "tmux-agent-usage-cursor"
+    "tmux-agent-usage-pi"
     "tmux-apply-theme-colors"
     "tmux-branch-display"
     "tmux-client-theme"

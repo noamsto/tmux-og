@@ -122,7 +122,7 @@ func TestAgentUsageArgsFallbacks(t *testing.T) {
 	}
 	got := agentUsageArgs(cfg)
 	want := " --icon-usage-claude 'C' --icon-usage-codex '\U0001F916' --icon-usage-cursor '\U0001F9CA'" +
-		" --agent-usage-monthly-threshold '50'"
+		" --icon-usage-pi '\U0001F967' --agent-usage-monthly-threshold '50'"
 	if got != want {
 		t.Fatalf("agentUsageArgs = %q, want %q", got, want)
 	}

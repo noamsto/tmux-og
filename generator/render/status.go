@@ -99,10 +99,11 @@ func agentUsageArgs(cfg *config.Config) string {
 	if !cfg.AgentUsage.Enable {
 		return ""
 	}
-	return fmt.Sprintf(" --icon-usage-claude '%s' --icon-usage-codex '%s' --icon-usage-cursor '%s' --agent-usage-monthly-threshold '%d'",
+	return fmt.Sprintf(" --icon-usage-claude '%s' --icon-usage-codex '%s' --icon-usage-cursor '%s' --icon-usage-pi '%s' --agent-usage-monthly-threshold '%d'",
 		processIcon(cfg, "claude", "🧠"),
 		processIcon(cfg, "codex", "🤖"),
 		processIcon(cfg, "cursor-agent", "🧊"),
+		processIcon(cfg, "pi", "🥧"),
 		cfg.AgentUsage.MonthlyThreshold)
 }
 

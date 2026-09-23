@@ -71,7 +71,7 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
 
 ## Agent Usage Limits
 
-Per-agent rate-limit utilization (Claude/Codex/Cursor) on the top-right of
+Per-agent rate-limit utilization (Claude/Codex/Cursor/pi) on the top-right of
 status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
 
 - **Cache files are the source of truth.** `tmux-agent-usage` (driven by the
@@ -79,20 +79,45 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   client renders no status line, so a status-driven poller never runs on a
   host whose only clients are bridges, #603) drives provider scripts that
   normalize vendor API responses into `/tmp/og-agent-usage/<agent>.json`
-  (`{windows:[{label,pct}], monthly:{label,pct}}`); `tmux-statusline` (Go)
-  only reads them — it never curls.
+  (`{windows:[{label,pct,reset_at?}], monthly:{label,pct,reset_at?},
+  spend:{label,usd,period,limit_usd?}}`); `tmux-statusline` (Go) only reads them — it
+  never curls. `spend` is optional: absent in an older cache or a provider
+  that has none, it decodes as `nil` (`usageCache.Spend *usageSpend`,
+  `picker/statusline/usage.go:20`) and the segment simply skips the `$`
+  figure for that agent; when present it renders unconditionally, no
+  threshold. `spend.limit_usd` is the provider's own known spending cap in
+  USD — cursor's `GetHardLimit.hardLimit` (cents ÷ 100), pi's OpenRouter
+  `/api/v1/key` `limit` (already USD) — and the key is omitted, not nulled,
+  when no cap is set; present, the renderer shows `$<spend>/$<limit>`.
+  No schema-version field was added for this — every cache field
+  added since the format shipped has been an optional sibling (`monthly`,
+  `reset_at`, `spend`, now `limit_usd`), so an old or new poller and an old or new
+  renderer already interoperate by omission alone; a later remote-mirror
+  follow-up should keep adding optional siblings rather than inventing a
+  version scheme.
 - **Auth is the CLIs' own.** Each provider extracts the token from the CLI's
   credential file and hits the same endpoint the CLI's own usage view uses.
-  No configured API keys; an expired/absent token just skips the refresh.
-- **Both sides gate on "an agent is running".** The poller skips passes and
-  the Go renderer hides the segment (live `list-panes -a` scan, basenames
-  normalized for nix's `.foo-wrapped`) when no pane runs a manifest command.
-  In the poller that gate precedes the `.last-tick` stamp, and the order is
-  load-bearing: stamping first meant every agent-free tick spent a refresh
-  cycle, so the first tick after an agent started was refused and the segment
-  reappeared showing the previous session's numbers for one more window. The
-  `#()` path stays cheap either way — the stamp's mtime check short-circuits
-  first, so the scan forks at most once per `refreshSeconds`.
+  No configured API keys (pi is the one exception — see below); an
+  expired/absent token just skips the refresh.
+- **The gate is per-agent, not global.** Go's `openAgents()`
+  (`picker/statusline/usage.go:68`) and bash's `OPEN` assoc array
+  (`scripts/tmux-agent-usage.sh`'s `scan_open_agents`) each do their own
+  `list-panes -a` scan and key the result by agent, not by "any agent
+  anywhere": `usageSegment` drops an agent's block when `open[agent]` is
+  false even if another agent's cache and pane both exist, and the poller
+  forks each provider only when that provider's own command is in `OPEN`.
+  The "gate before stamp" invariant carries over unchanged at this
+  granularity: `scan_open_agents` still runs before `.last-tick` is touched,
+  so a tick with no agent open spends nothing, and the first tick after an
+  agent (re)appears isn't refused by a stamp a gate-less pass would have
+  already written. New at per-agent granularity: `--tick-run` clears the
+  cache file of every manifest command *not* currently in `OPEN` before
+  forking providers. Without that, per-agent gating would reintroduce the
+  exact "reappears showing the previous session's numbers" bug the
+  gate-before-stamp ordering exists to prevent — just scoped to one agent:
+  close cursor, leave claude running, and cursor's stale cache would sit
+  untouched (nothing clears it) until cursor reopens and wins a refresh
+  window, showing a dead session's spend in the meantime.
 - **Monthly is threshold-gated** (`monthlyThreshold`, default 50): the monthly
   spend window renders only at/above that utilization; short windows (5h, 7d)
   are always on. Colors: <70 green, <90 peach, ≥90 red.
@@ -104,6 +129,46 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   aggregated usage-based cost (`GetAggregatedUsageEvents.totalCostCents`),
   plus `percentOfBurstUsed` (rendered as a `burst` window when nonzero).
   Fully pooled plans sit at 0% and stay hidden below the monthly threshold.
+  `totalCostCents` is also written as `spend` (USD, billing cycle),
+  unconditionally — no hard limit needed for the dollar figure to show; a
+  set hard limit adds `spend.limit_usd`.
+- **pi is OpenRouter-keyed, not pi's own token.** `tmux-agent-usage-pi.sh`
+  reads `~/.pi/agent/auth.json`'s `.openrouter.key` and hits OpenRouter's
+  `/api/v1/key` endpoint. pi's own key value supports a small syntax —
+  `!cmd` (run a shell command), `$VAR`/`${VAR}` (env interpolation), `$$`/`$!`
+  (escape a literal leading `$`/`!`), anything else literal — and the
+  provider implements only the parts safe for a background status tick:
+  `!cmd` is deliberately never executed (a tick must not run commands from a
+  config file, so that case resolves to an empty token and falls through),
+  `$$`/`$!` unescape correctly, and `$VAR`/`${VAR}` resolves only a
+  whole-value variable name (`^[A-Za-z_][A-Za-z0-9_]*$`) via `${!var}` —
+  a composite like `${A}_${B}` is left unresolved rather than risk expanding
+  a malformed name. Known gap, documented in the script: pi also consults the
+  credential's own `.openrouter.env` object before the process environment,
+  and that object is not read here, so a key stored only there falls through
+  to `$OPENROUTER_API_KEY` same as no key at all. With no resolvable token
+  the script exits 0 and leaves the previous cache untouched, same as every
+  other provider's failed-fetch case. OpenRouter has no short rate-limit
+  windows (`windows` is always `[]`); `monthly` is computed from
+  `limit_remaining` (`100 * (limit - limit_remaining) / limit`), not a naive
+  `usage/limit`, so it stays correct regardless of what `limit_reset` says;
+  `limit_reset` (`daily`/`weekly`/`monthly`/null) maps to the window's
+  `label` (`day`/`wk`/`mo`/`cap` for a null reset — a lifetime cap). `spend`
+  is `usage_monthly` (USD, current UTC calendar month), always written
+  regardless of whether the key carries a cap. A nonzero `limit` is written
+  as `spend.limit_usd` independently of `monthly` — a cap whose
+  `limit_remaining` is null still shows its budget. `limit`/`limit_remaining`
+  need no cents→USD conversion: they're the same "credits" unit as
+  `usage_monthly`, and OpenRouter's docs (openrouter.ai/docs/faq) state
+  credits are USD-denominated 1:1.
+- **Mirror/remote panes never count toward the gate.** Both `openAgents()`
+  and `scan_open_agents` key strictly off `pane_current_command`/the
+  manifest basenames and never look at `@bridge_proc`; #513 once let a
+  bridge mirror's `@bridge_proc` open the (then-global) gate. At per-agent
+  granularity that would be actively wrong, not just imprecise: it would
+  show a remote agent's column sourced from a *local* cache file the local
+  poller never refreshes for that agent, since the remote agent's usage
+  lives on a different host entirely.
 
 
 ## Window cwd tracking
