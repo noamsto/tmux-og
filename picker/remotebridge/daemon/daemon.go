@@ -2518,7 +2518,9 @@ func isCancelKey(b []byte) bool {
 // client's cancel key, but this daemon writes pane input, which a dead pane
 // ignores; display-popup -C is the server-side clear and runs ahead of the
 // command's CLIENT_CONTROL bail. The guard is evaluated remotely, so a live
-// pane keeps its cancel key.
+// pane keeps its cancel key — a deliberate divergence from tmux's own
+// PANE_CLOSEONCANCEL, which also kills a LIVE no--E popup on Escape/C-c for a
+// normal client; this clears only a DEAD one.
 func modalClearCmd(pane string) string {
 	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %s'", pane, pane)
 }

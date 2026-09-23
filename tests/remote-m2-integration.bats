@@ -3871,10 +3871,12 @@ attach_pty_client() {
 	[ -n "$mirror_float" ]
 	[ "$src_dead" = 1 ]
 
-	$DST send-keys -t "$mirror_float" Escape
-
+	# Re-pressed each round: the local float exists before its renderer is
+	# respawned and wired, and a key sent into that gap is lost. A dead pane
+	# ignores the extra Escapes, so only the daemon's clear can end the loop.
 	src_float="" dst_float=""
 	for _ in $(seq 1 60); do
+		$DST send-keys -t "$mirror_float" Escape 2>/dev/null || true
 		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_id}')"
 		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
 		[ -z "$src_float" ] && [ -z "$dst_float" ] && break

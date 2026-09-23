@@ -123,7 +123,7 @@ func TestModalClearCmd(t *testing.T) {
 }
 
 // TestPumpInputSendsModalClearOnLoneCancel pins isCancelKey against the
-// rewritten payload: a lone Escape or C-c must be followed by the modal-clear
+// forwarded frame: a lone Escape or C-c must be followed by the modal-clear
 // command, while an escape sequence's leading 0x1b (arrows, function keys)
 // or an ordinary keystroke must not. Each case is terminated by a sentinel
 // "z" frame rather than a timeout, so a missing clear reads as an assertion

@@ -1,4 +1,5 @@
-Let display-popup open its modal float for a control client.
+Let display-popup open its modal float for a control client, without
+blocking that client's own command queue on it.
 
 The bail predates 34cd5da4: a popup was a client-side overlay, so one asked
 for by a client with no screen crashed the server (tmux-og #346), and af3e4d2
@@ -15,11 +16,41 @@ session whose only client is a control client (tmux-og's remote-bridge daemon)
 has no other client for cmd_find_best_client() to pick, so every popup-based
 tool in a bridged session opens nothing at all.
 
+Dropping only that bail is not enough on its own: past it, the function sets
+new_wp->wait_item and returns CMD_RETURN_WAIT, which parks the queuing item
+until the popup pane exits. For an ordinary command client that is the whole
+point of -E — it blocks the shell that asked for the popup. But when the
+command reached here off a control client's own queue (a remote `set-hook
+after-split-window "display-popup -E ..."` fired by something the client
+itself sent, or a display-popup the client sent directly), that is the same
+queue the control client depends on for every other command it sends — so
+waiting there wedges the client, including the keystrokes the popup needs to
+make progress. Only that item's queuing client (cmdq_get_client(), not the
+possibly-different target client used for placement) determines whether to
+wait: return CMD_RETURN_NORMAL without setting wait_item when it is a control
+client, and wait as before otherwise.
+
 Submitted upstream; drop this file once it lands.
 
 --- a/cmd-display-menu.c
 +++ b/cmd-display-menu.c
-@@ -413,8 +413,6 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
+@@ -392,6 +392,7 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
+ 	struct cmd_find_state	*target = cmdq_get_target(item);
+ 	struct session		*s = target->s;
+ 	struct client		*tc = cmdq_get_target_client(item);
++	struct client		*c;
+ 	struct winlink		*wl = target->wl;
+ 	struct window		*w = wl->window;
+ 	struct window_pane	*wp = target->wp, *new_wp = NULL;
+@@ -404,6 +405,7 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
+ 	const char		*border_style = args_get(args, 'S');
+ 	char			*cause = NULL, *title = NULL;
+ 	enum pane_lines		 lines = PANE_LINES_SINGLE;
++	enum cmd_retval		 retval;
+ 	u_int			 px, py, sx, sy, count = args_count(args);
+ 	struct args_value	*av;
+ 	long long		 ll;
+@@ -413,8 +415,6 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
  			server_kill_pane(w->modal);
  		return (CMD_RETURN_NORMAL);
  	}
@@ -28,3 +59,33 @@ Submitted upstream; drop this file once it lands.
  	if (w->modal != NULL)
  		return (CMD_RETURN_NORMAL);
 
+@@ -560,13 +560,27 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
+ 		events_fire("pane-title-changed", ep);
+ 	}
+
+-	new_wp->wait_item = item;
++	/*
++	 * A control client's queue serves every command it sends the
++	 * server, itself included, so waiting here on a popup it started
++	 * would block that same queue on the popup's lifetime. Return
++	 * normally and let the popup run detached for that client only;
++	 * an ordinary command client still waits, since that is how -E
++	 * blocks its caller.
++	 */
++	c = cmdq_get_client(item);
++	if (c != NULL && (c->flags & CLIENT_CONTROL))
++		retval = CMD_RETURN_NORMAL;
++	else {
++		new_wp->wait_item = item;
++		retval = CMD_RETURN_WAIT;
++	}
+ 	server_redraw_session(s);
+ 	if (sc.argv != NULL)
+ 		cmd_free_argv(sc.argc, sc.argv);
+ 	environ_free(sc.environ);
+ 	free(title);
+-	return (CMD_RETURN_WAIT);
++	return (retval);
+
+ out:
+ 	if (sc.argv != NULL)
