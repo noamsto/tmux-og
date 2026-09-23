@@ -508,8 +508,13 @@ set-hook -g pane-died   'run-shell -b "{{index .Paths.Scripts "tmux-reap-pane"}}
 # in run-shell) carries the ownership guard. window_id and @window_has_agent
 # (#671) are the event trigger's window-wide naming/crew reset args — the
 # latter is the hook-fire-time value, read for free in this same
-# hook-context substitution, no extra fork to fetch it.
-set-hook -g pane-shell-prompt 'run-shell -b "{{index .Paths.Scripts "tmux-shell-prompt"}} #{q:hook_pane} #{qs:pane_current_command} #{qs:session_name} #{q:window_id} #{q:@window_has_agent}"'
+# hook-context substitution, no extra fork to fetch it. @bridge_win (#741) is
+# passed the same way so the handler can skip a daemon-owned mirror pane
+# before it clears pane state, again with no fork on the every-prompt path.
+# Both booleans go through #{?…,1,0}: an unset user option makes #{q:…}
+# expand to *nothing* (not an empty word), so a bare @window_has_agent would
+# vanish and shift @bridge_win into its slot.
+set-hook -g pane-shell-prompt 'run-shell -b "{{index .Paths.Scripts "tmux-shell-prompt"}} #{q:hook_pane} #{qs:pane_current_command} #{qs:session_name} #{q:window_id} #{?#{@window_has_agent},1,0} #{?#{@bridge_win},1,0}"'
 
 # A scratchpad dies with its parent session ([99] is tmux-remux's capture-event)
 set-hook -g session-closed[98] 'run-shell -b "tmux kill-session -t =scratch-#{qs:hook_session_name} 2>/dev/null || true"'

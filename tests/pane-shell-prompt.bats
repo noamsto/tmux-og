@@ -575,6 +575,31 @@ EOF
 	sleep 4 # let the fake agent drain before teardown
 }
 
+# #741: a @bridge_win mirror window is daemon-owned — its panes run the bridge
+# renderer, and panes/screen/interrupt plus @claude_status/@agent_screen are
+# shipped by the bridge shipper under the LOCAL pane id. A renderer re-emitting
+# the remote shell's OSC 133 must not reach claude_clear_agent_state and delete
+# that state (the daemon suppresses unchanged rows, so it would never be
+# rewritten until the remote value next changed). The existing naming-only case
+# above never seeded pane state, which is why this escaped.
+@test "bridge mirror pane: OSC 133 leaves the daemon-shipped pane state intact (#741)" {
+	t new-session -d -s bridge741 -x 80 -y 24 -c "$PWD" -- bash
+	local id
+	id="$(t list-panes -t bridge741 -F '#{pane_id}')"
+	[ -n "$id" ]
+
+	t set-option -w -t bridge741 @bridge_win 1
+	seed_shell_state "$id" bridge741
+	three_present "$id"
+
+	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
+	sleep 2
+
+	three_present "$id"
+	[ -n "$(t show-options -p -t "$id" -F '#{option_value}' @claude_status 2>/dev/null)" ]
+	[ -n "$(t show-options -p -t "$id" -F '#{option_value}' @agent_screen 2>/dev/null)" ]
+}
+
 # Unit-level: claude_clear_agent_state's ownership guard, exercised by sourcing
 # lib-claude.sh directly — no live tmux server needed (claude_progress_emit and
 # the trailing `tmux set` both self-guard with no server on PATH/reachable).

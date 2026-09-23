@@ -63,6 +63,16 @@ case " $AGENT_COMMANDS " in
 *) : ;;
 esac
 
+# A @bridge_win mirror window is daemon-owned (#741): its panes run the bridge
+# renderer, and all pane state — panes/, screen/, interrupt/, @claude_status,
+# @agent_screen — is shipped by the bridge daemon under the LOCAL pane id. A
+# renderer re-emitting the remote shell's OSC 133 would otherwise reach
+# claude_clear_agent_state and delete that state; the daemon's unchanged-row
+# suppression means it is then never rewritten until the remote value next
+# changes. $6 is #{?#{@bridge_win},1,0}, passed by the hook like @window_has_agent
+# so this skip costs no fork on the every-prompt path.
+[[ ${6:-} == 1 ]] && exit 0
+
 claude_clear_agent_state "${1:-}" "${3:-}"
 
 # Window-wide naming/crew reset (#671). Gated on the passed-through
@@ -73,9 +83,7 @@ claude_clear_agent_state "${1:-}" "${3:-}"
 window_id="${4:-}"
 [[ ${5:-} == 1 && -n $window_id ]] || exit 0
 
-bridge_manual=$(tmux display-message -p -t "$window_id" '#{@bridge_win}|#{@window_manual_name}')
-[[ ${bridge_manual%%|*} == 1 ]] && exit 0
-manual="${bridge_manual#*|}"
+manual=$(tmux display-message -p -t "$window_id" '#{@window_manual_name}')
 
 still_has_agent=""
 while IFS='|' read -r p_id p_cmd; do
