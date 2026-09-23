@@ -292,6 +292,12 @@ does not hold.
    key path — is broader than popups and is not fixed here. One issue, linked
    from the PR.
 
+9. The patch also skips `wait_item` when the item's queuing client is a control
+   client (found in review): past the dropped bail, `CMD_RETURN_WAIT` would park
+   that control client's whole queue on the popup's lifetime, wedging the bridge
+   when a remote hook opens a popup off a daemon command. `-E` therefore does not
+   order a control client's queue; a command client still waits.
+
 ### Out of scope
 
 - The `s.seen`/`s.sent` ordinal-desync diagnostic the task doc asks for
