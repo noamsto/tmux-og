@@ -52,6 +52,10 @@ setup() {
 		CTL="$BATS_TEST_TMPDIR/ctl"
 		(cd "$BATS_TEST_DIRNAME/../picker" && go build -o "$CTL" ./remotebridge/cmd/ctl)
 	fi
+	if [[ -z ${STATUSLINE:-} ]]; then
+		STATUSLINE="$BATS_TEST_TMPDIR/statusline"
+		(cd "$BATS_TEST_DIRNAME/../picker" && go build -o "$STATUSLINE" ./statusline)
+	fi
 	# pane_current_command truncates a long comm to macOS's MAXCOMLEN (15
 	# usable chars) but not Linux's (which reads the full cmdline) — the nix
 	# build's RENDERER is the long store binary name
@@ -1992,6 +1996,158 @@ $pane 1" ]; then
 	wait "$daemon_pid" 2>/dev/null || true
 
 	[[ $body == *"state=error"* ]]
+}
+
+# End to end: the remote's own open-gate + published caches reach
+# the mirror's statusline as the remote host's figures, never the local
+# host's, and a hostile label never survives the sanitizer.
+@test "daemon ships the remote host's agent usage, gated and sanitized, into the mirror's statusline" {
+	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+
+	$SRC new-session -d -s rem -x 120 -y 34
+	$DST new-session -d -s host-sess -x 120 -y 34
+
+	# Agent stand-ins: a copy of bash named after the agent, so
+	# pane_current_command reports the agent's own name (proven on 3.7c).
+	mkdir -p "$BATS_TEST_TMPDIR/bin"
+	agent_bin="$(readlink -f "$(command -v bash)")"
+	cp "$agent_bin" "$BATS_TEST_TMPDIR/bin/claude"
+	cp "$agent_bin" "$BATS_TEST_TMPDIR/bin/pi"
+	chmod +x "$BATS_TEST_TMPDIR/bin/claude" "$BATS_TEST_TMPDIR/bin/pi"
+
+	# A second SRC session, host-wide rather than the mirrored one: the open
+	# half of the subscription format walks every session on the server.
+	$SRC new-session -d -s agents -n claude -x 80 -y 24 "$BATS_TEST_TMPDIR/bin/claude -c 'sleep 600; :'"
+	$SRC new-window -t agents -n pi "$BATS_TEST_TMPDIR/bin/pi -c 'sleep 600; :'"
+
+	# claude: open and valid -> kept. codex: valid JSON but no open pane ->
+	# gated out. pi: open but its label uses '#', outside the sanitizer's
+	# alphabet by construction -> the whole agent drops, proving a #(...)
+	# payload never reaches a format the renderer would re-expand.
+	og_usage="$(jq -nc --arg pi_label "#(touch $BATS_TEST_TMPDIR/pwned)" '{
+		claude: {windows: [{label: "5h", pct: 77}], spend: {label: "mo", usd: 12.34, period: "month", limit_usd: 50}},
+		codex: {windows: [{label: "5h", pct: 5}]},
+		pi: {windows: [{label: $pi_label, pct: 50}]}
+	}')"
+	$SRC set -g @og_agent_usage "$og_usage"
+
+	# DST's own local gate is open too (a local claude stand-in), with a cache
+	# holding a different figure -- the mirror render must ignore both.
+	$DST new-session -d -s lo -x 80 -y 24 "$BATS_TEST_TMPDIR/bin/claude -c 'sleep 600; :'"
+	local_usage_dir="$BATS_TEST_TMPDIR/local-usage"
+	mkdir -p "$local_usage_dir"
+	printf '{"windows":[{"label":"5h","pct":11}]}' >"$local_usage_dir/claude.json"
+
+	bridge_up 1 usage --host lab
+
+	host="$($DST show-options -v -t host-sess -q @bridge_host 2>/dev/null || true)"
+	[ "$host" = lab ]
+
+	bridge_usage=""
+	for _ in $(seq 1 40); do
+		bridge_usage="$($DST show-options -v -t host-sess -q @bridge_usage 2>/dev/null || true)"
+		[ -n "$bridge_usage" ] && break
+		sleep 0.2
+	done
+	[ -n "$bridge_usage" ]
+	jq -e 'keys == ["claude"]' <<<"$bridge_usage" >/dev/null
+	[[ $bridge_usage != *'#('* ]]
+
+	# The statusline's last-good cache is a fixed path shared across runs.
+	rm -f /tmp/og-statusline/host-sess
+
+	dst_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2dst"
+	out="$(TMUX="$dst_sock,0,0" OG_AGENT_USAGE_DIR="$local_usage_dir" CLAUDE_STATUS_DIR="$CLAUDE_STATUS_DIR" \
+		"$STATUSLINE" --session host-sess \
+		--agent-usage-monthly-threshold 50 \
+		--icon-usage-claude C --icon-usage-codex X --icon-usage-cursor U --icon-usage-pi P \
+		--thm-bg '#1e1e2e' --thm-red '#f38ba8' --thm-mauve '#cba6f7' --thm-blue '#89b4fa' \
+		--thm-text '#cdd6f4' --thm-subtext0 '#a6adc8' --thm-overlay1 '#7f849c' \
+		--thm-peach '#fab387' --thm-green '#a6e3a1' --flavor mocha)"
+	last_line="$(tail -n1 <<<"$out")"
+	# The cache is host-wide (keyed on session name, not this test), so a
+	# later test reusing "host-sess" must not see this run's seeded figure.
+	rm -f /tmp/og-statusline/host-sess
+
+	# Closing the remote claude pane removes the stamp -- checked while the
+	# daemon is still alive, since it is the subscription that clears it.
+	$SRC kill-window -t agents:claude
+	bridge_usage2="$bridge_usage"
+	for _ in $(seq 1 40); do
+		bridge_usage2="$($DST show-options -v -t host-sess -q @bridge_usage 2>/dev/null || true)"
+		[ -z "$bridge_usage2" ] && break
+		sleep 0.2
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[[ $last_line == *"77%·5h"* ]]
+	# shellcheck disable=SC2016 # the literal "$12/$50" spend figure must not expand
+	[[ $last_line == *'$12/$50'* ]]
+	[[ $last_line != *"11%·5h"* ]]
+	[[ $last_line != *'#('* ]]
+	[ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+	[ -z "$bridge_usage2" ]
+}
+
+# reattach unsets @bridge_usage, and the remote value never changes here, so
+# only repair's usage.reset() + re-subscribe can put the same figure back.
+@test "a reconnect re-stamps the remote agent usage the reattach dropped" {
+	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	mkdir -p "$BATS_TEST_TMPDIR/bin"
+	agent_bin="$(readlink -f "$(command -v bash)")"
+	cp "$agent_bin" "$BATS_TEST_TMPDIR/bin/claude"
+	chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+	$SRC new-session -d -s agents -n claude -x 80 -y 24 "$BATS_TEST_TMPDIR/bin/claude -c 'sleep 600; :'"
+
+	$SRC set -g @og_agent_usage '{"claude":{"windows":[{"label":"5h","pct":42}]}}'
+
+	bridge_up 1 usgre --host lab
+
+	bridge_usage=""
+	for _ in $(seq 1 40); do
+		bridge_usage="$($DST show-options -v -t host-sess -q @bridge_usage 2>/dev/null || true)"
+		[ -n "$bridge_usage" ] && break
+		sleep 0.2
+	done
+	[ -n "$bridge_usage" ]
+
+	old_transport="$(transport_child)"
+	[ -n "$old_transport" ]
+	kill -9 "$old_transport"
+	wait_bridge_disconnected usgre "$BATS_TEST_TMPDIR/usgre.log"
+
+	new_transport=""
+	for _ in $(seq 1 80); do
+		candidate="$(transport_child)"
+		[ -n "$candidate" ] && [ "$candidate" != "$old_transport" ] && {
+			new_transport="$candidate"
+			break
+		}
+		sleep 0.1
+	done
+	[ -n "$new_transport" ]
+
+	wait_bridge_state "" usgre "$BATS_TEST_TMPDIR/usgre.log"
+
+	# The remote value never changed, so only the repair's reset + re-subscribe
+	# can put it back after the reattach cleared it.
+	bridge_usage2=""
+	for _ in $(seq 1 40); do
+		bridge_usage2="$($DST show-options -v -t host-sess -q @bridge_usage 2>/dev/null || true)"
+		[ "$bridge_usage2" = "$bridge_usage" ] && break
+		sleep 0.2
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$bridge_usage2" = "$bridge_usage" ]
 }
 
 # Screen-scraped agents (pi, codex, cursor) have no hook, so agent-detect's

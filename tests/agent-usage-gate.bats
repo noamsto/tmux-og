@@ -18,12 +18,14 @@ setup() {
 	mkdir -p "$FAKEBIN"
 	export USAGE_LOG="$BATS_TEST_TMPDIR/usage.log"
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/cache"
+	export TMUX_SET_LOG="$BATS_TEST_TMPDIR/tmux-set.log"
 	unset TMUX TMUX_PANE OPENROUTER_API_KEY
 
 	cat >"$FAKEBIN/tmux" <<-'EOF'
 		#!/bin/sh
 		case "$1" in
 		list-panes) printf '%s\n' "$FAKE_PANES" ;;
+		set) printf '%s\n' "$*" >>"$TMUX_SET_LOG" ;;
 		esac
 		exit 0
 	EOF
@@ -147,4 +149,35 @@ claude'
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ -e "$OG_AGENT_USAGE_DIR/claude.json" ]
+}
+
+@test "tick-run: publishes the surviving caches onto @og_agent_usage" {
+	export FAKE_PANES='claude'
+	mkdir -p "$OG_AGENT_USAGE_DIR"
+	echo '{"windows":[{"label":"5h","pct":42}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	# codex isn't open, so tick-run clears this before publish_usage reads
+	# the cache dir — the assertion below confirms it's absent either way.
+	echo '{"windows":[{"label":"5h","pct":99}]}' >"$OG_AGENT_USAGE_DIR/codex.json"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(wc -l <"$TMUX_SET_LOG")" -eq 1 ]
+	local line
+	line=$(cat "$TMUX_SET_LOG")
+	[[ $line == "set -g @og_agent_usage "* ]]
+	run jq -e '.claude.windows[0].pct == 42 and (has("codex")|not)' <<<"${line#set -g @og_agent_usage }"
+	[ "$status" -eq 0 ]
+}
+
+@test "tick-run: no surviving cache publishes an unset" {
+	export FAKE_PANES='claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$TMUX_SET_LOG")" = "set -gu @og_agent_usage" ]
+}
+
+@test "tick-run: no agent open never calls tmux set" {
+	export FAKE_PANES='bash'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$TMUX_SET_LOG" ]
 }

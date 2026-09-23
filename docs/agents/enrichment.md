@@ -161,14 +161,25 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   need no cents→USD conversion: they're the same "credits" unit as
   `usage_monthly`, and OpenRouter's docs (openrouter.ai/docs/faq) state
   credits are USD-denominated 1:1.
-- **Mirror/remote panes never count toward the gate.** Both `openAgents()`
-  and `scan_open_agents` key strictly off `pane_current_command`/the
-  manifest basenames and never look at `@bridge_proc`; #513 once let a
-  bridge mirror's `@bridge_proc` open the (then-global) gate. At per-agent
-  granularity that would be actively wrong, not just imprecise: it would
-  show a remote agent's column sourced from a *local* cache file the local
-  poller never refreshes for that agent, since the remote agent's usage
-  lives on a different host entirely.
+- **Mirror/remote panes never count toward the *local* gate.** Both
+  `openAgents()` and `scan_open_agents` key strictly off
+  `pane_current_command`/the manifest basenames and never look at
+  `@bridge_proc`; #513 once let a bridge mirror's `@bridge_proc` open the
+  (then-global) gate. At per-agent granularity that would be actively wrong,
+  not just imprecise: it would show a remote agent's column sourced from a
+  *local* cache file the local poller never refreshes for that agent, since
+  the remote agent's usage lives on a different host entirely. This still
+  holds unchanged — what changed is that a mirror session no longer needs the
+  local gate at all: it renders through its own path (below) with the
+  remote's own gate and caches.
+- **A mirror session renders `@bridge_usage`, not the local set, at all.**
+  The poller (`tmux-agent-usage`) additionally publishes the surviving cache
+  files onto the global `@og_agent_usage` option, and the bridge daemon ships
+  a sanitized, gate-applied copy onto the mirror session's `@bridge_usage`;
+  `tmux-statusline` selects between the two sources by `@bridge_host`, never
+  falling back to local caches/gate on a mirror. Full detail — the publish
+  option, the live subscription gate, the sanitizer, lifecycle and known
+  limits — is in `bridge-shipped-state.md`'s "Remote Agent Usage".
 
 
 ## Window cwd tracking

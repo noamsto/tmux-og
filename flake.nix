@@ -217,7 +217,7 @@
 
           agent-usage-gate-tests =
             pkgs.runCommand "agent-usage-gate-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
@@ -2092,13 +2092,16 @@
               # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
               # unixtools' shim — ps/sysctl/top/watch, no pgrep — which is why
               # transport_child reads the process table rather than pgrepping.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps (mkTmux pkgs)];
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
               DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
               RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
               # M2.3 structural input: the tests drive ctl straight at the
               # daemon's socket, since these vanilla -L servers carry no
               # tmux-og keybindings for a gate to intercept.
               CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+              # The agent-usage integration test runs the real statusline
+              # against DST's mirror session, same prebuilt-binary pattern.
+              STATUSLINE = "${pickerChecked}/bin/tmux-statusline";
               # Only tests/ is copied in, so a ../scripts path would not resolve.
               # The raw source file is what ships: this script carries no
               # build-time placeholder substitution.

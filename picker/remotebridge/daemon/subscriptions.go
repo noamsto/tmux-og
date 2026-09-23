@@ -6,10 +6,10 @@ import (
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
-// Both shippers carry state the remote holds in window or pane OPTIONS, whose
-// change emits no control-stream traffic of its own — no %output, no
-// %layout-change, nothing. A control client can subscribe to a format instead
-// and be told when its value moves (tmux 3.2):
+// Every shipper here carries state the remote holds in OPTIONS (window, pane,
+// session or global), whose change emits no control-stream traffic of its own —
+// no %output, no %layout-change, nothing. A control client can subscribe to a
+// format instead and be told when its value moves (tmux 3.2):
 //
 //	refresh-client -B "<name>:<what>:<format>"
 //	  -> %subscription-changed <name> $sess @win idx <pane|-> : <value>
@@ -33,6 +33,7 @@ const (
 	labelSubName = "og_labels"
 	agentSubName = "og_agents"
 	resSubName   = "og_res"
+	usageSubName = "og_usage"
 )
 
 // subscribeCmd builds the subscribe command for one format. Quoted as a single
@@ -49,12 +50,13 @@ func subscribeCmd(name, what, format string) string {
 // A round-trip rather than a bare send, because the answer decides whether the
 // 1s poll can stand down: an %error means the remote's tmux predates
 // subscriptions, and that shipper keeps polling for the life of the connection.
-// The res result is recorded and drives nothing: that shipper has no poll mode
-// to fall back to, by design.
-func subscribeFormats(rt roundTrip) (labels, agents, res bool) {
+// The res and usage results are recorded and drive nothing: those shippers
+// have no poll mode to fall back to, by design.
+func subscribeFormats(rt roundTrip) (labels, agents, res, usage bool) {
 	return sendSubscription(rt, labelSubName, "@*", windowLabelFormat),
 		sendSubscription(rt, agentSubName, "%*", agentStatusFormat),
-		sendSubscription(rt, resSubName, "", sessionResFormat)
+		sendSubscription(rt, resSubName, "", sessionResFormat),
+		sendSubscription(rt, usageSubName, "", agentUsageFormat)
 }
 
 func sendSubscription(rt roundTrip, name, what, format string) bool {
