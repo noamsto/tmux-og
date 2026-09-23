@@ -1,0 +1,30 @@
+Let display-popup open its modal float for a control client.
+
+The bail predates 34cd5da4: a popup was a client-side overlay, so one asked
+for by a client with no screen crashed the server (tmux-og #346), and af3e4d2
+turned that into a silent no-op. A popup is now an ordinary modal floating
+pane in the target window — a server-side object — and every client-dependent
+input below already answers safely for a control client: status_line_size()
+and status_at_line() short-circuit on CLIENT_CONTROL, and tty_window_offset()
+reads cached zeroes off a tty that was never started, which is exactly the
+window-relative placement wanted here.
+
+Keeping the bail means any display-popup whose target client resolves to a
+control client silently does nothing. That is not a corner: a shell inside a
+session whose only client is a control client (tmux-og's remote-bridge daemon)
+has no other client for cmd_find_best_client() to pick, so every popup-based
+tool in a bridged session opens nothing at all.
+
+Submitted upstream; drop this file once it lands.
+
+--- a/cmd-display-menu.c
++++ b/cmd-display-menu.c
+@@ -413,8 +413,6 @@ cmd_display_popup_exec(struct cmd *self, struct cmdq_item *item)
+ 			server_kill_pane(w->modal);
+ 		return (CMD_RETURN_NORMAL);
+ 	}
+-	if (tc->flags & CLIENT_CONTROL)
+-		return (CMD_RETURN_NORMAL);
+ 	if (w->modal != NULL)
+ 		return (CMD_RETURN_NORMAL);
+

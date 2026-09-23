@@ -2498,5 +2498,27 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
 			send(strings.Join(args, " "))
 		}
+		if isCancelKey(payload) {
+			send(modalClearCmd(remotePane))
+		}
 	}
+}
+
+// isCancelKey reports a frame that is one lone cancel key — the two keys
+// tmux's own PANE_CLOSEONCANCEL rule answers (server-client.c). A leading
+// 0x1b inside an escape sequence is not one.
+func isCancelKey(b []byte) bool {
+	return len(b) == 1 && (b[0] == 0x1b || b[0] == 0x03)
+}
+
+// modalClearCmd dismisses pane when it is its window's modal float and has
+// died. A popup opened without -E stays behind dead with remain-on-exit set,
+// and w->modal is only cleared when the pane is removed, so until then every
+// later display-popup in that window is a silent no-op. tmux clears it on a
+// client's cancel key, but this daemon writes pane input, which a dead pane
+// ignores; display-popup -C is the server-side clear and runs ahead of the
+// command's CLIENT_CONTROL bail. The guard is evaluated remotely, so a live
+// pane keeps its cancel key.
+func modalClearCmd(pane string) string {
+	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %s'", pane, pane)
 }

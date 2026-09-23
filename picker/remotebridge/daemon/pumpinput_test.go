@@ -113,3 +113,94 @@ func TestPumpInputCallsSeenBeforeForwarding(t *testing.T) {
 		t.Fatal("no send-keys reached the sink: the frame was never forwarded")
 	}
 }
+
+func TestModalClearCmd(t *testing.T) {
+	got := modalClearCmd("%7")
+	want := `if -F -t %7 '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %7'`
+	if got != want {
+		t.Errorf("modalClearCmd(%%7) = %q, want %q", got, want)
+	}
+}
+
+// TestPumpInputSendsModalClearOnLoneCancel pins isCancelKey against the
+// rewritten payload: a lone Escape or C-c must be followed by the modal-clear
+// command, while an escape sequence's leading 0x1b (arrows, function keys)
+// or an ordinary keystroke must not. Each case is terminated by a sentinel
+// "z" frame rather than a timeout, so a missing clear reads as an assertion
+// failure instead of a hang.
+func TestPumpInputSendsModalClearOnLoneCancel(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame []byte
+		want  []string
+	}{
+		{
+			name:  "lone escape",
+			frame: []byte{0x1b},
+			want: []string{
+				"send-keys -H -t %7 1b",
+				"if -F -t %7 '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %7'",
+			},
+		},
+		{
+			name:  "lone ctrl-c",
+			frame: []byte{0x03},
+			want: []string{
+				"send-keys -H -t %7 03",
+				"if -F -t %7 '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %7'",
+			},
+		},
+		{
+			name:  "escape sequence (up arrow)",
+			frame: []byte{0x1b, 0x5b, 0x41},
+			want:  []string{"send-keys -H -t %7 1b 5b 41"},
+		},
+		{
+			name:  "ordinary keystroke",
+			frame: []byte("a"),
+			want:  []string{"send-keys -H -t %7 61"},
+		},
+	}
+
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+
+	sendCh := make(chan string, 8)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peer.SetDeadline(time.Now().Add(5 * time.Second))
+			if err := wire.WriteFrame(peer, wire.FrameInput, tt.frame); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+			if err := wire.WriteFrame(peer, wire.FrameInput, []byte("z")); err != nil {
+				t.Fatalf("write sentinel: %v", err)
+			}
+
+			var got []string
+			for {
+				select {
+				case s := <-sendCh:
+					if s == "send-keys -H -t %7 7a" {
+						if len(got) != len(tt.want) {
+							t.Errorf("send calls = %q, want %q", got, tt.want)
+						} else {
+							for i := range got {
+								if got[i] != tt.want[i] {
+									t.Errorf("send calls = %q, want %q", got, tt.want)
+									break
+								}
+							}
+						}
+						return
+					}
+					got = append(got, s)
+				case <-time.After(5 * time.Second):
+					t.Fatalf("sentinel send-keys never arrived; got %q so far", got)
+				}
+			}
+		})
+	}
+}

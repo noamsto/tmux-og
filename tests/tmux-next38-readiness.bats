@@ -192,29 +192,35 @@ wait_for_client() {
 	[[ $output == *"s"* ]]
 }
 
-# A popup for a control client used to open and take the whole remote server
-# down with it (#346); upstream af3e4d2 makes display-popup a silent no-op for
-# such a client instead.
-@test "display-popup is refused for an attached control client" {
+# af3e4d2 made a control client's display-popup a silent no-op, back when a
+# popup was a client-side overlay and one opened for a client with no screen
+# crashed the server (#346). 34cd5da4 later made popups modal floating panes —
+# a server-side object — so the bail is dead weight; #738 drops it via
+# patches/tmux-display-popup-control-client.patch. This pins that the popup
+# now opens (a modal float exists) AND the server survives.
+@test "display-popup for an attached control client opens a modal float" {
 	marker="$BATS_TEST_TMPDIR/popup-ran"
-	sentinel="$BATS_TEST_TMPDIR/sentinel-ran"
 	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t s; }
 
 	wait_for_client
 
-	printf 'display-popup -E "printf popup-ok > %q"\n' "$marker" >&"${CTL[1]}"
-	# The refusal is silent, so a missing marker alone would also pass on a
-	# command that never arrived. This one does reach a control client.
-	printf 'run-shell "printf sentinel-ok > %q"\n' "$sentinel" >&"${CTL[1]}"
+	# -E with a command that exits at once would close the pane before any
+	# poll could see it, so keep it alive after the marker write.
+	printf 'display-popup -E "printf popup-ok > %q; sleep 30"\n' "$marker" >&"${CTL[1]}"
 	for _ in {1..30}; do
-		[[ -f $sentinel ]] && break
+		[[ -f $marker ]] && break
 		sleep 0.1
 	done
+	[ "$(cat "$marker")" = "popup-ok" ]
+
+	t list-panes -t s -F '#{pane_modal_flag}' | grep -qx 1
+
+	run t list-sessions
+	[ "$status" -eq 0 ]
+
+	printf 'display-popup -C -t s:\n' >&"${CTL[1]}" || true
 	printf 'detach-client\n' >&"${CTL[1]}" || true
 	kill "$CTL_PID" 2>/dev/null || true
-
-	[ "$(cat "$sentinel")" = "sentinel-ok" ]
-	[ ! -f "$marker" ]
 }
 
 # === Remote bridge structural-input gate (M2.3) ===

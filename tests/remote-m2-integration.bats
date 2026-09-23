@@ -3810,6 +3810,134 @@ attach_pty_client() {
 	[ "$src_float" = "$dst_float" ]
 }
 
+# #738: display-popup's CLIENT_CONTROL bail in cmd_display_popup_exec used to
+# resolve a REMOTE shell's own popup to the daemon's control client and
+# silently open nothing — patches/tmux-display-popup-control-client.patch
+# drops it. Issued from inside the mirrored pane (the production entry
+# point), bare tmux: the pane's $TMUX already names the m2src server. Red
+# against unpatched tmux: no remote float ever exists, so src_float stays
+# empty and the first assertion below fails, not a later step.
+@test "a remote display-popup opens a float the mirror gains (#738)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 popup1
+
+	base="$($SRC display-message -p -t rem -F '#{pane_id}')"
+	$SRC send-keys -t "$base" "tmux display-popup -E 'sleep 90'" Enter
+
+	src_float="" dst_float=""
+	for _ in $(seq 1 60); do
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_width}x#{pane_height}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_width}x#{pane_height}')"
+		[ -n "$src_float" ] && [ "$src_float" = "$dst_float" ] && break
+		sleep 0.15
+	done
+
+	# The remote popup is modal; the mirror renders it as an ordinary local
+	# float (the documented design a silent regression would break).
+	src_modal="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_modal_flag}')"
+	dst_modal="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_modal_flag}')"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$src_float" ]
+	[ "$src_float" = "$dst_float" ]
+	[ "$src_modal" = 1 ]
+	[ "$dst_modal" = 0 ]
+}
+
+# #738: a remote popup opened without -E leaves a dead modal float once its
+# command exits, and window_lost_pane never reaps it (window.c:1156/1175), so
+# w->modal stays set and every later popup in that window is a silent no-op.
+# A lone Escape into the mirror makes pumpInput send display-popup -C to
+# clear it. Keys always target $base by id: once the popup is open it is
+# the remote's active pane, so -t rem would land inside the popup instead.
+@test "a dead remote popup is dismissable from the mirror (#738)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 popup2
+
+	base="$($SRC display-message -p -t rem -F '#{pane_id}')"
+	$SRC send-keys -t "$base" "tmux display-popup 'echo popup-done'" Enter
+
+	mirror_float="" src_dead=""
+	for _ in $(seq 1 60); do
+		mirror_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		src_dead="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_dead}')"
+		[ -n "$mirror_float" ] && [ "$src_dead" = 1 ] && break
+		sleep 0.15
+	done
+	[ -n "$mirror_float" ]
+	[ "$src_dead" = 1 ]
+
+	$DST send-keys -t "$mirror_float" Escape
+
+	src_float="" dst_float=""
+	for _ in $(seq 1 60); do
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		[ -z "$src_float" ] && [ -z "$dst_float" ] && break
+		sleep 0.15
+	done
+	[ -z "$src_float" ]
+	[ -z "$dst_float" ]
+
+	# The wedge: a fresh popup must open again, proving w->modal was
+	# actually cleared and not just hidden behind the dead pane.
+	$SRC send-keys -t "$base" "tmux display-popup -E 'sleep 90'" Enter
+
+	for _ in $(seq 1 60); do
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		[ -n "$src_float" ] && [ -n "$dst_float" ] && break
+		sleep 0.15
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$src_float" ]
+	[ -n "$dst_float" ]
+}
+
+# #738: the fzf >=0.74 shape, which nothing else here covers — a float a
+# REMOTE SHELL opens from inside its own pane via new-pane (not the
+# daemon's external new-pane -d), landing in a window that already has a
+# tiled split, which is where the pane-diff mapping could go wrong and the
+# one-pane cases above cannot see it. Bare tmux inside the pane, argv
+# captured from the real fzf 0.74 binary via a PATH shim.
+@test "a float a remote shell opens from inside its own pane mirrors (#738)" {
+	$SRC new-session -d -s rem -x 138 -y 36
+	$SRC split-window -h -t rem
+	$SRC split-window -v -t rem
+	$DST new-session -d -s host-sess -x 138 -y 36
+	bridge_up 3 shellfloat
+
+	active="$($SRC display-message -p -t rem -F '#{pane_id}')"
+	src_tiled_before="$(sorted_tiled_dims "$SRC" rem)"
+
+	$SRC send-keys -t "$active" "tmux if -F -t $active '#{window_zoomed_flag}' 'resize-pane -Z -t $active' \; new-pane -P -F '#{pane_id}' -t $active -x 94 -y 16 -X 13 -Y 7 sleep 90" Enter
+
+	src_float="" dst_float="" src_tiled="" dst_tiled=""
+	for _ in $(seq 1 60); do
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_width}x#{pane_height}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_width}x#{pane_height}')"
+		src_tiled="$(sorted_tiled_dims "$SRC" rem)"
+		dst_tiled="$(sorted_tiled_dims "$DST" host-sess:1)"
+		[ -n "$src_float" ] && [ "$src_float" = "$dst_float" ] && [ "$src_tiled" = "$dst_tiled" ] && break
+		sleep 0.15
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$src_float" ]
+	[ "$src_float" = "$dst_float" ]
+	[ "$src_tiled_before" = "$src_tiled" ]
+	[ "$src_tiled" = "$dst_tiled" ]
+}
+
 # #535: a float that is the USER's, not the daemon's, opened directly on
 # DST inside the mirror window. applyLayout's drop-mirrored-floats step and
 # the local-cells short-circuit used to exist only to route around the local
