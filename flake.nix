@@ -64,6 +64,11 @@
       pkgs.tmux.overrideAttrs (old: {
         version = "next-3.9";
         src = inputs.tmux-upstream;
+        # display-popup still carries the overlay-era CLIENT_CONTROL bail, so a
+        # popup a remote shell opens inside a bridged session resolves to the
+        # daemon's control client and silently opens nothing (#738). Drop once
+        # upstream takes it.
+        patches = (old.patches or []) ++ [./patches/tmux-display-popup-control-client.patch];
         configureFlags =
           old.configureFlags
           ++ ["--disable-asan"]
