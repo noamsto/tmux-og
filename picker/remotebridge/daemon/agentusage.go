@@ -21,9 +21,7 @@ const agentUsageFormat = "#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-age
 
 // usageRawMaxLen caps the published caches (the JSON half, after the cut).
 // Four caches of a few windows each fit in well under half of it. The open
-// half is uncapped here: it grows with the remote host's agent-pane count,
-// and capping the whole value before the cut would unset the segment on a
-// busy host.
+// half is not capped: it grows with the remote host's agent-pane count.
 const usageRawMaxLen = 4096
 
 // usageMaxWindows bounds the windows one agent may carry; no provider emits

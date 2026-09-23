@@ -1998,7 +1998,7 @@ $pane 1" ]; then
 	[[ $body == *"state=error"* ]]
 }
 
-# End-to-end for #743: the remote's own open-gate + published caches reach
+# End to end: the remote's own open-gate + published caches reach
 # the mirror's statusline as the remote host's figures, never the local
 # host's, and a hostile label never survives the sanitizer.
 @test "daemon ships the remote host's agent usage, gated and sanitized, into the mirror's statusline" {
@@ -2091,14 +2091,8 @@ $pane 1" ]; then
 	[ -z "$bridge_usage2" ]
 }
 
-# #743 follow-up: repair()'s usage.reset() clears the shipper's dedupe state
-# on every reconnect so a real change republishes, but the reattach itself
-# unsets @bridge_usage first (see daemon.go's repair path) — this proves the
-# reset also re-subscribes and re-stamps the SAME figure the drop wiped,
-# not just a changed one. transport_child/wait_bridge_disconnected/
-# wait_bridge_state are the helpers the control-connection-drop case below
-# uses for the same drop; defined further down but usable here since bats
-# sources the whole file before invoking any one test.
+# reattach unsets @bridge_usage, and the remote value never changes here, so
+# only repair's usage.reset() + re-subscribe can put the same figure back.
 @test "a reconnect re-stamps the remote agent usage the reattach dropped" {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
 

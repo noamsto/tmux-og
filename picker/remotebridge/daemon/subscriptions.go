@@ -8,8 +8,8 @@ import (
 
 // Every shipper here carries state the remote holds in OPTIONS (window, pane,
 // session or global), whose change emits no control-stream traffic of its own —
-// no %output, no %layout-change, nothing. A control client can subscribe to a format instead
-// and be told when its value moves (tmux 3.2):
+// no %output, no %layout-change, nothing. A control client can subscribe to a
+// format instead and be told when its value moves (tmux 3.2):
 //
 //	refresh-client -B "<name>:<what>:<format>"
 //	  -> %subscription-changed <name> $sess @win idx <pane|-> : <value>

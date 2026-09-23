@@ -109,9 +109,8 @@ func parseBridgeUsage(v string) map[string]usageCache {
 // session (@bridge_host set) renders the remote host's figures from
 // @bridge_usage, gated by every key present — the daemon already applied the
 // remote's own live open gate — and never touches local caches or localOpen,
-// so a mirror never shows local figures. A local session keeps the existing
-// path: read the cheap local caches first, and call localOpen only once
-// there's data worth gating.
+// so a mirror never shows local figures. A local session reads the cheap
+// local caches first and calls localOpen only once there's data worth gating.
 func usageFor(a args, localDir string, localOpen func() map[string]bool, now int64) string {
 	if a.bridgeHost != "" {
 		caches := parseBridgeUsage(a.bridgeUsage)
