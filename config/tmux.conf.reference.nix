@@ -844,6 +844,14 @@
     # point.
     set-hook -g window-resized          'run-shell -b "${script.tmux-float-refit}/bin/tmux-float-refit #{q:window_id}"'
 
+    # Responsive dispatcher grid layout (#749). Indexed [10] beside the
+    # tmux-float-refit setter at index 0, so a single resize fires both; the bare
+    # `set-hook -gu window-resized` above clears every index on reload. The
+    # dispatcher calls tmux-grid-refit itself after adding or removing a role
+    # pane, so no after-split-window / pane-exited hook is needed. Read-only on the
+    # @crew_* hints it consumes.
+    set-hook -g window-resized[10]      'run-shell -b "${script.tmux-grid-refit}/bin/tmux-grid-refit #{q:window_id}"'
+
     # Tag every newly-created window as a worktree window from its cwd — at
     # creation, regardless of creator or CLAUDECODE (issue #95). new-session
     # doesn't fire after-new-window for its first window, so both are needed; -b

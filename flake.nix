@@ -515,6 +515,25 @@
               touch $out
             '';
 
+          # The grid-refit WIRING (#749). Indexed [10] so the responsive grid
+          # setter coexists with the float refit at index 0 — a bare
+          # `set-hook -g window-resized` (index 0) is the trap this guards, since
+          # the second setter would silently replace it. The bare `-gu` clear
+          # must still precede both, as for the alert hooks.
+          grid-conf-assertions =
+            pkgs.runCommand "grid-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
+              grep -E 'set-hook -g window-resized\[10\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
+
+              clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
+              setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
+              [ "$clear" -lt "$setter" ]
+              touch $out
+            '';
+
           # Crew badge display gate (#671). status-format[1]'s single-line
           # window list wraps the existing bridge-aware crew-name ternary
           # (bridgeOpts() in generator/render/status.go: for name "crew_name",
@@ -1826,6 +1845,20 @@
               cp -r ${./tests} tests
               export HOME=$TMPDIR
               bats tests/float-refit.bats
+              touch $out
+            '';
+
+          grid-refit-tests =
+            pkgs.runCommand "grid-refit-tests" {
+              # mkTmux, not pkgs.tmux: the hook-coexistence case creates a real
+              # floating pane, same trap as float-refit-tests above. The other
+              # cases only need layout/pane options, which stock tmux has.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR
+              bats tests/grid-refit.bats
               touch $out
             '';
 
