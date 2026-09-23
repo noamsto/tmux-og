@@ -176,12 +176,16 @@ first_pane() { tmux list-panes -t "$WIN" -F '#{pane_id}' | head -1; }
 		bash "$GRID" "$WIN" &
 		p2=$!
 		wait "$p1" "$p2"
+
+		# Assert before the next re-arm and before any healing run: a final
+		# serial call would re-apply a demoted lead (the signature carries
+		# $lead and the skip needs lead==first), masking a broken lock.
+		[ "$(first_pane)" = "$LEAD" ]
 	done
 
 	# The mkdir lock serializes the non-idempotent swap, so no racing pair
 	# leaves the lead demoted to a role column (#749's exact symptom).
 	bash "$GRID" "$WIN"
-	[ "$(first_pane)" = "$LEAD" ]
 	[ "$(tmux show-options -w -v -t "$WIN" main-pane-width)" = "60%" ]
 }
 

@@ -36,6 +36,8 @@ acquire_lock() {
 		now=$(date +%s)
 		((now - mtime < 60)) && return 1
 		rmdir "$dir" 2>/dev/null
+	else
+		rm -f "$dir" 2>/dev/null
 	fi
 	mkdir "$dir" 2>/dev/null
 }
