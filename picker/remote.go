@@ -87,6 +87,10 @@ var (
 	errRemoteHostKeyChanged = errors.New("remote host key changed")
 	errRemoteTailscaleCheck = errors.New("remote requires a Tailscale SSH check")
 	errRemoteSessionGone    = errors.New("remote session already gone")
+	// errRemoteKillUnrunnable is a reachable host whose tmux the ssh command
+	// could not execute (exit 126/127, or any other non-1 tmux failure). The
+	// session may still exist, so the row is kept rather than forgotten.
+	errRemoteKillUnrunnable = errors.New("remote could not run tmux")
 )
 
 type remoteProbeState int
@@ -600,9 +604,12 @@ func detectTailscaleCheck(stdout string) (url string, ok bool) {
 // probe's stdout is still usable evidence (#486).
 // classifyKillErr maps a failed kill-session ssh round trip to the same
 // host-level states classifyProbeErr maps a probe to, with one difference: a
-// non-255 exit is the remote tmux command's own failure — overwhelmingly a
-// session that is already gone — so it maps to errRemoteSessionGone rather
-// than errRemoteNoServer.
+// non-255 exit is the remote tmux command's own failure. Exit 1 is tmux
+// reporting the session already absent (or no server), so it maps to
+// errRemoteSessionGone; a command that could not be executed at all (126/127,
+// e.g. tmux missing from both PATH and the per-user profile) or any other
+// uncertain non-zero code maps to errRemoteKillUnrunnable, which keeps the row
+// rather than forgetting a session never proven gone.
 func classifyKillErr(err error, stdout, stderr string, timedOut bool) error {
 	if timedOut {
 		if url, ok := detectTailscaleCheck(stdout); ok {
@@ -612,7 +619,10 @@ func classifyKillErr(err error, stdout, stderr string, timedOut bool) error {
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() != sshConnectFailureExit {
-		return fmt.Errorf("%w: %w", errRemoteSessionGone, err)
+		if exitErr.ExitCode() == 1 {
+			return fmt.Errorf("%w: %w", errRemoteSessionGone, err)
+		}
+		return fmt.Errorf("%w: %w", errRemoteKillUnrunnable, err)
 	}
 	if strings.Contains(stderr, hostKeyChangedPattern) || strings.Contains(stderr, revokedHostKeyPattern) {
 		return fmt.Errorf("%w: %w", errRemoteHostKeyChanged, err)

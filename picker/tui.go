@@ -126,6 +126,11 @@ type tuiModel struct {
 	// killConfirm holds the remote session rows staged for a y/N confirmation;
 	// non-empty means the next key answers the prompt (see handleKillConfirm).
 	killConfirm []listItem
+	// forgotten records every (host,sess) killed in this popup. The initial
+	// remote probe runs concurrently with a kill and its late remoteMsg (and
+	// cache write) can name a session already killed, so remoteMsg filters
+	// against this set and re-forgets the cache it may have rewritten.
+	forgotten map[string]bool
 
 	// Preview
 	preview        viewport.Model
@@ -431,6 +436,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case remoteMsg:
 		keep := m.currentTarget()
 		m.remoteItems = msg.items
+		if len(m.forgotten) > 0 {
+			// The probe listed (and wrote the cache) before the kill landed;
+			// drop the dead rows and undo the cache write so they cannot
+			// revive (#736).
+			kept := make([]listItem, 0, len(msg.items))
+			for _, it := range msg.items {
+				if it.remoteSess != "" && m.forgotten[it.remoteHost+"\x00"+it.remoteSess] {
+					forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+					continue
+				}
+				kept = append(kept, it)
+			}
+			m.remoteItems = kept
+		}
 		m = m.recombine().withFilter()
 		m = m.restoreCursor(keep)
 		if m.mode == modeWall {
@@ -1552,6 +1571,8 @@ func remoteKillFailure(host, sess string, err error) string {
 		return prefix + "host key changed"
 	case errors.Is(err, errRemoteTailscaleCheck):
 		return prefix + "tailscale check required"
+	case errors.Is(err, errRemoteKillUnrunnable):
+		return prefix + "could not run tmux"
 	default:
 		return prefix + "unreachable"
 	}
@@ -1567,8 +1588,12 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 		return m
 	}
 	killed := make(map[string]bool, len(targets))
+	if m.forgotten == nil {
+		m.forgotten = make(map[string]bool, len(targets))
+	}
 	for _, it := range targets {
 		killed[it.remoteHost+"\x00"+it.remoteSess] = true
+		m.forgotten[it.remoteHost+"\x00"+it.remoteSess] = true
 		forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
 		for _, bm := range m.mirrors {
 			if bm.host == it.remoteHost && bm.sess == it.remoteSess {

@@ -2060,3 +2060,85 @@ func TestKillConfirmPromptFitsWidth(t *testing.T) {
 		t.Errorf("prompt = %q, want the (y/N) suffix", got)
 	}
 }
+
+// A reachable host whose tmux could not be executed (126/127) keeps its row:
+// the session was never proven absent.
+func TestRemoteKillUnrunnableKeepsRow(t *testing.T) {
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "mono", "other")
+	fakeKillSSH(t, 127)
+	mono := killRemoteRow("lab", "mono")
+	m := tuiModel{width: 120, remoteItems: []listItem{mono}, killConfirm: []listItem{mono}}
+	m = m.recombine().withFilter()
+
+	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := next.(tuiModel)
+	if len(mm.remoteItems) != 1 {
+		t.Errorf("an unrunnable kill dropped the row: %+v", mm.remoteItems)
+	}
+	if !strings.Contains(mm.statusMsg, "could not run tmux") {
+		t.Errorf("statusMsg = %q, want a could-not-run hint", mm.statusMsg)
+	}
+	if c, _ := readRemoteSessionCache("lab"); strings.Join(c.Sessions, ",") != "mono,other" {
+		t.Errorf("cache = %v, want it untouched", c.Sessions)
+	}
+}
+
+// The mirror belonging to a killed remote session is torn down through the
+// stopBridgeDaemon owner, using the mirror's local session name.
+func TestRemoteKillTearsDownMirror(t *testing.T) {
+	useRemoteCache(t)
+	fakeKillSSH(t, 0)
+	mono := killRemoteRow("lab", "mono")
+	m := tuiModel{
+		width:       120,
+		remoteItems: []listItem{mono},
+		mirrors:     []bridgeMirror{{host: "lab", sess: "mono", target: "lab-mono"}},
+		killConfirm: []listItem{mono},
+	}
+	m = m.recombine().withFilter()
+
+	var got []string
+	orig := stopBridgeDaemonFn
+	stopBridgeDaemonFn = func(sess string) { got = append(got, sess) }
+	t.Cleanup(func() { stopBridgeDaemonFn = orig })
+
+	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := next.(tuiModel)
+	if len(got) != 1 || got[0] != "lab-mono" {
+		t.Fatalf("stopBridgeDaemonFn calls = %v, want [lab-mono]", got)
+	}
+	if len(mm.mirrors) != 0 {
+		t.Errorf("mirror survived the kill: %+v", mm.mirrors)
+	}
+}
+
+// The initial remote probe can land after a kill with a listing (and a cache
+// write) that still names the dead session; remoteMsg must not revive it.
+func TestKillForgetSurvivesLateRemoteMsg(t *testing.T) {
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "mono", "other")
+	fakeKillSSH(t, 0)
+	mono := killRemoteRow("lab", "mono")
+	other := killRemoteRow("lab", "other")
+	m := tuiModel{width: 120, remoteItems: []listItem{mono, other}, killConfirm: []listItem{mono}}
+	m = m.recombine().withFilter()
+
+	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := next.(tuiModel)
+	if len(mm.remoteItems) != 1 {
+		t.Fatalf("kill left %d rows, want 1", len(mm.remoteItems))
+	}
+
+	// The in-flight probe's cache write lands with mono still listed...
+	writeRemoteSessionCache("lab", []string{"mono", "other"}, time.Now())
+	// ...and its remoteMsg arrives after the kill.
+	next2, _ := mm.Update(remoteMsg{items: []listItem{mono, other}})
+	final := next2.(tuiModel)
+	if len(final.remoteItems) != 1 || final.remoteItems[0].remoteSess != "other" {
+		t.Errorf("late remoteMsg revived the killed row: %+v", final.remoteItems)
+	}
+	if c, _ := readRemoteSessionCache("lab"); strings.Join(c.Sessions, ",") != "other" {
+		t.Errorf("late probe's cache write survived: %v", c.Sessions)
+	}
+}

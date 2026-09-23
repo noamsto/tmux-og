@@ -23,10 +23,14 @@ func TestClassifyKillErr(t *testing.T) {
 		timedOut bool
 		want     error
 	}{
-		// A non-255 exit is the remote tmux command's own failure — a session
-		// that is already gone, not an unreachable host.
+		// A non-255 exit is the remote tmux command's own failure. Exit 1 is a
+		// session already gone; a command that could not run (126/127) or any
+		// other uncertain non-zero code keeps the row.
 		{"exit 1 is a gone session", exitErr(1), "", "can't find session: mono", false, errRemoteSessionGone},
-		{"exit 127 (tmux missing) still the command's own", exitErr(127), "", "", false, errRemoteSessionGone},
+		{"exit 1, no server running, is gone too", exitErr(1), "", "no server running on /tmp/tmux-1000/default", false, errRemoteSessionGone},
+		{"exit 127 (tmux missing)", exitErr(127), "", "", false, errRemoteKillUnrunnable},
+		{"exit 126 (tmux not executable)", exitErr(126), "", "", false, errRemoteKillUnrunnable},
+		{"exit 2 (uncertain tmux failure) keeps the row", exitErr(2), "", "", false, errRemoteKillUnrunnable},
 		{"timeout beats the exit status", exitErr(1), "", "", true, errRemoteUnreachable},
 		{"ssh binary missing", errors.New(`exec: "ssh": not found`), "", "", false, errRemoteUnreachable},
 
