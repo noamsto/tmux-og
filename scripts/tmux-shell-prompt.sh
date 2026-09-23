@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Invoked by the pane-shell-prompt hook (OSC 133;A) with #{q:hook_pane}
 # #{qs:pane_current_command} #{qs:session_name} #{q:window_id}
-# #{q:@window_has_agent}. Clears an exited agent's state, but only when the
-# foreground command at the prompt is no longer an agent: a still-running
-# agent emitting a nested prompt (subshell, `!`) reports itself as the
-# foreground process-group leader and must not read as "agent gone".
+# #{?#{@window_has_agent},1,0} #{?#{@bridge_win},1,0} — both booleans go through
+# `#{?…,1,0}` because an unset user option makes `#{q:…}` expand to nothing, not
+# an empty word, so a bare trailing option would vanish and shift the next arg
+# into its slot. Clears an exited agent's state, but only when the foreground
+# command at the prompt is no longer an agent: a still-running agent emitting a
+# nested prompt (subshell, `!`) reports itself as the foreground process-group
+# leader and must not read as "agent gone". A @bridge_win mirror window is
+# skipped whole before that clear (#741): its pane state is daemon-owned.
 #
 # Also the event trigger for #671: when this was the window's last live
 # agent, resets the window's naming/crew display state (never
