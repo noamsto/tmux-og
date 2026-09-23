@@ -66,6 +66,39 @@ func TestRemoteSessionCacheRoundTrip(t *testing.T) {
 	}
 }
 
+// Forgetting one session must drop exactly that row and preserve the
+// snapshot's SavedAt, so the host's remaining rows keep their (cached …) age
+// instead of jumping to fresh the moment a kill lands.
+func TestForgetRemoteSessionCache(t *testing.T) {
+	useRemoteCache(t)
+	savedAt := time.UnixMilli(1_700_000_000_123)
+	seedRemoteCache(t, "lab", savedAt, "mono", "gone", "other")
+
+	forgetRemoteSessionCache("lab", "gone")
+	c, ok := readRemoteSessionCache("lab")
+	if !ok {
+		t.Fatal("cache vanished after a forget")
+	}
+	if strings.Join(c.Sessions, ",") != "mono,other" {
+		t.Errorf("sessions = %v, want mono,other", c.Sessions)
+	}
+	if c.SavedAt != savedAt.UnixMilli() {
+		t.Errorf("SavedAt = %d, want the original %d (a forget must not refresh the age)", c.SavedAt, savedAt.UnixMilli())
+	}
+
+	// Forgetting an absent session leaves the list untouched.
+	forgetRemoteSessionCache("lab", "absent")
+	if c, _ = readRemoteSessionCache("lab"); strings.Join(c.Sessions, ",") != "mono,other" {
+		t.Errorf("absent forget changed sessions: %v", c.Sessions)
+	}
+
+	// A host with no cache is a no-op.
+	forgetRemoteSessionCache("dead", "x")
+	if _, ok := readRemoteSessionCache("dead"); ok {
+		t.Error("forget created a cache for a host that had none")
+	}
+}
+
 func TestRemoteSessionCacheIgnoresUntrustedDir(t *testing.T) {
 	dir := useRemoteCache(t)
 	writeRemoteSessionCache("lab", []string{"mono"}, time.Now())

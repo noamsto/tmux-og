@@ -57,6 +57,15 @@ func remoteTmuxCmd(args string) string {
 
 var remoteListSessionsCmd = remoteIdentityPreamble + `; ` + remoteListSessionsBody
 
+// remoteKillSessionBody builds the remote-side tmux command that kills one
+// session. The `=` prefix makes the target an exact name match (a numeric
+// session name would otherwise also resolve as a window/pane index), and the
+// name is single-quoted by shellQuote so a remote-controlled session name can
+// never inject a second command through the remote login shell.
+func remoteKillSessionBody(sess string) string {
+	return remoteTmuxCmd(`kill-session -t ` + shellQuote("="+sess))
+}
+
 // remoteSelfCacheDir holds alias→self verdicts so pendingRemoteItems can omit
 // known-self hosts on the first paint without another ssh probe.
 var remoteSelfCacheDir = "/tmp/og-remote-self"
@@ -77,6 +86,7 @@ var (
 	errRemoteNeedsAuth      = errors.New("remote needs interactive authentication")
 	errRemoteHostKeyChanged = errors.New("remote host key changed")
 	errRemoteTailscaleCheck = errors.New("remote requires a Tailscale SSH check")
+	errRemoteSessionGone    = errors.New("remote session already gone")
 )
 
 type remoteProbeState int
@@ -338,6 +348,23 @@ func writeRemoteSessionCache(host string, sessions []string, now time.Time) {
 	}
 }
 
+// forgetRemoteSessionCache drops sess from host's cached listing, preserving
+// the snapshot's SavedAt so the host's remaining rows keep their (cached …)
+// age instead of jumping to fresh. A missing or untrusted cache is a no-op.
+func forgetRemoteSessionCache(host, sess string) {
+	c, ok := readRemoteSessionCache(host)
+	if !ok {
+		return
+	}
+	kept := make([]string, 0, len(c.Sessions))
+	for _, s := range c.Sessions {
+		if s != sess {
+			kept = append(kept, s)
+		}
+	}
+	writeRemoteSessionCache(host, kept, time.UnixMilli(c.SavedAt))
+}
+
 func readRemoteSessionCache(host string) (remoteSessionCache, bool) {
 	dir := remoteSessionCacheDir()
 	if dir == "" || !ownerOnlyDir(dir) {
@@ -571,6 +598,33 @@ func detectTailscaleCheck(stdout string) (url string, ok bool) {
 // by the probe's own deadline rather than exiting 255, but tailscaled's check
 // banner still arrives on stdout before the process is killed, so a killed
 // probe's stdout is still usable evidence (#486).
+// classifyKillErr maps a failed kill-session ssh round trip to the same
+// host-level states classifyProbeErr maps a probe to, with one difference: a
+// non-255 exit is the remote tmux command's own failure — overwhelmingly a
+// session that is already gone — so it maps to errRemoteSessionGone rather
+// than errRemoteNoServer.
+func classifyKillErr(err error, stdout, stderr string, timedOut bool) error {
+	if timedOut {
+		if url, ok := detectTailscaleCheck(stdout); ok {
+			return &tailscaleCheckErr{url: url}
+		}
+		return fmt.Errorf("%w: kill timed out", errRemoteUnreachable)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() != sshConnectFailureExit {
+		return fmt.Errorf("%w: %w", errRemoteSessionGone, err)
+	}
+	if strings.Contains(stderr, hostKeyChangedPattern) || strings.Contains(stderr, revokedHostKeyPattern) {
+		return fmt.Errorf("%w: %w", errRemoteHostKeyChanged, err)
+	}
+	for _, p := range authFailurePatterns {
+		if strings.Contains(stderr, p) {
+			return fmt.Errorf("%w: %w", errRemoteNeedsAuth, err)
+		}
+	}
+	return fmt.Errorf("%w: %w", errRemoteUnreachable, err)
+}
+
 func classifyProbeErr(err error, stdout, stderr string, timedOut bool) error {
 	if timedOut {
 		if url, ok := detectTailscaleCheck(stdout); ok {
@@ -631,6 +685,32 @@ func remoteAuthStartFailure(err error) (string, bool) {
 		return err.Error(), true
 	}
 	return "", false
+}
+
+// sshKillRemoteSession kills sess on host over ssh. It returns nil on success
+// and a classified error otherwise: errRemoteSessionGone when the remote tmux
+// ran and reported the session already absent, errRemoteUnreachable (or the
+// auth/host-key/tailscale states) when ssh itself could not complete.
+func sshKillRemoteSession(host, sess string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ssh",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=2",
+		"-T",
+		host,
+		"--",
+		remoteKillSessionBody(sess),
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
+	return classifyKillErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
 }
 
 // sshListRemoteSessions runs the same path/tmpdir resolution as
@@ -1294,3 +1374,8 @@ func stopBridgeDaemon(sess string) {
 	}
 	proc.Signal(syscall.SIGTERM) //nolint:errcheck
 }
+
+// stopBridgeDaemonFn seals stopBridgeDaemon for tests: the remote-session kill
+// path signals the mirror daemon through it, and a unit test cannot read a
+// live server's @bridge_sock. Production uses the real function.
+var stopBridgeDaemonFn = stopBridgeDaemon

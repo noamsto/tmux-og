@@ -123,6 +123,9 @@ type tuiModel struct {
 
 	// Transient error shown in the hint line (e.g. session-create failure)
 	statusMsg string
+	// killConfirm holds the remote session rows staged for a y/N confirmation;
+	// non-empty means the next key answers the prompt (see handleKillConfirm).
+	killConfirm []listItem
 
 	// Preview
 	preview        viewport.Model
@@ -537,6 +540,9 @@ func nextScope(cur hostScope, hosts []string) hostScope {
 func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = "" // any keypress clears a stale create-error
 	key := msg.String()
+	if len(m.killConfirm) > 0 {
+		return m.handleKillConfirm(key)
+	}
 	// The wall's keymap runs first: letters navigate the grid there, so a shared
 	// branch must never see a key the wall (or its filter prompt) owns.
 	if m.mode == modeWall {
@@ -606,6 +612,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.zoxideCmd()
+		}
+		if isKillableRemoteSession(item) {
+			targets := m.killableMarkedRemoteItems()
+			if len(targets) == 0 {
+				targets = []listItem{item}
+			}
+			m.killConfirm = targets
+			return m, nil
 		}
 		if item.target != "" && item.remoteHost == "" {
 			if strings.Contains(item.target, ":") {
@@ -1456,6 +1470,134 @@ func (m tuiModel) openMarkedRemoteWith(
 	}
 	m.marked = nil
 	return m, tea.Quit
+}
+
+// isKillableRemoteSession reports whether item is a live session on a remote
+// host that ^x may kill. A restorable snapshot row (remoteRestore) has no
+// remote session yet, and a host row (remoteSess == "") is not a session.
+func isKillableRemoteSession(item listItem) bool {
+	return item.remoteHost != "" && item.remoteSess != "" && !item.remoteRestore
+}
+
+// killableMarkedRemoteItems is markedRemoteItems narrowed to rows ^x can kill,
+// so a marked restore row is never staged for a kill that has nothing to kill.
+func (m tuiModel) killableMarkedRemoteItems() []listItem {
+	marked := m.markedRemoteItems()
+	out := make([]listItem, 0, len(marked))
+	for _, it := range marked {
+		if !it.remoteRestore {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// handleKillConfirm answers a staged remote-kill prompt. Only y/Y acts; every
+// other key — n, esc, space, an unmapped chord — cancels, so the destructive
+// default is NO.
+func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
+	if key == "ctrl+c" {
+		m.killConfirm = nil
+		return m, tea.Quit
+	}
+	text, ok := printableKeyText(key)
+	if !ok || (text != "y" && text != "Y") {
+		m.killConfirm = nil
+		return m, nil
+	}
+	targets := m.killConfirm
+	m.killConfirm = nil
+	return m.killRemoteSessions(targets)
+}
+
+// killRemoteSessions runs the staged remote kills. Each row is killed on its
+// host over ssh. A host that answers "already gone" still forgets its row; an
+// unreachable host (or a refused ssh state) keeps the row and explains itself
+// in the hint line. Synchronous, like openRemoteBridge: the picker owns the
+// screen and no background result channel exists for a kill; each round trip
+// carries the same remoteProbeTimeout bound as the probe path.
+func (m tuiModel) killRemoteSessions(targets []listItem) (tea.Model, tea.Cmd) {
+	var forget []listItem
+	var msgs []string
+	for _, it := range targets {
+		err := sshKillRemoteSession(it.remoteHost, it.remoteSess)
+		switch {
+		case err == nil:
+			logEvent("picker", "event", "kill_remote_session", "host", it.remoteHost, "sess", it.remoteSess)
+			forget = append(forget, it)
+		case errors.Is(err, errRemoteSessionGone):
+			logEvent("picker", "event", "kill_remote_session_gone", "host", it.remoteHost, "sess", it.remoteSess)
+			msgs = append(msgs, it.remoteHost+"/"+it.remoteSess+" was already gone")
+			forget = append(forget, it)
+		default:
+			logEvent("picker", "event", "kill_remote_session_failed", "host", it.remoteHost, "sess", it.remoteSess, "error", err.Error())
+			msgs = append(msgs, remoteKillFailure(it.remoteHost, it.remoteSess, err))
+		}
+	}
+	m = m.forgetRemoteRows(forget)
+	if len(msgs) > 0 {
+		m.statusMsg = strings.Join(msgs, "; ")
+	}
+	return m, nil
+}
+
+// remoteKillFailure is the hint-line wording for a kill ssh that did not
+// complete; the specific ssh state is worth naming over a bare "failed".
+func remoteKillFailure(host, sess string, err error) string {
+	prefix := host + "/" + sess + ": "
+	switch {
+	case errors.Is(err, errRemoteNeedsAuth):
+		return prefix + "ssh needs auth"
+	case errors.Is(err, errRemoteHostKeyChanged):
+		return prefix + "host key changed"
+	case errors.Is(err, errRemoteTailscaleCheck):
+		return prefix + "tailscale check required"
+	default:
+		return prefix + "unreachable"
+	}
+}
+
+// forgetRemoteRows drops killed (or already-gone) remote sessions from the
+// picker at once: the host's cache, the in-memory Remote rows, any local mirror
+// (torn down through stopBridgeDaemon, the same owner the manual mirror close
+// uses), and the multi-select marks. Without the cache rewrite the row would
+// revive from a stale listing on the next launch.
+func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
+	if len(targets) == 0 {
+		return m
+	}
+	killed := make(map[string]bool, len(targets))
+	for _, it := range targets {
+		killed[it.remoteHost+"\x00"+it.remoteSess] = true
+		forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		for _, bm := range m.mirrors {
+			if bm.host == it.remoteHost && bm.sess == it.remoteSess {
+				stopBridgeDaemonFn(bm.target)
+			}
+		}
+		delete(m.marked, it.target)
+	}
+	keptRows := make([]listItem, 0, len(m.remoteItems))
+	for _, it := range m.remoteItems {
+		if it.remoteSess != "" && killed[it.remoteHost+"\x00"+it.remoteSess] {
+			continue
+		}
+		keptRows = append(keptRows, it)
+	}
+	m.remoteItems = keptRows
+	keptMirrors := make([]bridgeMirror, 0, len(m.mirrors))
+	for _, bm := range m.mirrors {
+		if killed[bm.host+"\x00"+bm.sess] {
+			continue
+		}
+		keptMirrors = append(keptMirrors, bm)
+	}
+	m.mirrors = keptMirrors
+
+	keep := m.currentTarget()
+	m = m.recombine().withFilter()
+	m = m.restoreCursor(keep)
+	return m
 }
 
 // listRowTop is the first screen row of the list body — just below the search

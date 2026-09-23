@@ -195,6 +195,22 @@ func (m tuiModel) renderHints() string {
 	dim := lipgloss.NewStyle().Foreground(m.thmColor("@thm_surface_2", "#585b70", "#9ca0b0"))
 	key := lipgloss.NewStyle().Foreground(m.thmColor("@thm_lavender", "#b4befe", "#7287fd"))
 
+	if len(m.killConfirm) > 0 {
+		warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
+		prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
+		if n := len(m.killConfirm); n > 1 {
+			prompt = "kill " + strconv.Itoa(n) + " remote sessions?"
+		}
+		// The (y/N) answer is the one part that must never be truncated away,
+		// so reserve its cells and clip only the name/question to the rest.
+		suffix := warn.Render("  (y/N)")
+		headWidth := m.width - visibleWidth("  (y/N)")
+		if headWidth < 0 {
+			headWidth = 0
+		}
+		return fitVisibleWidth(warn.Render("  "+prompt), headWidth) + suffix
+	}
+
 	if m.statusMsg != "" {
 		red := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
 		return fitVisibleWidth(red.Render("  "+m.statusMsg), m.width)
