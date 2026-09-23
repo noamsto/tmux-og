@@ -160,6 +160,31 @@ first_pane() { tmux list-panes -t "$WIN" -F '#{pane_id}' | head -1; }
 	[ "$(tmux show-options -w -v -t "$WIN" @grid_refit_sig)" = "$sig" ]
 }
 
+@test "concurrent refits cannot demote the lead" {
+	make_grid 4
+
+	local last i p1 p2
+	for i in 1 2 3 4 5; do
+		# Re-arm: move the lead away from first and clear the signature so
+		# both invocations decide to lay the window out.
+		last="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | tail -1)"
+		[ "$last" = "$LEAD" ] || tmux swap-pane -d -s "$LEAD" -t "$last"
+		tmux set-option -w -u -t "$WIN" @grid_refit_sig
+
+		bash "$GRID" "$WIN" &
+		p1=$!
+		bash "$GRID" "$WIN" &
+		p2=$!
+		wait "$p1" "$p2"
+	done
+
+	# The mkdir lock serializes the non-idempotent swap, so no racing pair
+	# leaves the lead demoted to a role column (#749's exact symptom).
+	bash "$GRID" "$WIN"
+	[ "$(first_pane)" = "$LEAD" ]
+	[ "$(tmux show-options -w -v -t "$WIN" main-pane-width)" = "60%" ]
+}
+
 @test "no target argument: no-op, exits 0" {
 	run bash "$GRID"
 	[ "$status" -eq 0 ]

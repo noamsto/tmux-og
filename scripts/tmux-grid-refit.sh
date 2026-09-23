@@ -6,9 +6,10 @@
 # option.
 #   args: <target-window>   (the window-resized hook passes #{window_id})
 # No-op unless the window carries @crew_grid=1, so a window that is not a crew
-# grid — and any non-tmux-og server — is untouched. Silent, cheap and
-# convergent: @grid_refit_sig caches the last applied decision, so an unchanged
-# grid costs no tmux command and emits no reflow notification.
+# grid — and any non-tmux-og server — is untouched. Silent and convergent: an
+# unchanged grid issues no state-changing tmux command and emits no reflow
+# notification (@grid_refit_sig caches the last applied decision, and the
+# read-only probes before it are cheap).
 set -uo pipefail
 
 target=${1:-}
@@ -22,6 +23,23 @@ read_opt() {
 	[[ -n $val ]] && printf '%s' "$val" || printf '%s' "$2"
 }
 
+# acquire_lock DIR — non-blocking lock via atomic mkdir, the same primitive
+# lib-log's acquire_lock uses (`flock` is Linux-only and this flake builds on
+# darwin). Returns 0 once the lock is held (an EXIT trap releases it), 1 when a
+# live holder owns it. A dir older than the stale window is a crashed holder's
+# and is stolen, so a crash can never wedge every later refit.
+acquire_lock() {
+	local dir=$1 mtime now
+	mkdir "$dir" 2>/dev/null && return 0
+	if [[ -d $dir ]]; then
+		mtime=$(stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null || echo 0)
+		now=$(date +%s)
+		((now - mtime < 60)) && return 1
+		rmdir "$dir" 2>/dev/null
+	fi
+	mkdir "$dir" 2>/dev/null
+}
+
 [[ "$(read_opt @crew_grid 0)" == 1 ]] || exit 0
 
 # Zoom is user state: a zoomed grid is left exactly as the user left it.
@@ -31,7 +49,8 @@ read_opt() {
 lead=$(tmux list-panes -t "$target" -f '#{==:#{@crew_role},lead}' -F '#{pane_id}' 2>/dev/null | head -1)
 [[ -n $lead ]] || exit 0
 
-pane_ids=$(tmux list-panes -t "$target" -F '#{pane_id}' 2>/dev/null)
+read_panes() { tmux list-panes -t "$target" -F '#{pane_id}' 2>/dev/null; }
+pane_ids=$(read_panes)
 np=$(printf '%s\n' "$pane_ids" | grep -c .) || true
 ((np > 1)) || exit 0
 
@@ -57,17 +76,37 @@ else
 	opt=main-pane-height
 fi
 
-sig="$layout:$pct:$np:${w}x${h}:$min_cols:$aspect"
-[[ "$(read_opt @grid_refit_sig '')" == "$sig" ]] && exit 0
-
-# Claim before mutating: window-resized is backgrounded, so concurrent refits
-# can be in flight during a drag, and the swap below is the one non-idempotent
-# step. The loser of the claim exits above instead of swapping a second time.
-tmux set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null || true
-
+# $lead is part of the signature so a re-tagged lead forces a re-layout, and
+# the lead-is-first test below makes a demoted lead (a race that slipped
+# through before this lock existed) re-apply instead of caching the breakage.
+sig="$layout:$pct:$np:${w}x${h}:$min_cols:$aspect:$lead"
 first=$(printf '%s\n' "$pane_ids" | head -1)
-[[ $lead == "$first" ]] || tmux swap-pane -d -s "$lead" -t "$first" 2>/dev/null || true
+if [[ "$(read_opt @grid_refit_sig '')" == "$sig" && $lead == "$first" ]]; then
+	exit 0
+fi
 
-tmux set-window-option -t "$target" "$opt" "${pct}%" 2>/dev/null || true
-tmux select-layout -t "$target" "$layout" 2>/dev/null || true
+# Serialize the read-modify-write. window-resized is backgrounded and the
+# dispatcher also calls this binary directly, so two refits can be in flight;
+# without the lock both would swap the lead and the second swap demotes it.
+srv=""
+IFS=, read -r _ srv _ <<<"${TMUX:-}"
+lockdir="${TMPDIR:-/tmp}/og-grid-refit.lock.${srv:-0}.${target//[^A-Za-z0-9]/_}"
+acquire_lock "$lockdir" || exit 0
+# shellcheck disable=SC2064  # bake $lockdir now; no locals live past EXIT
+trap "rmdir \"$lockdir\" 2>/dev/null" EXIT
+
+# Re-check under the lock: a peer may have applied this very decision while we
+# were between the fast check above and the acquire.
+first=$(read_panes | head -1)
+if [[ "$(read_opt @grid_refit_sig '')" == "$sig" && $lead == "$first" ]]; then
+	exit 0
+fi
+
+ok=1
+[[ $lead == "$first" ]] || tmux swap-pane -d -s "$lead" -t "$first" 2>/dev/null || ok=0
+tmux set-window-option -t "$target" "$opt" "${pct}%" 2>/dev/null || ok=0
+tmux select-layout -t "$target" "$layout" 2>/dev/null || ok=0
+# Cache only a decision that actually landed: a failed run leaves the sig stale
+# so the next refit retries instead of caching the breakage.
+((ok)) && tmux set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null || true
 exit 0
