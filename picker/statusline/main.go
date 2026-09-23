@@ -148,8 +148,8 @@ type args struct {
 	iconRemote                       string
 
 	// coding-agent usage segment (feature off when usageMonthlyThreshold == 0)
-	iconUsageClaude, iconUsageCodex, iconUsageCursor string
-	usageMonthlyThreshold                            int
+	iconUsageClaude, iconUsageCodex, iconUsageCursor, iconUsagePi string
+	usageMonthlyThreshold                                         int
 }
 
 // branchDisplay mirrors tmux-branch-display.sh: prefer the cached @branch,
@@ -278,7 +278,9 @@ var wrappedRe = regexp.MustCompile(`^\.(.*)-wrapped$`)
 // paneCmdDisplay names the command beside the pane icon. bridgeProc wins when
 // set: a mirror pane runs the bridge renderer, so pane_current_command names
 // that rather than the remote command on screen — the same preference the icon
-// beside it takes (tmux-update-icons) and the agent scan in usage.go (#590).
+// beside it takes (tmux-update-icons) (#590). The usage gate in usage.go
+// deliberately does not: a remote agent on a mirror doesn't open its local
+// usage column.
 func paneCmdDisplay(cmd, bridgeProc string) string {
 	if bridgeProc != "" {
 		cmd = bridgeProc
@@ -406,6 +408,7 @@ func main() {
 	flag.StringVar(&a.iconUsageClaude, "icon-usage-claude", "", "")
 	flag.StringVar(&a.iconUsageCodex, "icon-usage-codex", "", "")
 	flag.StringVar(&a.iconUsageCursor, "icon-usage-cursor", "", "")
+	flag.StringVar(&a.iconUsagePi, "icon-usage-pi", "", "")
 	flag.IntVar(&a.usageMonthlyThreshold, "agent-usage-monthly-threshold", 0, "")
 	flag.Parse()
 
@@ -438,17 +441,19 @@ func main() {
 		return
 	}
 
-	// Usage segment: cheapest gates first — reading the three cache files
-	// forks nothing, so the per-second tmux list-panes gate only runs when
-	// there's actual data to display.
+	// Usage segment: cheapest gates first — reading the cache files forks
+	// nothing, so the per-second tmux list-panes gate only runs when there's
+	// actual data to display.
 	usage := ""
 	if a.usageMonthlyThreshold > 0 {
 		usageDir := os.Getenv("OG_AGENT_USAGE_DIR")
 		if usageDir == "" {
 			usageDir = usageCacheDir
 		}
-		if caches := loadUsageCaches(usageDir); len(caches) > 0 && agentsRunning() {
-			usage = usageSegment(a, caches, time.Now().Unix())
+		if caches := loadUsageCaches(usageDir); len(caches) > 0 {
+			if open := openAgents(); len(open) > 0 {
+				usage = usageSegment(a, caches, open, time.Now().Unix())
+			}
 		}
 	}
 

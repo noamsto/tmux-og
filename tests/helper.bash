@@ -119,13 +119,13 @@ make_pr_enrich() {
 
 # Builds a runnable tmux-agent-usage with every placeholder resolved: @lib_log@
 # is sourced, @refresh_seconds@ is used in arithmetic (unsubstituted is a syntax
-# error), @AGENT_COMMANDS@ is the gate's match list, and the three provider
+# error), @AGENT_COMMANDS@ is the gate's match list, and the four provider
 # placeholders are EXECUTED by a pass — left raw, a test execs the literal
 # string. Providers become stubs that append their name to $USAGE_LOG.
 # Sets AGENT_USAGE_SCRIPT.
 make_agent_usage() {
 	local stub
-	for stub in claude codex cursor; do
+	for stub in claude codex cursor pi; do
 		cat >"$BATS_TEST_TMPDIR/usage-$stub" <<-EOF
 			#!/bin/sh
 			printf '%s\n' "$stub" >>"\$USAGE_LOG"
@@ -135,9 +135,10 @@ make_agent_usage() {
 	AGENT_USAGE_SCRIPT="$BATS_TEST_TMPDIR/tmux-agent-usage.sh"
 	sed -e "s|@lib_log@|$PWD/scripts/lib-log.sh|" \
 		-e 's|@refresh_seconds@|120|' \
-		-e 's|@AGENT_COMMANDS@|claude codex cursor-agent|' \
+		-e 's|@AGENT_COMMANDS@|claude codex cursor-agent pi|' \
 		-e "s|@usage_claude@|$BATS_TEST_TMPDIR/usage-claude|" \
 		-e "s|@usage_codex@|$BATS_TEST_TMPDIR/usage-codex|" \
 		-e "s|@usage_cursor@|$BATS_TEST_TMPDIR/usage-cursor|" \
+		-e "s|@usage_pi@|$BATS_TEST_TMPDIR/usage-pi|" \
 		scripts/tmux-agent-usage.sh >"$AGENT_USAGE_SCRIPT"
 }
