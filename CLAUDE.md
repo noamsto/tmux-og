@@ -69,7 +69,7 @@ Three drivers, and picking the wrong one is a recurring bug:
 
 - **`#()` in `status-format[0]`, every 1s** — `tmux-update-icons`, `claude-status`, `tmux-branch-display`, `tmux-dir-display`. Runs only for a client that draws a status line.
 - **`-B` monitor hooks, every 5s, client-independent** — `@og-sweep-tick` (`tmux-update-icons` sweep), `@og-pr-tick` (`tmux-pr-enrich`), `@og-backfill-tick` (`tmux-issue-stamp --backfill`), `@og-usage-tick` (`tmux-agent-usage`), `@og-res-tick` (`tmux-session-resources`).
-- **tmux hooks / keybinds / external callers** — `tmux-reflow-windows` (window add/remove/resize), `tmux-reap-pane` (`pane-exited`/`pane-died`), `tmux-shell-prompt` (`pane-shell-prompt`, OSC 133), `tmux-float-refit` (`window-resized`), `tmux-client-theme` (`client-*-theme`), `tmux-splash-maybe` (`client-attached`), `claude-status-update` (Claude Code plugin hooks), `tmux-worktree-match` + `tmux-issue-stamp` (worktrunk `post-switch`), the pickers (`prefix + s`/`w`/`W`), the `og-remote-*` launchers.
+- **tmux hooks / keybinds / external callers** — `tmux-reflow-windows` (window add/remove/resize), `tmux-reap-pane` (`pane-exited`/`pane-died`), `tmux-shell-prompt` (`pane-shell-prompt`, OSC 133), `tmux-float-refit` (`window-resized`), `tmux-grid-refit` (`window-resized[10]`), `tmux-client-theme` (`client-*-theme`), `tmux-splash-maybe` (`client-attached`), `claude-status-update` (Claude Code plugin hooks), `tmux-worktree-match` + `tmux-issue-stamp` (worktrunk `post-switch`), the pickers (`prefix + s`/`w`/`W`), the `og-remote-*` launchers.
 
 ### Claude Code plugin
 
