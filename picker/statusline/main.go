@@ -470,7 +470,7 @@ func main() {
 	// escapes to stdout or the cache.
 	line := strings.ReplaceAll(
 		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, liveIDs), "\n", " ")
-	if ok {
+	if ok && panesOK {
 		writeLastGood(statuslineCacheDir, a.session, line)
 	}
 	os.Stdout.WriteString(line + "\n")
