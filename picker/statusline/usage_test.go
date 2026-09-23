@@ -240,6 +240,46 @@ func TestUsageSegmentSpendZeroRenders(t *testing.T) {
 	}
 }
 
+func TestUsageSegmentSpendWithLimit(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsageCursor:       "CU", iconUsagePi: "PI",
+		thmSubtext0: "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi":     {Spend: &usageSpend{Label: "mo", USD: 5, Period: "month", LimitUSD: limit(20)}},
+		"cursor": {Spend: &usageSpend{Label: "mo", USD: 12.34, Period: "cycle", LimitUSD: limit(7.5)}},
+	}
+	open := map[string]bool{"pi": true, "cursor": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]CU #[fg=#9a8]$12/$7.50  #[fg=#9a8]PI #[fg=#9a8]$5.00/$20  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestLoadUsageCachesSpendWithoutLimitRendersSpendAlone(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
+
+	caches := loadUsageCaches(dir)
+	c, ok := caches["pi"]
+	if !ok || c.Spend == nil {
+		t.Fatalf("pi spend missing: %+v", caches)
+	}
+	if c.Spend.LimitUSD != nil {
+		t.Fatalf("LimitUSD = %v, want nil when limit_usd is absent", *c.Spend.LimitUSD)
+	}
+
+	a := args{usageMonthlyThreshold: 50, iconUsagePi: "PI", thmSubtext0: "#9a8"}
+	got := usageSegment(a, caches, map[string]bool{"pi": true}, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$5.00  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestUsageSegmentPiOrderAndIcon(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,

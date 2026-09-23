@@ -8,6 +8,11 @@
 # current UTC calendar month), always written. `monthly` is a pct only when the
 # key carries a cap: computed from limit vs limit_remaining so it stays right
 # whatever limit_reset says (daily/weekly/monthly, or null = lifetime cap).
+# The cap itself (limit) is spend.limit_usd whenever set, even when
+# limit_remaining is missing and `monthly` can't be computed. limit/
+# limit_remaining are "credits", same unit as usage_monthly; OpenRouter's own
+# docs (openrouter.ai/docs/faq) say credits are USD-denominated 1:1, so no
+# conversion is needed.
 set -uo pipefail
 
 CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
@@ -55,7 +60,8 @@ out=$(jq -c '
 				pct: (100 * ($d.limit - $d.limit_remaining) / $d.limit | floor)
 			}
 			else null end),
-		spend: {label: "mo", usd: ($d.usage_monthly // 0), period: "month"}
+		spend: ({label: "mo", usd: ($d.usage_monthly // 0), period: "month"}
+			+ (if ($d.limit // 0) > 0 then {limit_usd: $d.limit} else {} end))
 	}' <<<"$resp" 2>/dev/null) || exit 0
 
 mkdir -p "$CACHE_DIR" 2>/dev/null

@@ -80,14 +80,18 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   host whose only clients are bridges, #603) drives provider scripts that
   normalize vendor API responses into `/tmp/og-agent-usage/<agent>.json`
   (`{windows:[{label,pct,reset_at?}], monthly:{label,pct,reset_at?},
-  spend:{label,usd,period}}`); `tmux-statusline` (Go) only reads them — it
+  spend:{label,usd,period,limit_usd?}}`); `tmux-statusline` (Go) only reads them — it
   never curls. `spend` is optional: absent in an older cache or a provider
   that has none, it decodes as `nil` (`usageCache.Spend *usageSpend`,
   `picker/statusline/usage.go:20`) and the segment simply skips the `$`
   figure for that agent; when present it renders unconditionally, no
-  threshold. No schema-version field was added for this — every cache field
+  threshold. `spend.limit_usd` is the provider's own known spending cap in
+  USD — cursor's `GetHardLimit.hardLimit` (cents ÷ 100), pi's OpenRouter
+  `/api/v1/key` `limit` (already USD) — and the key is omitted, not nulled,
+  when no cap is set; present, the renderer shows `$<spend>/$<limit>`.
+  No schema-version field was added for this — every cache field
   added since the format shipped has been an optional sibling (`monthly`,
-  `reset_at`, now `spend`), so an old or new poller and an old or new
+  `reset_at`, `spend`, now `limit_usd`), so an old or new poller and an old or new
   renderer already interoperate by omission alone; a later remote-mirror
   follow-up should keep adding optional siblings rather than inventing a
   version scheme.
@@ -126,7 +130,8 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   plus `percentOfBurstUsed` (rendered as a `burst` window when nonzero).
   Fully pooled plans sit at 0% and stay hidden below the monthly threshold.
   `totalCostCents` is also written as `spend` (USD, billing cycle),
-  unconditionally — no hard limit needed for the dollar figure to show.
+  unconditionally — no hard limit needed for the dollar figure to show; a
+  set hard limit adds `spend.limit_usd`.
 - **pi is OpenRouter-keyed, not pi's own token.** `tmux-agent-usage-pi.sh`
   reads `~/.pi/agent/auth.json`'s `.openrouter.key` and hits OpenRouter's
   `/api/v1/key` endpoint. pi's own key value supports a small syntax —
@@ -150,7 +155,12 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `limit_reset` (`daily`/`weekly`/`monthly`/null) maps to the window's
   `label` (`day`/`wk`/`mo`/`cap` for a null reset — a lifetime cap). `spend`
   is `usage_monthly` (USD, current UTC calendar month), always written
-  regardless of whether the key carries a cap.
+  regardless of whether the key carries a cap. A nonzero `limit` is written
+  as `spend.limit_usd` independently of `monthly` — a cap whose
+  `limit_remaining` is null still shows its budget. `limit`/`limit_remaining`
+  need no cents→USD conversion: they're the same "credits" unit as
+  `usage_monthly`, and OpenRouter's docs (openrouter.ai/docs/faq) state
+  credits are USD-denominated 1:1.
 - **Mirror/remote panes never count toward the gate.** Both `openAgents()`
   and `scan_open_agents` key strictly off `pane_current_command`/the
   manifest basenames and never look at `@bridge_proc`; #513 once let a

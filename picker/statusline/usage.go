@@ -28,11 +28,12 @@ type usageWindow struct {
 
 // usageSpend is the dollar figure an agent has spent over Period ("month",
 // "cycle"). Label and Period describe the figure for other consumers; the
-// segment renders only USD.
+// segment renders only USD and, when the provider knows a budget, LimitUSD.
 type usageSpend struct {
-	Label  string  `json:"label"`
-	USD    float64 `json:"usd"`
-	Period string  `json:"period"`
+	Label    string   `json:"label"`
+	USD      float64  `json:"usd"`
+	Period   string   `json:"period"`
+	LimitUSD *float64 `json:"limit_usd,omitempty"`
 }
 
 const usageCacheDir = "/tmp/og-agent-usage"
@@ -135,11 +136,20 @@ func usageResetSuffix(w usageWindow, now int64) string {
 	}
 }
 
-// usageSegment renders "<icon> <pct>·<label> … $<usd>" per open agent with
-// data, joined and trailing-padded for the right-aligned group. The monthly
-// window only appears at/above the configured threshold; spend always appears
-// when cached, $0 included; an agent with nothing to show (e.g. an uncapped
-// enterprise tier) drops out entirely.
+// usageDollars keeps cents only under $10, where they are still significant.
+func usageDollars(v float64) string {
+	if v < 10 {
+		return fmt.Sprintf("%.2f", v)
+	}
+	return fmt.Sprintf("%.0f", v)
+}
+
+// usageSegment renders "<icon> <pct>·<label> … $<usd>[/$<limit>]" per open
+// agent with data, joined and trailing-padded for the right-aligned group. The
+// monthly window only appears at/above the configured threshold; spend always
+// appears when cached, $0 included, with the budget appended when the provider
+// knows one; an agent with nothing to show (e.g. an uncapped enterprise tier)
+// drops out entirely.
 func usageSegment(a args, caches map[string]usageCache, open map[string]bool, now int64) string {
 	if a.usageMonthlyThreshold <= 0 {
 		return ""
@@ -165,11 +175,11 @@ func usageSegment(a args, caches map[string]usageCache, open map[string]bool, no
 			parts = append(parts, render(*c.Monthly))
 		}
 		if c.Spend != nil {
-			usd := fmt.Sprintf("%.0f", c.Spend.USD)
-			if c.Spend.USD < 10 {
-				usd = fmt.Sprintf("%.2f", c.Spend.USD)
+			s := "#[fg=" + a.thmSubtext0 + "]$" + usageDollars(c.Spend.USD)
+			if c.Spend.LimitUSD != nil {
+				s += "/$" + usageDollars(*c.Spend.LimitUSD)
 			}
-			parts = append(parts, "#[fg="+a.thmSubtext0+"]$"+usd)
+			parts = append(parts, s)
 		}
 		if len(parts) == 0 {
 			continue

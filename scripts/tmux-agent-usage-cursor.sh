@@ -9,7 +9,8 @@
 # window when nonzero. Fully pooled plans (totalCostCents 0 vs any limit) sit
 # at 0% and stay hidden below the monthly threshold. totalCostCents is also
 # written as `spend` (USD, billing cycle) whenever the cycle usage is known —
-# independent of the `monthly` pct block, which stays limit-gated.
+# independent of the `monthly` pct block, which stays limit-gated. A set hard
+# limit rides along as spend.limit_usd; with none the key is omitted.
 set -uo pipefail
 
 CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
@@ -55,7 +56,8 @@ out=$(jq -cn --argjson agg "$agg" --argjson hard "$hard" --argjson cycle "$cycle
 				+ (if $ce > (now * 1000) then {reset_at: ($ce / 1000 | floor)} else {} end))
 			else null end),
 		spend: (if ($agg.totalCostCents // null) != null
-			then {label: "mo", usd: (($agg.totalCostCents | tonumber) / 100), period: "cycle"}
+			then ({label: "mo", usd: (($agg.totalCostCents | tonumber) / 100), period: "cycle"}
+				+ (if $limit != null and $limit > 0 then {limit_usd: ($limit / 100)} else {} end))
 			else null end)
 	}' 2>/dev/null) || exit 0
 

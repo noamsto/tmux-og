@@ -51,17 +51,17 @@ cursor_setup() {
 	echo '{"totalCostCents":1234}' >"$FIXTURES/GetAggregatedUsageEvents.json"
 }
 
-@test "cursor: spend is the cycle's totalCostCents in USD, with a hard limit" {
+@test "cursor: spend is the cycle's totalCostCents in USD, capped by the hard limit" {
 	cursor_setup
 	echo '{"hardLimit":5000}' >"$FIXTURES/GetHardLimit.json"
 	run bash scripts/tmux-agent-usage-cursor.sh
 	[ "$status" -eq 0 ]
 	cache="$OG_AGENT_USAGE_DIR/cursor.json"
-	[ "$(jq -c .spend "$cache")" = '{"label":"mo","usd":12.34,"period":"cycle"}' ]
+	[ "$(jq -c .spend "$cache")" = '{"label":"mo","usd":12.34,"period":"cycle","limit_usd":50}' ]
 	[ "$(jq -c .monthly.pct "$cache")" = 24 ]
 }
 
-@test "cursor: spend is written with no hard limit" {
+@test "cursor: spend is written with no hard limit, and no limit_usd" {
 	cursor_setup
 	echo '{}' >"$FIXTURES/GetHardLimit.json"
 	run bash scripts/tmux-agent-usage-cursor.sh
@@ -94,12 +94,20 @@ default_pi() {
 	export EXPECT_TOKEN=sk-or-test-not-a-key
 }
 
-@test "pi: a monthly cap reports pct and month spend" {
+@test "pi: a monthly cap reports pct, month spend, and the cap as limit_usd" {
 	default_pi
 	pi_key_fixture '{"limit":20,"limit_remaining":15,"limit_reset":"monthly","usage_monthly":5}'
 	run_pi
 	[ "$(jq -c .monthly "$(pi_cache)")" = '{"label":"mo","pct":25}' ]
-	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":5,"period":"month"}' ]
+	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":5,"period":"month","limit_usd":20}' ]
+}
+
+@test "pi: a cap with no limit_remaining still reports limit_usd, without monthly" {
+	default_pi
+	pi_key_fixture '{"limit":20,"limit_remaining":null,"limit_reset":"monthly","usage_monthly":5}'
+	run_pi
+	[ "$(jq -c .monthly "$(pi_cache)")" = null ]
+	[ "$(jq -c .spend.limit_usd "$(pi_cache)")" = 20 ]
 }
 
 @test "pi: a weekly cap's pct comes from limit_remaining, not usage_monthly" {
@@ -111,7 +119,7 @@ default_pi() {
 	[ "$(jq -c .spend.usd "$(pi_cache)")" = 12 ]
 }
 
-@test "pi: an uncapped key has no monthly but still reports spend" {
+@test "pi: an uncapped key has no monthly or limit_usd but still reports spend" {
 	default_pi
 	pi_key_fixture '{"limit":null,"limit_remaining":null,"limit_reset":null,"usage_monthly":3.5}'
 	run_pi
