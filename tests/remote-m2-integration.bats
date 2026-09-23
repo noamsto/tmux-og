@@ -3810,13 +3810,10 @@ attach_pty_client() {
 	[ "$src_float" = "$dst_float" ]
 }
 
-# #738: display-popup's CLIENT_CONTROL bail in cmd_display_popup_exec used to
-# resolve a REMOTE shell's own popup to the daemon's control client and
-# silently open nothing — patches/tmux-display-popup-control-client.patch
-# drops it. Issued from inside the mirrored pane (the production entry
-# point), bare tmux: the pane's $TMUX already names the m2src server. Red
-# against unpatched tmux: no remote float ever exists, so src_float stays
-# empty and the first assertion below fails, not a later step.
+# #738: a remote shell's display-popup resolves its target client to the
+# daemon's control client, the session's only client, and stock tmux refused
+# it silently. Issued from inside the mirrored pane with bare tmux: the pane's
+# $TMUX already names the m2src server.
 @test "a remote display-popup opens a float the mirror gains (#738)" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
@@ -3847,12 +3844,9 @@ attach_pty_client() {
 	[ "$dst_modal" = 0 ]
 }
 
-# #738: a remote popup opened without -E leaves a dead modal float once its
-# command exits, and window_lost_pane never reaps it (window.c:1156/1175), so
-# w->modal stays set and every later popup in that window is a silent no-op.
-# A lone Escape into the mirror makes pumpInput send display-popup -C to
-# clear it. Keys always target $base by id: once the popup is open it is
-# the remote's active pane, so -t rem would land inside the popup instead.
+# #738: a popup opened without -E lingers as a dead modal float, and until it
+# is removed w->modal blocks every later popup in that window. Keys target
+# $base by id: once the popup is open it is the remote's active pane.
 @test "a dead remote popup is dismissable from the mirror (#738)" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
@@ -3903,12 +3897,8 @@ attach_pty_client() {
 	[ -n "$dst_float" ]
 }
 
-# #738: the fzf >=0.74 shape, which nothing else here covers — a float a
-# REMOTE SHELL opens from inside its own pane via new-pane (not the
-# daemon's external new-pane -d), landing in a window that already has a
-# tiled split, which is where the pane-diff mapping could go wrong and the
-# one-pane cases above cannot see it. Bare tmux inside the pane, argv
-# captured from the real fzf 0.74 binary via a PATH shim.
+# #738: the argv fzf >= 0.74 sends for `--tmux` — new-pane from inside the
+# remote pane, into a window with a tiled split the pane diff must leave alone.
 @test "a float a remote shell opens from inside its own pane mirrors (#738)" {
 	$SRC new-session -d -s rem -x 138 -y 36
 	$SRC split-window -h -t rem

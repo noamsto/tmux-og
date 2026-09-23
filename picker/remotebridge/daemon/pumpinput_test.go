@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -122,12 +123,8 @@ func TestModalClearCmd(t *testing.T) {
 	}
 }
 
-// TestPumpInputSendsModalClearOnLoneCancel pins isCancelKey against the
-// forwarded frame: a lone Escape or C-c must be followed by the modal-clear
-// command, while an escape sequence's leading 0x1b (arrows, function keys)
-// or an ordinary keystroke must not. Each case is terminated by a sentinel
-// "z" frame rather than a timeout, so a missing clear reads as an assertion
-// failure instead of a hang.
+// Each case ends with a sentinel "z" frame, so a missing or extra clear shows
+// up as the wrong next send rather than as a timeout.
 func TestPumpInputSendsModalClearOnLoneCancel(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -184,15 +181,8 @@ func TestPumpInputSendsModalClearOnLoneCancel(t *testing.T) {
 				select {
 				case s := <-sendCh:
 					if s == "send-keys -H -t %7 7a" {
-						if len(got) != len(tt.want) {
+						if !slices.Equal(got, tt.want) {
 							t.Errorf("send calls = %q, want %q", got, tt.want)
-						} else {
-							for i := range got {
-								if got[i] != tt.want[i] {
-									t.Errorf("send calls = %q, want %q", got, tt.want)
-									break
-								}
-							}
 						}
 						return
 					}

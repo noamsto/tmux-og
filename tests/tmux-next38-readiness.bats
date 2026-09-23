@@ -192,12 +192,10 @@ wait_for_client() {
 	[[ $output == *"s"* ]]
 }
 
-# af3e4d2 made a control client's display-popup a silent no-op, back when a
-# popup was a client-side overlay and one opened for a client with no screen
-# crashed the server (#346). 34cd5da4 later made popups modal floating panes —
-# a server-side object — so the bail is dead weight; #738 drops it via
-# patches/tmux-display-popup-control-client.patch. This pins that the popup
-# now opens (a modal float exists) AND the server survives.
+# Upstream made a control client's popup a silent no-op back when a popup for a
+# screenless client crashed the server (#346); popups are floating panes now,
+# and patches/tmux-display-popup-control-client.patch lets it open (#738). The
+# server surviving is the property that bail existed for.
 @test "display-popup for an attached control client opens a modal float" {
 	marker="$BATS_TEST_TMPDIR/popup-ran"
 	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t s; }
@@ -224,16 +222,9 @@ wait_for_client() {
 	kill "$CTL_PID" 2>/dev/null || true
 }
 
-# A reviewer caught what the test above doesn't: past the bail, the function
-# still unconditionally sets new_wp->wait_item and returns CMD_RETURN_WAIT, so
-# the popup's own item parks on whichever client's queue sent it. For a normal
-# command client that queue serves nobody else, but a control client's queue
-# serves every command IT sends the server too — so a display-popup fired over
-# a control stream (the bridge daemon, or a remote set-hook it triggers) wedges
-# that same stream on the popup's lifetime, queuing the popup's own keystrokes
-# behind it. The patch special-cases cmdq_get_client(item): a control client's
-# queuing item returns CMD_RETURN_NORMAL without setting wait_item, so a later
-# command on the same stream keeps running.
+# A popup waits on the queue of the client that issued it. A control client's
+# queue carries every command it sends, so waiting there would wedge the bridge
+# for the popup's lifetime (#738).
 @test "a control client's queue keeps serving other commands while its own popup is open" {
 	marker="$BATS_TEST_TMPDIR/popup-ran"
 	sentinel="$BATS_TEST_TMPDIR/sentinel"
@@ -248,9 +239,7 @@ wait_for_client() {
 	done
 	[ "$(cat "$marker")" = "popup-ok" ]
 
-	# Sent over the SAME control stream while the popup is still open. Bounded
-	# to ~3s: red on the unconditional wait_item (blocked the full sleep 30),
-	# green once display-popup skips it for this client's own queuing item.
+	# Same control stream, popup still open.
 	printf 'run-shell "printf sentinel-ok > %q"\n' "$sentinel" >&"${CTL[1]}"
 	for _ in {1..30}; do
 		[[ -f $sentinel ]] && break
