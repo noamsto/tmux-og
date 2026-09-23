@@ -116,7 +116,14 @@ func TestSanitizeUsage(t *testing.T) {
 				Monthly: &usageWindow{Label: "mo", Pct: 3, ResetAt: 2050},
 			}},
 		},
-		{name: "over the cap is empty", v: "claude |{\"claude\":{\"windows\":[]},\"x\":\"" + strings.Repeat("a", usageRawMaxLen) + "\"}"},
+		{
+			// The open half grows with the remote host's agent-pane count; the cap
+			// must not count against it, only against the JSON half.
+			name: "a busy host's open half does not count against the cap",
+			v:    strings.Repeat("claude ", 800) + `|{"claude":{"windows":[{"label":"5h","pct":1}]}}`,
+			want: map[string]usageCache{"claude": {Windows: []usageWindow{{Label: "5h", Pct: 1}}}},
+		},
+		{name: "a JSON half over the cap is empty", v: "claude |{\"claude\":{\"windows\":[]},\"x\":\"" + strings.Repeat("a", usageRawMaxLen) + "\"}"},
 		{name: "no separator is empty", v: `{"claude":{"windows":[{"label":"5h","pct":1}]}}`},
 		{name: "bad JSON is empty", v: `claude |{"claude":`},
 		{name: "a not-rebuilt remote is empty", v: "claude |"},
@@ -140,6 +147,51 @@ func TestSanitizeUsage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestUsageAgentTablesAgree keeps usageAgentCmds, usageAgentKeys and
+// agentUsageFormat's open-pane pattern in sync: adding an agent to one table
+// but not the others must fail here rather than silently misgate a provider.
+func TestUsageAgentTablesAgree(t *testing.T) {
+	const marker = "#{m/r:"
+	i := strings.Index(agentUsageFormat, marker)
+	if i < 0 {
+		t.Fatalf("agentUsageFormat has no %q: %s", marker, agentUsageFormat)
+	}
+	rest := agentUsageFormat[i+len(marker):]
+	j := strings.Index(rest, ",#{pane_current_command}}")
+	if j < 0 {
+		t.Fatalf("agentUsageFormat's #{m/r:...} has no ,#{pane_current_command}} close: %s", agentUsageFormat)
+	}
+	re, err := regexp.Compile(rest[:j])
+	if err != nil {
+		t.Fatalf("pattern %q: %v", rest[:j], err)
+	}
+
+	for cmd := range usageAgentCmds {
+		for _, form := range []string{cmd, "." + cmd + "-wrapped", "/nix/store/abc/bin/" + cmd} {
+			if !re.MatchString(form) {
+				t.Errorf("agentUsageFormat's open-pane pattern %q does not match %q (usageAgentCmds key %q)", rest[:j], form, cmd)
+			}
+		}
+	}
+
+	keys := map[string]bool{}
+	for _, k := range usageAgentKeys {
+		keys[k] = true
+	}
+	seen := map[string]bool{}
+	for cmd, agent := range usageAgentCmds {
+		seen[agent] = true
+		if !keys[agent] {
+			t.Errorf("usageAgentCmds[%q] = %q is not in usageAgentKeys", cmd, agent)
+		}
+	}
+	for _, k := range usageAgentKeys {
+		if !seen[k] {
+			t.Errorf("usageAgentKeys has %q with no usageAgentCmds entry mapping to it", k)
+		}
 	}
 }
 

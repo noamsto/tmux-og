@@ -1,6 +1,6 @@
 # Bridge: State Shipped from the Remote
 
-A mirror pane runs a renderer, so everything a local consumer reads about a bridged window — resources, agent status, labels — is shipped across as `@bridge_*` stamps.
+A mirror pane runs a renderer, so everything a local consumer reads about a bridged window — resources, agent status, labels, and (session-wide, not per-window) agent usage — is shipped across as `@bridge_*` stamps.
 
 ## Remote Session Resources
 
@@ -161,14 +161,14 @@ The remote publishes its own caches and the daemon ships them across (#743).
   own `refreshSeconds` (120s default) the way a gate sourced from the cache
   files alone would. Verified on tmux 3.7c with a scratch server and a control
   client (`%subscription-changed u $1 - - - : claude .pi-wrapped |{"x":1}`,
-  then the loop half updating on `kill-window`, the JSON half on `set -g`). A
-  remote not rebuilt from this revision reports `<agents>|` (empty JSON):
-  nothing to ship.
+  then the loop half updating on `kill-window`, the JSON half on `set -g`).
 - **`agentusage.go`'s `sanitizeUsage` re-types rather than filters the JSON.**
-  The raw value is capped at `usageRawMaxLen` (4 KiB) before any parsing —
-  over the cap is treated as malformed. It splits at the **first** `|` into
-  the open half and the JSON half (no `|` at all → drop everything); the open
-  half is normalised into a set exactly as the renderer's `openAgents()`
+  It splits at the **first** `|` into the open half and the JSON half (no `|`
+  at all → drop everything); the JSON half is then capped at `usageRawMaxLen`
+  (4 KiB) — over the cap is treated as malformed. The open half is left
+  uncapped: it grows with the remote host's agent-pane count, and capping the
+  whole value before the split would unset the segment on a busy host. The
+  open half is normalised into a set exactly as the renderer's `openAgents()`
   would (`usageOpenSet`: basename, `^\.(.*)-wrapped$` unwrap, then
   `claude|codex|cursor-agent→cursor|pi`). The JSON half decodes into
   `map[string]json.RawMessage`, and only a *known* agent key
@@ -184,10 +184,9 @@ The remote publishes its own caches and the daemon ships them across (#743).
   spaces, braces, so a `#(…)`/`#{…}`/`#[…]` payload cannot survive), more than
   `usageMaxWindows` (8) windows, `pct` outside `[0, 1000]`, `usd`/`limit_usd`
   outside `[0, 1e7]`, or a negative `reset_at`. `spend.label`/`spend.period`
-  are decoded (present in the struct only to match the cache shape) but never
-  rendered and so effectively not carried onward — the re-marshal produces
-  compact JSON with sorted keys, and only the fields `usageSpend`/`usageWindow`
-  actually declare survive it.
+  are not declared on the daemon's `usageSpend` at all — only the
+  statusline's struct has them, and it never renders them — so the typed
+  decode drops them like any other unknown field.
 - **A final guard rejects the marshaled output if it contains `|` or `#`** —
   unreachable by construction (the validated alphabet already excludes both),
   checked anyway because the cost of being wrong isn't cosmetic: `|` matters
@@ -234,14 +233,15 @@ The remote publishes its own caches and the daemon ships them across (#743).
   on every key present — the daemon already applied the remote's live open
   gate, so the renderer re-derives nothing. Local caches and the local
   `list-panes` gate (`openAgents`) are **not consulted** in that branch, even
-  when `@bridge_usage` is empty or absent (not-rebuilt remote, disconnected,
-  nothing open remotely) — a mirror then shows no usage segment, never a
-  local one. `fetchVolatile` only runs the usage selection on a successful
-  volatile fetch (`ok`): a failed fetch with no last-good frame leaves the
-  bridge fields empty, and running the selector on that frame would fall a
-  mirror into the local branch for one cold-start tick. The renderer does not
-  re-sanitize `@bridge_usage` — the daemon is the sole sanitizer, per the
-  repo's usual convention — but a malformed value simply decodes to `nil`.
+  when `@bridge_usage` is empty or absent (disconnected, nothing open
+  remotely, or a not-rebuilt remote — see Known limits) — a mirror then shows
+  no usage segment, never a local one. `main` runs the usage selection only
+  when `fetchVolatile` reports `ok`: a failed fetch with no last-good frame
+  leaves the bridge fields empty, and running the selector on that frame
+  would fall a mirror into the local branch for one cold-start tick. The
+  renderer does not re-sanitize `@bridge_usage` — the daemon is the sole
+  sanitizer, per the repo's usual convention — but a malformed value simply
+  decodes to `nil`.
 - **Known limits.** No staleness bound on the published value, unlike
   `@bridge_res`'s tick + 30s cutoff: a remote poller that stops while agents
   stay open (hook gone, or a resident server predating the rebuild, #407)

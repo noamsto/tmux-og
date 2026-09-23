@@ -19,8 +19,11 @@ import (
 // Unquoted: it is a subscription format, and the call site owns the quoting.
 const agentUsageFormat = "#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{pane_current_command}},#{pane_current_command} ,}}}}|#{@og_agent_usage}"
 
-// usageRawMaxLen caps the value before any parsing. Four caches of a few
-// windows each fit in well under half of it.
+// usageRawMaxLen caps the published caches (the JSON half, after the cut).
+// Four caches of a few windows each fit in well under half of it. The open
+// half is uncapped here: it grows with the remote host's agent-pane count,
+// and capping the whole value before the cut would unset the segment on a
+// busy host.
 const usageRawMaxLen = 4096
 
 // usageMaxWindows bounds the windows one agent may carry; no provider emits
@@ -117,11 +120,11 @@ func shiftUsageReset(w *usageWindow, skew int64) {
 // reset_at is shifted by skew (localNow - remoteNow) so the renderer's
 // countdown runs on the local clock.
 func sanitizeUsage(v string, skew int64) string {
-	if len(v) > usageRawMaxLen {
-		return ""
-	}
 	openPart, jsonPart, ok := strings.Cut(v, "|")
 	if !ok {
+		return ""
+	}
+	if len(jsonPart) > usageRawMaxLen {
 		return ""
 	}
 	var raw map[string]json.RawMessage

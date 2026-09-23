@@ -2065,6 +2065,9 @@ $pane 1" ]; then
 		--thm-text '#cdd6f4' --thm-subtext0 '#a6adc8' --thm-overlay1 '#7f849c' \
 		--thm-peach '#fab387' --thm-green '#a6e3a1' --flavor mocha)"
 	last_line="$(tail -n1 <<<"$out")"
+	# The cache is host-wide (keyed on session name, not this test), so a
+	# later test reusing "host-sess" must not see this run's seeded figure.
+	rm -f /tmp/og-statusline/host-sess
 
 	# Closing the remote claude pane removes the stamp -- checked while the
 	# daemon is still alive, since it is the subscription that clears it.
@@ -2086,6 +2089,71 @@ $pane 1" ]; then
 	[[ $last_line != *'#('* ]]
 	[ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 	[ -z "$bridge_usage2" ]
+}
+
+# #743 follow-up: repair()'s usage.reset() clears the shipper's dedupe state
+# on every reconnect so a real change republishes, but the reattach itself
+# unsets @bridge_usage first (see daemon.go's repair path) — this proves the
+# reset also re-subscribes and re-stamps the SAME figure the drop wiped,
+# not just a changed one. transport_child/wait_bridge_disconnected/
+# wait_bridge_state are the helpers the control-connection-drop case below
+# uses for the same drop; defined further down but usable here since bats
+# sources the whole file before invoking any one test.
+@test "a reconnect re-stamps the remote agent usage the reattach dropped" {
+	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	mkdir -p "$BATS_TEST_TMPDIR/bin"
+	agent_bin="$(readlink -f "$(command -v bash)")"
+	cp "$agent_bin" "$BATS_TEST_TMPDIR/bin/claude"
+	chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+	$SRC new-session -d -s agents -n claude -x 80 -y 24 "$BATS_TEST_TMPDIR/bin/claude -c 'sleep 600; :'"
+
+	$SRC set -g @og_agent_usage '{"claude":{"windows":[{"label":"5h","pct":42}]}}'
+
+	bridge_up 1 usgre --host lab
+
+	bridge_usage=""
+	for _ in $(seq 1 40); do
+		bridge_usage="$($DST show-options -v -t host-sess -q @bridge_usage 2>/dev/null || true)"
+		[ -n "$bridge_usage" ] && break
+		sleep 0.2
+	done
+	[ -n "$bridge_usage" ]
+
+	old_transport="$(transport_child)"
+	[ -n "$old_transport" ]
+	kill -9 "$old_transport"
+	wait_bridge_disconnected usgre "$BATS_TEST_TMPDIR/usgre.log"
+
+	new_transport=""
+	for _ in $(seq 1 80); do
+		candidate="$(transport_child)"
+		[ -n "$candidate" ] && [ "$candidate" != "$old_transport" ] && {
+			new_transport="$candidate"
+			break
+		}
+		sleep 0.1
+	done
+	[ -n "$new_transport" ]
+
+	wait_bridge_state "" usgre "$BATS_TEST_TMPDIR/usgre.log"
+
+	# The remote value never changed, so only the repair's reset + re-subscribe
+	# can put it back after the reattach cleared it.
+	bridge_usage2=""
+	for _ in $(seq 1 40); do
+		bridge_usage2="$($DST show-options -v -t host-sess -q @bridge_usage 2>/dev/null || true)"
+		[ "$bridge_usage2" = "$bridge_usage" ] && break
+		sleep 0.2
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$bridge_usage2" = "$bridge_usage" ]
 }
 
 # Screen-scraped agents (pi, codex, cursor) have no hook, so agent-detect's
