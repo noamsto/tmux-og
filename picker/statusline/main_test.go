@@ -17,8 +17,8 @@ func TestUnderModal(t *testing.T) {
 }
 
 func TestVolatileFieldsModalSwap(t *testing.T) {
-	if len(volatileFields) != 22 {
-		t.Fatalf("len = %d, want 22", len(volatileFields))
+	if len(volatileFields) != 23 {
+		t.Fatalf("len = %d, want 23", len(volatileFields))
 	}
 	for _, tc := range []struct {
 		idx  int
@@ -27,6 +27,7 @@ func TestVolatileFieldsModalSwap(t *testing.T) {
 		{6, underModal("#{pane_current_path}")},
 		{9, underModal("#{pane_current_command}")},
 		{20, underModal("#{@bridge_proc}")},
+		{22, "#{@bridge_usage}"},
 	} {
 		if volatileFields[tc.idx] != tc.want {
 			t.Fatalf("volatileFields[%d] = %q, want %q", tc.idx, volatileFields[tc.idx], tc.want)

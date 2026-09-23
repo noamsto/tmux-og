@@ -55,6 +55,7 @@ var volatileFields = []string{
 	"#{@bridge_label_id}", "#{@bridge_label_rest_long}",
 	underModal("#{@bridge_proc}"),
 	"#{@window_has_agent}",
+	"#{@bridge_usage}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message
@@ -84,6 +85,7 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	a.bridgeLabelID, a.bridgeLabelRestLong = f[18], f[19]
 	a.bridgeProc = f[20]
 	a.windowHasAgent = f[21]
+	a.bridgeUsage = f[22]
 	return f[0] == "1", true
 }
 
@@ -136,6 +138,7 @@ type args struct {
 	bridgeWin, bridgeHost, bridgeState              string
 	bridgeCrewName, bridgeCrewColor                 string
 	bridgeLabelID, bridgeLabelRestLong              string
+	bridgeUsage                                     string
 
 	// theme palette (passed pre-expanded from tmux @thm_* options)
 	thmBg, thmRed, thmMauve, thmBlue, thmText, thmSubtext0 string
@@ -441,20 +444,16 @@ func main() {
 		return
 	}
 
-	// Usage segment: cheapest gates first — reading the cache files forks
-	// nothing, so the per-second tmux list-panes gate only runs when there's
-	// actual data to display.
+	// Usage segment: only on a successful volatile fetch — a failed fetch with
+	// no last-good frame (cold start) leaves the bridge fields empty, and a
+	// mirror would otherwise fall into the local path for that frame.
 	usage := ""
-	if a.usageMonthlyThreshold > 0 {
+	if a.usageMonthlyThreshold > 0 && ok {
 		usageDir := os.Getenv("OG_AGENT_USAGE_DIR")
 		if usageDir == "" {
 			usageDir = usageCacheDir
 		}
-		if caches := loadUsageCaches(usageDir); len(caches) > 0 {
-			if open := openAgents(); len(open) > 0 {
-				usage = usageSegment(a, caches, open, time.Now().Unix())
-			}
-		}
+		usage = usageFor(a, usageDir, openAgents, time.Now().Unix())
 	}
 
 	// One job-output line is one status frame, and tmux publishes only the LAST

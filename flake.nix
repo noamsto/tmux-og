@@ -217,7 +217,7 @@
 
           agent-usage-gate-tests =
             pkgs.runCommand "agent-usage-gate-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests

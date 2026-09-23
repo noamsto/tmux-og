@@ -4,7 +4,9 @@
 #   --tick-run  one pass: refresh every OPEN, authed agent's cache concurrently
 # Always exits 0. Cache: /tmp/og-agent-usage/<agent>.json, rendered by
 # tmux-statusline (Go). Providers curl the usage endpoints with the CLIs' own
-# stored tokens — no extra API keys.
+# stored tokens — no extra API keys. Tick-run also publishes the surviving
+# caches onto the global @og_agent_usage option, for the remote bridge daemon
+# to ship into a mirror session's statusline (docs/agents/bridge-shipped-state.md).
 #
 # scan_open_agents populates OPEN[cmd]=1 per manifest-command pane seen, from
 # one `list-panes -a` call. Tick mode gates on "any agent open at all"
@@ -29,6 +31,24 @@ REFRESH_SECONDS="@refresh_seconds@"
 AGENT_COMMANDS="@AGENT_COMMANDS@"
 
 declare -gA OPEN=()
+
+# publish_usage: ships the surviving cache files as one compact JSON object
+# (keyed by cache name) onto the global @og_agent_usage option, for the
+# bridge daemon to sanitize and ship into a mirror session. A jq failure
+# (torn/garbage cache) leaves the option as it was — same "failed refresh
+# keeps the previous value" posture as the providers themselves.
+publish_usage() {
+	local files=() f v
+	for f in "$CACHE_DIR"/claude.json "$CACHE_DIR"/codex.json "$CACHE_DIR"/cursor.json "$CACHE_DIR"/pi.json; do
+		[[ -f $f ]] && files+=("$f")
+	done
+	if ((${#files[@]} == 0)); then
+		tmux set -gu @og_agent_usage
+		return
+	fi
+	v=$(jq -cn 'reduce inputs as $c ({}; . + {(input_filename | split("/") | last | rtrimstr(".json")): $c})' "${files[@]}") || return
+	tmux set -g @og_agent_usage "$v"
+}
 
 # scan_open_agents: populates the global OPEN[cmd]=1 map, one entry per
 # manifest-command basename with a pane open somewhere. One `list-panes`
@@ -115,4 +135,5 @@ pids+=($!)
 ) &
 pids+=($!)
 ((${#pids[@]})) && wait "${pids[@]}" 2>/dev/null
+publish_usage
 exit 0

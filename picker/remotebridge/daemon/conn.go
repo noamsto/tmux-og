@@ -216,6 +216,7 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 	// at the source, so the picker's freshness rule gets its "not disconnected"
 	// condition from the absent stamp rather than from reading a second option.
 	clearBridgeRes(cfg)
+	clearBridgeUsage(cfg)
 	bo := cfg.retrySchedule()
 	for {
 		conn, result := attemptCycle(cfg, router, hold, want, repair, bo)
@@ -526,6 +527,13 @@ func clearBridgeRes(cfg Config) {
 		return
 	}
 	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
+}
+
+func clearBridgeUsage(cfg Config) {
+	if cfg.LocalSess == "" {
+		return
+	}
+	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_usage")
 }
 
 // stopped reports whether the user has asked the daemon to shut down. A nil

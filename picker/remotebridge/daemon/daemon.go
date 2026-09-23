@@ -783,8 +783,11 @@ func Run(cfg Config) error {
 	}
 	// The launcher reuses a mirror session (#474), so a prior daemon killed
 	// mid-outage — teardown would have taken the session with it — can leave
-	// its disconnected badge behind on a session this one is now attached to.
+	// its disconnected badge behind on a session this one is now attached to,
+	// and one killed while connected its usage figures, which would otherwise
+	// stand until this daemon's first report.
 	clearBridgeState(cfg)
+	clearBridgeUsage(cfg)
 
 	reg := newRegistry()
 	// The one waiter every mirror path gets. connCh goes no further than this
@@ -838,6 +841,7 @@ func Run(cfg Config) error {
 	var (
 		labels   *labelShipper
 		res      *resShipper
+		usage    *usageShipper
 		loopTick *time.Ticker
 	)
 	teardown := func() {
@@ -855,6 +859,9 @@ func Run(cfg Config) error {
 		}
 		if res != nil {
 			res.clear(cfg)
+		}
+		if usage != nil {
+			usage.clear(cfg)
 		}
 		if loopTick != nil {
 			loopTick.Stop()
@@ -990,17 +997,19 @@ func Run(cfg Config) error {
 
 	// Ship the remote's agent state into the local claude-status tree, its
 	// window labels onto the mirror windows as @bridge_* options, and the remote
-	// session's own CPU/mem figures onto the mirror session.
+	// session's own CPU/mem figures and the host's agent usage onto the mirror
+	// session.
 	skew := remoteClockSkew(rt)
 	agents = newAgentShipper(cfg.LocalSess, skew)
 	labels = newLabelShipper()
 	res = newResShipper(pin.id, skew)
+	usage = newUsageShipper(skew)
 	// Subscriptions are per control client, so this runs once per attach — here
 	// for the first one, and at the end of repair for every reconnect. The two
-	// shippers with a poll mode keep polling if the remote refuses; res has none,
-	// and could not trust the answer anyway — a spec tmux cannot parse is dropped
-	// with no %error.
-	subscribe := func() { labels.subscribed, agents.subscribed, _ = subscribeFormats(rt) }
+	// shippers with a poll mode keep polling if the remote refuses; res and usage
+	// have none, and could not trust the answer anyway — a spec tmux cannot
+	// parse is dropped with no %error.
+	subscribe := func() { labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt) }
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
 	// its floor on every reconnect.
@@ -1066,6 +1075,9 @@ func Run(cfg Config) error {
 			}
 			if v, ok := subscriptionValue(l, resSubName); ok && len(l.Args) > 1 {
 				res.queue(l.Args[1], v)
+			}
+			if v, ok := subscriptionValue(l, usageSubName); ok {
+				usage.queue(v)
 			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
@@ -1142,6 +1154,7 @@ func Run(cfg Config) error {
 			agents.flush(cfg, rt, gen, drained)
 			labels.flush(cfg, reg, rt, gen, drained)
 			res.flush(cfg)
+			usage.flush(cfg)
 			sweeper.sweep(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
 			reseedDropped(router, rt)
 			reseedReshaped(router, rt)
@@ -1302,10 +1315,12 @@ func Run(cfg Config) error {
 		skew := remoteClockSkew(rt)
 		agents.reskew(skew)
 		res.reskew(skew)
+		usage.reskew(skew)
 		// Before the re-subscribe below, whose re-report is the only thing that
 		// puts the figures back: reattach dropped the stamp, and a shipper that
 		// still remembered writing it would suppress the write as unchanged.
 		res.reset()
+		usage.reset()
 		// Last, and after the registry has settled: the fresh client carries no
 		// subscriptions, and re-subscribing re-reports every window and pane —
 		// so this doubles as the label/agent-state half of the repair.

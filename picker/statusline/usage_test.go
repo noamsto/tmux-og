@@ -298,6 +298,74 @@ func TestUsageSegmentPiOrderAndIcon(t *testing.T) {
 	}
 }
 
+func TestUsageForMirrorRendersBridgeUsageNeverLocal(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+
+	a := args{
+		usageMonthlyThreshold: 50,
+		bridgeHost:            "lab",
+		bridgeUsage:           `{"claude":{"windows":[{"label":"5h","pct":77}],"spend":{"usd":12.34,"limit_usd":50}}}`,
+		iconUsageClaude:       "CL",
+		thmSubtext0:           "#9a8", thmGreen: "#0f0", thmPeach: "#fa0", thmRed: "#f00",
+	}
+	localOpen := func() map[string]bool {
+		t.Fatal("localOpen called for a mirror session")
+		return nil
+	}
+	got := usageFor(a, dir, localOpen, 0)
+	if !strings.Contains(got, "77%·5h") {
+		t.Fatalf("got %q, want it to contain 77%%·5h", got)
+	}
+	if !strings.Contains(got, "$12/$50") {
+		t.Fatalf("got %q, want it to contain $12/$50", got)
+	}
+	if strings.Contains(got, "11%") {
+		t.Fatalf("got %q, want no local figure (11%%)", got)
+	}
+}
+
+func TestUsageForMirrorEmptyBridgeUsageRendersNothing(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+
+	a := args{usageMonthlyThreshold: 50, bridgeHost: "lab", bridgeUsage: ""}
+	localOpen := func() map[string]bool {
+		t.Fatal("localOpen called for a mirror session")
+		return nil
+	}
+	if got := usageFor(a, dir, localOpen, 0); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestUsageForMirrorMalformedBridgeUsageRendersNothing(t *testing.T) {
+	a := args{usageMonthlyThreshold: 50, bridgeHost: "lab", bridgeUsage: "not json"}
+	localOpen := func() map[string]bool {
+		t.Fatal("localOpen called for a mirror session")
+		return nil
+	}
+	if got := usageFor(a, t.TempDir(), localOpen, 0); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}
+
+func TestUsageForLocalSessionRendersLocalFigure(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsageClaude:       "CL",
+		thmSubtext0:           "#9a8", thmGreen: "#0f0", thmPeach: "#fa0", thmRed: "#f00",
+	}
+	localOpen := func() map[string]bool { return map[string]bool{"claude": true} }
+	got := usageFor(a, dir, localOpen, 0)
+	if !strings.Contains(got, "11%·5h") {
+		t.Fatalf("got %q, want it to contain 11%%·5h", got)
+	}
+}
+
 func TestOpenAgentsFailOpen(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "tmux")

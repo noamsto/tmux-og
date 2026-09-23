@@ -90,6 +90,51 @@ func openAgents() map[string]bool {
 	return open
 }
 
+// parseBridgeUsage decodes a mirror session's @bridge_usage option into the
+// same cache shape the local provider caches use. The daemon is the sole
+// sanitizer (docs/agents/bridge-shipped-state.md); this only re-types the
+// JSON, so empty or malformed input yields nil rather than a partial read.
+func parseBridgeUsage(v string) map[string]usageCache {
+	if v == "" {
+		return nil
+	}
+	var out map[string]usageCache
+	if json.Unmarshal([]byte(v), &out) != nil {
+		return nil
+	}
+	return out
+}
+
+// usageFor selects the caches and open gate for the usage segment. A mirror
+// session (@bridge_host set) renders the remote host's figures from
+// @bridge_usage, gated by every key present — the daemon already applied the
+// remote's own live open gate — and never touches local caches or localOpen,
+// so a mirror never shows local figures. A local session keeps the existing
+// path: read the cheap local caches first, and call localOpen only once
+// there's data worth gating.
+func usageFor(a args, localDir string, localOpen func() map[string]bool, now int64) string {
+	if a.bridgeHost != "" {
+		caches := parseBridgeUsage(a.bridgeUsage)
+		if len(caches) == 0 {
+			return ""
+		}
+		open := make(map[string]bool, len(caches))
+		for agent := range caches {
+			open[agent] = true
+		}
+		return usageSegment(a, caches, open, now)
+	}
+	caches := loadUsageCaches(localDir)
+	if len(caches) == 0 {
+		return ""
+	}
+	open := localOpen()
+	if len(open) == 0 {
+		return ""
+	}
+	return usageSegment(a, caches, open, now)
+}
+
 func usageColor(pct float64, a args) string {
 	switch {
 	case pct >= 90:
