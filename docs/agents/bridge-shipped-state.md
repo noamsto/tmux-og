@@ -194,6 +194,21 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   #603 sweep hook is what makes this reachable at all: it arms `agent-detect`
   on a host whose only clients are bridges, which is why the note this
   replaces once called screen-scraper state uncarriable.
+- **The local OSC-133 clear must skip a mirror pane** (#741). The mirror
+  session's window icon *and* session tint both come from the shipped
+  `screen/<id>` (via `claude_pane_ids`/`read_pane_state`), but the local
+  `pane-shell-prompt` hook fires on the renderer re-emitting the remote shell's
+  OSC 133, and used to run `claude_clear_agent_state` before any `@bridge_win`
+  check — deleting `panes`/`screen`/`interrupt` and blanking
+  `@claude_status`/`@agent_screen`. Because an unchanged row is never rewritten,
+  the shipped verdict was then gone for good until the remote value next moved;
+  Claude mirrors mostly escaped only because their hook state moves often enough
+  to re-stamp. `tmux-shell-prompt` now exits on `@bridge_win` before the clear
+  (passed through the hook context, no fork on the every-prompt path). The
+  state a mirror could still show at session level while the window-name state
+  glyph was missing is the `@bridge_proc`-derived **process** icon
+  (`@active_pane_icon`, `win_procs`) — a different source that never reads
+  `screen/`.
 - Not carried: `interrupted` (derived on the remote from a transcript tail
   this side can't read).
 
