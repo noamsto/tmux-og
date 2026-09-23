@@ -124,6 +124,135 @@ the ssh `ps` leg survives only as the version-skew fallback
   rebuilt, so an older remote stamps nothing and degrades silently to the
   fallback.
 
+## Remote Agent Usage
+
+The top-right usage segment normally reads *this* host's
+`/tmp/og-agent-usage/<agent>.json` caches, gated by a local `list-panes -a`
+(`enrichment.md`'s "Agent Usage Limits"). In a mirror session every pane runs
+a renderer, so that gate and those caches describe the wrong host entirely.
+The remote publishes its own caches and the daemon ships them across (#743).
+
+- **`tmux-agent-usage --tick-run` publishes the surviving cache files as one
+  compact JSON object onto the global `@og_agent_usage` option**
+  (`scripts/tmux-agent-usage.sh`'s `publish_usage`), keyed by cache name —
+  `jq -cn 'reduce inputs as $c ({}; . + {(input_filename|…): $c})'` over
+  whichever of `claude.json`/`codex.json`/`cursor.json`/`pi.json` exist. No
+  schema change: the value *is* the caches, verbatim. No files survive → `tmux
+  set -gu @og_agent_usage`, reached only on a pass that ran at all (some agent
+  open, none with a cache); when every remote agent closes, `--tick`/
+  `--tick-run` exit at the `OPEN` gate before publishing at all, so the last
+  value sits on the remote server — same as the local cache files, which also
+  survive an all-closed period untouched. The daemon's live open gate (below)
+  is what hides a closed agent from the mirror in the meantime, not the
+  publish side. A `jq` failure (a torn/garbage cache) leaves the option as it
+  was, the same "failed refresh keeps the previous value" posture every
+  provider already has. Driven by the existing `@og-usage-tick` monitor hook,
+  so it runs on a bridge-only remote too (#603). Global, not per-session:
+  usage is host-wide, one account per host.
+- **The `og_usage` subscription carries both the live open gate and the
+  published JSON in one format**, session-scoped (empty `what`) beside
+  `og_labels`/`og_agents`/`og_res`:
+  `#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{pane_current_command}},#{pane_current_command} ,}}}}|#{@og_agent_usage}`.
+  The `S:`/`W:`/`P:` loop walks every pane on the remote server and emits each
+  agent pane's `pane_current_command`, then `|`, then `@og_agent_usage`. tmux
+  re-evaluates a subscription every second and reports only on change, so
+  **the per-agent gate is live**: closing the last remote claude pane removes
+  claude's block from the mirror within ~1s, rather than lagging the poller's
+  own `refreshSeconds` (120s default) the way a gate sourced from the cache
+  files alone would. Verified on tmux 3.7c with a scratch server and a control
+  client (`%subscription-changed u $1 - - - : claude .pi-wrapped |{"x":1}`,
+  then the loop half updating on `kill-window`, the JSON half on `set -g`). A
+  remote not rebuilt from this revision reports `<agents>|` (empty JSON):
+  nothing to ship.
+- **`agentusage.go`'s `sanitizeUsage` re-types rather than filters the JSON.**
+  The raw value is capped at `usageRawMaxLen` (4 KiB) before any parsing —
+  over the cap is treated as malformed. It splits at the **first** `|` into
+  the open half and the JSON half (no `|` at all → drop everything); the open
+  half is normalised into a set exactly as the renderer's `openAgents()`
+  would (`usageOpenSet`: basename, `^\.(.*)-wrapped$` unwrap, then
+  `claude|codex|cursor-agent→cursor|pi`). The JSON half decodes into
+  `map[string]json.RawMessage`, and only a *known* agent key
+  (`claude codex cursor pi`) that is *also* in the open set gets decoded
+  further, into the typed `usageCache`/`usageWindow`/`usageSpend` structs
+  (`json` tags matching `picker/statusline/usage.go`'s `usageCache`) — a plain
+  `json.Unmarshal`, **never `DisallowUnknownFields`**, so a provider adding a
+  field later does not drop the whole agent; the typed struct already keeps
+  the unknown field out of the output regardless. **One bad field drops the
+  whole agent** (`validUsageCache`, the identity-field policy — no partial
+  reading, since a partial reading would render as a different account): any
+  window/monthly `label` failing `^[A-Za-z0-9._-]{1,12}$` (excludes `#`, `|`,
+  spaces, braces, so a `#(…)`/`#{…}`/`#[…]` payload cannot survive), more than
+  `usageMaxWindows` (8) windows, `pct` outside `[0, 1000]`, `usd`/`limit_usd`
+  outside `[0, 1e7]`, or a negative `reset_at`. `spend.label`/`spend.period`
+  are decoded (present in the struct only to match the cache shape) but never
+  rendered and so effectively not carried onward — the re-marshal produces
+  compact JSON with sorted keys, and only the fields `usageSpend`/`usageWindow`
+  actually declare survive it.
+- **A final guard rejects the marshaled output if it contains `|` or `#`** —
+  unreachable by construction (the validated alphabet already excludes both),
+  checked anyway because the cost of being wrong isn't cosmetic: `|` matters
+  because `tmux-statusline`'s `fetchVolatile` reads `@bridge_usage` out of a
+  `|`-delimited `display-message -p` row that **fails closed on a wrong field
+  count** (a stray `|` would shift every field after it), and `#` is the
+  start of every tmux format directive the value could otherwise inject once
+  it reaches a format string.
+- **Every nonzero `reset_at` is shifted by the shipper's measured clock skew**
+  (`localNow − remoteNow`, the same value `resShipper` already gets), so the
+  renderer's `↻<dur>` countdown runs on the local clock rather than the
+  remote's.
+- **Malformed or empty input fails closed to unset, unlike `@bridge_res`'s
+  keep-previous.** `usageShipper.flush`: `sanitizeUsage` returning `""` (over
+  cap, no `|`, bad JSON, no open+valid agent survives) issues `set-option -u`
+  on `@bridge_usage`; a nonempty result issues `set-option … @bridge_usage
+  <json>`. A figure the daemon cannot vouch for must not stand in for the
+  remote's — `@bridge_res` gets to keep stale numbers because a wrong CPU/Mem
+  reading is merely imprecise, but a wrong usage figure names the wrong
+  account. Unchanged-row suppression skips the write when the output equals
+  the last one written (`known && out == written`); the **first** report after
+  start or `reset()` always applies, replacing whatever a previous daemon on
+  this session left.
+- **Stored per mirror session, not per host, and for the same reason
+  `@bridge_res` is**: each daemon owns exactly one mirror session, so a
+  session option needs no cross-daemon refcounting — two mirrors of the same
+  host each carry the same host-wide value independently, and one daemon's
+  teardown cannot delete what another still serves the way a host-keyed file
+  would need guarding against. It also dies with the session.
+- **Lifecycle mirrors `@bridge_res`'s, plus one extra startup case.**
+  `reattach` clears `@bridge_usage` in the same breath it clears `@bridge_res`,
+  right after it stamps `@bridge_state disconnected` — figures over a dead
+  link describe nothing live. `repair` calls `usage.reset()` (beside
+  `res.reset()`) before the re-subscribe, so the re-report re-stamps even an
+  identical value. `teardown` clears it too (near-vacuous, since the session
+  is usually killed with it — the path that matters is a kill that fails).
+  **Startup also clears it**, beside `clearBridgeState`, because the launcher
+  reuses mirror sessions (#474): a prior daemon killed while connected would
+  otherwise leave its last usage figures standing on a session this daemon
+  has just taken over, until its own first report arrives.
+- **The renderer selects by `@bridge_host`, never falls back to local
+  figures.** `usageFor` (`picker/statusline/usage.go`): a session with
+  `@bridge_host` set decodes `@bridge_usage` via `parseBridgeUsage` and gates
+  on every key present — the daemon already applied the remote's live open
+  gate, so the renderer re-derives nothing. Local caches and the local
+  `list-panes` gate (`openAgents`) are **not consulted** in that branch, even
+  when `@bridge_usage` is empty or absent (not-rebuilt remote, disconnected,
+  nothing open remotely) — a mirror then shows no usage segment, never a
+  local one. `fetchVolatile` only runs the usage selection on a successful
+  volatile fetch (`ok`): a failed fetch with no last-good frame leaves the
+  bridge fields empty, and running the selector on that frame would fall a
+  mirror into the local branch for one cold-start tick. The renderer does not
+  re-sanitize `@bridge_usage` — the daemon is the sole sanitizer, per the
+  repo's usual convention — but a malformed value simply decodes to `nil`.
+- **Known limits.** No staleness bound on the published value, unlike
+  `@bridge_res`'s tick + 30s cutoff: a remote poller that stops while agents
+  stay open (hook gone, or a resident server predating the rebuild, #407)
+  keeps serving its last figures on every subscribe — accepted at the 120s
+  refresh cadence these figures move at, the same staleness the local cache
+  files already have when the local poller stops. A remote not rebuilt from
+  this revision publishes nothing, so a mirror of it shows no usage segment at
+  all (no capability probe, same shape as remote session resources). An
+  orphaned mirror (daemon killed without teardown) keeps its last
+  `@bridge_usage` until the session itself dies.
+
 ## Remote Agent Status
 
 A mirror window's local panes run renderers, so nothing writes
