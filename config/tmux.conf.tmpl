@@ -390,6 +390,7 @@ set-hook -gu client-session-changed
 set-hook -gu client-attached
 set-hook -gu client-attached[20]
 set-hook -gu window-resized
+set-hook -gu window-layout-changed
 
 # Also clear hooks from older config versions that may linger
 set-hook -gu window-linked
@@ -455,9 +456,16 @@ set-hook -g window-resized          'run-shell -b "{{index .Paths.Scripts "tmux-
 # tmux-float-refit setter at index 0, so a single resize fires both; the bare
 # `set-hook -gu window-resized` above clears every index on reload. The
 # dispatcher calls tmux-grid-refit itself after adding or removing a role
-# pane, so no after-split-window / pane-exited hook is needed. Read-only on the
-# @crew_* hints it consumes.
+# pane. Read-only on the @crew_* hints it consumes.
 set-hook -g window-resized[10]      'run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}"'
+
+# A pane split/kill/move changes the layout without resizing the window, so
+# window-resized never fires and the lead keeps whatever cells tmux
+# redistributed to it (#760) — the aeye carousel toggle is exactly such a
+# split-then-kill. window-layout-changed fires on every layout mutation and
+# tmux-grid-refit re-normalises the grid; it stays a no-op on anything else,
+# and the script excludes floating panes (which also fire this hook).
+set-hook -g window-layout-changed   'run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}"'
 
 # Tag every newly-created window as a worktree window from its cwd — at
 # creation, regardless of creator or CLAUDECODE (issue #95). new-session

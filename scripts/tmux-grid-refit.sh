@@ -4,12 +4,22 @@
 # this reads (window @crew_grid / @crew_grid_main_pct, pane @crew_role) and calls
 # this after adding or removing a role pane. Nothing here ever writes a @crew_*
 # option.
-#   args: <target-window>   (the window-resized hook passes #{window_id})
+#   args: <target-window>   (window-resized[10] and window-layout-changed
+#                            pass #{q:window_id})
 # No-op unless the window carries @crew_grid=1, so a window that is not a crew
 # grid — and any non-tmux-og server — is untouched. Silent and convergent: an
 # unchanged grid issues no state-changing tmux command and emits no reflow
 # notification (@grid_refit_sig caches the last applied decision, and the
 # read-only probes before it are cheap).
+#
+# Two triggers, because a grid can change shape without a resize (#760): the
+# window-resized[10] hook covers a client resize, and window-layout-changed
+# covers a split/kill/move of any pane — the aeye carousel toggle splits then
+# kills a pane, which never resizes the window, so without the second hook the
+# freed cells stayed with a neighbour and the lead never returned to
+# @crew_grid_main_pct. Floats are excluded from the pane set below: a float
+# open/close fires window-layout-changed too, but it is not part of the tiled
+# layout select-layout acts on, so counting it would churn @grid_refit_sig.
 set -uo pipefail
 
 target=${1:-}
@@ -48,10 +58,12 @@ acquire_lock() {
 [[ "$(tmux display-message -p -t "$target" '#{window_zoomed_flag}' 2>/dev/null)" == 1 ]] && exit 0
 
 # The lead pane is the main pane. No lead -> not a grid we can lay out.
-lead=$(tmux list-panes -t "$target" -f '#{==:#{@crew_role},lead}' -F '#{pane_id}' 2>/dev/null | head -1)
+# Floats are excluded everywhere (#760): window-layout-changed fires on a float
+# open/close, and a float is not part of the tiled set select-layout lays out.
+lead=$(tmux list-panes -t "$target" -f '#{&&:#{==:#{@crew_role},lead},#{!:#{pane_floating_flag}}}' -F '#{pane_id}' 2>/dev/null | head -1)
 [[ -n $lead ]] || exit 0
 
-read_panes() { tmux list-panes -t "$target" -F '#{pane_id}' 2>/dev/null; }
+read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
 pane_ids=$(read_panes)
 np=$(printf '%s\n' "$pane_ids" | grep -c .) || true
 ((np > 1)) || exit 0
