@@ -109,6 +109,13 @@ func truncate(s string, max int) string {
 	return string(r) + "…"
 }
 
+func (w winState) noURLReason() string {
+	if w.issueStampError != "" {
+		return w.issueStampError
+	}
+	return "stamp failed"
+}
+
 func (m model) issueBlock() string {
 	c, w := m.cfg, m.win
 	if w.issueID == "" {
@@ -120,6 +127,10 @@ func (m model) issueBlock() string {
 	}
 	head := m.sty(c.blue).Bold(true).Render(glyph + "  " + w.issueID)
 	title := m.sty(c.fg).Render(truncate(w.issueTitle, m.titleWidth()))
+	if w.issueURL == "" {
+		noURL := m.sty(c.overlay0).Render(truncate("no url — "+w.noURLReason(), m.titleWidth()))
+		return lipgloss.JoinVertical(lipgloss.Left, head, title, noURL)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, head, title)
 }
 
@@ -221,14 +232,19 @@ func (m model) footer() string {
 		items = append(items, plain.Render("[r] refresh"))
 	}
 	items = append(items, plain.Render("[q] close"))
+	const sep = "   "
 	if m.flash != "" {
 		flashColor := c.green
 		if m.flashIsError {
 			flashColor = c.red
 		}
-		items = append(items, m.sty(flashColor).Render(m.flash))
+		// Truncate to what's actually left on the row, not the full panel
+		// width — the fixed [o]/[p]/[r]/[q] items already eat most of it, and
+		// m.flash can carry an arbitrary CLI error message.
+		budget := max(m.titleWidth()-lipgloss.Width(strings.Join(items, sep))-lipgloss.Width(sep), 4)
+		items = append(items, m.sty(flashColor).Render(truncate(m.flash, budget)))
 	}
-	return strings.Join(items, "   ")
+	return strings.Join(items, sep)
 }
 
 // card renders the full bordered popup. Pure over model state (no tmux calls).
@@ -252,6 +268,7 @@ func (m model) card() string {
 type tickMsg struct{}
 type refreshDoneMsg struct{}
 type bridgeRefreshDoneMsg struct{ errText string } // errText == "" is success
+type openDoneMsg struct{ errText string }          // errText == "" is success
 
 const (
 	// ctlErrorPrefix matches og-remote-bridge-ctl's own errorPrefix
@@ -274,8 +291,10 @@ func tickCmd() tea.Cmd {
 
 func openCmd(url string) tea.Cmd {
 	return func() tea.Msg {
-		_ = exec.Command("xdg-open", url).Start() // best-effort; Linux-only (parity w/ old keybind)
-		return nil
+		if err := exec.Command("xdg-open", url).Start(); err != nil { // Linux-only (parity w/ old keybind)
+			return openDoneMsg{errText: err.Error()}
+		}
+		return openDoneMsg{}
 	}
 }
 
@@ -393,6 +412,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashUntil = time.Now().Add(flashConfirmDuration)
 		}
 		return m, nil
+	case openDoneMsg:
+		if msg.errText != "" {
+			m.flash = "open failed: " + msg.errText
+			m.flashIsError = true
+			m.flashUntil = time.Now().Add(flashErrorDuration)
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg.String())
 	}
@@ -409,6 +435,11 @@ func (m model) handleKey(k string) (tea.Model, tea.Cmd) {
 			m.flashIsError = false
 			m.flashUntil = time.Now().Add(flashConfirmDuration)
 			return m, openCmd(m.win.issueURL)
+		} else if m.win.issueID != "" {
+			m.flash = "no url — " + m.win.noURLReason()
+			m.flashIsError = true
+			m.flashUntil = time.Now().Add(flashErrorDuration)
+			return m, nil
 		}
 	case "p":
 		if m.win.prURL != "" {

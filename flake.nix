@@ -1616,6 +1616,7 @@
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
               bats tests/issue-stamp.bats
+              bats tests/issue-stamp-linear-provider.bats
               touch $out
             '';
 

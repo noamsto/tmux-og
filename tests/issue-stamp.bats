@@ -51,6 +51,7 @@ setup() {
 		else
 			case "$2" in
 			*eng-1957*) printf 'ENG-1957\nBranch Title\nhttps://linear.example/ENG-1957\n' ;;
+			*eng-9001*) printf 'ENG-9001\n\n\nsome error\n' ;;
 			*) printf '\n\n\n' ;;
 			esac
 		fi
@@ -226,4 +227,20 @@ wait_for() {
 	second="$(cat "$STATE/opt_@issue_id")"
 	[ "$first" = "$second" ]
 	[ "$second" = "ENG-1957" ]
+}
+
+@test "branch-derived: a partial stamp with a provider error stores @issue_stamp_error" {
+	run bash "$STAMP" sess:1 /repo feat/eng-9001-x
+	[ "$status" -eq 0 ]
+	[ "$(cat "$STATE/opt_@issue_id")" = "ENG-9001" ]
+	[ "$(cat "$STATE/opt_@issue_stamp_error")" = "some error" ]
+}
+
+@test "branch-derived: a later successful stamp clears @issue_stamp_error" {
+	run bash "$STAMP" sess:1 /repo feat/eng-9001-x
+	[ "$(cat "$STATE/opt_@issue_stamp_error")" = "some error" ]
+	run bash "$STAMP" sess:1 /repo feat/eng-1957-x
+	[ "$status" -eq 0 ]
+	[ ! -f "$STATE/opt_@issue_stamp_error" ]
+	grep -q 'unset @issue_stamp_error' "$STATE/setlog"
 }
