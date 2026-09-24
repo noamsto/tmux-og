@@ -196,6 +196,9 @@ func TestBridgeRefreshDoneMsgFlashesRealOutcome(t *testing.T) {
 	if ok.flash != "refresh sent ↗" {
 		t.Errorf("flash = %q, want the success flash", ok.flash)
 	}
+	if ok.flashIsError {
+		t.Error("a success flash must not be marked as an error")
+	}
 	if !ok.flashUntil.After(time.Now().Add(flashConfirmDuration - time.Second)) {
 		t.Error("success flash should carry the confirm-duration deadline")
 	}
@@ -208,8 +211,30 @@ func TestBridgeRefreshDoneMsgFlashesRealOutcome(t *testing.T) {
 	if fail.flash != "bridge daemon unreachable" {
 		t.Errorf("flash = %q, want the ctl's own error text", fail.flash)
 	}
+	if !fail.flashIsError {
+		t.Error("a ctl error flash must be marked as an error")
+	}
 	if !fail.flashUntil.After(time.Now().Add(flashConfirmDuration)) {
 		t.Error("a ctl error should carry the longer error-duration deadline, not the confirm one")
+	}
+}
+
+// TestFooterFlashColor pins the color-by-outcome contract (#762): an error
+// flash renders in c.red, a confirmation flash in c.green.
+func TestFooterFlashColor(t *testing.T) {
+	cfg := testCfg()
+	m := model{cfg: cfg}
+
+	errM := model{cfg: cfg, width: 60, height: 18, flash: "boom", flashIsError: true}
+	wantErr := m.sty(cfg.red).Render("boom")
+	if got := errM.footer(); !strings.Contains(got, wantErr) {
+		t.Errorf("footer() = %q, want it to contain the c.red-rendered flash %q", got, wantErr)
+	}
+
+	okM := model{cfg: cfg, width: 60, height: 18, flash: "opened ↗", flashIsError: false}
+	wantOK := m.sty(cfg.green).Render("opened ↗")
+	if got := okM.footer(); !strings.Contains(got, wantOK) {
+		t.Errorf("footer() = %q, want it to contain the c.green-rendered flash %q", got, wantOK)
 	}
 }
 
