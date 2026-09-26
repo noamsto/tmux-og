@@ -38,9 +38,10 @@ type model struct {
 	// refreshing: prBlock renders refreshing as "⧗ #N refreshing…", which
 	// would misdescribe a local socket write as a PR fetch. Set on dispatch,
 	// cleared by bridgeRefreshDoneMsg.
-	sending    bool
-	flash      string    // transient footer note ("opened ↗", a ctl error, …)
-	flashUntil time.Time // when flash clears; zero means nothing to clear
+	sending      bool
+	flash        string    // transient footer note ("opened ↗", a ctl error, …)
+	flashIsError bool      // true renders flash in c.red instead of c.green
+	flashUntil   time.Time // when flash clears; zero means nothing to clear
 }
 
 const (
@@ -221,7 +222,11 @@ func (m model) footer() string {
 	}
 	items = append(items, plain.Render("[q] close"))
 	if m.flash != "" {
-		items = append(items, m.sty(c.green).Render(m.flash))
+		flashColor := c.green
+		if m.flashIsError {
+			flashColor = c.red
+		}
+		items = append(items, m.sty(flashColor).Render(m.flash))
 	}
 	return strings.Join(items, "   ")
 }
@@ -380,9 +385,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sending = false
 		if msg.errText != "" {
 			m.flash = msg.errText
+			m.flashIsError = true
 			m.flashUntil = time.Now().Add(flashErrorDuration)
 		} else {
 			m.flash = "refresh sent ↗"
+			m.flashIsError = false
 			m.flashUntil = time.Now().Add(flashConfirmDuration)
 		}
 		return m, nil
@@ -399,12 +406,14 @@ func (m model) handleKey(k string) (tea.Model, tea.Cmd) {
 	case "o":
 		if m.win.issueURL != "" {
 			m.flash = "opened ↗"
+			m.flashIsError = false
 			m.flashUntil = time.Now().Add(flashConfirmDuration)
 			return m, openCmd(m.win.issueURL)
 		}
 	case "p":
 		if m.win.prURL != "" {
 			m.flash = "opened ↗"
+			m.flashIsError = false
 			m.flashUntil = time.Now().Add(flashConfirmDuration)
 			return m, openCmd(m.win.prURL)
 		}
