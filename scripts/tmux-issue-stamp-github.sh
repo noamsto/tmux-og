@@ -3,7 +3,8 @@
 # Usage: tmux-issue-stamp-github <worktree-path> <branch> [<explicit-number>]
 # <explicit-number> (optional): skip branch-regex derivation and resolve this
 # issue/PR number directly (explicit-id mode — see tmux-issue-stamp).
-# Output: three lines on stdout — id, title, url (empty for unset fields).
+# Output: four lines on stdout — id, title, url, error (empty for unset
+# fields).
 # Errors → empty output, exit 0.
 set -uo pipefail
 
@@ -13,7 +14,7 @@ source @lib_enrich@
 worktree="${1:-}"
 branch="${2:-}"
 explicit_num="${3:-}"
-id="" title="" url=""
+id="" title="" url="" raw_err=""
 
 # Only a github.com origin qualifies.
 if [[ -d $worktree ]]; then
@@ -22,7 +23,7 @@ else
 	origin=""
 fi
 if [[ $origin != *github.com* ]]; then
-	printf '\n\n\n'
+	printf '\n\n\n\n'
 	exit 0
 fi
 
@@ -32,7 +33,7 @@ else
 	branch_to_gh_issue_number "$branch"
 	num="$REPLY"
 	if [[ -z $num ]]; then
-		printf '\n\n\n'
+		printf '\n\n\n\n'
 		exit 0
 	fi
 fi
@@ -42,7 +43,12 @@ id="#$num"
 # a network stall can't hold tmux-issue-stamp's per-window lock long enough for
 # a concurrent trigger to see it as stale and steal it mid-fetch.
 if command -v gh >/dev/null 2>&1; then
-	json="$(cd "$worktree" && timeout 15 gh issue view "$num" --json number,title,url 2>/dev/null)" || json=""
+	errf="$(mktemp)"
+	trap 'rm -f "$errf"' EXIT
+	json="$(cd "$worktree" && timeout 15 gh issue view "$num" --json number,title,url 2>"$errf")" || json=""
+	raw_err="$(head -n1 "$errf" 2>/dev/null)"
+	rm -f "$errf"
+	trap - EXIT
 	if [[ -n $json ]]; then
 		title="$(jq -r '.title // ""' <<<"$json" 2>/dev/null)" || title=""
 		url="$(jq -r '.url // ""' <<<"$json" 2>/dev/null)" || url=""
@@ -54,5 +60,11 @@ if [[ -n $title ]]; then
 	title="$REPLY"
 fi
 
-printf '%s\n%s\n%s\n' "$id" "$title" "$url"
+err=""
+if [[ -z $title && -z $url && -n $raw_err ]]; then
+	sanitize_stamp_error "$raw_err"
+	err="$REPLY"
+fi
+
+printf '%s\n%s\n%s\n%s\n' "$id" "$title" "$url" "$err"
 exit 0

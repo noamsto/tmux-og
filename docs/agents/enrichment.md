@@ -11,6 +11,13 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   control-mode client renders no status line, so a status-driven poller never
   runs on a host whose only clients are bridges, #603) writes `@pr_*`. Display
   formats and keybinds only read them.
+- **Stamp failures:** when a provider CLI runs but a matched id ends up with
+  no title/url, `tmux-issue-stamp` stores the sanitized first line of the
+  CLI's stderr in `@issue_stamp_error` (cleared on a successful stamp or when
+  no provider matches). The enrich card's issue block permanently shows
+  `no url — <reason>` whenever `@issue_url` is empty; pressing `o` on that
+  window additionally flashes the same reason instead of silently no-op'ing.
+  Local-only, never carried across the remote bridge (`@bridge_*`).
 - **Providers** (`enrich.providers`, default `["linear" "github"]`) are tried in
   priority order; first non-empty issue id wins. Both CLIs are optional and
   degrade gracefully: `gh` (inherited from PATH) provides PR data and GitHub

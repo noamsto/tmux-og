@@ -9,7 +9,7 @@ import (
 // options. The card reflects these — it never re-derives issue/PR/claude data.
 type winState struct {
 	issueProvider, issueID, issueTitle, issueURL            string
-	issueExplicitID                                         string
+	issueExplicitID, issueStampError                        string
 	prNumber, prTitle, prState, prCheck, prURL, prMergeable string
 	prDraft, prReview, prAutoMerge, prProgress              string
 	branch, worktree, gitRoot                               string
@@ -60,6 +60,8 @@ func parseWindowOptions(out string, o *winOpts) {
 			o.local.issueURL = val
 		case "@issue_explicit_id":
 			o.local.issueExplicitID = val
+		case "@issue_stamp_error":
+			o.local.issueStampError = val
 		case "@pr_number":
 			o.local.prNumber = val
 		case "@pr_title":

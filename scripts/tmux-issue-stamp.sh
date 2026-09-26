@@ -126,11 +126,11 @@ run_provider() {
 	case "$1" in
 	linear) @issue_stamp_linear@ "$worktree" "$branch" "${2:-}" ;;
 	github) @issue_stamp_github@ "$worktree" "$branch" "${2:-}" ;;
-	*) printf '\n\n\n' ;;
+	*) printf '\n\n\n\n' ;;
 	esac
 }
 
-chosen_provider="" id="" title="" url=""
+chosen_provider="" id="" title="" url="" err=""
 if [[ -n $explicit_id ]]; then
 	parse_explicit_issue_id "$explicit_id"
 	# A malformed id (REPLY_LOCAL empty) must stay a hard "no id" here — calling
@@ -144,6 +144,7 @@ if [[ -n $explicit_id ]]; then
 		id="${out[0]:-}"
 		title="${out[1]:-}"
 		url="${out[2]:-}"
+		err="${out[3]:-}"
 	fi
 else
 	provider_priority_list
@@ -155,6 +156,7 @@ else
 			id="${out[0]:-}"
 			title="${out[1]:-}"
 			url="${out[2]:-}"
+			err="${out[3]:-}"
 			break
 		fi
 	done
@@ -171,6 +173,7 @@ if [[ -z $id ]]; then
 	tmux set-option -t "$target" -wu @issue_branch 2>/dev/null
 	tmux set-option -t "$target" -wu @issue_backfill_tries 2>/dev/null
 	tmux set-option -t "$target" -wu @issue_explicit_id 2>/dev/null
+	tmux set-option -t "$target" -wu @issue_stamp_error 2>/dev/null
 	@reflow@ "$(tmux display-message -t "$target" -p '#{session_name}')" --force >/dev/null 2>&1 &
 	log_enabled && log_event enrich event stamp_clear win_id "$win_id" sess "$(tmux display-message -t "$target" -p '#{session_name}' 2>/dev/null || true)"
 	# A branch with no issue id still has a PR (the common case) — kick the same
@@ -202,7 +205,13 @@ log_enabled && log_event enrich event stamp provider "$chosen_provider" id "$id"
 # otherwise inherit a prior id's exhausted counter and never get backfilled.
 if [[ -n $title && -n $url ]]; then
 	tmux set-option -t "$target" -wu @issue_backfill_tries 2>/dev/null
+	tmux set-option -t "$target" -wu @issue_stamp_error 2>/dev/null
 else
+	if [[ -n $err ]]; then
+		tmux set-option -t "$target" -w @issue_stamp_error "$err"
+	else
+		tmux set-option -t "$target" -wu @issue_stamp_error 2>/dev/null
+	fi
 	if [[ $old_branch == "$branch" && $old_explicit_id == "$explicit_id" ]]; then
 		tries="$(tmux show-options -t "$target" -wqv @issue_backfill_tries 2>/dev/null)"
 		[[ $tries =~ ^[0-9]+$ ]] || tries=0

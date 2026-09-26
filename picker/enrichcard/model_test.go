@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/noamsto/tmux-og/picker/enrichstate"
 )
 
@@ -41,6 +43,7 @@ func bridgedCfg() cfg {
 func TestCardFullIssueAndPR(t *testing.T) {
 	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
 		issueProvider: "linear", issueID: "ENG-6794", issueTitle: "Carousel nav",
+		issueURL: "https://linear.app/x/issue/ENG-6794",
 		prNumber: "103", prState: "open", prCheck: "success", prMergeable: "mergeable",
 		prTitle: "kitty nav", branch: "feat/103-kitty-nav",
 	}}
@@ -231,7 +234,7 @@ func TestFooterFlashColor(t *testing.T) {
 		t.Errorf("footer() = %q, want it to contain the c.red-rendered flash %q", got, wantErr)
 	}
 
-	okM := model{cfg: cfg, width: 60, height: 18, flash: "opened ↗", flashIsError: false}
+	okM := model{cfg: cfg, width: 80, height: 18, flash: "opened ↗", flashIsError: false}
 	wantOK := m.sty(cfg.green).Render("opened ↗")
 	if got := okM.footer(); !strings.Contains(got, wantOK) {
 		t.Errorf("footer() = %q, want it to contain the c.green-rendered flash %q", got, wantOK)
@@ -258,6 +261,70 @@ func TestIssueStampArgs(t *testing.T) {
 	}
 	if got, want := issueStampArgs("$0:@0", "/repo", "main", "GH-42"), []string{"$0:@0", "/repo", "main", "GH-42"}; !slices.Equal(got, want) {
 		t.Errorf("issueStampArgs with explicit id = %v, want %v", got, want)
+	}
+}
+
+func TestCardIssueNoURLShowsStampError(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+		issueID: "ENG-9001", issueStampError: "No API key configured", branch: "b",
+	}}
+	out := render(m)
+	if !strings.Contains(out, "no url — No API key configured") {
+		t.Errorf("expected stamp error reason in card\n%s", out)
+	}
+}
+
+func TestCardIssueNoURLFallsBackToGenericReason(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+		issueID: "ENG-9001", branch: "b",
+	}}
+	out := render(m)
+	if !strings.Contains(out, "no url — stamp failed") {
+		t.Errorf("expected generic stamp-failed reason in card\n%s", out)
+	}
+}
+
+func TestHandleKeyOpenIssueWithNoURLFlashesReason(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+		issueID: "ENG-9001", issueStampError: "No API key configured", branch: "b",
+	}}
+	m2, cmd := m.handleKey("o")
+	if cmd != nil {
+		t.Error("o on an issue with no url must not dispatch xdg-open")
+	}
+	if got, want := m2.(model).flash, "no url — No API key configured"; got != want {
+		t.Errorf("flash = %q, want %q", got, want)
+	}
+	if !m2.(model).flashIsError {
+		t.Error("the no-url flash must be marked as an error")
+	}
+}
+
+func TestOpenDoneMsgFlashesFailure(t *testing.T) {
+	base := model{cfg: testCfg(), width: 60, height: 18}
+	m, cmd := base.Update(openDoneMsg{errText: "no such file"})
+	if cmd != nil {
+		t.Error("openDoneMsg handling should not dispatch a further cmd")
+	}
+	if got, want := m.(model).flash, "open failed: no such file"; got != want {
+		t.Errorf("flash = %q, want %q", got, want)
+	}
+	if !m.(model).flashIsError {
+		t.Error("an open failure flash must be marked as an error")
+	}
+}
+
+// TestFooterLongFlashStaysInsideCardWidth: footer() must truncate m.flash to
+// the room actually left on its row, not the full panel width, or a long
+// flash (an exec error, a CLI stderr line) overflows the card's border.
+func TestFooterLongFlashStaysInsideCardWidth(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{branch: "b"}}
+	m.flash = `open failed: exec: "xdg-open": executable file not found in $PATH`
+	out := render(m)
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+		}
 	}
 }
 

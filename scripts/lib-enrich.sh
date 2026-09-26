@@ -87,6 +87,32 @@ sanitize_title() {
 	REPLY="${clean:0:50}"
 }
 
+# sanitize_stamp_error RAW
+# Strips ANSI CSI sequences and control chars from a captured stderr line,
+# redacts token-shaped substrings (this is a third-party CLI's stderr, which
+# on a verbose auth-failure path could echo back a bearer token, an
+# Authorization header, credentials embedded in a URL, or a token/api_key/
+# secret query-string param), then clamps to 120 chars. Sets REPLY to the
+# cleaned text. Best-effort, not exhaustive: an unlabeled opaque secret under
+# 20 chars, in a shape none of these rules names, can still survive.
+sanitize_stamp_error() {
+	local clean
+	clean="$(printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g')"
+	# Labeled forms first (keep the label, drop the value), then a generic
+	# catch-all for any other long opaque token. `Bearer` runs before
+	# `Authorization:` — an "Authorization: Bearer <token>" line otherwise
+	# has its value-capture eat only the literal word "Bearer", leaving the
+	# real token for a now-unmatchable Bearer rule.
+	clean="$(printf '%s' "$clean" | sed -E \
+		-e 's/[Bb]earer[[:space:]]+[^[:space:]]+/Bearer [redacted]/g' \
+		-e 's/([Aa]uthorization:[[:space:]]*)[^[:space:]]+/\1[redacted]/g' \
+		-e 's#://[^/[:space:]@]+:[^/[:space:]@]+@#://[redacted]@#g' \
+		-e 's/([?&])(token|api[_-]?key|access[_-]?token|secret)=[^&[:space:]]+/\1\2=[redacted]/gI' \
+		-e 's/\b[A-Za-z0-9_-]{20,}\b/[redacted]/g')"
+	clean="${clean//[[:cntrl:]]/}"
+	REPLY="${clean:0:120}"
+}
+
 # truncate_ellipsis STR MAX
 # If STR exceeds MAX display chars, truncate to MAX-1 and append "…".
 # Sets REPLY to the (possibly shortened) string.
