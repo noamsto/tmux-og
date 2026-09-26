@@ -696,8 +696,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "remote picker not configured — reload tmux"
 			return m, nil
 		}
-		if err := exec.Command("tmux", remotePickNewPaneArgs(bin, host)...).Run(); err != nil {
-			m.statusMsg = err.Error()
+		window, err := exec.Command("tmux", "display-message", "-p", "-t", os.Getenv("TMUX_PANE"), "#{window_id}").Output()
+		if err != nil {
+			m.statusMsg = "remote picker: cannot resolve own window: " + err.Error()
+			return m, nil
+		}
+		out, err := exec.Command("tmux", remotePickScheduleArgs(bin, host, strings.TrimSpace(string(window)))...).CombinedOutput()
+		if err != nil {
+			m.statusMsg = "remote picker: " + strings.TrimSpace(string(out))
 			return m, nil
 		}
 		return m, tea.Quit

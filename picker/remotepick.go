@@ -134,9 +134,12 @@ func shellQuote(s string) string {
 // this window like any other pane-switch attempt; it self-corrects on the
 // next remote focus change to a different pane or the next local focus
 // gesture.
-func remotePickNewPaneArgs(bin, host string) []string {
+//
+// window is the picker's own window id (@N): by id, so the deferred command
+// (remotePickScheduleArgs) still finds it after the popup pane is gone.
+func remotePickNewPaneArgs(bin, host, window string) []string {
 	return []string{
-		"new-pane",
+		"new-pane", "-t", window,
 		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A", "-O", "-K", "-C",
 		bin + " " + shellQuote(host),
 		";",
@@ -146,6 +149,30 @@ func remotePickNewPaneArgs(bin, host string) []string {
 		";",
 		"set", "-p", "remain-on-exit", "off",
 	}
+}
+
+// remotePickScheduleArgs defers remotePickNewPaneArgs past the picker popup's
+// teardown. A window holds one modal pane, so a `new-pane -O` issued while the
+// popup is still open is refused ("window already has a modal pane", #766);
+// whichKeyReplayDelay is the measured floor for the same collision.
+func remotePickScheduleArgs(bin, host, window string) []string {
+	return []string{"run-shell", "-b", "-d", whichKeyReplayDelay, "-C",
+		tmuxCommandLine(remotePickNewPaneArgs(bin, host, window))}
+}
+
+// tmuxCommandLine joins argv into one string for tmux's own command parser
+// (run-shell -C): every word single-quoted, with `;` left bare so it still
+// separates the chained commands.
+func tmuxCommandLine(argv []string) string {
+	words := make([]string, len(argv))
+	for i, a := range argv {
+		if a == ";" {
+			words[i] = a
+			continue
+		}
+		words[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(words, " ")
 }
 
 // emitEmptyRow is spec D3's "empty view is never blank" placeholder: an

@@ -212,10 +212,10 @@ func TestRemotePickHost(t *testing.T) {
 func TestRemotePickNewPaneArgsHostWithoutQuotes(t *testing.T) {
 	bin := "/nix/store/xxx-og-remote-pick/bin/og-remote-pick"
 	host := "tp-g6"
-	args := remotePickNewPaneArgs(bin, host)
+	args := remotePickNewPaneArgs(bin, host, "@7")
 	cmdStr := bin + " " + shellQuote(host)
 	want := []string{
-		"new-pane",
+		"new-pane", "-t", "@7",
 		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A", "-O", "-K", "-C",
 		cmdStr,
 		";",
@@ -256,11 +256,38 @@ func TestRemotePickNewPaneArgsHostWithoutQuotes(t *testing.T) {
 // A host with an embedded quote must not break out of the shell-command
 // string tmux hands to the pane's own shell.
 func TestRemotePickNewPaneArgsHostWithEmbeddedQuote(t *testing.T) {
-	args := remotePickNewPaneArgs("/bin/og-remote-pick", "o'brien")
-	cmdStr := args[15] // after -x/-y/-X/-Y/-B heavy/-A/-O/-K/-C (#648)
+	args := remotePickNewPaneArgs("/bin/og-remote-pick", "o'brien", "@7")
+	cmdStr := args[17] // after -t/-x/-y/-X/-Y/-B heavy/-A/-O/-K/-C (#648)
 	want := `/bin/og-remote-pick 'o'\''brien'`
 	if cmdStr != want {
 		t.Errorf("command string = %q, want %q", cmdStr, want)
+	}
+}
+
+// The float must be scheduled past the picker popup's teardown, not issued
+// from inside it: the popup is the window's one modal pane (#766).
+func TestRemotePickScheduleArgsDefersNewPane(t *testing.T) {
+	args := remotePickScheduleArgs("/bin/og-remote-pick", "tp-g6", "@7")
+	head := []string{"run-shell", "-b", "-d", whichKeyReplayDelay, "-C"}
+	if len(args) != len(head)+1 {
+		t.Fatalf("args = %#v, want %v plus one command string", args, head)
+	}
+	for i := range head {
+		if args[i] != head[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], head[i])
+		}
+	}
+	want := tmuxCommandLine(remotePickNewPaneArgs("/bin/og-remote-pick", "tp-g6", "@7"))
+	if args[len(head)] != want {
+		t.Errorf("command = %q, want %q", args[len(head)], want)
+	}
+}
+
+func TestTmuxCommandLine(t *testing.T) {
+	got := tmuxCommandLine([]string{"set", "-p", "@x", "a'b c", ";", "kill-pane"})
+	want := `'set' '-p' '@x' 'a'\''b c' ; 'kill-pane'`
+	if got != want {
+		t.Errorf("tmuxCommandLine() = %q, want %q", got, want)
 	}
 }
 
