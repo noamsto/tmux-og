@@ -41,7 +41,13 @@
   `tests/popup-float.bats` test 5 ("chrome rule at the tmux layer").
   `tmux-worktree-match` (`NOT_MODAL` + `EFF_ACTIVE`) and
   `claude-status-update`'s `window_stamp` (`EFF_ACTIVE`) carry the same
-  expressions verbatim but are unpinned. The picker additionally never
+  expressions verbatim but are unpinned. `tmux-grid-refit` is float-aware too,
+  but via `#{!:#{pane_floating_flag}}` — **all** floats, not the modal
+  `NOT_MODAL` — because `window-layout-changed` fires on any float open/close
+  and a non-modal float would otherwise churn its `@grid_refit_sig` (#760). The
+  two filters are deliberately different, not drift: the chrome rule is about
+  transient *modal* panes, this one is about the tiled set `select-layout`
+  operates on. The picker additionally never
   captures its own float, and only when the picker's own window holds a
   modal: `selfCaptureTarget` maps its own session/window targets to the pane
   under its float before any preview or wall `capture-pane`, so the tile for

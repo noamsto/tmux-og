@@ -530,11 +530,13 @@
               touch $out
             '';
 
-          # The grid-refit WIRING (#749). Indexed [10] so the responsive grid
-          # setter coexists with the float refit at index 0 — a bare
-          # `set-hook -g window-resized` (index 0) is the trap this guards, since
-          # the second setter would silently replace it. The bare `-gu` clear
-          # must still precede both, as for the alert hooks.
+          # The grid-refit WIRING (#749, extended by #760). Indexed [10] so the
+          # responsive grid setter coexists with the float refit at index 0 — a
+          # bare `set-hook -g window-resized` (index 0) is the trap this guards,
+          # since the second setter would silently replace it. The bare `-gu`
+          # clear must still precede both, as for the alert hooks. The
+          # window-layout-changed setter (the carousel-toggle trigger) carries no
+          # index and needs its own clear-before-set ordering check.
           grid-conf-assertions =
             pkgs.runCommand "grid-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
@@ -542,10 +544,14 @@
             } ''
               grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
               grep -E 'set-hook -g window-resized\[10\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
+              grep -E 'set-hook -g window-layout-changed[[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
 
               clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
               setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
               [ "$clear" -lt "$setter" ]
+              lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
+              lsetter=$(grep -n 'set-hook -g window-layout-changed ' "$CONF" | head -1 | cut -d: -f1)
+              [ "$lclear" -lt "$lsetter" ]
               touch $out
             '';
 
@@ -1869,6 +1875,10 @@
               # floating pane, same trap as float-refit-tests above. The other
               # cases only need layout/pane options, which stock tmux has.
               nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              # The #760 regression sources the *production* hook wiring out of
+              # the rendered conf and runs the store-built script, so the test
+              # exercises the real hook lines, not a hand-rolled copy.
+              TMUX_OG_CONF = tmuxConfig.tmuxConf;
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
