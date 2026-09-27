@@ -44,7 +44,14 @@ var (
 
 // The re-typing structs: what survives a decode into these is all that is ever
 // carried. json tags match picker/statusline's usageCache, which decodes the
-// output. spend.label and spend.period are not rendered and so not carried.
+// output. spend.label is now rendered (validated the same way a window label
+// is) and so carried; spend.period is still not rendered and so still dropped.
+// spend.remaining_usd and spend.remaining_label (a per-key cap, possibly
+// overdrawn) are also carried. The top-level balance (an account-balance
+// fallback for when the key has no cap) is carried too; it and
+// spend.remaining_usd are mutually exclusive by construction — the provider
+// script only ever writes one, per precedence: capped key -> spend.remaining_usd;
+// uncapped key with a management key configured -> balance; neither -> spend only.
 type usageWindow struct {
 	Label   string  `json:"label"`
 	Pct     float64 `json:"pct"`
@@ -52,14 +59,22 @@ type usageWindow struct {
 }
 
 type usageSpend struct {
-	USD      float64  `json:"usd"`
-	LimitUSD *float64 `json:"limit_usd,omitempty"`
+	Label          string   `json:"label,omitempty"`
+	USD            float64  `json:"usd"`
+	LimitUSD       *float64 `json:"limit_usd,omitempty"`
+	RemainingUSD   *float64 `json:"remaining_usd,omitempty"`
+	RemainingLabel string   `json:"remaining_label,omitempty"`
+}
+
+type usageBalance struct {
+	USDRemaining float64 `json:"usd_remaining"`
 }
 
 type usageCache struct {
 	Windows []usageWindow `json:"windows"`
 	Monthly *usageWindow  `json:"monthly,omitempty"`
 	Spend   *usageSpend   `json:"spend,omitempty"`
+	Balance *usageBalance `json:"balance,omitempty"`
 }
 
 // usageOpenSet normalises the open half exactly as the renderer's openAgents
@@ -84,6 +99,11 @@ func validUsageWindow(w usageWindow) bool {
 
 func validUsageMoney(v float64) bool { return v >= 0 && v <= 1e7 }
 
+// validUsageRemaining is deliberately wider than validUsageMoney: it validates
+// remaining credit on a per-key cap, which may be negative when overdrawn —
+// still a legitimate value to carry, not garbage.
+func validUsageRemaining(v float64) bool { return v >= -1e7 && v <= 1e7 }
+
 // validUsageCache is the identity-field policy: one bad field drops the whole
 // agent, since a partial reading of it would render as a different account.
 func validUsageCache(c usageCache) bool {
@@ -98,7 +118,14 @@ func validUsageCache(c usageCache) bool {
 	if c.Monthly != nil && !validUsageWindow(*c.Monthly) {
 		return false
 	}
-	if s := c.Spend; s != nil && (!validUsageMoney(s.USD) || s.LimitUSD != nil && !validUsageMoney(*s.LimitUSD)) {
+	if s := c.Spend; s != nil && (!validUsageMoney(s.USD) ||
+		s.LimitUSD != nil && !validUsageMoney(*s.LimitUSD) ||
+		s.Label != "" && !usageLabelRe.MatchString(s.Label) ||
+		s.RemainingUSD != nil && !validUsageRemaining(*s.RemainingUSD) ||
+		s.RemainingLabel != "" && !usageLabelRe.MatchString(s.RemainingLabel)) {
+		return false
+	}
+	if c.Balance != nil && !validUsageRemaining(c.Balance.USDRemaining) {
 		return false
 	}
 	return true

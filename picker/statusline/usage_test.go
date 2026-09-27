@@ -253,9 +253,213 @@ func TestUsageSegmentSpendWithLimit(t *testing.T) {
 	}
 	open := map[string]bool{"pi": true, "cursor": true}
 	got := usageSegment(a, caches, open, 0)
-	want := "#[fg=#9a8]CU #[fg=#9a8]$12/$7.50  #[fg=#9a8]PI #[fg=#9a8]$5.00/$20  "
+	want := "#[fg=#9a8]CU #[fg=#9a8]$12/$7.50  #[fg=#9a8]PI #[fg=#9a8]$5.00/$20 mo  "
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestUsageSegmentCursorRenderUnchanged pins that cursor's spend clause is
+// byte-identical to its pre-label rendering: no " mo" suffix, ever.
+func TestUsageSegmentCursorRenderUnchanged(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsageCursor:       "CU",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"cursor": {Spend: &usageSpend{Label: "mo", USD: 12.34, Period: "cycle", LimitUSD: limit(7.5)}},
+	}
+	open := map[string]bool{"cursor": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]CU #[fg=#9a8]$12/$7.50  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiSpendShowsLabel(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month"}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiSpendWithCapShowsLabel(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 5, Period: "month", LimitUSD: limit(20)}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$5.00/$20 mo  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiSpendWithRemainingLifetimeCap(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", LimitUSD: limit(20), RemainingUSD: limit(18.40), RemainingLabel: "cap"}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo · $18 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiSpendWithRemainingResettingCap(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", LimitUSD: limit(20), RemainingUSD: limit(18.40), RemainingLabel: "day"}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20/$20 mo · $18 left/day  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiSpendRemainingNegative(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", RemainingUSD: limit(-3.50), RemainingLabel: "cap"}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo · -$3.50 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiSpendWithAccountBalance(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month"}, Balance: &usageBalance{USDRemaining: 18.40}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo · $18 acct left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestUsageSegmentPiAccountBalanceIgnoredWhenKeyCapPresent(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", RemainingUSD: limit(18.40), RemainingLabel: "cap"}, Balance: &usageBalance{USDRemaining: 99}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo · $18 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestUsageSegmentBalanceWithNilSpendRendersNothing pins the current
+// invariant: Balance only renders alongside Spend (the provider script
+// always writes spend alongside balance), so a cache with Balance set but
+// Spend nil renders no spend/balance clause — the agent still shows its
+// windows/monthly if any, or drops out entirely otherwise.
+func TestUsageSegmentBalanceWithNilSpendRendersNothing(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	caches := map[string]usageCache{
+		"pi": {Balance: &usageBalance{USDRemaining: 18.40}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	if got != "" {
+		t.Fatalf("got %q, want empty (no Spend means nothing renders, even with Balance set)", got)
+	}
+}
+
+// TestUsageSegmentPiSpendWithRemainingNoLabel pins the RemainingLabel=="" case
+// (valid since it's omitempty): the "left" clause renders with no "/<label>"
+// suffix, same as the "cap" case, but /$<limit> is NOT dropped since the
+// drop rule specifically checks RemainingLabel=="cap".
+func TestUsageSegmentPiSpendWithRemainingNoLabel(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", LimitUSD: limit(20), RemainingUSD: limit(18.40)}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20/$20 mo · $18 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
+
+	caches := loadUsageCaches(dir)
+	c, ok := caches["pi"]
+	if !ok {
+		t.Fatalf("pi cache missing")
+	}
+	if c.Spend.RemainingUSD != nil {
+		t.Fatalf("RemainingUSD = %+v, want nil for old-schema cache", c.Spend.RemainingUSD)
+	}
+	if c.Spend == nil || c.Spend.USD != 5 {
+		t.Fatalf("spend not parsed: %+v", c)
 	}
 }
 
@@ -274,7 +478,7 @@ func TestLoadUsageCachesSpendWithoutLimitRendersSpendAlone(t *testing.T) {
 
 	a := args{usageMonthlyThreshold: 50, iconUsagePi: "PI", thmSubtext0: "#9a8"}
 	got := usageSegment(a, caches, map[string]bool{"pi": true}, 0)
-	want := "#[fg=#9a8]PI #[fg=#9a8]$5.00  "
+	want := "#[fg=#9a8]PI #[fg=#9a8]$5.00 mo  "
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}

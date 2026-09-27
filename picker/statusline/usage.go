@@ -13,11 +13,15 @@ import (
 )
 
 // usageCache mirrors the normalized JSON the tmux-agent-usage-* provider
-// scripts write to usageCacheDir/<agent>.json.
+// scripts write to usageCacheDir/<agent>.json. Balance is a fallback tier
+// used only when Spend.RemainingUSD is nil (no per-key cap known); the two
+// are mutually exclusive by construction since a provider script only ever
+// writes one.
 type usageCache struct {
 	Windows []usageWindow `json:"windows"`
 	Monthly *usageWindow  `json:"monthly"`
 	Spend   *usageSpend   `json:"spend"`
+	Balance *usageBalance `json:"balance,omitempty"`
 }
 
 type usageWindow struct {
@@ -27,13 +31,30 @@ type usageWindow struct {
 }
 
 // usageSpend is the dollar figure an agent has spent over Period ("month",
-// "cycle"). Label and Period describe the figure for other consumers; the
-// segment renders only USD and, when the provider knows a budget, LimitUSD.
+// "cycle"). The segment renders USD, LimitUSD when the provider knows a
+// budget, and Label as a trailing suffix (e.g. "$1.20 mo") for every agent
+// except cursor, whose rendering predates the label suffix and stays
+// unchanged. RemainingUSD and RemainingLabel carry a provider's remaining
+// per-key cap (e.g. pi's OpenRouter key), rendered as its own "$<amt> left"
+// clause; RemainingLabel mirrors Label's day/wk/mo/cap mapping, but describes
+// when the remaining figure resets rather than the spend. When a key has no
+// cap (RemainingUSD nil), usageCache.Balance is the fallback: a top-level
+// account balance rendered as its own distinct "$<amt> acct left" clause so
+// it's never confused with the per-key figure.
 type usageSpend struct {
-	Label    string   `json:"label"`
-	USD      float64  `json:"usd"`
-	Period   string   `json:"period"`
-	LimitUSD *float64 `json:"limit_usd,omitempty"`
+	Label          string   `json:"label"`
+	USD            float64  `json:"usd"`
+	Period         string   `json:"period"`
+	LimitUSD       *float64 `json:"limit_usd,omitempty"`
+	RemainingUSD   *float64 `json:"remaining_usd,omitempty"`
+	RemainingLabel string   `json:"remaining_label,omitempty"`
+}
+
+// usageBalance is a provider's top-level account balance, used as a fallback
+// spend clause only when the key has no per-key cap (usageSpend.RemainingUSD
+// is nil).
+type usageBalance struct {
+	USDRemaining float64 `json:"usd_remaining"`
 }
 
 const usageCacheDir = "/tmp/og-agent-usage"
@@ -188,12 +209,25 @@ func usageDollars(v float64) string {
 	return fmt.Sprintf("%.0f", v)
 }
 
-// usageSegment renders "<icon> <pct>·<label> … $<usd>[/$<limit>]" per open
-// agent with data, joined and trailing-padded for the right-aligned group. The
-// monthly window only appears at/above the configured threshold; spend always
-// appears when cached, $0 included, with the budget appended when the provider
-// knows one; an agent with nothing to show (e.g. an uncapped enterprise tier)
-// drops out entirely.
+// usageSegment renders "<icon> <pct>·<label> … $<usd>[/$<limit>][ <label>][ ·
+// $<remaining> left[/<label>]]" per open agent with data, joined and
+// trailing-padded for the right-aligned group. The monthly window only
+// appears at/above the configured threshold; spend always appears when
+// cached, $0 included, with the budget appended when the provider knows one
+// and, for every agent but cursor, the spend's own Label appended as a suffix
+// (cursor's rendering predates the label suffix and is pinned unchanged). The
+// "/$<limit>" clause is dropped when RemainingUSD is set and RemainingLabel
+// is "cap" — a lifetime cap's remaining figure already implies the limit, so
+// showing both is redundant — but kept for a resetting cap (day/wk/mo) or
+// when there's no remaining figure at all. RemainingUSD, when set, renders as
+// its own "$<amt> left" clause (with "/<label>" appended unless the label is
+// "cap"), joined onto the spend clause with " · ". When RemainingUSD is nil
+// (no per-key cap known), Balance is used instead as a distinct "$<amt> acct
+// left" clause, so it's never confused with the per-key figure; the two
+// fallback tiers are mutually exclusive by construction (a provider script
+// only ever writes one), and RemainingUSD always wins if both are somehow
+// set. An agent with nothing to show (e.g. an uncapped enterprise tier) drops
+// out entirely.
 func usageSegment(a args, caches map[string]usageCache, open map[string]bool, now int64) string {
 	if a.usageMonthlyThreshold <= 0 {
 		return ""
@@ -218,12 +252,39 @@ func usageSegment(a args, caches map[string]usageCache, open map[string]bool, no
 		if c.Monthly != nil && c.Monthly.Pct >= float64(a.usageMonthlyThreshold) {
 			parts = append(parts, render(*c.Monthly))
 		}
+		var spendClause string
 		if c.Spend != nil {
-			s := "#[fg=" + a.thmSubtext0 + "]$" + usageDollars(c.Spend.USD)
-			if c.Spend.LimitUSD != nil {
-				s += "/$" + usageDollars(*c.Spend.LimitUSD)
+			spendClause = "$" + usageDollars(c.Spend.USD)
+			lifetimeCap := c.Spend.RemainingUSD != nil && c.Spend.RemainingLabel == "cap"
+			if c.Spend.LimitUSD != nil && !lifetimeCap {
+				spendClause += "/$" + usageDollars(*c.Spend.LimitUSD)
 			}
-			parts = append(parts, s)
+			// cursor's rendering predates the label suffix and is pinned
+			// unchanged; this is not a data-driven distinction.
+			if agent != "cursor" && c.Spend.Label != "" {
+				spendClause += " " + c.Spend.Label
+			}
+			if c.Spend.RemainingUSD != nil {
+				v := *c.Spend.RemainingUSD
+				left := "$" + usageDollars(v) + " left"
+				if v < 0 {
+					left = "-$" + usageDollars(-v) + " left"
+				}
+				if c.Spend.RemainingLabel != "" && c.Spend.RemainingLabel != "cap" {
+					left += "/" + c.Spend.RemainingLabel
+				}
+				spendClause += " · " + left
+			} else if c.Balance != nil {
+				v := c.Balance.USDRemaining
+				acctLeft := "$" + usageDollars(v) + " acct left"
+				if v < 0 {
+					acctLeft = "-$" + usageDollars(-v) + " acct left"
+				}
+				spendClause += " · " + acctLeft
+			}
+		}
+		if spendClause != "" {
+			parts = append(parts, "#[fg="+a.thmSubtext0+"]"+spendClause)
 		}
 		if len(parts) == 0 {
 			continue
