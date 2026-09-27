@@ -70,7 +70,15 @@ setup() {
 			esac
 			sess=""
 			case "$cmd" in
-			*"sess_lit="*) sess=$(printf '%s\n' "$cmd" | sed -n "s/.*sess_lit='\([^']*\)'.*/\1/p") ;;
+			*"sess_lit="*)
+				sess=$(printf '%s\n' "$cmd" | sed -n "s/.*sess_lit='\([^']*\)'.*/\1/p")
+				# The launcher's canonicalization step (sess_canon=…) only ships once
+				# the #817 fix lands; a set FAKE_SESS_CANON simulates the remote's
+				# prefix-matched #{session_name} coming back different from the literal.
+				case "$cmd" in
+				*"sess_canon="*) [ -n "${FAKE_SESS_CANON:-}" ] && sess="$FAKE_SESS_CANON" ;;
+				esac
+				;;
 			*) [ -f "$REMOTE_SERVER" ] && sess="$REMOTE_SESSION" ;;
 			esac
 			win=""
@@ -854,6 +862,20 @@ run_launcher_bg() {
 	# never split on the embedded space.
 	grep -q "sess_lit='my session'" "$SSH_LOG"
 	grep -q 'switch-client -t =tp-g6-my_session' "$TMUX_LOG"
+}
+
+@test "a prefix-matched session name is canonicalized before the daemon sees it (#817)" {
+	# The remote holds only 'api-main'; the daemon attaches EXACTLY, so a
+	# prefix name here must become the real one or the first attach refuses.
+	touch "$REMOTE_SERVER"
+	export FAKE_SESS_CANON=api-main
+
+	run bash "$LAUNCHER" h api
+	[ "$status" -eq 0 ]
+
+	grep -q "sess_lit='api'" "$SSH_LOG"
+	grep -qxF 'set-option -t h-api-main @bridge_session api-main' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =h-api-main' "$TMUX_LOG"
 }
 
 # --- #783: the local mirror name is sanitized; the raw pair is the identity ---

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,12 @@ func (l *callLog) snapshot() [][]string {
 	defer l.mu.Unlock()
 	return append([][]string(nil), l.calls...)
 }
+
+// testPin is the pin the recording fakes below answer to as still standing;
+// ownedAnswer is display-message's reply that says so.
+var testPin = localPin{serverPID: "100", id: "$1"}
+
+const ownedAnswer = "100|$1\n"
 
 // TestTombstoneTextStripsControlBytes checks the message a gone mirror shows
 // is safe for a local pty: host/session come from the remote and may carry
@@ -69,9 +76,12 @@ func TestResetMirrorSessionKillsEveryOldWindow(t *testing.T) {
 	var log callLog
 	cfg := Config{
 		LocalSess: "m",
+		local:     testPin,
 		LocalTmuxOut: func(args ...string) (string, error) {
 			log.add(args)
 			switch args[0] {
+			case "display-message":
+				return ownedAnswer, nil
 			case "list-windows":
 				return "@1\n@4\n", nil
 			case "new-window":
@@ -93,7 +103,7 @@ func TestResetMirrorSessionKillsEveryOldWindow(t *testing.T) {
 	calls := log.snapshot()
 	wantNewWindow := argvKey([]string{
 		"new-window", "-d", "-P", "-F", "#{window_id}",
-		"-a", "-t", "m:{end}", "--", "sleep", "2147483647",
+		"-a", "-t", "$1:{end}", "--", "sleep", "2147483647",
 	})
 	newWindowIdx := -1
 	killed := map[string]bool{}
@@ -129,8 +139,11 @@ func TestResetMirrorSessionKillsNothingWhenTheNewWindowFails(t *testing.T) {
 	var killed [][]string
 	cfg := Config{
 		LocalSess: "m",
+		local:     testPin,
 		LocalTmuxOut: func(args ...string) (string, error) {
 			switch args[0] {
+			case "display-message":
+				return ownedAnswer, nil
 			case "list-windows":
 				return "@1\n@4\n", nil
 			case "new-window":
@@ -163,9 +176,12 @@ func TestTombstoneMirrorUnsetsTheDaemonOptions(t *testing.T) {
 		LocalSess:     "m",
 		RemoteHost:    "host",
 		RemoteSession: "sess",
+		local:         testPin,
 		LocalTmuxOut: func(args ...string) (string, error) {
 			log.add(args)
 			switch args[0] {
+			case "display-message":
+				return ownedAnswer, nil
 			case "list-windows":
 				return "@1\n@4\n", nil
 			case "new-window":
@@ -200,8 +216,8 @@ func TestTombstoneMirrorUnsetsTheDaemonOptions(t *testing.T) {
 
 	want := []string{
 		argvKey([]string{"set-option", "-w", "-t", "@9", "remain-on-exit", "off"}),
-		argvKey([]string{"set-option", "-u", "-t", "m", "@bridge_sock"}),
-		argvKey([]string{"set-option", "-u", "-t", "m", "@bridge_state"}),
+		argvKey([]string{"set-option", "-u", "-t", "$1", "@bridge_sock"}),
+		argvKey([]string{"set-option", "-u", "-t", "$1", "@bridge_state"}),
 	}
 	for _, w := range want {
 		if !got[w] {
@@ -415,14 +431,14 @@ func TestShowReopenNoticeShowsAtOnceToACurrentViewer(t *testing.T) {
 
 var errRebuild = errors.New("daemon: identity read for sess timed out")
 
-// runLoopConfig is a Config for driving runLoop: recording local tmux fakes, a
-// pidfile to watch, and a restore schedule of two zero-delay retries, bounded
-// by attempts alone so the count is exact.
+// runLoopConfig is a Config for driving runLoop: recording local tmux fakes
+// that answer to testPin as still standing, and a pidfile naming this process,
+// as the replaced run's teardown leaves it.
 func runLoopConfig(t *testing.T, log *callLog, shutdown chan struct{}) (Config, string) {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "sock")
 	pidFile := sock + ".pid"
-	if err := os.WriteFile(pidFile, []byte("1\n"), 0o600); err != nil {
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return Config{
@@ -431,16 +447,12 @@ func runLoopConfig(t *testing.T, log *callLog, shutdown chan struct{}) (Config, 
 		RemoteSession: "sess",
 		SockPath:      sock,
 		Shutdown:      shutdown,
-		RestoreRetry: &Backoff{
-			Base:        time.Millisecond,
-			Ceiling:     time.Millisecond,
-			MaxAttempts: 2,
-			Now:         time.Now,
-			Jitter:      func() float64 { return 0 },
-		},
+		local:         testPin,
 		LocalTmuxOut: func(args ...string) (string, error) {
 			log.add(args)
 			switch args[0] {
+			case "display-message":
+				return ownedAnswer, nil
 			case "list-windows":
 				return "@1\n", nil
 			case "new-window":
@@ -516,39 +528,18 @@ func TestRunLoopStopBetweenRunsKillsTheSession(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("run called %d times, want 1 — a stop must not rebuild", calls)
 	}
-	if kill := findCall(log.snapshot(), "kill-session"); argvKey(kill) != argvKey([]string{"kill-session", "-t", "m"}) {
-		t.Errorf("kill-session call = %v, want kill-session -t m among %v", kill, log.snapshot())
+	if kill := findCall(log.snapshot(), "kill-session"); argvKey(kill) != argvKey([]string{"kill-session", "-t", "$1"}) {
+		t.Errorf("kill-session call = %v, want kill-session -t $1 among %v", kill, log.snapshot())
 	}
 	if pidFileExists(t, pidFile) {
 		t.Error("pidfile still present after a stop between runs")
 	}
 }
 
-// TestRunLoopRetriesAFailedRebuild checks a rebuild that fails before its
-// mirror stood — typically the link still flapping as the outage clears — is
-// retried rather than declared gone.
-func TestRunLoopRetriesAFailedRebuild(t *testing.T) {
-	var log callLog
-	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
-	run, seen := scriptedRun(errServerReplaced, errRebuild, nil)
-
-	if err := runLoop(cfg, run); err != nil {
-		t.Fatalf("runLoop(...) = %v, want nil", err)
-	}
-	if want := []bool{false, true, true}; !slices.Equal(*seen, want) {
-		t.Errorf("reopened per run = %v, want %v", *seen, want)
-	}
-	if nw := findCall(log.snapshot(), "new-window"); nw != nil {
-		t.Errorf("a retried rebuild was tombstoned: %v", nw)
-	}
-	if !pidFileExists(t, pidFile) {
-		t.Error("pidfile removed under a rebuild that went on to stand")
-	}
-}
-
-// TestRunLoopTombstonesARebuildThatNeverStands checks the retry is bounded by
-// the restore schedule and ends in a tombstone that says the re-open failed —
-// not that the session is gone, which the new server confirmed moments before.
+// TestRunLoopTombstonesARebuildThatNeverStands checks a rebuild that fails
+// before its mirror stood is not retried — its dial would run with no listener
+// up — and ends in a tombstone that says the re-open failed, not that the
+// session is gone, which the new server confirmed moments before.
 func TestRunLoopTombstonesARebuildThatNeverStands(t *testing.T) {
 	var log callLog
 	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
@@ -557,9 +548,8 @@ func TestRunLoopTombstonesARebuildThatNeverStands(t *testing.T) {
 	if err := runLoop(cfg, run); !errors.Is(err, errRebuild) {
 		t.Fatalf("runLoop(...) = %v, want %v", err, errRebuild)
 	}
-	// The replaced run, the first rebuild, then one per retry the schedule allows.
-	if want := 1 + 1 + cfg.RestoreRetry.MaxAttempts; len(*seen) != want {
-		t.Errorf("run called %d times, want %d", len(*seen), want)
+	if len(*seen) != 2 {
+		t.Errorf("run called %d times, want 2 — the replaced run and one rebuild", len(*seen))
 	}
 	nw := findCall(log.snapshot(), "new-window")
 	if nw == nil {
@@ -575,7 +565,7 @@ func TestRunLoopTombstonesARebuildThatNeverStands(t *testing.T) {
 
 // TestRunLoopStopDuringAFailedRebuildKillsTheSession checks a stop that
 // arrives while a rebuild is failing ends like any other stop: kill-session,
-// no tombstone, no retry.
+// no tombstone.
 func TestRunLoopStopDuringAFailedRebuildKillsTheSession(t *testing.T) {
 	var log callLog
 	shutdown := make(chan struct{})
@@ -650,5 +640,217 @@ func TestRunLoopFirstRunErrorIsNotARebuild(t *testing.T) {
 	}
 	if !pidFileExists(t, pidFile) {
 		t.Error("runLoop removed the pidfile after a first-run error")
+	}
+}
+
+// TestRunLoopLeavesASessionThatIsNotOursAlone checks a rebuild that found the
+// local session no longer its own ends quietly: runMirror already logged it,
+// and whatever holds that name now — a sibling, a namesake og-remote-open
+// recreated with its own daemon — is not this daemon's to touch.
+func TestRunLoopLeavesASessionThatIsNotOursAlone(t *testing.T) {
+	var log callLog
+	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
+	run, seen := scriptedRun(errServerReplaced, errNotOurs)
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil", err)
+	}
+	if len(*seen) != 2 {
+		t.Errorf("run called %d times, want 2", len(*seen))
+	}
+	if calls := log.snapshot(); len(calls) != 0 {
+		t.Errorf("runLoop touched the local server for a session that is not its own: %v", calls)
+	}
+	if !pidFileExists(t, pidFile) {
+		t.Error("runLoop removed the pidfile on a session that is not its own")
+	}
+}
+
+// TestEndReopenKeepsAnotherDaemonsPidFile checks endReopen removes the pidfile
+// only while it still names this process: a daemon og-remote-open started for
+// the pair meanwhile has written its own there.
+func TestEndReopenKeepsAnotherDaemonsPidFile(t *testing.T) {
+	var log callLog
+	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid()+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	endReopen(cfg, "")
+
+	if !pidFileExists(t, pidFile) {
+		t.Error("endReopen removed a pidfile naming another process")
+	}
+}
+
+// fakeServer is a local tmux that resolves targets the way tmux does, down to
+// the traps the pin exists for: a bare name falls back to a unique prefix once
+// the exact session is gone, and display-message on a missing $N exits 0 with
+// an empty id.
+type fakeServer struct {
+	t        *testing.T
+	pid      string
+	sessions []*fakeSession
+	nextWin  int
+	gone     error // tmux's exit 1, "can't find ..."
+	mutated  []string
+}
+
+type fakeSession struct {
+	id, name string
+	windows  []string
+}
+
+func (f *fakeServer) resolve(target string) *fakeSession {
+	target, _, _ = strings.Cut(target, ":")
+	match := func(ok func(*fakeSession) bool) *fakeSession {
+		for _, s := range f.sessions {
+			if ok(s) {
+				return s
+			}
+		}
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(target, "$"):
+		return match(func(s *fakeSession) bool { return s.id == target })
+	case strings.HasPrefix(target, "@"):
+		return match(func(s *fakeSession) bool { return slices.Contains(s.windows, target) })
+	case strings.HasPrefix(target, "="):
+		return match(func(s *fakeSession) bool { return s.name == target[1:] })
+	}
+	if s := match(func(s *fakeSession) bool { return s.name == target }); s != nil {
+		return s
+	}
+	var prefixed []*fakeSession
+	for _, s := range f.sessions {
+		if strings.HasPrefix(s.name, target) {
+			prefixed = append(prefixed, s)
+		}
+	}
+	if len(prefixed) == 1 {
+		return prefixed[0]
+	}
+	return nil
+}
+
+func fakeTarget(args []string) string {
+	if i := slices.Index(args, "-t"); i >= 0 && i+1 < len(args) {
+		return args[i+1]
+	}
+	return ""
+}
+
+func (f *fakeServer) mutate(s *fakeSession, args []string) {
+	f.mutated = append(f.mutated, s.id+" "+strings.Join(args, " "))
+}
+
+func (f *fakeServer) out(args ...string) (string, error) {
+	s := f.resolve(fakeTarget(args))
+	switch args[0] {
+	case "list-sessions":
+		var b strings.Builder
+		for _, s := range f.sessions {
+			b.WriteString(f.pid + "|" + s.id + "|" + s.name + "\n")
+		}
+		return b.String(), nil
+	case "display-message":
+		if s == nil {
+			return f.pid + "|\n", nil
+		}
+		return f.pid + "|" + s.id + "\n", nil
+	case "list-windows":
+		if s == nil {
+			return "", f.gone
+		}
+		return strings.Join(s.windows, "\n") + "\n", nil
+	case "new-window":
+		if s == nil {
+			return "", f.gone
+		}
+		f.nextWin++
+		id := "@" + strconv.Itoa(f.nextWin)
+		s.windows = append(s.windows, id)
+		f.mutate(s, args)
+		return id + "\n", nil
+	}
+	f.t.Fatalf("fakeServer: unexpected read %v", args)
+	return "", nil
+}
+
+func (f *fakeServer) run(args ...string) error {
+	target := fakeTarget(args)
+	s := f.resolve(target)
+	if s == nil {
+		return f.gone
+	}
+	f.mutate(s, args)
+	switch args[0] {
+	case "kill-window":
+		s.windows = slices.DeleteFunc(s.windows, func(w string) bool { return w == target })
+	case "kill-session":
+		f.sessions = slices.DeleteFunc(f.sessions, func(x *fakeSession) bool { return x == s })
+	case "set-option":
+	default:
+		f.t.Fatalf("fakeServer: unexpected command %v", args)
+	}
+	return nil
+}
+
+// TestNoDestructiveCallReachesAPrefixSibling pins "the daemon never touches a
+// local tmux session it does not own" for every path that resets, tombstones
+// or kills the mirror session. Once that session is gone its bare name reaches
+// a prefix sibling, and after a server restart its $N may name someone else;
+// either way the sibling must come through untouched.
+func TestNoDestructiveCallReachesAPrefixSibling(t *testing.T) {
+	gone := exitError(t, 1)
+	for _, tc := range []struct {
+		name  string
+		after func(*fakeServer)
+	}{
+		{"mirror session gone, prefix sibling alive", func(f *fakeServer) {
+			f.run("kill-session", "-t", "$1")
+		}},
+		{"server restarted, $1 reused by the sibling", func(f *fakeServer) {
+			f.pid = "200"
+			f.sessions = []*fakeSession{{id: "$1", name: "h-api-v2", windows: []string{"@5"}}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeServer{t: t, pid: "100", gone: gone, nextWin: 9, sessions: []*fakeSession{
+				{id: "$1", name: "h-api", windows: []string{"@1"}},
+				{id: "$2", name: "h-api-v2", windows: []string{"@5"}},
+			}}
+			cfg := Config{
+				LocalSess:     "h-api",
+				RemoteHost:    "host",
+				RemoteSession: "sess",
+				SockPath:      filepath.Join(t.TempDir(), "sock"),
+				LocalTmuxOut:  f.out,
+				LocalTmux:     f.run,
+			}
+			pin, ok := pinLocalSession(cfg)
+			if !ok || pin != testPin {
+				t.Fatalf("pinLocalSession(...) = (%+v, %v), want (%+v, true)", pin, ok, testPin)
+			}
+			cfg.local = pin
+			tc.after(f)
+			f.mutated = nil
+
+			if _, ok := resetMirrorSession(cfg, "sleep", "2147483647"); ok {
+				t.Error("resetMirrorSession reported a reset of a session that is not its own")
+			}
+			tombstoneMirror(cfg, tombstoneText(cfg.RemoteHost, cfg.RemoteSession))
+			endReopen(cfg, reopenFailedText(cfg.RemoteHost, cfg.RemoteSession))
+			endReopen(cfg, "")
+
+			if len(f.mutated) != 0 {
+				t.Errorf("mutations reached a session that is not the mirror's: %v", f.mutated)
+			}
+			sib := f.resolve("=h-api-v2")
+			if sib == nil || !slices.Equal(sib.windows, []string{"@5"}) {
+				t.Errorf("sibling h-api-v2 = %+v, want it standing with only @5", sib)
+			}
+		})
 	}
 }

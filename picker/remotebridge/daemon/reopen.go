@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -16,7 +17,7 @@ var errServerReplaced = errors.New("daemon: remote tmux server replaced")
 
 // tornDown marks a runMirror error returned after its own teardown ran: the
 // local session is already killed and the pidfile gone, so the loop must not
-// tombstone, kill or retry — a session og-remote-open recreated under the same
+// tombstone or kill — a session og-remote-open recreated under the same
 // name in that gap is never this daemon's to touch (#680).
 type tornDown struct{ error }
 
@@ -42,23 +43,28 @@ func (e tornDown) Unwrap() error { return e.error }
 // stays put. The second dial is deliberate: reusing the connection that
 // answered the mismatch would hand a verified-foreign stream to a half-built
 // mirror.
+//
+// The local session is pinned first, before anything can rename or recreate
+// it: the launcher has just created that exact name and spawned this daemon,
+// so the name is the hand-off, and from here on only the pin is trusted.
 func Run(cfg Config) error {
+	if p, ok := pinLocalSession(cfg); ok {
+		cfg.local = p
+	}
 	return runLoop(cfg, runMirror)
 }
 
 // runLoop is Run over an injectable run. A rebuild that fails before its
-// mirror stood is retried on the restore schedule: the new server confirmed
-// the session moments earlier, so the likely failure is the link still
-// flapping as the outage clears, and calling that "gone" would turn a
-// recoverable drop into a closed mirror. Only an exhausted schedule gives up.
+// mirror stood is not retried: the restore window already ran inside the
+// replaced run, in reattach, while it still held its listener, and a retry
+// here would dial again with no listener up — the gap in which og-remote-open
+// reads this daemon as dead and recreates the session under its own.
 func runLoop(cfg Config, run func(Config) error) error {
-	bo := cfg.restoreSchedule()
-	var (
-		attempt int
-		start   time.Time
-	)
 	for {
 		err := run(cfg)
+		if errors.Is(err, errNotOurs) {
+			return nil
+		}
 		if errors.Is(err, errServerReplaced) {
 			if stopped(cfg.Shutdown) {
 				endReopen(cfg, "")
@@ -66,7 +72,6 @@ func runLoop(cfg Config, run func(Config) error) error {
 			}
 			fmt.Fprintf(os.Stderr, "daemon: %s: re-opening %s on the new tmux server\n", cfg.RemoteHost, cfg.RemoteSession)
 			cfg.reopened = true
-			attempt, start = 0, bo.Now()
 			continue
 		}
 		if !cfg.reopened || err == nil || errors.As(err, new(tornDown)) {
@@ -78,26 +83,36 @@ func runLoop(cfg Config, run func(Config) error) error {
 			endReopen(cfg, "")
 			return nil
 		}
-		attempt++
-		d, ok := bo.Next(attempt, start)
-		if !ok {
-			endReopen(cfg, reopenFailedText(cfg.RemoteHost, cfg.RemoteSession))
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "daemon: %s: re-open of %s failed (%v); retrying\n", cfg.RemoteHost, cfg.RemoteSession, err)
-		if Wait(d, cfg.Shutdown) {
-			endReopen(cfg, "")
-			return nil
-		}
+		endReopen(cfg, reopenFailedText(cfg.RemoteHost, cfg.RemoteSession))
+		return err
 	}
+}
+
+// errNotOurs is a rebuild's return when the local session it would rebuild
+// into is no longer the one this daemon was launched into; see runMirror.
+var errNotOurs = errors.New("daemon: local session is no longer this mirror's")
+
+// ownsLocalSession reports whether cfg.local still stands, logging when it
+// does not. Every path that destroys or rebuilds the session after it could
+// have gone asks this first, and then targets it by id alone.
+func ownsLocalSession(cfg Config) bool {
+	if cfg.local.check(cfg) == owned {
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "daemon: %s: local session is no longer this mirror's; leaving it alone\n", cfg.LocalSess)
+	return false
 }
 
 // endReopen ends a rebuild that will not stand: with no tombstone text it is a
 // stop and kills the session, which is what og-remote-detach expects;
 // otherwise the session is tombstoned with that text. The pidfile goes either
-// way, since the replaced run's teardown kept it for the rebuild.
+// way, since the replaced run's teardown kept it for the rebuild — unless it
+// no longer names this process, i.e. a new daemon has taken the pair over.
 func endReopen(cfg Config, tombstone string) {
-	os.Remove(cfg.SockPath + ".pid")
+	pidFile := cfg.SockPath + ".pid"
+	if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) == strconv.Itoa(os.Getpid()) {
+		os.Remove(pidFile)
+	}
 	if cfg.LocalSess == "" {
 		return
 	}
@@ -105,26 +120,32 @@ func endReopen(cfg Config, tombstone string) {
 		tombstoneMirror(cfg, tombstone)
 		return
 	}
-	cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
+	if ownsLocalSession(cfg) {
+		cfg.LocalTmux("kill-session", "-t", cfg.local.id)
+	}
 }
 
-// resetMirrorSession leaves cfg.LocalSess holding one fresh window running
-// argv, killing every other window, and returns the new window's id. The new
-// window comes first so the session never empties (and a viewing client lands
-// on it); the old ones go by id, never index, since renumber-windows is on.
+// resetMirrorSession leaves the pinned mirror session holding one fresh window
+// running argv, killing every other window, and returns the new window's id.
+// The new window comes first so the session never empties (and a viewing
+// client lands on it); the old ones go by id, never index, since
+// renumber-windows is on.
 //
 // argv rather than a shell: `sleep 2147483647` as the rebuild's placeholder
 // is no shell and nothing on screen, and setupWindow respawns it into the
 // first renderer via firstMirrorWindow, as it does the launcher's loading
 // pane. (BSD sleep accepts the large integer; `infinity` it rejects.)
 func resetMirrorSession(cfg Config, argv ...string) (string, bool) {
-	old, err := cfg.LocalTmuxOut("list-windows", "-t", cfg.LocalSess, "-F", "#{window_id}")
+	if !ownsLocalSession(cfg) {
+		return "", false
+	}
+	old, err := cfg.LocalTmuxOut("list-windows", "-t", cfg.local.id, "-F", "#{window_id}")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: list-windows %s: %v\n", cfg.LocalSess, err)
 		return "", false
 	}
 	out, err := cfg.LocalTmuxOut(append([]string{"new-window", "-d", "-P", "-F", "#{window_id}",
-		"-a", "-t", cfg.LocalSess + ":{end}", "--"}, argv...)...)
+		"-a", "-t", cfg.local.id + ":{end}", "--"}, argv...)...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: new-window in %s: %v\n", cfg.LocalSess, err)
 		return "", false
@@ -187,8 +208,8 @@ func tombstoneMirror(cfg Config, text string) {
 	// @bridge_session stay, so og-remote-open's pair lookup recognises this as
 	// the pair's mirror and replaces it on the next open instead of walking to
 	// a -remote suffix.
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_sock")
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_state")
+	cfg.LocalTmux("set-option", "-u", "-t", cfg.local.id, "@bridge_sock")
+	cfg.LocalTmux("set-option", "-u", "-t", cfg.local.id, "@bridge_state")
 	fmt.Fprintf(os.Stderr, "daemon: %s\n", text)
 }
 

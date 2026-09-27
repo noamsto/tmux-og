@@ -3978,6 +3978,53 @@ wait_daemon_exit() {
 	[ "$closed" = yes ]
 }
 
+# #817: the mirror session is closed locally while its refused attach waits out
+# the restore window. When the window ends there is no session of its own left
+# to tombstone — and "host-sess" as a bare tmux target now resolves by unique
+# prefix to host-sess-x, so a tombstone aimed by name would kill that session's
+# windows and unset options on it. The daemon checks the session it pinned at
+# startup and leaves everything else alone.
+@test "a mirror closed during its restore window never touches a sibling session" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$DST new-session -d -s host-sess-x -x 100 -y 30 'sleep 86400'
+	sib_before="$($DST list-panes -s -t host-sess-x -F '#{window_id}|#{pane_id}|#{pane_start_command}')"
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s OG_DAEMON_RESTORE_MAX_ELAPSED=6s
+	bridge_up 1 sib
+
+	outage_start
+	wait_bridge_state parked sib "$BATS_TEST_TMPDIR/sib.log"
+	server_restart rem-sibling
+
+	refused=no
+	press_until_log "$BATS_TEST_TMPDIR/sib.log" "refused the attach" sib && refused=yes
+	$DST kill-session -t =host-sess
+
+	exited=no
+	wait_daemon_exit sib "$BATS_TEST_TMPDIR/sib.log" 200 && exited=yes
+
+	sib_after="$($DST list-panes -s -t host-sess-x -F '#{window_id}|#{pane_id}|#{pane_start_command}' 2>/dev/null || true)"
+	sib_cmd="$($DST list-panes -s -t host-sess-x -F '#{pane_current_command}' 2>/dev/null || true)"
+	bridge_sock="$($DST show-options -qv -t host-sess-x @bridge_sock 2>/dev/null || true)"
+	bridge_session="$($DST show-options -qv -t host-sess-x @bridge_session 2>/dev/null || true)"
+	left_alone=no
+	grep -q "no longer this mirror's" "$BATS_TEST_TMPDIR/sib.log" 2>/dev/null && left_alone=yes
+	if [ "$sib_after" != "$sib_before" ]; then
+		printf 'sibling before=%q after=%q\n--- daemon log ---\n' "$sib_before" "$sib_after" >&3
+		tail -60 "$BATS_TEST_TMPDIR/sib.log" >&3 2>/dev/null || true
+	fi
+
+	[ "$refused" = yes ]
+	[ "$exited" = yes ]
+	[ -n "$sib_before" ]
+	[ "$sib_after" = "$sib_before" ]
+	[ "$sib_cmd" = sleep ]
+	[ -z "$bridge_sock" ]
+	[ -z "$bridge_session" ]
+	[ ! -e "$sock" ]
+	[ "$left_alone" = yes ]
+}
+
 # #817: a parked mirror whose remote server restarted but landed the SAME
 # session name on it (a real restart, not a session that was simply closed)
 # re-opens onto the new server in place — the rebuilt mirror carries no trace

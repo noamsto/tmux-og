@@ -8,6 +8,8 @@ Numeric session names (e.g., "10") cause ambiguity with `tmux set -t '10'` when 
 
 **`show-options` does not accept the `=` exact-match prefix.** `has-session`, `switch-client` and `kill-session` all take `-t "=name"`; `show-options -t "=name"` answers `no such session`, and `-q` turns that into an empty string indistinguishable from an unset option — so a script can stamp an option with `set-option -t "$name"` and never read it back. That silently disabled `og-remote-open`'s mirror dedup, forking a `-remote` session on every re-open (#474). Read session user-options with a bare `-t "$name"` (an exact match still beats a prefix match), or via `display-message -p` / `list-sessions -F`.
 
+**`display-message -p -t '$N' …` against a gone session id is not an existence probe.** With a client-less caller it exits 0 and prints EMPTY fields rather than erroring "can't find session" (measured, next-3.9) — a target string that merely parses (`$N`) is accepted even when nothing answers behind it. Comparing the echoed id (or pid) against what was asked for is the only way to tell "gone" from "answered" (`ownsLocalSession`, `picker/remotebridge/daemon/ownership.go`, #817). Separately, a **bare session name** still resolves exact-then-unique-prefix for any command that takes a session target — use `=name` where a command accepts it (`attach-session`, `has-session`, `switch-client`, `kill-session`), or target by `$id`; `set-option`/`show-options` reject `=name` outright (above).
+
 
 ## Formats, scratch servers, background pollers
 

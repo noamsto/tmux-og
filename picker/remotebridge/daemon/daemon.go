@@ -113,6 +113,9 @@ type Config struct {
 	// reopened is set by Run on a run that rebuilds the mirror onto a
 	// replaced remote server, so that run shows the fresh-server notice.
 	reopened bool
+	// local is LocalSess as Run pinned it at startup; every path that may
+	// destroy or rebuild the session after it could have gone checks it.
+	local localPin
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -801,6 +804,15 @@ func runMirror(cfg Config) error {
 	if len(remoteWins) == 0 {
 		hold.close()
 		return fmt.Errorf("daemon: remote session %s has no windows", cfg.RemoteSession)
+	}
+
+	// A rebuild's dial ran with no listener up, so og-remote-open may have read
+	// this daemon as dead and recreated the session under a daemon of its own:
+	// this run must neither remove that daemon's socket nor stamp and respawn
+	// into a session that is no longer the one it was launched into.
+	if cfg.reopened && !ownsLocalSession(cfg) {
+		hold.close()
+		return errNotOurs
 	}
 
 	// One-shot, here rather than in repair: Run() runs exactly once per bridge,
@@ -1579,6 +1591,13 @@ attach:
 				break attach
 			}
 			if c, ending = reattach(cfg, router, hold, pin.identity, repair, park); c == nil {
+				// A reset or tombstone is for this mirror's own session only;
+				// with it gone there is nothing to rebuild into, so end as for
+				// a vanished session and leave the name alone (#680).
+				if ending != endTeardown && !ownsLocalSession(cfg) {
+					ending = endTeardown
+					localSessionVanished = true
+				}
 				break attach
 			}
 			// The dial that just succeeded read View.Desired, so a raise that

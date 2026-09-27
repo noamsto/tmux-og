@@ -121,14 +121,30 @@ path, which every caller already handles.
   fresh control connection is the reply to the transport's own
   `attach-session` (flags 0, since this control client never sent it), and an
   unflagged `%error` there (`can't find session: X`, `no sessions`) means the
-  remote answered and the pinned session is not on the server that did.
-  `attachWatch` records it on the unverified round-trip (`readReplyRouting`
-  would otherwise drop it as a block nobody waits for), and `attachRefusal`
-  drains the rest of the connection through the same recorder under a fresh
-  deadline, because the tmux client has often already exited before
-  `readIdentity` writes to it (EPIPE, nothing ever read). Before #817 this
-  read as just another EOF, so a remote whose tmux server restarted without
-  the pinned session parked forever. A refusal opens one bounded **restore
+  remote answered and the pinned session is not on the server that did. Every
+  dial attaches `-t '=<session>'` exactly — `sshControlArgs`,
+  `testLocalDialArgv`, and the no-ssh branch in `cmd/daemon/main.go` all pin it
+  the same way — because tmux otherwise attaches by unique *prefix*, and a
+  re-open silently landing on a sibling session (`nix-config` for `nix`)
+  instead of refusing would be worse than the refusal itself; a missing exact
+  name is what turns a gone session into a refused attach rather than a wrong
+  one. `og-remote-open`'s remote probe canonicalizes a caller-given session
+  name to its real name before that exact attach ever runs (`sess_canon`, a
+  `list-windows -t "$sess" -F '#{session_name}'` on the remote): a prefix the
+  user typed becomes the session's actual name before the daemon,
+  `@bridge_session`, and the local mirror name ever see it; a name that
+  doesn't exist yet (`OG_REMOTE_RESTORE`/`OG_REMOTE_NEW_DIR`) stays the
+  caller's literal, since there is nothing yet to canonicalize against.
+  `attachWatch` records the refusal on the unverified round-trip
+  (`readReplyRouting` would otherwise drop it as a block nobody waits for),
+  and `attachRefusal` drains the rest of the connection through the same
+  recorder under a fresh deadline, because the tmux client has often already
+  exited before `readIdentity` writes to it (EPIPE, nothing ever read). The
+  refusal reaches stderr as `daemon: %s refused the attach to %s (%s)` with
+  the reason run through `printable` first — it is tmux's `%error` text,
+  carried from a server this process does not control. Before #817 this read
+  as just another EOF, so a remote whose tmux server restarted without the
+  pinned session parked forever. A refusal opens one bounded **restore
   window** (`RestoreBackoff`, 60s): with tmux-remux `restoreMode = auto` a
   restarted server restores its sessions moments after it starts, so the
   window catches that; with `restoreMode = off` (the default) nothing brings
@@ -141,8 +157,34 @@ path, which every caller already handles.
   pidfile is kept so `og-remote-detach` still SIGTERMs this daemon) — so the
   new server's output never reaches the old panes, registry or renderers. The
   second dial is deliberate: reusing the connection that answered the
-  mismatch would hand a verified-foreign stream to a half-built mirror. The
-  reopened mirror's "fresh server" notice waits for the first viewer (the
+  mismatch would hand a verified-foreign stream to a half-built mirror.
+  **The local mirror session is pinned once, at startup**, as (local server
+  `#{pid}`, `$id`) rather than by name (`pinLocalSession`/`localPin`,
+  `ownership.go`) — a bare name is not an identity: tmux prefix-resolves a
+  gone name onto a sibling, a recreated namesake gets a new `$id`, and a
+  restarted server reuses `$0`, hence the pid beside it. Every destructive
+  step this reconnect path takes — the placeholder reset above, the
+  tombstone below, and the rebuild's own kill/pidfile cleanup — targets `$N`,
+  never the name, and runs only when `display-message -t $N
+  '#{pid}|#{session_id}'` (`ownsLocalSession`) echoes the pin exactly;
+  anything else leaves the session alone. A rebuild whose dial finds the
+  session no longer its own — `og-remote-open` read the listener-less daemon
+  as dead during the rebuild's one gap with no listener up, and recreated the
+  session under a daemon of its own — returns `errNotOurs` and ends the loop
+  without touching that session or its socket. A rebuild that fails before
+  its own mirror stands is **not retried**: the bounded restore-window wait
+  already ran inside the *replaced* run, in `reattach`, while it still held
+  its listener, and a retry here would only widen the ownership gap above —
+  instead it is tombstoned with the "could not re-open … on the restarted
+  tmux server" text (`reopenFailedText`). An error `runMirror` returns after
+  its own teardown has already run (`tornDown`) passes through `runLoop`
+  untouched — that session is already reset or killed, so there is nothing
+  left for the loop itself to do to it. (Teardown's plain
+  `kill-session -t cfg.LocalSess`, `unregisterResizeHook`,
+  `clearBridgeRes`/`clearBridgeUsage` and `setBridgeState` are pre-existing
+  bare-name sites this pin does not reach — unset-only, except `kill-session`
+  — and stay out of scope here; they still prefix-resolve once the session is
+  gone.) The reopened mirror's "fresh server" notice waits for the first viewer (the
   park's own focus edge, plus a 15s recheck backstop) rather than firing into
   an empty session. A refusal still standing at the end of the restore window
   ends in a **tombstone**: `host-sess` is reset to one `sh` window explaining
@@ -153,10 +195,7 @@ path, which every caller already handles.
   daemon exits. Both the placeholder and the tombstone window carry no
   `@bridge_win`, so local scripts treat them as ordinary windows, and a
   tmux-remux save can resurrect a tombstone after a local restart —
-  `og-remote-open` already discards that as a ghost on the next open. One
-  narrow race: a direct `og-remote-open` for the same host/session pair
-  during the rebuild's one dial can find a live pidfile but no socket yet,
-  and recreates the session out from under the rebuild.
+  `og-remote-open` already discards that as a ghost on the next open.
 - **Repair order is load-bearing and every error in it is silent**: reset the
   converger wholesale (it caches what *this* client told the remote, and
   `watchResize` records before it sends, so a resize during the outage left it
