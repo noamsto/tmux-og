@@ -375,6 +375,23 @@ func TestUsageSegmentPiSpendNegativeBalance(t *testing.T) {
 	}
 }
 
+func TestUsageSegmentBalanceOnlyNoSpend(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	caches := map[string]usageCache{
+		"pi": {Balance: &usageBalance{USDRemaining: 18.40}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$18 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestLoadUsageCachesBalanceOldSchemaNil(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
