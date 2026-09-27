@@ -50,6 +50,10 @@ setup() {
 		# *_lit literals).
 		case "$cmd" in
 		*": og-probe;"*)
+			if [ -n "${FAKE_SSH_TERM:-}" ]; then
+				kill -TERM "$(cat "$LAUNCHER_PID_FILE")" 2>/dev/null || true
+				exit 0
+			fi
 			os="${FAKE_UNAME:-Linux}"
 			uid=1000
 			# Read the launcher's own resolution out of the probe script it
@@ -123,7 +127,7 @@ setup() {
 			fi
 			touch "$REMOTE_SERVER"
 			;;
-		*list-sessions*) [ -f "$REMOTE_SERVER" ] && echo "$REMOTE_SESSION" ;;
+		*list-sessions*) [ -f "$REMOTE_SERVER" ] && printf '%s\n' "${FAKE_LIST_SESSIONS_REPLY:-$REMOTE_SESSION}" ;;
 		# A failed remote list-windows still exits 0 with empty stdout: the remote
 		# command is a pipeline ending in awk, and carries none of our pipefail.
 		*list-windows*) [ -n "${FAKE_NO_WINDOW:-}" ] || echo 1 ;;
@@ -134,6 +138,17 @@ setup() {
 	cat >"$FAKEBIN/tmux" <<-'EOF'
 		#!/bin/sh
 		echo "$*" >>"$TMUX_LOG"
+		# Simulates a TERM landing on the launcher mid-command: matched invocations
+		# kill the launcher's own pid (from $LAUNCHER_PID_FILE) before returning, so
+		# a test can pin the signal to an exact point in the script.
+		if [ -n "${FAKE_TERM_ON:-}" ]; then
+			case "$*" in
+			"$FAKE_TERM_ON"*)
+				kill -TERM "$(cat "$LAUNCHER_PID_FILE")" 2>/dev/null || true
+				exit 0
+				;;
+			esac
+		fi
 		case "$*" in
 		has-session*)
 			if [ -n "${FAKE_LOCAL_SESSION:-}" ]; then
@@ -153,6 +168,28 @@ setup() {
 			;;
 			display-message*)
 			case "$*" in
+			# Only a session-id target answers: the launcher's own cur_sess read
+			# of #{session_name} targets $TMUX_PANE or nothing, never a $N id, and
+			# must keep coming back empty.
+			*'-t $'*'#{session_name}'*) [ -n "${FAKE_PAIR_NAME:-}" ] && printf '%s\n' "$FAKE_PAIR_NAME" ;;
+			*'-t $'*'#{@bridge_sock}'*) [ -n "${FAKE_PAIR_SOCK:-}" ] && printf '%s\n' "$FAKE_PAIR_SOCK" ;;
+			# A session's own pair defaults to what its FAKE_LIST_SESSIONS line
+			# claims; set FAKE_PAIR_HOST/FAKE_PAIR_SESSION (even empty) to make
+			# that line a forgery.
+			*'-t $'*'#{@bridge_host}'*)
+				if [ -n "${FAKE_PAIR_HOST+set}" ]; then
+					printf '%s\n' "$FAKE_PAIR_HOST"
+				else
+					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -F'|' -v id="$4" '$1 == id { print $2; exit }'
+				fi
+				;;
+			*'-t $'*'#{@bridge_session}'*)
+				if [ -n "${FAKE_PAIR_SESSION+set}" ]; then
+					printf '%s\n' "$FAKE_PAIR_SESSION"
+				else
+					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -v id="$4" 'index($0, id "|") == 1 { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }'
+				fi
+				;;
 			*"#{client_width} #{client_height} #{status}"*)
 				[ -n "${FAKE_CLIENT_SIZE:-}" ] && printf '%s\n' "$FAKE_CLIENT_SIZE"
 				;;
@@ -164,6 +201,7 @@ setup() {
 			*"@bridge_session"*) [ -n "${FAKE_BRIDGE_SESSION:-}" ] && printf '%s\n' "$FAKE_BRIDGE_SESSION" ;;
 			esac
 			;;
+		list-sessions*) [ -n "${FAKE_LIST_SESSIONS:-}" ] && printf '%s\n' "$FAKE_LIST_SESSIONS" ;;
 		esac
 		exit 0
 	EOF
@@ -197,6 +235,20 @@ teardown() {
 	if [[ -n ${DAEMON_PID:-} ]]; then
 		kill "$DAEMON_PID" 2>/dev/null || true
 	fi
+}
+
+# Runs the launcher backgrounded so a fake tmux/ssh invocation can signal it
+# mid-run, then waits for it and sets $status like bats' own `run` does.
+# Waits on `$!` rather than reading it back via $PPID: a fake invoked from a
+# $(…) substitution has a subshell as its parent, not the launcher itself.
+run_launcher_bg() {
+	export LAUNCHER_PID_FILE="$BATS_TEST_TMPDIR/launcher.pid"
+	bash "$LAUNCHER" "$@" &
+	echo "$!" >"$LAUNCHER_PID_FILE"
+	# `|| status=$?`, not a bare `wait`: bats runs under `set -e`, and a bare
+	# non-zero exit here would abort the test before this assignment ran.
+	status=0
+	wait "$!" || status=$?
 }
 
 # Every case runs `bash "$LAUNCHER"` rather than executing it: the nix check
@@ -801,5 +853,421 @@ teardown() {
 	# The whole name rides through shell_quote as one single-quoted literal,
 	# never split on the embedded space.
 	grep -q "sess_lit='my session'" "$SSH_LOG"
-	grep -q 'switch-client -t =tp-g6-my session' "$TMUX_LOG"
+	grep -q 'switch-client -t =tp-g6-my_session' "$TMUX_LOG"
+}
+
+# --- #783: the local mirror name is sanitized; the raw pair is the identity ---
+
+@test "a ##-substitution session name opens under a sanitized local name, raw in @bridge_session" {
+	touch "$REMOTE_SERVER"
+	export REMOTE_SESSION='x##(touch S)'
+
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-x___touch_S_ -n x___touch_S_' "$TMUX_LOG"
+	grep -qxF 'set-option -t tp-g6-x___touch_S_ @bridge_session x##(touch S)' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =tp-g6-x___touch_S_' "$TMUX_LOG"
+
+	local sess_line host_line
+	sess_line="$(grep -n '^set-option .* @bridge_session ' "$TMUX_LOG" | head -1 | cut -d: -f1)"
+	host_line="$(grep -n '^set-option .* @bridge_host ' "$TMUX_LOG" | head -1 | cut -d: -f1)"
+	[ -n "$sess_line" ] && [ -n "$host_line" ]
+	[ "$sess_line" -lt "$host_line" ]
+}
+
+@test "a quote break-out session name from the probe opens under a sanitized local name" {
+	touch "$REMOTE_SERVER"
+	export REMOTE_SESSION="x' '' ; run-shell 'touch S' ; display-menu -T 'y"
+	local want=tp-g6-x_______run-shell__touch_S____display-menu_-T__y
+
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+
+	grep -qxF "new-session -d -s $want -n ${want#tp-g6-}" "$TMUX_LOG"
+	grep -qxF "set-option -t $want @bridge_session $REMOTE_SESSION" "$TMUX_LOG"
+	grep -qxF "switch-client -t =$want" "$TMUX_LOG"
+}
+
+@test "a dotted user@host is sanitized in the local name, raw in @bridge_host" {
+	touch "$REMOTE_SERVER"
+
+	run bash "$LAUNCHER" user@tp.lan
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s user_tp_lan-workstation -n workstation' "$TMUX_LOG"
+	grep -qxF 'set-option -t user_tp_lan-workstation @bridge_host user@tp.lan' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =user_tp_lan-workstation' "$TMUX_LOG"
+}
+
+@test "a legacy mirror is not adopted when sanitizing altered the remote name" {
+	# a.b and a_b sanitize alike, and a legacy mirror (no @bridge_session)
+	# cannot say which of the two it mirrors.
+	export FAKE_LOCAL_SESSION=tp-g6-a_b FAKE_BRIDGE_HOST=tp-g6
+
+	run bash "$LAUNCHER" tp-g6 a.b
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-a_b-remote -n a_b' "$TMUX_LOG"
+	run grep -qxF 'kill-session -t =tp-g6-a_b' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "a legacy mirror is still adopted when its remote name needed no sanitizing" {
+	export FAKE_LOCAL_SESSION=tp-g6-a_b FAKE_BRIDGE_HOST=tp-g6
+
+	run bash "$LAUNCHER" tp-g6 a_b
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-a_b -n a_b' "$TMUX_LOG"
+}
+
+@test "a mirror found by its raw pair keeps its own name, not the first free one" {
+	export FAKE_LIST_SESSIONS='$7|tp-g6|a.b' FAKE_PAIR_NAME=tp-g6-a_b-remote-2
+
+	run bash "$LAUNCHER" tp-g6 a.b
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-a_b-remote-2 -n a_b' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =tp-g6-a_b-remote-2' "$TMUX_LOG"
+	run grep -qF 'kill-session -t $7' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "a pre-#783 raw-named mirror is retired, its unproven pidfile pid left alone" {
+	export FAKE_LIST_SESSIONS='$9|tp-g6|x##(y)' FAKE_PAIR_NAME='tp-g6-x#(y)'
+	export FAKE_PAIR_SOCK="$BATS_TEST_TMPDIR/old.sock"
+	export FAKE_CTL_ERROR='og-remote-bridge-ctl: bridge daemon unreachable: connect: connection refused'
+	sleep 30 &
+	DAEMON_PID=$!
+	printf '%s\n' "$DAEMON_PID" >"$FAKE_PAIR_SOCK.pid"
+	: >"$FAKE_PAIR_SOCK"
+
+	run bash "$LAUNCHER" tp-g6 'x##(y)'
+	[ "$status" -eq 0 ]
+
+	grep -qxF -- "--sock $FAKE_PAIR_SOCK ping _" "$CTL_LOG"
+	grep -qxF 'kill-session -t $9' "$TMUX_LOG"
+	kill -0 "$DAEMON_PID"
+	[ ! -e "$FAKE_PAIR_SOCK" ]
+	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
+	grep -qxF 'new-session -d -s tp-g6-x___y_ -n x___y_' "$TMUX_LOG"
+}
+
+@test "a pre-#783 raw-named mirror is retired, its daemon reaped once ping proves ownership" {
+	export FAKE_LIST_SESSIONS='$9|tp-g6|x##(y)' FAKE_PAIR_NAME='tp-g6-x#(y)'
+	export FAKE_PAIR_SOCK="$BATS_TEST_TMPDIR/old.sock"
+	sleep 30 &
+	DAEMON_PID=$!
+	printf '%s\n' "$DAEMON_PID" >"$FAKE_PAIR_SOCK.pid"
+
+	run bash "$LAUNCHER" tp-g6 'x##(y)'
+	[ "$status" -eq 0 ]
+
+	grep -qxF -- "--sock $FAKE_PAIR_SOCK ping _" "$CTL_LOG"
+	grep -qxF 'kill-session -t $9' "$TMUX_LOG"
+	run kill -0 "$DAEMON_PID"
+	[ "$status" -ne 0 ]
+	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
+	grep -qxF 'new-session -d -s tp-g6-x___y_ -n x___y_' "$TMUX_LOG"
+}
+
+@test "a pre-#783 raw-named mirror is retired, its daemon reaped on an old-protocol reply" {
+	export FAKE_LIST_SESSIONS='$9|tp-g6|x##(y)' FAKE_PAIR_NAME='tp-g6-x#(y)'
+	export FAKE_PAIR_SOCK="$BATS_TEST_TMPDIR/old.sock"
+	export FAKE_CTL_ERROR='og-remote-bridge-ctl: ctl protocol version "2", this daemon speaks "1" — reopen the bridge'
+	sleep 30 &
+	DAEMON_PID=$!
+	printf '%s\n' "$DAEMON_PID" >"$FAKE_PAIR_SOCK.pid"
+
+	run bash "$LAUNCHER" tp-g6 'x##(y)'
+	[ "$status" -eq 0 ]
+
+	grep -qxF -- "--sock $FAKE_PAIR_SOCK ping _" "$CTL_LOG"
+	grep -qxF 'kill-session -t $9' "$TMUX_LOG"
+	run kill -0 "$DAEMON_PID"
+	[ "$status" -ne 0 ]
+	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
+}
+
+@test "a cold-started remote's multi-line session name is rejected before any local session exists" {
+	export FAKE_LIST_SESSIONS_REPLY='evil
+$0|tp-g6|main'
+
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 1 ]
+	[[ $output == *"session name contains a control character"* ]]
+
+	run grep -cE 'new-session|kill-session|set-option' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "a caller-given session name containing a newline is rejected before any round trip" {
+	run bash "$LAUNCHER" tp-g6 'wo
+rk'
+	[ "$status" -eq 1 ]
+	[[ $output == *"session name contains a control character"* ]]
+
+	[ ! -s "$SSH_LOG" ]
+}
+
+# A @bridge_session stored before control bytes were rejected can carry a
+# newline, forging a list-sessions line that names another session's id.
+@test "a forged pair line never reuses the unrelated session it names" {
+	export FAKE_LIST_SESSIONS='$5|tp-g6|evil
+$0|tp-g6|main' FAKE_PAIR_NAME=work FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
+
+	run bash "$LAUNCHER" tp-g6 main
+	[ "$status" -eq 0 ]
+
+	run grep -E 'kill-session -t (=work|\$0)$' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	grep -qxF 'new-session -d -s tp-g6-main -n main' "$TMUX_LOG"
+}
+
+@test "a forged pair line never retires the unrelated session it names" {
+	export FAKE_LIST_SESSIONS='$5|tp-g6|evil
+$0|tp-g6|main' FAKE_PAIR_NAME='my.proj' FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
+
+	run bash "$LAUNCHER" tp-g6 main
+	[ "$status" -eq 0 ]
+
+	run grep -E 'kill-session -t (=my\.proj|\$0)$' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	grep -qxF 'new-session -d -s tp-g6-main -n main' "$TMUX_LOG"
+}
+
+# --- #770: progress fd phase lines (opt-in, gated by OG_REMOTE_OPEN_PROGRESS_FD) ---
+
+@test "progress: cold start emits connect, start-server, connect (late window lookup), mirror" {
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	[ "$(cat "$BATS_TEST_TMPDIR/phases")" = "$(printf 'connect\nstart-server\nconnect\nmirror\n')" ]
+}
+
+@test "progress: warm attach emits connect, mirror" {
+	touch "$REMOTE_SERVER"
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	[ "$(cat "$BATS_TEST_TMPDIR/phases")" = "$(printf 'connect\nmirror\n')" ]
+}
+
+@test "progress: restore emits connect, restore, start-server, restore, mirror" {
+	export OG_REMOTE_RESTORE=1
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+	run bash "$LAUNCHER" tp-g6 work 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	[ "$(cat "$BATS_TEST_TMPDIR/phases")" = "$(printf 'connect\nrestore\nstart-server\nrestore\nmirror\n')" ]
+}
+
+@test "progress: new dir emits connect, create, start-server, create, mirror" {
+	export OG_REMOTE_NEW_DIR=/srv
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+	run bash "$LAUNCHER" tp-g6 proj 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	[ "$(cat "$BATS_TEST_TMPDIR/phases")" = "$(printf 'connect\ncreate\nstart-server\ncreate\nmirror\n')" ]
+}
+
+@test "progress: no active window emits connect twice and fails" {
+	touch "$REMOTE_SERVER"
+	export FAKE_NO_WINDOW=1
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 1 ]
+
+	[ "$(cat "$BATS_TEST_TMPDIR/phases")" = "$(printf 'connect\nconnect\n')" ]
+}
+
+@test "progress: with the env var unset, the fd stays untouched" {
+	touch "$REMOTE_SERVER"
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	[ ! -s "$BATS_TEST_TMPDIR/phases" ]
+}
+
+@test "progress: a non-numeric fd value is ignored, with no bad-fd noise on stderr" {
+	touch "$REMOTE_SERVER"
+	export OG_REMOTE_OPEN_PROGRESS_FD=abc
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	[ ! -s "$BATS_TEST_TMPDIR/phases" ]
+	[[ $output != *"Bad file descriptor"* ]]
+}
+
+@test "progress: an fd number with nothing open there is silently ignored" {
+	touch "$REMOTE_SERVER"
+	export OG_REMOTE_OPEN_PROGRESS_FD=9
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "progress: the fd var is never passed on to the daemon" {
+	touch "$REMOTE_SERVER"
+	export DAEMON_ENV_LOG="$BATS_TEST_TMPDIR/daemon-env"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		printf '%s\n' "${OG_REMOTE_OPEN_PROGRESS_FD-unset}" >"$DAEMON_ENV_LOG"
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	local waited=0
+	while [[ ! -s $DAEMON_ENV_LOG && $waited -lt 20 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	[ "$(cat "$DAEMON_ENV_LOG")" = unset ]
+}
+
+@test "progress: fd 3 is closed before the daemon launches" {
+	touch "$REMOTE_SERVER"
+	export DAEMON_FD3_LOG="$BATS_TEST_TMPDIR/daemon-fd3"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		if [ -e /dev/fd/3 ]; then
+			echo open >"$DAEMON_FD3_LOG"
+		else
+			echo closed >"$DAEMON_FD3_LOG"
+		fi
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
+	export OG_REMOTE_OPEN_PROGRESS_FD=3
+
+	run bash "$LAUNCHER" tp-g6 3>"$BATS_TEST_TMPDIR/phases"
+	[ "$status" -eq 0 ]
+
+	local waited=0
+	while [[ ! -s $DAEMON_FD3_LOG && $waited -lt 20 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	[ "$(cat "$DAEMON_FD3_LOG")" = closed ]
+}
+
+# --- #770: TERM/INT/HUP rollback (only undoes a mirror the script itself built,
+# and only up to the commit point — the final switch-client of either path) ---
+
+@test "signal: TERM after the mirror exists but before switch-client rolls it back" {
+	touch "$REMOTE_SERVER"
+	export FAKE_TERM_ON='set-option -t tp-g6-workstation @bridge_session'
+	local sock="$TMUX_TMPDIR/og-daemon-tp-g6-workstation.sock"
+
+	run_launcher_bg tp-g6
+	[ "$status" -eq 143 ]
+
+	local new_line
+	new_line="$(grep -n '^new-session' "$TMUX_LOG" | head -1 | cut -d: -f1)"
+	[ -n "$new_line" ]
+	sed -n "${new_line},\$p" "$TMUX_LOG" | grep -q 'kill-session -t =tp-g6-workstation'
+
+	run grep -c switch-client "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	[ ! -e "$sock" ]
+	[ ! -e "${sock}.pid" ]
+	[ ! -e "${sock}.phase" ]
+}
+
+@test "signal: TERM at the final switch-client is a completed attach, not a rollback" {
+	export FAKE_TERM_ON='switch-client'
+
+	run_launcher_bg tp-g6
+	[ "$status" -eq 0 ]
+
+	local new_line
+	new_line="$(grep -n '^new-session' "$TMUX_LOG" | head -1 | cut -d: -f1)"
+	[ -n "$new_line" ]
+	run bash -c "sed -n '${new_line},\$p' '$TMUX_LOG' | grep -c 'kill-session -t =tp-g6-workstation'"
+	[ "$status" -ne 0 ]
+}
+
+@test "signal: TERM at switch-client on the dedup path leaves the reused daemon untouched" {
+	touch "$REMOTE_SERVER"
+	export FAKE_DAEMON_SESSION=tp-g6-workstation FAKE_BRIDGE_HOST=tp-g6
+	export FAKE_TERM_ON='switch-client'
+	sleep 30 &
+	DAEMON_PID=$!
+	local sock="$TMUX_TMPDIR/og-daemon-tp-g6-workstation.sock"
+	printf '%s\n' "$DAEMON_PID" >"${sock}.pid"
+
+	run_launcher_bg tp-g6
+	[ "$status" -eq 0 ]
+
+	run grep -c new-session "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	run grep -c kill-session "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	kill -0 "$DAEMON_PID"
+}
+
+@test "signal: TERM during the initial probe unwinds with nothing to roll back" {
+	export FAKE_SSH_TERM=1
+
+	run_launcher_bg tp-g6
+	[ "$status" -eq 143 ]
+
+	run grep -c new-session "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	run grep -c kill-session "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+# --- #770: the nohup/set -m fallback, taken only when setsid can't be found ---
+
+@test "nohup fallback: daemon lands in its own process group without setsid" {
+	touch "$REMOTE_SERVER"
+
+	local nosetsid="$BATS_TEST_TMPDIR/nosetsid"
+	mkdir -p "$nosetsid"
+	for tool in rm nohup dirname sleep cat sed touch cut tr printf mkdir ps; do
+		local real
+		real="$(command -v "$tool" 2>/dev/null)" || continue
+		ln -s "$real" "$nosetsid/$tool"
+	done
+	local restricted_path="$FAKEBIN:$nosetsid"
+
+	# Confirms the fallback below actually exercises the no-setsid branch,
+	# rather than agreeing with a PATH that still has the real one on it.
+	local setsid_probe
+	setsid_probe="$(PATH="$restricted_path" command -v setsid || true)"
+	[ -z "$setsid_probe" ]
+
+	# Records its own pid and process-group id, then exits: leading its own
+	# group is what a group TERM aimed at the launcher can no longer reach.
+	export DAEMON_PGID_FILE="$BATS_TEST_TMPDIR/daemon-pgid"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		if [ -r /proc/$$/stat ]; then
+			read -r _ _ _ _ pgid _ </proc/$$/stat
+		else
+			pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+		fi
+		printf '%s %s\n' "$$" "${pgid:-NOPGID}" >"$DAEMON_PGID_FILE"
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
+
+	PATH="$restricted_path" run "$BASH" "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+
+	local waited=0
+	while [[ ! -s $DAEMON_PGID_FILE && $waited -lt 20 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	[ -s "$DAEMON_PGID_FILE" ]
+
+	local pid pgid
+	read -r pid pgid <"$DAEMON_PGID_FILE"
+	[ "$pid" = "$pgid" ]
 }

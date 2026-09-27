@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/mirrorname"
 	"github.com/noamsto/tmux-og/picker/remotebridge/daemon"
 	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
 )
@@ -181,7 +182,7 @@ func main() {
 	gfxMax := flag.Int64("gfx-max-bytes", 8<<20, "largest single image fetched from the remote; bigger stores are dropped")
 	gfxRelayMaxBytes := flag.Int64("gfx-relay-max-bytes", graphics.DefaultRasterHold, "byte budget for holding a partial sixel meant for relay; bigger holds are dropped")
 	localTmux := flag.String("local-tmux", envDefault("OG_DAEMON_LOCAL_TMUX", "tmux"), "local tmux binary (may carry args, e.g. \"tmux -L sock\")")
-	localSess := flag.String("local-sess", os.Getenv("OG_DAEMON_LOCAL_SESS"), `local session name (default "<host>-<session>")`)
+	localSess := flag.String("local-sess", os.Getenv("OG_DAEMON_LOCAL_SESS"), `local session name (default "<host>-<session>", both halves mirrorname.Part-sanitized)`)
 	sock := flag.String("sock", os.Getenv("OG_DAEMON_SOCK"), "unix socket path for renderers")
 	rendererBin := flag.String("renderer", os.Getenv("OG_DAEMON_RENDERER"), "absolute path to the renderer binary")
 	reflowBin := flag.String("reflow", os.Getenv("OG_DAEMON_REFLOW"), "absolute path to tmux-reflow-windows (empty = never force a reflow)")
@@ -200,7 +201,7 @@ func main() {
 	flag.Parse()
 
 	if *localSess == "" {
-		*localSess = fmt.Sprintf("%s-%s", *host, *session)
+		*localSess = mirrorname.Local(*host, *session)
 	}
 	if *sock == "" {
 		*sock = fmt.Sprintf("%s/og-daemon-%d.sock", os.TempDir(), os.Getpid())

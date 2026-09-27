@@ -223,6 +223,41 @@ func TestBridgeRefreshDoneMsgFlashesRealOutcome(t *testing.T) {
 	}
 }
 
+// TestFooterDegradesGracefully sweeps card widths from the minimum up and
+// verifies footer() never exceeds the available inner width, and items are
+// dropped or shortened whole rather than cut mid-label by the outer MaxWidth.
+func TestFooterDegradesGracefully(t *testing.T) {
+	base := model{
+		cfg: testCfg(), height: heightFloor,
+		win: winState{
+			issueProvider: "linear", issueID: "ENG-6794",
+			issueURL:   "https://linear.app/x/issue/ENG-6794",
+			prNumber: "103", prState: "open", prCheck: "success",
+			prMergeable: "mergeable", prTitle: "kitty nav",
+			branch: "feat/103-kitty-nav",
+		},
+	}
+
+	for w := widthFloor; w <= 80; w += 2 {
+		m := base
+		m.width = w
+		footer := m.footer()
+		if fw := lipgloss.Width(footer); fw > m.titleWidth() {
+			t.Errorf("width=%d: footer width %d > titleWidth %d; raw=%q",
+				w, fw, m.titleWidth(), stripANSI(footer))
+		}
+
+		// With a long flash that previously overflowed at narrow widths.
+		m.flash = "error: bridge daemon unreachable — will retry on next tick"
+		m.flashIsError = true
+		footer2 := m.footer()
+		if fw2 := lipgloss.Width(footer2); fw2 > m.titleWidth() {
+			t.Errorf("width=%d (flash): footer width %d > titleWidth %d; raw=%q",
+				w, fw2, m.titleWidth(), stripANSI(footer2))
+		}
+	}
+}
+
 // TestFooterFlashColor pins the color-by-outcome contract (#762): an error
 // flash renders in c.red, a confirmation flash in c.green.
 func TestFooterFlashColor(t *testing.T) {
@@ -327,6 +362,87 @@ func TestBranchBlockLongBranchStaysInsideCardWidth(t *testing.T) {
 		if w := lipgloss.Width(line); w > m.width {
 			t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 		}
+	}
+}
+
+// TestIssueBlockLongIDStaysInsideCardWidth: issueBlock() must truncate its
+// head line (glyph + "  " + issueID) — it renders raw provider data with no
+// upper bound and previously skipped truncate() entirely.
+func TestIssueBlockLongIDStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{
+			name: "long-ascii",
+			id:   "ENG-67891011121314151617181920212223242526",
+		},
+		{
+			name: "wide-rune",
+			id:   "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴-id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+				issueProvider: "linear", issueID: tc.id,
+				issueTitle: "carousel nav", issueURL: "https://linear.app/x/issue/1",
+			}}
+			out := render(m)
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
+	}
+}
+
+// TestPRBlockLongBadgeStaysInsideCardWidth: prBlock() must truncate its
+// badge line (glyph + " #" + prNumber + optional progress fraction) — it
+// renders raw data with no upper bound and previously skipped truncate().
+func TestPRBlockLongBadgeStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name     string
+		prNumber string
+		prCheck  string
+	}{
+		{
+			name:     "long-ascii",
+			prNumber: "123456789012345678901234567890",
+			prCheck:  "pending",
+		},
+		{
+			name:     "wide-rune",
+			prNumber: "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴-num",
+			prCheck:  "pending",
+		},
+		{
+			name:     "long-progress",
+			prNumber: "42",
+			prCheck:  "pending",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+				prNumber:   tc.prNumber,
+				prState:    "open",
+				prCheck:    tc.prCheck,
+				prProgress: "999998/999999",
+				prMergeable: "mergeable",
+				prTitle:    "kitty nav",
+				branch:     "b",
+			}}
+			out := render(m)
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
 	}
 }
 
@@ -441,5 +557,69 @@ func TestCardPendingWithoutProgressKeepsGlyph(t *testing.T) {
 	out := render(m)
 	if !strings.Contains(out, "P #103") || strings.Contains(out, "checks") {
 		t.Errorf("expected plain pending badge and no progress text\n%s", out)
+	}
+}
+
+// TestCardMaxWidthBackstop: card()'s outer style must clamp content to
+// m.width even when a block skips truncate() entirely — claudeBlock()
+// renders w.task with no upper bound today. Every rendered line must stay
+// within m.width, and the border must stay intact on both edges rather
+// than get clipped by a naive MaxWidth on the bordered style itself.
+func TestCardMaxWidthBackstop(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+		branch: "b",
+		task:   strings.Repeat("x", 200),
+	}}
+	out := render(m)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected a bordered multi-line card, got %d lines: %q", len(lines), out)
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line %d exceeds card width %d (got %d): %q", i, m.width, w, line)
+		}
+	}
+	first, last := lines[0], lines[len(lines)-1]
+	if !strings.HasPrefix(first, "╭") || !strings.HasSuffix(first, "╮") {
+		t.Errorf("top border missing or clipped: %q", first)
+	}
+	if !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
+		t.Errorf("bottom border missing or clipped: %q", last)
+	}
+	for i, line := range lines[1 : len(lines)-1] {
+		if !strings.HasPrefix(line, "│") || !strings.HasSuffix(line, "│") {
+			t.Errorf("row %d missing side border: %q", i+1, line)
+		}
+	}
+}
+
+// TestCardNoRoomForFrameStaysWithinWidth: at or below the border+padding
+// frame size (startup before the first WindowSizeMsg, or an absurdly small
+// popup), lipgloss treats MaxWidth(0)/MaxHeight(0) as "unset" rather than
+// "clamp to zero" — without card()'s own guard for this case, the backstop
+// would silently disengage exactly where it matters most.
+func TestCardNoRoomForFrameStaysWithinWidth(t *testing.T) {
+	cases := []struct {
+		name          string
+		width, height int
+	}{
+		{"zero size (pre-WindowSizeMsg)", 0, 0},
+		{"width at frame size", 4, 18},
+		{"height at frame size", 60, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: tc.width, height: tc.height, win: winState{
+				branch: "b",
+				task:   strings.Repeat("x", 200),
+			}}
+			out := render(m)
+			for _, line := range strings.Split(out, "\n") {
+				if w := lipgloss.Width(line); w > tc.width {
+					t.Errorf("line exceeds width %d (got %d): %q", tc.width, w, line)
+				}
+			}
+		})
 	}
 }

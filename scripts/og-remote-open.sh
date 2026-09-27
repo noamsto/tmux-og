@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Create a local <host>-<sess> session and launch the M2 multi-window bridge
-# daemon detached: it enumerates every remote window and mirrors each into its
-# own local window (live add/close/rename/active-changed). Resolves remote
-# tmux path + TMUX_TMPDIR for the ssh control connection.
+# Create a local <host>-<sess> session (both halves sanitized) and launch the
+# M2 multi-window bridge daemon detached: it enumerates every remote window and
+# mirrors each into its own local window (live add/close/rename/active-changed).
+# Resolves remote tmux path + TMUX_TMPDIR for the ssh control connection.
 set -euo pipefail
 
 # @lib_remote@ is substituted at Nix build time; in bats the lib is pre-sourced.
@@ -66,9 +66,92 @@ reap_daemon() {
 	kill -KILL -- "$pid" 2>/dev/null || true
 }
 
+# probe_daemon <sock> sets REPLY to `live` when the daemon behind sock's
+# pidfile answers ping, `outdated` when it answers in an older ctl protocol,
+# and empty when its pid is dead or its socket unreachable. A live pid alone
+# is not enough: a config reload can leave a daemon that speaks an older ctl
+# protocol behind. ctl bounds the probe at two seconds.
+#
+# A stale pidfile can be recycled by an unrelated process. Only the daemon's
+# deterministic replies establish that the PID owns this socket, so only a
+# non-empty REPLY may lead to signalling it. Matched on the suffix both
+# old-protocol replies share: pinning the version digits stops reaping the
+# daemon a later bump obsoletes.
+probe_daemon() {
+	local probe_error
+	REPLY=""
+	remote_daemon_alive "${1}.pid" || return 0
+	if probe_error="$("$ctl" --sock "$1" ping _ 2>&1)"; then
+		REPLY=live
+	elif [[ $probe_error == *'— reopen the bridge'* ]]; then
+		REPLY=outdated
+	fi
+}
+
+# retire_mirror <session_id> removes a mirror whose name predates #783's
+# sanitizing, with its daemon's files. Targeted by id: the raw name may not
+# parse as a target.
+retire_mirror() {
+	local id="$1" old pid
+	old="$(tmux display-message -p -t "$id" '#{@bridge_sock}' 2>/dev/null || true)"
+	if [[ -n $old ]]; then
+		probe_daemon "$old"
+		if [[ -n $REPLY ]]; then
+			pid="$(<"${old}.pid")"
+			[[ $pid =~ ^[0-9]+$ ]] && reap_daemon "$pid"
+		fi
+	fi
+	tmux kill-session -t "$id" 2>/dev/null || true
+	if [[ -n $old ]]; then
+		rm -f "$old" "${old}.pid" "${old}.phase"
+	fi
+}
+
+# Rollback state for on_signal (#770). The picker's group TERM only reaches
+# ssh — the daemon is launched setsid, outside the group — so this script owns
+# undoing its own mirror on a signal. mirror_created means there is local state
+# (a socket dir, maybe a mirror session) worth tearing down; attached means the
+# commit point (one of the two switch-clients) has already run, so a racing
+# signal is reported as success — a complete mirror exists either way.
+mirror_created="" attached="" daemon_started=""
+on_signal() {
+	[[ -n $attached ]] && exit 0
+	if [[ -n $mirror_created ]]; then
+		# daemon_started is set before the launch attempt: set after the `&`, a
+		# signal in between would leave a launched daemon unreaped. $! is unset
+		# until that launch because nothing earlier in the script backgrounds a
+		# job — don't add one before it, or ${!:-} would reap the wrong pid.
+		if [[ -n $daemon_started && -n ${!:-} ]]; then
+			reap_daemon "$!"
+		fi
+		tmux kill-session -t "=$local_sess" 2>/dev/null || true
+		rm -f "$sock" "${sock}.pid" "$phase_file"
+	fi
+	exit 143
+}
+trap on_signal TERM INT HUP
+
 host="$1"
 sess="${2:-}"
 win="${3:-}"
+
+# Opt-in progress channel for the picker: one phase name per line on this fd,
+# never on stdout (which a remote command can forge).
+# Never exported onward — the daemon's hand-off re-runs this script from its
+# own environment, where fd 3 may be something else entirely.
+progress_fd=""
+if [[ ${OG_REMOTE_OPEN_PROGRESS_FD:-} =~ ^[0-9]+$ ]]; then
+	progress_fd=$OG_REMOTE_OPEN_PROGRESS_FD
+fi
+unset OG_REMOTE_OPEN_PROGRESS_FD
+
+# 2>/dev/null runs before the fd redirect so a closed or never-opened fd
+# fails silently instead of printing "Bad file descriptor" on our own stderr.
+phase() {
+	[[ -n $progress_fd ]] || return 0
+	# shellcheck disable=SC2261 # intentional: order matters, see the comment above
+	printf '%s\n' "$1" 2>/dev/null >&"$progress_fd" || true
+}
 
 if [[ -n $win && ! $win =~ ^[0-9]+$ ]]; then
 	echo "og-remote-open: window index must be numeric, got: $win" >&2
@@ -89,13 +172,29 @@ if [[ -n ${OG_REMOTE_NEW_DIR:-} ]] && ! shell_quotable "$OG_REMOTE_NEW_DIR"; the
 	exit 1
 fi
 
-# The session-name quoting discipline (shell_quote is unsafe for a value
-# containing a backslash) applies here too: check before a caller-given $sess
-# rides into the probe below, not only after a remote-derived one comes back.
-if [[ -n $sess ]] && ! shell_quotable "$sess"; then
-	echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $sess — pass an explicit session name instead" >&2
-	exit 1
-fi
+# require_session_name <sess> exits unless sess is safe to carry: shell_quote
+# is unsafe for a backslash, and a control byte never appears in a real tmux
+# session name (tmux rejects them), so one can only come from a hostile
+# remote — whose newline in the raw @bridge_session would forge a line in the
+# pair lookup below. Byte-wise under LC_ALL=C, like mirror_name_part; %q keeps
+# the rejected bytes off the user's terminal.
+require_session_name() {
+	local LC_ALL=C quoted
+	if [[ $1 == *[[:cntrl:]]* ]]; then
+		printf -v quoted '%q' "$1"
+		echo "og-remote-open: session name contains a control character, which no tmux session name can: $quoted — pass an explicit session name instead" >&2
+		exit 1
+	fi
+	if ! shell_quotable "$1"; then
+		echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $1 — pass an explicit session name instead" >&2
+		exit 1
+	fi
+}
+
+# The session-name discipline applies here too: check before a caller-given
+# $sess rides into the probe below, not only after a remote-derived one comes
+# back.
+require_session_name "$sess"
 
 # Validated here, before it ever rides into probe_script below — not after the
 # probe has already shipped it to the remote. valid_remote_path's charset also
@@ -178,6 +277,7 @@ printf '"'"'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\n'"'"' "$os" "$ui
 # behind a fish parse error on stderr. Feed the script to an explicit bash on
 # stdin instead, the same way og-remote-picker already does. A fish login
 # greeting can still land on stdout, which the key=value parse below ignores.
+phase connect
 probe_out="$(ssh -T "$host" bash -s <<<"$probe_script")"
 
 remote_os="" remote_uid="" remote_tmux="" remote_tmpdir="" probe_sess="" probe_win=""
@@ -195,12 +295,8 @@ done <<<"$probe_out"
 [[ -z $win ]] && win="$probe_win"
 
 # A session already live on the remote (the common case) is named here, by
-# the probe above, not by the caller — so it hasn't run the backslash check
-# above yet.
-if [[ -n $sess ]] && ! shell_quotable "$sess"; then
-	echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $sess — pass an explicit session name instead" >&2
-	exit 1
-fi
+# the probe above, not by the caller — so it hasn't run the check above yet.
+require_session_name "$sess"
 
 if ! valid_remote_path "$remote_tmpdir"; then
 	echo "og-remote-open: unusable remote tmpdir: $remote_tmpdir" >&2
@@ -218,6 +314,7 @@ fi
 # (#345). Exits the whole script on failure: a cold start is a fatal
 # precondition for every caller.
 start_remote_server() {
+	phase start-server
 	if [[ $remote_os == Darwin ]]; then
 		# The launchd agent mirrors tmux-startup.service on macOS; kickstart
 		# runs a RunAtLoad agent on demand.
@@ -243,12 +340,10 @@ if [[ -z $sess ]]; then
 		echo "og-remote-open: started $start_desc on $host but no session appeared" >&2
 		exit 1
 	fi
-	# A remote-derived name gets the same backslash check the caller-given path
-	# already ran above — this is the only route it could have skipped it.
-	if ! shell_quotable "$sess"; then
-		echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $sess — pass an explicit session name instead" >&2
-		exit 1
-	fi
+	# A remote-derived name gets the same check the caller-given path already
+	# ran above — this is the only route it could have skipped it. `$(…)` keeps
+	# the inner newlines of a multi-line reply.
+	require_session_name "$sess"
 fi
 
 # The picker's row came from a tmux-remux snapshot, not a live probe (#268):
@@ -256,10 +351,12 @@ fi
 # caller explicitly asked for a restore — a plain live-session attach (the
 # common case) takes none of these extra round trips.
 if [[ -n ${OG_REMOTE_RESTORE:-} && -n $sess ]]; then
+	phase restore
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
 	if ! ssh "$host" "env TMUX_TMPDIR=$remote_tmpdir $remote_tmux has-session -t $(shell_quote "=$sess")" 2>/dev/null; then
 		if [[ -z "$(first_remote_session)" ]]; then
 			start_remote_server
+			phase restore
 		fi
 		remote_remux="$(ssh "$host" 'command -v tmux-remux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux-remux')"
 		# Bypasses the remote's own restoreMode=off gate (config/tmux.conf.nix's
@@ -304,6 +401,7 @@ fi
 # session is made moments before the daemon attaches instead of having to survive
 # the whole interactive pick.
 if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
+	phase create
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
 	if ! ssh "$host" "env TMUX_TMPDIR=$remote_tmpdir $remote_tmux has-session -t $(shell_quote "=$sess")" 2>/dev/null; then
 		# Both cold-start gates above are `[[ -z $sess ]]`, and we hold a name —
@@ -311,6 +409,7 @@ if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
 		# spawned, outside the startup unit that owns it everywhere else (#345).
 		if [[ -z "$(first_remote_session)" ]]; then
 			start_remote_server
+			phase create
 		fi
 		remote_size=""
 		if [[ -n $initial_width ]]; then
@@ -330,6 +429,7 @@ if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
 fi
 
 if [[ -z $win ]]; then
+	phase connect
 	# base-index is non-zero under tmux-og (windows start at 1), so target the
 	# session's active window rather than assuming index 0.
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
@@ -344,39 +444,7 @@ if [[ -z $win ]]; then
 	fi
 fi
 
-base_local_sess="${host}-${sess}"
-local_sess="$base_local_sess"
-
-# Keep a real local session with the old deterministic name. New mirrors use a
-# stable suffix only when that name is occupied by something other than this
-# host/session bridge. @bridge_session makes the choice unambiguous even when
-# either side contains a hyphen; the host-only fallback keeps old mirrors
-# reusable while they are upgraded.
-#
-# show-options does not accept the "=" exact-match prefix has-session takes one
-# line up: it answers "no such session", which -q turns into an empty string
-# indistinguishable from an unset option — so these reads use the bare name
-# (#474). has-session has already proved the exact name exists, and an exact
-# match beats a prefix match, so the bare form cannot resolve to a sibling.
-collision=0
-while tmux has-session -t "=$local_sess" 2>/dev/null; do
-	existing_bridge_host="$(tmux show-options -t "$local_sess" -qv @bridge_host 2>/dev/null || true)"
-	existing_bridge_session="$(tmux show-options -t "$local_sess" -qv @bridge_session 2>/dev/null || true)"
-	if [[ $existing_bridge_host == "$host" && $existing_bridge_session == "$sess" ]] ||
-		[[ $existing_bridge_host == "$host" && -z $existing_bridge_session && $local_sess == "$base_local_sess" ]]; then
-		break
-	fi
-	collision=$((collision + 1))
-	if ((collision == 1)); then
-		local_sess="${base_local_sess}-remote"
-	else
-		local_sess="${base_local_sess}-remote-${collision}"
-	fi
-done
-
-sock_dir="${TMUX_TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}"
-sock_name="${local_sess//[^A-Za-z0-9._-]/_}"
-sock="${sock_dir}/og-daemon-${sock_name}.sock"
+phase mirror
 # Store paths, substituted at build time. This script runs from the tmux server,
 # whose PATH is frozen until a server restart, while the keybinds that reach the
 # daemon repoint on a config reload alone — a bare name straddles the two, so
@@ -393,36 +461,100 @@ loading="@loading@"
 [[ $reflow == @* ]] && reflow="$(command -v tmux-reflow-windows)"
 [[ $loading == @* ]] && loading="$(command -v og-remote-loading || true)"
 
+# The local name reaches stock `run-shell -C` menus, which re-parse it as
+# commands, and every target parser, which splits on `.`/`:` — so only inert
+# bytes survive (#783). Identity lives in the raw @bridge_host/@bridge_session.
+mirror_name_part "$host"
+host_part=$REPLY
+mirror_name_part "$sess"
+sess_part=$REPLY
+base_local_sess="${host_part}-${sess_part}"
+
+# The mirror of this raw pair, wherever an earlier open put it. Captured, then
+# fed through a herestring: a `< <(…)` would set $!, which on_signal reaps.
+# Split by hand, not `IFS='|' read`: read drops a lone trailing `|`, so a
+# session named `x|` would come back as `x`. Session last, so a `|` inside it
+# stays in the final field.
+local_sess=""
+pairs="$(tmux list-sessions -F '#{session_id}|#{@bridge_host}|#{@bridge_session}' 2>/dev/null || true)"
+while IFS= read -r pair_line; do
+	pair_id="${pair_line%%|*}"
+	pair_rest="${pair_line#*|}"
+	pair_host="${pair_rest%%|*}"
+	pair_sess="${pair_rest#*|}"
+	[[ $pair_host == "$host" && $pair_sess == "$sess" ]] || continue
+	# A @bridge_session stored before control bytes were rejected can hold a
+	# newline, forging a line above whose id names an unrelated session: act
+	# only once that session's own options claim this pair.
+	pair_own_host="$(tmux display-message -p -t "$pair_id" '#{@bridge_host}' 2>/dev/null || true)"
+	pair_own_sess="$(tmux display-message -p -t "$pair_id" '#{@bridge_session}' 2>/dev/null || true)"
+	[[ $pair_own_host == "$host" && $pair_own_sess == "$sess" ]] || continue
+	pair_name="$(tmux display-message -p -t "$pair_id" '#{session_name}' 2>/dev/null || true)"
+	mirror_name_part "$pair_name"
+	if [[ $REPLY != "$pair_name" ]]; then
+		retire_mirror "$pair_id"
+	elif [[ -z $local_sess ]]; then
+		local_sess="$pair_name"
+	fi
+done <<<"$pairs"
+
+# No mirror of this pair yet: take the base name, or a stable suffix when it
+# is occupied by something other than this host/session bridge. The pair
+# clause covers a mirror created between the lookup above and here; a legacy
+# mirror (host only, no @bridge_session) is adopted only when sanitizing left
+# the name unchanged, since otherwise it cannot say which remote session it
+# mirrors (a.b and a_b share a base name).
+#
+# show-options does not accept the "=" exact-match prefix has-session takes one
+# line up: it answers "no such session", which -q turns into an empty string
+# indistinguishable from an unset option — so these reads use the bare name
+# (#474). has-session has already proved the exact name exists, and an exact
+# match beats a prefix match, so the bare form cannot resolve to a sibling.
+if [[ -z $local_sess ]]; then
+	local_sess="$base_local_sess"
+	collision=0
+	while tmux has-session -t "=$local_sess" 2>/dev/null; do
+		existing_bridge_host="$(tmux show-options -t "$local_sess" -qv @bridge_host 2>/dev/null || true)"
+		existing_bridge_session="$(tmux show-options -t "$local_sess" -qv @bridge_session 2>/dev/null || true)"
+		if [[ $existing_bridge_host == "$host" && $existing_bridge_session == "$sess" ]] ||
+			[[ $existing_bridge_host == "$host" && -z $existing_bridge_session && $local_sess == "$base_local_sess" && $base_local_sess == "${host}-${sess}" ]]; then
+			break
+		fi
+		collision=$((collision + 1))
+		if ((collision == 1)); then
+			local_sess="${base_local_sess}-remote"
+		else
+			local_sess="${base_local_sess}-remote-${collision}"
+		fi
+	done
+fi
+
+sock_dir="${TMUX_TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}"
+sock="${sock_dir}/og-daemon-${local_sess}.sock"
+
 # The caption the loading pane renders. Written here for the stretch before
 # the daemon exists, by the daemon after that, removed by its teardown.
 phase_file="${sock}.phase"
 
-# Dedup: a live pid alone is not enough. A config reload can leave a daemon
-# that speaks an older ctl protocol behind, so prove its compatibility before
-# reusing the mirror. ctl bounds the probe at two seconds.
-if remote_daemon_alive "${sock}.pid"; then
-	if probe_error="$("$ctl" --sock "$sock" ping _ 2>&1)"; then
-		if tmux has-session -t "=$local_sess" 2>/dev/null; then
-			tmux switch-client -t "=$local_sess"
-			exit 0
-		fi
-		# The daemon is alive and speaks the protocol, but the mirror session it
-		# was serving is gone — killed from the picker, by hand, or a crash.
-		# switch-client above would otherwise fail against a session
-		# that no longer exists, so reap the orphan daemon and fall through to
-		# recreate.
-		daemon_pid="$(<"${sock}.pid")"
-		[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
-	# A stale pidfile can be recycled by an unrelated process. Only the daemon's
-	# deterministic old-protocol replies establish that the PID owns this socket;
-	# an unreachable socket goes straight to cleanup/recreate without signalling.
-	# Matched on the suffix both replies share: pinning the version digits stops
-	# reaping the daemon a later bump obsoletes.
-	elif [[ $probe_error == *'— reopen the bridge'* ]]; then
-		daemon_pid="$(<"${sock}.pid")"
-		[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
-	fi
+# Dedup: reuse the mirror only behind a daemon proven compatible. Any other
+# proven daemon is reaped; an unreachable one goes straight to cleanup/recreate
+# without signalling.
+probe_daemon "$sock"
+if [[ $REPLY == live ]] && tmux has-session -t "=$local_sess" 2>/dev/null; then
+	attached=1
+	tmux switch-client -t "=$local_sess"
+	exit 0
 fi
+# A live daemon that got here speaks the protocol, but the mirror session it
+# was serving is gone — killed from the picker, by hand, or a crash.
+# switch-client above would otherwise fail against a session that no longer
+# exists, so reap the orphan daemon (or the outdated one) and fall through to
+# recreate.
+if [[ -n $REPLY ]]; then
+	daemon_pid="$(<"${sock}.pid")"
+	[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
+fi
+mirror_created=1
 # Stale cleanup: a prior daemon was killed (SIGTERM/SIGKILL) without running
 # teardown, leaving socket + pidfile behind. Remove both so the new daemon can
 # bind cleanly; the session below is also replaced.
@@ -442,7 +574,7 @@ tmux kill-session -t "=$local_sess" 2>/dev/null || true
 # respawn-pane for that window is what replaces it, so there is nothing extra
 # to reap; a build with no loading binary on PATH falls back to the shell.
 printf 'connecting to %s\n' "$host" >"$phase_file"
-new_session_args=(new-session -d -s "$local_sess" -n "$sess")
+new_session_args=(new-session -d -s "$local_sess" -n "$sess_part")
 if [[ -n $initial_width ]]; then
 	new_session_args+=(-x "$initial_width" -y "$initial_height")
 fi
@@ -452,9 +584,11 @@ fi
 tmux "${new_session_args[@]}"
 
 # Read by tmux-statusline to name the machine on line 0. Session-scoped, so it
-# survives the daemon replacing every window under it.
-tmux set-option -t "$local_sess" @bridge_host "$host"
+# survives the daemon replacing every window under it. @bridge_session goes
+# first: a concurrent walk or picker probe must never see host set, session
+# empty, and take this mirror for a legacy one.
 tmux set-option -t "$local_sess" @bridge_session "$sess"
+tmux set-option -t "$local_sess" @bridge_host "$host"
 
 # Pass the (remote-derived, untrusted) params through the environment instead
 # of interpolating them into a shell/command string tmux/ssh would re-parse,
@@ -523,15 +657,29 @@ read_session_env "$cur_sess" TERM_PROGRAM && term_program="$REPLY" || true
 export OG_BRIDGE_COLORTERM="$colorterm"
 export OG_BRIDGE_TERM_PROGRAM="$term_program"
 
+# The fd must not outlive the launcher: the detached daemon would otherwise
+# hold the pipe's write end open for its whole life.
+if [[ -n $progress_fd ]]; then
+	exec {progress_fd}>&-
+	progress_fd=""
+fi
+
 # Launch the daemon DETACHED, outside the panes it manages (I4): it is not the
 # window's command — it respawns the local panes into renderers. setsid is
 # Linux-only (not on macOS base), so fall back to plain backgrounding + disown
 # where it's unavailable; either way the daemon is fully detached from this shell.
+daemon_started=1
 if command -v setsid >/dev/null 2>&1; then     # portable-ok: guard, verified fallback below
 	setsid "$daemon" >/dev/null 2>"${sock}.log" & # portable-ok: guarded above; else branch is the verified macOS fallback
 else
+	# The daemon must land outside this script's process group on every
+	# platform: bash job control (set -m) puts a backgrounded job in its own
+	# group, so a group TERM racing the commit point below never reaches it.
+	set -m
 	nohup "$daemon" >/dev/null 2>"${sock}.log" &
+	set +m
 	disown 2>/dev/null || true
 fi
 
+attached=1
 tmux switch-client -t "=$local_sess"

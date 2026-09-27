@@ -6,9 +6,11 @@ import (
 	imgcolor "image/color"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -169,6 +171,15 @@ type tuiModel struct {
 	// set before the probe answers survives the swap. nil until the first
 	// mark.
 	marked map[string]bool
+
+	// attach is the in-flight og-remote-open (nil = idle). While set, every
+	// key but esc/ctrl+c and every mouse event is ignored so a second
+	// concurrent attach can never start.
+	attach *attachState
+	// attachSeq mints attach ids so a stray message from a superseded attempt
+	// is recognizable and dropped.
+	attachSeq int
+	attachSup *attachSupervisor
 }
 
 // --- Catppuccin palette (dark/light) ---
@@ -234,6 +245,56 @@ type wallMsg struct {
 	content map[string]string
 	bad     string
 }
+
+type attachPhaseMsg struct {
+	id    int
+	phase attachPhase
+}
+
+type attachDoneMsg struct {
+	id     int
+	result attachResult
+}
+
+// attachTickMsg drives the attach status line's spinner.
+type attachTickMsg struct{ id int }
+
+// attachState is the model's view of one in-flight attach. rest is the
+// multi-open remainder, launched only once this attach succeeds.
+type attachState struct {
+	id         int
+	run        *attachRun
+	host, sess string
+	label      string // sanitized "host/sess", host alone when sess is empty
+	phase      attachPhase
+	phaseAt    time.Time // when phase last changed, for the elapsed-in-phase clock
+	frame      int       // spinner frame, advanced by attachTickMsg
+	cancelling bool
+	rest       []listItem
+}
+
+// waitAttachCmd blocks on r's progress/done for one event; Update re-issues it
+// after every non-final event so the run's fork and its supervision never
+// touch the Update goroutine.
+func waitAttachCmd(id int, r *attachRun) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case p := <-r.progress:
+			return attachPhaseMsg{id: id, phase: p}
+		case <-r.done:
+			return attachDoneMsg{id: id, result: r.result()}
+		}
+	}
+}
+
+const attachTickInterval = 100 * time.Millisecond
+
+func attachTickCmd(id int) tea.Cmd {
+	return tea.Tick(attachTickInterval, func(time.Time) tea.Msg { return attachTickMsg{id: id} })
+}
+
+// launchDetached is a test seam over launchRemoteBridgeDetached.
+var launchDetached = launchRemoteBridgeDetached
 
 // --- Entry point ---
 
@@ -319,9 +380,27 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 	if emitPath != "" {
 		m.emitHost = os.Getenv("OG_PICKER_HOST")
 	}
+	sup := &attachSupervisor{}
+	m.attachSup = sup
 
 	p := tea.NewProgram(m)
+	// The popup pane dying under the picker (window closed, client detached)
+	// delivers SIGHUP; its default disposition would kill the picker before
+	// sup.stop below cancels the Setsid'd launcher, so turn it into a Kill
+	// to let Run return.
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	go func() {
+		if _, ok := <-sighup; ok {
+			p.Kill()
+		}
+	}()
 	final, err := p.Run()
+	signal.Stop(sighup)
+	// Runs before the error return because a panic bubbletea recovered comes
+	// back as an error with a nil model. The Setsid'd launcher does not die
+	// with the popup pty's session, so nothing else would cancel it.
+	sup.stop(attachKillGrace + time.Second)
 	if err != nil {
 		return err
 	}
@@ -403,8 +482,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		// Read the selection before the rebuild invalidates its index.
 		keep := m.currentTarget()
-		m.sessionItems = msg.items
-		m.mirrors = msg.mirrors
+		// A 1s refresh's collectBridgeMirrors runs off-thread, so a kill's
+		// teardown landing during that capture can revive the (mirrored) row
+		// here; filter the stale snapshot too (#754).
+		m.sessionItems = m.filterForgottenRemoteRows(msg.items)
+		m.mirrors = m.filterForgottenMirrors(msg.mirrors)
 		m = m.recombine().withFilter()
 		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
@@ -435,21 +517,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteMsg:
 		keep := m.currentTarget()
-		m.remoteItems = msg.items
-		if len(m.forgotten) > 0 {
-			// The probe listed (and wrote the cache) before the kill landed;
-			// drop the dead rows and undo the cache write so they cannot
-			// revive (#736).
-			kept := make([]listItem, 0, len(msg.items))
-			for _, it := range msg.items {
-				if it.remoteSess != "" && m.forgotten[it.remoteHost+"\x00"+it.remoteSess] {
-					forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
-					continue
-				}
-				kept = append(kept, it)
-			}
-			m.remoteItems = kept
-		}
+		// The probe listed (and wrote the cache) before the kill landed; drop
+		// the dead rows and undo the cache write so they cannot revive (#736).
+		m.remoteItems = m.filterForgottenRemoteRows(msg.items)
 		m = m.recombine().withFilter()
 		m = m.restoreCursor(keep)
 		if m.mode == modeWall {
@@ -462,6 +532,31 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = execErrorMessage
 		}
 		return m, m.remoteCmd()
+
+	case attachPhaseMsg:
+		if m.attach == nil || msg.id != m.attach.id {
+			return m, nil
+		}
+		next := *m.attach
+		next.phase = msg.phase
+		next.phaseAt = time.Now()
+		m.attach = &next
+		return m, waitAttachCmd(msg.id, m.attach.run)
+
+	case attachDoneMsg:
+		if m.attach == nil || msg.id != m.attach.id {
+			return m, nil
+		}
+		return m.finishAttach(msg.result)
+
+	case attachTickMsg:
+		if m.attach == nil || msg.id != m.attach.id {
+			return m, nil
+		}
+		next := *m.attach
+		next.frame++
+		m.attach = &next
+		return m, attachTickCmd(msg.id)
 
 	case previewMsg:
 		if msg.target == m.currentTarget() {
@@ -488,7 +583,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// doesn't have — a stray click there would resolve to an arbitrary row and,
 	// when it matched the cursor, switch to it and quit.
 	case tea.MouseWheelMsg:
-		if m.mode != modeList {
+		if m.mode != modeList || m.attach != nil {
 			return m, nil
 		}
 		mouse := msg.Mouse()
@@ -506,7 +601,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadPreviewCmd()
 
 	case tea.MouseClickMsg:
-		if m.mode != modeList {
+		if m.mode != modeList || m.attach != nil {
 			return m, nil
 		}
 		mouse := msg.Mouse()
@@ -559,6 +654,9 @@ func nextScope(cur hostScope, hosts []string) hostScope {
 func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = "" // any keypress clears a stale create-error
 	key := msg.String()
+	if m.attach != nil {
+		return m.handleAttachKey(key)
+	}
 	if len(m.killConfirm) > 0 {
 		return m.handleKillConfirm(key)
 	}
@@ -1449,11 +1547,8 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 			cmd := exec.Command(authBin, item.remoteHost)
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return remoteAuthDoneMsg{err: err} })
 		}
-		if err := openRemoteBridge(m.tmuxOpts, item.remoteHost, item.remoteSess, item.remoteRestore); err != nil {
-			m.statusMsg = err.Error()
-			return m, nil
-		}
-		return m, tea.Quit
+		cmd := m.beginAttach(item, nil)
+		return m, cmd
 	}
 	if item.createPath != "" {
 		if err := createAndSwitch(item.createName, item.createPath); err != nil {
@@ -1467,34 +1562,94 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-// openMarkedRemote opens every marked session, via the real launchers.
+// openMarkedRemote opens every marked session: the first in list order as the
+// supervised attach the client switches to — not the cursor row, which need
+// not itself be marked when Enter fires — and the rest detached once that
+// attach succeeds.
 func (m tuiModel) openMarkedRemote(marked []listItem) (tea.Model, tea.Cmd) {
-	return m.openMarkedRemoteWith(marked, openRemoteBridge, launchRemoteBridgeDetached)
+	logEvent("picker", "event", "open_marked", "count", strconv.Itoa(len(marked)))
+	cmd := m.beginAttach(marked[0], marked[1:])
+	return m, cmd
 }
 
-// openMarkedRemoteWith does the work, with the two launchers passed in so
-// tests can record calls instead of exec'ing og-remote-open. All but the
-// first item launch via launch — fired and not waited on — so N marks cost
-// one foreground ssh probe (open's, exactly what a single Enter pays today)
-// rather than N serialized ones; the popup can quit while the rest still
-// dial. The client switches to the first marked session in list order: not
-// the cursor row, which need not itself be marked when Enter fires.
-func (m tuiModel) openMarkedRemoteWith(
-	marked []listItem,
-	open func(tmuxOpts map[string]string, host, sess string, restore bool) error,
-	launch func(tmuxOpts map[string]string, host, sess string, restore bool),
-) (tea.Model, tea.Cmd) {
-	logEvent("picker", "event", "open_marked", "count", strconv.Itoa(len(marked)))
-	for _, it := range marked[1:] {
-		launch(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
+// beginAttach returns the Cmds that drive a new attach. The fork happens in
+// the first Cmd's goroutine, never here, so Update never blocks on
+// og-remote-open.
+func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
+	m.attachSeq++
+	id := m.attachSeq
+	label := first.remoteHost
+	if first.remoteSess != "" {
+		label += "/" + first.remoteSess
 	}
-	first := marked[0]
-	if err := open(m.tmuxOpts, first.remoteHost, first.remoteSess, first.remoteRestore); err != nil {
-		m.statusMsg = err.Error()
+	label = sanitizeStatusText(label)
+
+	run := newAttachRun(attachSpec{
+		bin:     remoteOpenBin(m.tmuxOpts),
+		host:    first.remoteHost,
+		sess:    first.remoteSess,
+		restore: first.remoteRestore,
+	})
+	m.attachSup.track(run)
+	m.attach = &attachState{
+		id:      id,
+		run:     run,
+		host:    first.remoteHost,
+		sess:    first.remoteSess,
+		label:   label,
+		phase:   phaseLaunch,
+		phaseAt: time.Now(),
+		rest:    rest,
+	}
+	return tea.Batch(
+		func() tea.Msg { run.run(); return nil },
+		waitAttachCmd(id, run),
+		attachTickCmd(id),
+	)
+}
+
+// finishAttach lands an attach's final result. Any outcome but success leaves
+// the cursor and marks alone so Enter retries.
+func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
+	rest := m.attach.rest
+	label := m.attach.label
+	m.attach = nil
+	switch res.outcome {
+	case attachOK:
+		for _, it := range rest {
+			launchDetached(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
+		}
+		m.marked = nil
+		return m, tea.Quit
+	case attachCancelled:
+		m.statusMsg = "cancelled opening " + label
+	case attachTimedOut:
+		budgetSecs := strconv.Itoa(int(res.budget / time.Second))
+		m.statusMsg = label + ": timed out " + attachPhaseLabel(res.phase) + " after " + budgetSecs + "s — enter to retry"
+	default: // attachFailed
+		m.statusMsg = label + ": " + res.msg + " — enter to retry"
+	}
+	return m, nil
+}
+
+// handleAttachKey is the whole keymap while an attach is in flight. A second
+// ctrl+c while already cancelling ends the TUI, but runTUI still waits for the
+// launcher's rollback before returning.
+func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
+	if key != "esc" && key != "ctrl+c" {
 		return m, nil
 	}
-	m.marked = nil
-	return m, tea.Quit
+	if m.attach.cancelling {
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	next := *m.attach
+	next.cancelling = true
+	m.attach = &next
+	m.attach.run.cancel()
+	return m, nil
 }
 
 // isKillableRemoteSession reports whether item is a live session on a remote
@@ -1538,9 +1693,9 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 // killRemoteSessions runs the staged remote kills. Each row is killed on its
 // host over ssh. A host that answers "already gone" still forgets its row; an
 // unreachable host (or a refused ssh state) keeps the row and explains itself
-// in the hint line. Synchronous, like openRemoteBridge: the picker owns the
-// screen and no background result channel exists for a kill; each round trip
-// carries the same remoteProbeTimeout bound as the probe path.
+// in the hint line. Synchronous, unlike an attach: no background result
+// channel exists for a kill, so each round trip blocks Update, bounded by the
+// same remoteProbeTimeout the probe path carries.
 func (m tuiModel) killRemoteSessions(targets []listItem) (tea.Model, tea.Cmd) {
 	var forget []listItem
 	var msgs []string
@@ -1584,6 +1739,44 @@ func remoteKillFailure(host, sess string, err error) string {
 	}
 }
 
+// forgottenRemoteKey keys a (host, sess) pair for the forgotten set.
+func forgottenRemoteKey(host, sess string) string {
+	return host + "\x00" + sess
+}
+
+// filterForgottenRemoteRows drops Remote-section rows for sessions killed in
+// this popup and undoes the cache write a late probe may have left behind (#736).
+func (m tuiModel) filterForgottenRemoteRows(items []listItem) []listItem {
+	if len(m.forgotten) == 0 {
+		return items
+	}
+	kept := make([]listItem, 0, len(items))
+	for _, it := range items {
+		if it.remoteSess != "" && m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
+			forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+			continue
+		}
+		kept = append(kept, it)
+	}
+	return kept
+}
+
+// filterForgottenMirrors drops local mirror rows whose remote session was
+// killed before the surrounding snapshot was captured (#754).
+func (m tuiModel) filterForgottenMirrors(mirrors []bridgeMirror) []bridgeMirror {
+	if len(m.forgotten) == 0 {
+		return mirrors
+	}
+	kept := make([]bridgeMirror, 0, len(mirrors))
+	for _, bm := range mirrors {
+		if m.forgotten[forgottenRemoteKey(bm.host, bm.sess)] {
+			continue
+		}
+		kept = append(kept, bm)
+	}
+	return kept
+}
+
 // forgetRemoteRows drops killed (or already-gone) remote sessions from the
 // picker at once: the host's cache, the in-memory Remote rows, any local mirror
 // (torn down through stopBridgeDaemon, the same owner the manual mirror close
@@ -1598,8 +1791,8 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 		m.forgotten = make(map[string]bool, len(targets))
 	}
 	for _, it := range targets {
-		killed[it.remoteHost+"\x00"+it.remoteSess] = true
-		m.forgotten[it.remoteHost+"\x00"+it.remoteSess] = true
+		killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
+		m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
 		forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
 		for _, bm := range m.mirrors {
 			if bm.host == it.remoteHost && bm.sess == it.remoteSess {
@@ -1610,7 +1803,7 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	}
 	keptRows := make([]listItem, 0, len(m.remoteItems))
 	for _, it := range m.remoteItems {
-		if it.remoteSess != "" && killed[it.remoteHost+"\x00"+it.remoteSess] {
+		if it.remoteSess != "" && killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
 			continue
 		}
 		keptRows = append(keptRows, it)
@@ -1618,7 +1811,7 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	m.remoteItems = keptRows
 	keptMirrors := make([]bridgeMirror, 0, len(m.mirrors))
 	for _, bm := range m.mirrors {
-		if killed[bm.host+"\x00"+bm.sess] {
+		if killed[forgottenRemoteKey(bm.host, bm.sess)] {
 			continue
 		}
 		keptMirrors = append(keptMirrors, bm)

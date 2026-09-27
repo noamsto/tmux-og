@@ -66,6 +66,9 @@ type Data struct {
 	// PersistBlock alone opens with a blank line of its own (I7).
 	CarouselHooks string
 	PersistBlock  string
+
+	// MenuBinds is the %if-gated menu block, no trailing newline.
+	MenuBinds string
 }
 
 // Build derives the template data.
@@ -102,6 +105,7 @@ func Build(cfg *config.Config, p *paths.Paths) Data {
 		TickHookIfShell:    tickHookIfShell(cfg, p),
 		CarouselHooks:      carouselHooks(p),
 		PersistBlock:       persistBlock(p),
+		MenuBinds:          menuBinds(p),
 	}
 }
 

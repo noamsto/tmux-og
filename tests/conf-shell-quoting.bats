@@ -282,14 +282,29 @@ walk_tokens() {
 		case "$tok" in
 		run-shell)
 			i=$((i + 1))
+			local has_c=0
 			while ((i < n)) && [[ ${_toks[i]} == -* ]]; do
 				case "${_toks[i]}" in
 				-d | -t | -c) i=$((i + 2)) ;;
+				-C)
+					has_c=1
+					i=$((i + 1))
+					;;
 				*) i=$((i + 1)) ;;
 				esac
 			done
 			if ((i < n)); then
-				scan_shell_string "${_toks[i]}" "$lineno"
+				if ((has_c)); then
+					# -C hands its argument to cmd_parse, never to sh -c, so walk it
+					# as a command line for the shell strings nested in it. A bare
+					# format in the argument itself is re-parsed by tmux, not a
+					# shell -- a hazard outside this scanner.
+					local arg="${_toks[i]}"
+					tmux_tokenize "$arg"
+					walk_tokens "$lineno" "${TOKENS[@]}"
+				else
+					scan_shell_string "${_toks[i]}" "$lineno"
+				fi
 				i=$((i + 1))
 			fi
 			;;
@@ -476,6 +491,7 @@ run-shell "/bin/x #{q:#{session_name}}"
 bind V if-shell '/bin/gate' 'set -g @x y ; run-shell "/bin/x #{window_name}"' 'display-message no'
 bind U run-shell '/bin/x #{?client_name,--client #{client_name},}'
 bind E run-shell '/bin/x #{qe:@window_bridge_name}'
+bind N run-shell -C "display-menu Foo f {run-shell '/bin/x #{session_name}'}"
 EOF
 	run check_conf_quoting "$BATS_TEST_TMPDIR/bad.conf"
 	[ "$status" -eq 1 ]
@@ -493,7 +509,10 @@ EOF
 	# #{qe:} is STYLE quoting (format_quote_style doubles '#' only) -- accepting
 	# #{qs:} must not widen the predicate to every #{q*:} modifier
 	[[ $output == *'#{qe:@window_bridge_name}'* ]]
-	[ "$count" -eq 8 ]
+	# run-shell -C's argument is a tmux command, and a run-shell NESTED inside
+	# that command is still reachable from a shell -- the recursion into -C's
+	# argument must keep walking it as a command line, not stop at scanning it
+	[ "$count" -eq 9 ]
 }
 
 @test "flags a bare format in a run-shell nested behind a quote in a string-form branch" {
@@ -535,6 +554,7 @@ bind x confirm-before -p "kill #{@bridge_pane}? (y/n)" { run-shell "/bin/x #{q:@
 bind | if-shell -F '#{@gate}' { run-shell "/bin/x #{q:@bridge_pane}" } { split-window -h -c "#{pane_current_path}" }
 set -g status-format[0] "#{session_name}"
 bind U run-shell '/bin/x #{?client_name,--client #{q:client_name},}'
+bind M run-shell -C "display-menu -T 'Menu' Foo f {new-window}"
 EOF
 	run check_conf_quoting "$BATS_TEST_TMPDIR/good.conf"
 	[ "$status" -eq 0 ]

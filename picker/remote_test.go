@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -454,6 +453,16 @@ func TestLocalBridgeSession(t *testing.T) {
 	if got := localBridgeSession("tp-g6", "mono"); got != "tp-g6-mono" {
 		t.Fatalf("got %q", got)
 	}
+	if got := localBridgeSession("user@h.lan", "x##(y)"); got != "user_h_lan-x___y_" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBridgeSessionPresentSanitizedHost(t *testing.T) {
+	bridges := firstPaintBridges([]listItem{{target: "h-a_b", session: "h-a_b", bridgeHost: "h"}})
+	if !bridgeSessionPresent(bridges, "h", "a.b") {
+		t.Fatal("expected sanitized legacy key to match")
+	}
 }
 
 // Fish login shells reject `td=...; t=...` assignments (exit 127), which made
@@ -791,30 +800,6 @@ func TestRemoteSessionsForHostNewStates(t *testing.T) {
 	}
 }
 
-// The launcher never reaches PATH, so only @remote_open_bin resolves it.
-func TestOpenRemoteBridgeUsesConfiguredBin(t *testing.T) {
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "args")
-	bin := filepath.Join(dir, "fake-open")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := map[string]string{"@remote_open_bin": bin}
-	if err := openRemoteBridge(opts, "lab", "work", false); err != nil {
-		t.Fatalf("openRemoteBridge: %v", err)
-	}
-
-	got, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("launcher did not run: %v", err)
-	}
-	if want := "lab\nwork\n"; string(got) != want {
-		t.Errorf("args = %q, want %q", got, want)
-	}
-}
-
 func TestParseRemoteProbeOutput(t *testing.T) {
 	stdout := "abc123\nnoams\nmono\nother\n"
 	got := parseRemoteProbeOutput(stdout)
@@ -1055,6 +1040,8 @@ func TestSessionDisplayName(t *testing.T) {
 		// A renamed mirror keeps whatever the user called it.
 		{"tp-g6", "tp-g6", "tp-g6"},
 		{"scratch-1", "tp-g6", "scratch-1"},
+		{"user_h_lan-work", "user@h.lan", "work"},
+		{"h_lan-a_b", "h.lan", "a_b"},
 	}
 	for _, c := range cases {
 		if got := sessionDisplayName(c.name, c.host); got != c.want {

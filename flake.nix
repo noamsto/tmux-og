@@ -141,6 +141,7 @@
               go test ./agentdetect/...
               go test ./statusline/...
               go test ./proctree/...
+              go test ./mirrorname/...
               go test -race ./remotebridge/...
               runHook postCheck
             '';
@@ -503,7 +504,14 @@
               sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
 
               [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -v '@float_geom'; then
+
+              # The stock Empty menu (#769's non-mirror branch) carries tmux's own
+              # `new-pane ; join-pane`, tiled at once — never a float. Strip that
+              # exact item text, not the bindings, so a changed upstream item
+              # is still scanned.
+              sed 's/\\"New Pane\\" p { new-pane ; join-pane }//g' joined >scrubbed
+
+              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v '@float_geom'; then
                 echo "float bind above has no @float_geom stamp — tmux-float-refit cannot refit it" >&2
                 exit 1
               fi
@@ -511,7 +519,7 @@
               # And the remain-on-exit pin (#587), asserted for the same reason:
               # a bind that forgets it looks right until it is pressed inside a
               # mirror window, whose own remain-on-exit the pane inherits.
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -v 'remain-on-exit off'; then
+              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v 'remain-on-exit off'; then
                 echo "float bind above does not pin remain-on-exit off — its pane will linger dead inside a mirror window" >&2
                 exit 1
               fi
@@ -2055,7 +2063,13 @@
               # provides `script`, which remote-auth.bats uses to give the
               # accept-path cases a real pty (same pattern as
               # remote-bridge-integration-tests below).
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux];
+              nativeBuildInputs =
+                [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux]
+                # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
+                ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
+              # The shell and Go halves of the mirror-name mapping (#783) are
+              # pinned to one shared vector file; remote.bats loops it too.
+              MIRROR_NAME_VECTORS = ./picker/mirrorname/testdata/vectors.tsv;
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
@@ -2171,6 +2185,92 @@
               [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
               export CTL_PROTOCOL_VERSION
               bats tests/rename-bind-integration.bats
+              touch $out
+            '';
+
+          # A keypress AND a right-click, not the conf text: tmux's own default
+          # menus, re-bound on a mirror window (#769), driven for real through
+          # the same attached-client + recording-stub harness as
+          # rename-bind-integration-tests above, for the same reason — a
+          # keybind or a mouse binding fires only for a real attached client.
+          # TMUX_RAW, the raw pinned binary (not the wrapper, which always adds
+          # `-f <conf>`), is what the stock-tripwire and version-gate tests
+          # source a bare `%if`…`%endif` block into. enrich/agent-usage off for
+          # the same reason as rename-bind-integration-tests: their monitor
+          # hooks fire on the server's own 5s clock regardless of clients and
+          # would contend with wait_for_frame's poll.
+          menu-bind-integration-tests = let
+            menuBindTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "menu-bind-integration-tests" {
+              # gawk splits a stockmenus.txt line into its table/key fields;
+              # gnused extracts the %if…%endif block and the conf's version
+              # literal. grep -P finds the verb after `--sock=#+{q:@bridge_sock}`.
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
+              TMUX_BIN = "${menuBindTmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+              CONF = "${menuBindTmuxConfig.tmuxConf}";
+              STOCK_MENUS = ./generator/render/stockmenus.txt;
+              CTL_GO = ./picker/remotebridge/daemon/ctl.go;
+              # A hostile window-name fixture is UTF-8, and so is the status
+              # line it is read back from.
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              # argv[0] of every ctl frame, read from the one source of truth so a
+              # protocol bump doesn't read as a wire-shape regression.
+              protocol_go=${./picker/remotebridge/wire/protocol.go}
+              CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
+              [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
+              export CTL_PROTOCOL_VERSION
+              bats tests/menu-bind-integration.bats
+              touch $out
+            '';
+
+          # A hostile remote session name reaching tmux's own stock
+          # MouseDown3StatusLeft/M-MouseDown3StatusLeft session-pill menu
+          # (#783): the same real-attached-client reasoning as
+          # rename-bind-integration-tests above, but a right-click, not a
+          # keybind, and the real og-remote-open launcher (fake ssh/daemon/
+          # ctl/renderer, `tmux` execing this same wrapped binary against a
+          # private -L server) rather than a hand-set window option — the
+          # vulnerability is in what og-remote-open NAMES the local mirror
+          # session, not in anything the daemon touches. util-linux for
+          # `setsid`, so the launcher takes its Linux daemon-launch path.
+          mirror-session-name-integration-tests = let
+            mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "mirror-session-name-integration-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.util-linux];
+              TMUX_BIN = "${mirrorNameTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/mirror-session-name-integration.bats
               touch $out
             '';
 
