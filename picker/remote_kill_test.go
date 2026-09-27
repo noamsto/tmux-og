@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClassifyKillErr(t *testing.T) {
@@ -165,5 +167,62 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 	}
 	if !strings.Contains(sessions, keep) {
 		t.Errorf("keep %q was killed too: %s", keep, sessions)
+	}
+}
+
+// TestSSHKillRemoteSessionCtxCancelReapsProcessGroup proves a cancel doesn't
+// just kill ssh itself: without Setsid + a process-group kill, a shell child
+// that hasn't been exec'd into (a real ssh ProxyCommand, or here a fake ssh
+// that forks a subcommand rather than exec'ing it) survives as an orphan,
+// still holding the stdout/stderr pipes cmd.Wait needs to see EOF on (#781).
+func TestSSHKillRemoteSessionCtxCancelReapsProcessGroup(t *testing.T) {
+	dir := t.TempDir()
+	shimDir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	// The grandchild is a uniquely-pathed script (rather than a bare "sleep")
+	// so pgrep can identify it precisely on a shared machine — it must not
+	// exec into sleep itself, or its argv (and pgrep match) would become
+	// indistinguishable "sleep 5" the moment it starts.
+	child := filepath.Join(shimDir, "slow-grandchild")
+	if err := os.WriteFile(child, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately NOT `exec`-ing the grandchild: a plain invocation forks a
+	// child of this shell rather than replacing it, so a kill of the shell
+	// alone leaves it running — the shape a real ssh ProxyCommand child takes.
+	shim := "#!/bin/sh\ntouch " + marker + "\n" + child + "\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "ssh"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", shimDir+":"+oldPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- sshKillRemoteSessionCtx(ctx, "lab", "mono") }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("shim never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sshKillRemoteSessionCtx did not return after cancel")
+	}
+
+	// The orphaned grandchild survives well past killWaitDelay if it isn't
+	// reaped as part of ssh's process group.
+	time.Sleep(300 * time.Millisecond)
+	out, err := exec.Command("pgrep", "-f", child).CombinedOutput()
+	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		t.Errorf("orphaned process survived cancel: %s", out)
 	}
 }

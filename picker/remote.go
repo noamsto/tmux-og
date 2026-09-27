@@ -733,6 +733,14 @@ func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
 	cmd.Stderr = &stderr
 	// A grandchild holding stdout/stderr must not stall Wait past a clean exit.
 	cmd.WaitDelay = killWaitDelay
+	// Setsid so a cancel/timeout can kill ssh's whole process group, not just
+	// ssh itself — otherwise a remote shell's own child (a ProxyCommand, or a
+	// test shim's non-exec'd subcommand) survives as an orphan, still holding
+	// stdout/stderr open behind it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	err := cmd.Run()
 	// Exit 0 wins over a cancel or timeout: past its commit point the remote
 	// kill already landed.
