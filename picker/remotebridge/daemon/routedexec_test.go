@@ -410,3 +410,59 @@ func TestPasterUsesPlainHooks(t *testing.T) {
 		t.Errorf("plain LocalTmuxOut calls = %d, want 1", plainCalls)
 	}
 }
+
+func layoutChangeLine() controlmode.Line {
+	return controlmode.Line{Kind: controlmode.LayoutChange, Args: []string{"@1", "b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"}}
+}
+
+// TestRouteWhileStopsAtLayoutChange pins reshape-before-output: a geometry
+// notice is queued and reading stops, so %output the remote produced after
+// its reshape waits for settle's local select-layout.
+func TestRouteWhileStopsAtLayoutChange(t *testing.T) {
+	st := testStream()
+	router := NewRouter()
+	async := &asyncQueue{}
+	var sink capBuf
+	router.Register("%0", &sink)
+	lines := make(chan controlmode.Line, 4)
+	lines <- layoutChangeLine()
+	lines <- outputLine("%0", "x")
+
+	within(t, 5*time.Second, func() {
+		routeWhile(lines, router, async, st, func() { time.Sleep(50 * time.Millisecond) })
+	})
+	q := async.take()
+	if len(q) != 1 || q[0].Kind != controlmode.LayoutChange || q[0].Args[0] != "@1" {
+		t.Fatalf("async queue = %+v, want exactly the %%layout-change @1", q)
+	}
+	if sink.String() != "" {
+		t.Errorf("sink = %q, want empty: output behind a layout-change waits for its reshape", sink.String())
+	}
+	if n := len(lines); n != 1 {
+		t.Errorf("len(lines) = %d, want 1", n)
+	}
+}
+
+// TestRouteWhileSkipsReadingBehindQueuedLayoutChange pins the entry rule: a
+// layout-change an earlier exec of the same operation queued still holds the
+// stream, so the next exec reads nothing past it.
+func TestRouteWhileSkipsReadingBehindQueuedLayoutChange(t *testing.T) {
+	st := testStream()
+	router := NewRouter()
+	async := &asyncQueue{}
+	async.push(layoutChangeLine())
+	var sink capBuf
+	router.Register("%0", &sink)
+	lines := make(chan controlmode.Line, 4)
+	lines <- outputLine("%0", "x")
+
+	within(t, 5*time.Second, func() {
+		routeWhile(lines, router, async, st, func() { time.Sleep(50 * time.Millisecond) })
+	})
+	if sink.String() != "" {
+		t.Errorf("sink = %q, want empty: nothing is read behind a queued layout-change", sink.String())
+	}
+	if n := len(lines); n != 1 {
+		t.Errorf("len(lines) = %d, want 1", n)
+	}
+}

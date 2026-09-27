@@ -18,13 +18,19 @@ import "github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 // has seeded it. For the same reason nothing is read while the slot is already
 // occupied. A closed stream stops the reads and stays closed, so the next
 // reader takes the usual EOF path.
+//
+// A %layout-change is a stream position too: the %output behind it was drawn
+// after the remote reshape, so it must wait for settle's local select-layout.
+// Reading stops once one is queued, and doesn't start while async holds one.
+// Round-trips inside the same operation still read past it — the read-first
+// transient this doesn't widen.
 func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue, st *stream, fn func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		fn()
 	}()
-	if st.parkedSeq() != 0 {
+	if st.parkedSeq() != 0 || async.holdsLayoutChange() {
 		lines = nil
 	}
 	for {
@@ -43,6 +49,9 @@ func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue
 				continue
 			}
 			handleAsideLine(l, router, async)
+			if l.Kind == controlmode.LayoutChange {
+				lines = nil
+			}
 		}
 	}
 }

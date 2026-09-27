@@ -1770,6 +1770,17 @@ func (q *asyncQueue) take() []controlmode.Line {
 	return lines
 }
 
+// holdsLayoutChange reports whether a %layout-change is waiting for settle,
+// which routeWhile must not read past (see its doc).
+func (q *asyncQueue) holdsLayoutChange() bool {
+	for _, l := range q.lines {
+		if l.Kind == controlmode.LayoutChange {
+			return true
+		}
+	}
+	return false
+}
+
 // coalesceLayoutChanges collapses a burst of %layout-change notifications for
 // the same window into just the last one. reconcileLayoutFrom reads the
 // surviving line's own Args, so only the last notification for a given window

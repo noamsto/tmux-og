@@ -823,9 +823,16 @@ wait_bridge_disconnected() {
 @test "window add keeps live output flowing while the local new-window is slow" {
 	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
 	real="$(command -v tmux)"
+	# #!/bin/sh, not #!/usr/bin/env bash: the Linux nix build sandbox has no
+	# /usr/bin/env, so an env shebang leaves the stub unexecutable there and
+	# bridge_up fails to start the daemon at all. A word-by-word scan, not a
+	# `case " $* " in *" m2dst "*" new-window "*)` glob: m2dst and new-window
+	# sit one space apart in the real argv, and a glob pattern that requires a
+	# space on both sides of each word can never match two words separated by
+	# only one — each literal's boundary space would have to reuse the same
+	# character the other literal's boundary space also needs.
 	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
-#!/usr/bin/env bash
-real="$real"
+#!/bin/sh
 has_dst=0
 has_neww=0
 for arg in "\$@"; do
@@ -835,7 +842,7 @@ done
 if [ "\$has_dst" -eq 1 ] && [ "\$has_neww" -eq 1 ]; then
 	sleep 4
 fi
-exec "\$real" "\$@"
+exec "$real" "\$@"
 EOF
 	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
 
@@ -859,7 +866,9 @@ EOF
 	done
 
 	n=0
-	deadline=$((SECONDS + 8))
+	# 4s fixed stall + BRIDGE_UP_BUDGET_SECS of contended headroom for the
+	# reconcile that follows it to land.
+	deadline=$((SECONDS + 4 + BRIDGE_UP_BUDGET_SECS))
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		n="$($DST list-windows -t host-sess -F '#{window_id}' 2>/dev/null | wc -l)"
 		[ "$n" -eq 2 ] && break
@@ -871,6 +880,70 @@ EOF
 
 	[ "$painted" = yes ]
 	[ "$n" -eq 2 ]
+}
+
+# The daemon routes %output during window-set execs while they run (#808), but
+# must NOT during pane-shaping ones: reconcileLayoutFrom's geometry-only path
+# runs its local select-layout under cfg, not flowCfg, so no output may reach
+# the mirror between the %layout-change and that select-layout landing.
+# slowbin/tmux stands in for a slow local select-layout call; the flag file
+# keeps startup's own select-layout calls (mirroring, bridge_up) from tripping
+# it, so only the resize under test is slowed.
+@test "a geometry-only layout change still holds live output until the local reshape lands" {
+	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	real="$(command -v tmux)"
+	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
+#!/bin/sh
+has_dst=0
+has_sl=0
+for arg in "\$@"; do
+	[ "\$arg" = m2dst ] && has_dst=1
+	[ "\$arg" = select-layout ] && has_sl=1
+done
+if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_sl" -eq 1 ]; then
+	sleep 3
+fi
+exec "$real" "\$@"
+EOF
+	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+
+	$SRC new-session -d -s rem -x 200 -y 50
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 200 -y 50
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 2 slowshape
+
+	touch "$BATS_TEST_TMPDIR/slow.on"
+	# A pure geometry change: same pane set, new dimensions only, as in
+	# "daemon rebuilds a mirror holding a pane the remote layout does not name".
+	$SRC resize-pane -t rem.1 -x 60
+	sleep 0.3
+	$SRC send-keys -t rem.1 'echo HELDSHAPE_4Q9' Enter
+
+	# Sample once, well before the stalled select-layout returns: the marker
+	# must not have painted into either mirror pane yet.
+	sleep 1.2
+	held=yes
+	mirror_contains 2 HELDSHAPE_4Q9 && held=no
+
+	arrived=no
+	# 3s fixed stall + BRIDGE_UP_BUDGET_SECS of contended headroom for the
+	# reconcile that follows it to land.
+	deadline=$((SECONDS + 3 + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		if mirror_contains 2 HELDSHAPE_4Q9; then
+			arrived=yes
+			break
+		fi
+		sleep 0.1
+	done
+
+	rm -f "$BATS_TEST_TMPDIR/slow.on"
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$held" = yes ]
+	[ "$arrived" = yes ]
 }
 
 # Regression for the pre-existing reconcile hole M2.3 had to close: layout

@@ -284,8 +284,9 @@ Both use the same tmux. Times are ms; load is the 1-minute average at start.
 Pair 3 aborted on both builds, and pair 4's B aborted. Every abort is the
 `%0` rebuild listed under Residuals, which `main` shares.
 
-B's p99 fell in 5 of 6 comparable pairs. Pair 7 and B's two 200 ms maxes
-are not the daemon. Two traced B runs had these probe results:
+B's p99 fell in 4 of the 5 pairs where both runs completed. Pair 7, where
+B's p99 was higher, and B's two 200 ms maxes are not the daemon. Two
+traced B runs had these probe results:
 - p99 18.2 and 18.7 ms, max 29.5 and 40.3 ms;
 - no `%0` wait over 15 ms at all (baseline: 14);
 - a worst wait of 11.7 ms, every one of them over 10 ms inside a

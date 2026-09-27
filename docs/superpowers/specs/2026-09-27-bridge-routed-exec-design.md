@@ -102,6 +102,18 @@ across the wait. `routeWhile` makes that structural instead of assumed:
   as `waitHellos` drops them. These are the common case under typing load:
   every keystroke's `send-keys` and its `og-fanout` barrier answer here.
 
+### A geometry notice stops the read too
+
+Review found that a `%layout-change` arriving during a routed exec was queued
+while the output behind it kept flowing. That output reached the renderer
+before `settle`'s local reshape. `routeWhile` now treats the notice like an
+awaited reply:
+- it queues the notice and stops reading for the rest of the exec;
+- it reads nothing at entry while the async queue still holds one.
+
+Round-trips inside the same operation still read past it: that is the
+existing read-first transient, not widened.
+
 ### Stream end during an exec
 
 On a closed channel `routeWhile` stops reading and waits for the exec. The
