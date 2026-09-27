@@ -47,6 +47,18 @@ valid_remote_path() { [[ $1 =~ ^/[A-Za-z0-9._/@+:-]*$ ]]; }
 # OG_REMOTE_NEW_DIR through this before either ever reaches shell_quote.
 shell_quotable() { [[ $1 != *\\* ]]; }
 
+# mirror_name_part <s>: set REPLY to s with every byte outside [A-Za-z0-9_-]
+# replaced by `_` — one half of a local mirror session name, which stock tmux
+# menus re-parse as commands and target parsers split on `.`/`:`. Byte-wise
+# under LC_ALL=C: a UTF-8 locale would map a multibyte char to one `_`, so the
+# name would depend on whichever locale the launcher happened to run under.
+# Must stay byte-identical to Go's mirrorname.Part; both are pinned by
+# picker/mirrorname/testdata/vectors.tsv.
+mirror_name_part() {
+	local LC_ALL=C
+	REPLY="${1//[^A-Za-z0-9_-]/_}"
+}
+
 # read_session_env <session> <name>: set REPLY to NAME's value from session
 # $1's environment. Returns 1 (REPLY unset/stale) for a totally-unset name, an
 # update-environment "removed" marker (-NAME, tmux's own leading-dash escape

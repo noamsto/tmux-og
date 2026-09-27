@@ -453,6 +453,16 @@ func TestLocalBridgeSession(t *testing.T) {
 	if got := localBridgeSession("tp-g6", "mono"); got != "tp-g6-mono" {
 		t.Fatalf("got %q", got)
 	}
+	if got := localBridgeSession("user@h.lan", "x##(y)"); got != "user_h_lan-x___y_" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBridgeSessionPresentSanitizedHost(t *testing.T) {
+	bridges := firstPaintBridges([]listItem{{target: "h-a_b", session: "h-a_b", bridgeHost: "h"}})
+	if !bridgeSessionPresent(bridges, "h", "a.b") {
+		t.Fatal("expected sanitized legacy key to match")
+	}
 }
 
 // Fish login shells reject `td=...; t=...` assignments (exit 127), which made
@@ -1030,6 +1040,8 @@ func TestSessionDisplayName(t *testing.T) {
 		// A renamed mirror keeps whatever the user called it.
 		{"tp-g6", "tp-g6", "tp-g6"},
 		{"scratch-1", "tp-g6", "scratch-1"},
+		{"user_h_lan-work", "user@h.lan", "work"},
+		{"h_lan-a_b", "h.lan", "a_b"},
 	}
 	for _, c := range cases {
 		if got := sessionDisplayName(c.name, c.host); got != c.want {

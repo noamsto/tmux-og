@@ -1,0 +1,11 @@
+workstation	workstation
+a.b	a_b
+a_b	a_b
+a b	a_b
+user@host.lan	user_host_lan
+a|b:c	a_b_c
+-_09AZaz	-_09AZaz
+x##(touch S)	x___touch_S_
+x' '' ; run-shell 'touch S' ; display-menu -T 'y	x_______run-shell__touch_S____display-menu_-T__y
+שלום	________
+é	__
