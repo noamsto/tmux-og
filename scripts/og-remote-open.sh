@@ -77,8 +77,10 @@ mirror_created="" attached="" daemon_started=""
 on_signal() {
 	[[ -n $attached ]] && exit 0
 	if [[ -n $mirror_created ]]; then
-		# Guard $! against being empty under set -u: only the daemon-launch line
-		# sets daemon_started, and only after the daemon is actually backgrounded.
+		# daemon_started is set right before the launch attempt (deliberately —
+		# setting it after the `&` would leave a window where a launched daemon
+		# is never reaped). ${!:-} is what actually guards against a signal
+		# landing before that `&`, when $! is still unset/stale under set -u.
 		if [[ -n $daemon_started && -n ${!:-} ]]; then
 			reap_daemon "$!"
 		fi

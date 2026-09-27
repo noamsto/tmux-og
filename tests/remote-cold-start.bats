@@ -1018,3 +1018,52 @@ run_launcher_bg() {
 	run grep -c kill-session "$TMUX_LOG"
 	[ "$status" -ne 0 ]
 }
+
+# --- #770: the nohup/set -m fallback, taken only when setsid can't be found ---
+
+@test "nohup fallback: daemon lands in its own process group without setsid" {
+	touch "$REMOTE_SERVER"
+
+	local nosetsid="$BATS_TEST_TMPDIR/nosetsid"
+	mkdir -p "$nosetsid"
+	for tool in rm nohup dirname sleep cat sed touch cut tr printf mkdir ps; do
+		local real
+		real="$(command -v "$tool" 2>/dev/null)" || continue
+		ln -s "$real" "$nosetsid/$tool"
+	done
+	local restricted_path="$FAKEBIN:$nosetsid"
+
+	# Confirms the fallback below actually exercises the no-setsid branch,
+	# rather than agreeing with a PATH that still has the real one on it.
+	local setsid_probe
+	setsid_probe="$(PATH="$restricted_path" command -v setsid || true)"
+	[ -z "$setsid_probe" ]
+
+	# Records its own pid and process-group id, then exits: leading its own
+	# group is what a group TERM aimed at the launcher can no longer reach.
+	export DAEMON_PGID_FILE="$BATS_TEST_TMPDIR/daemon-pgid"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		if [ -r /proc/$$/stat ]; then
+			read -r _ _ _ _ pgid _ </proc/$$/stat
+		else
+			pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+		fi
+		printf '%s %s\n' "$$" "$pgid" >"$DAEMON_PGID_FILE"
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
+
+	PATH="$restricted_path" run "$BASH" "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+
+	local waited=0
+	while [[ ! -s $DAEMON_PGID_FILE && $waited -lt 20 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	[ -s "$DAEMON_PGID_FILE" ]
+
+	local pid pgid
+	read -r pid pgid <"$DAEMON_PGID_FILE"
+	[ "$pid" = "$pgid" ]
+}

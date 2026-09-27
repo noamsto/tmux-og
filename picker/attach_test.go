@@ -23,6 +23,9 @@ func TestSanitizeStatusText(t *testing.T) {
 		{"two-byte esc", "a\x1bcb", "ab"},
 		{"c1 csi", "a\u009b31mb", "a31mb"},
 		{"bidi", "a‮b⁦c", "abc"},
+		{"bidi rlm", "a‏b", "ab"},
+		{"bidi alm", "a؜b", "ab"},
+		{"bidi lrm", "a‎b", "ab"},
 		{"whitespace collapse", "a\n\t b", "a b"},
 		{"trim", "  a  ", "a"},
 		{"cap", strings.Repeat("x", 300), strings.Repeat("x", 200)},
@@ -278,7 +281,7 @@ func TestAttachStartFailure(t *testing.T) {
 }
 
 func TestBuildAttachCmd(t *testing.T) {
-	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "mono"})
+	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "mono"}, attachKillGrace)
 	if want := []string{"/x/og-remote-open", "lab", "mono"}; !slices.Equal(cmd.Args, want) {
 		t.Errorf("args = %v, want %v", cmd.Args, want)
 	}
@@ -297,7 +300,7 @@ func TestBuildAttachCmd(t *testing.T) {
 		t.Error("launcher not started in its own session")
 	}
 
-	cmd = buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", restore: true})
+	cmd = buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", restore: true}, attachKillGrace)
 	if want := []string{"/x/og-remote-open", "lab"}; !slices.Equal(cmd.Args, want) {
 		t.Errorf("args = %v, want %v", cmd.Args, want)
 	}

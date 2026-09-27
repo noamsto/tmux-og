@@ -144,7 +144,7 @@ func (r *attachRun) finish(res attachResult) {
 	close(r.done)
 }
 
-func buildAttachCmd(spec attachSpec) *exec.Cmd {
+func buildAttachCmd(spec attachSpec, grace time.Duration) *exec.Cmd {
 	args := []string{spec.host}
 	if spec.sess != "" {
 		args = append(args, spec.sess)
@@ -158,7 +158,7 @@ func buildAttachCmd(spec attachSpec) *exec.Cmd {
 	}
 	cmd.SysProcAttr = attachSysProcAttr()
 	// A grandchild holding stderr must not stall Wait past a clean exit.
-	cmd.WaitDelay = attachKillGrace
+	cmd.WaitDelay = grace
 	return cmd
 }
 
@@ -178,7 +178,7 @@ func (r *attachRun) run() {
 		return
 	}
 	defer pr.Close()
-	cmd := buildAttachCmd(r.spec)
+	cmd := buildAttachCmd(r.spec, r.grace)
 	cmd.ExtraFiles = []*os.File{pw}
 	// Launcher stderr is the failure text, never painted: the picker owns the
 	// screen.
@@ -354,7 +354,7 @@ func sanitizeStatusText(s string) string {
 		case unicode.IsSpace(r):
 			space = b.Len() > 0
 			continue
-		case unicode.IsControl(r) || isBidiControl(r):
+		case unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r):
 			continue
 		}
 		if space {
@@ -398,8 +398,4 @@ func skipEscape(s string, i int) int {
 	}
 	_, size := utf8.DecodeRuneInString(s[i:])
 	return i + size
-}
-
-func isBidiControl(r rune) bool {
-	return (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
 }

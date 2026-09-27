@@ -151,13 +151,20 @@ func TestAttachUpdateNeverLaunchesSynchronously(t *testing.T) {
 }
 
 // 9(b): every key but esc/ctrl+c is a no-op while an attach is in flight, so
-// a second concurrent attach can never start.
+// a second concurrent attach can never start. The base model's cursor sits on
+// a real Remote-section row (remote:lab:mono) precisely so an un-gated enter
+// would also return nil here — with no rows, it couldn't tell a real gate from
+// an empty list — and instead exercises activateCurrent, returning a Cmd and a
+// new attach.id.
 func TestAttachKeysIgnoredDuringAttach(t *testing.T) {
 	run := newAttachRun(attachSpec{bin: fakeLauncher(t, "sleep 30"), host: "lab", sess: "mono"})
-	base := tuiModel{
-		query: "q", cursor: 2, marked: map[string]bool{"remote:lab:mono": true},
-		attach: &attachState{id: 7, run: run, host: "lab", sess: "mono", label: "lab/mono", phase: phaseConnect},
-	}
+	base := attachTestModel(fakeLauncher(t, "sleep 30"))
+	base.query = "q"
+	base.cursor = findVisible(t, base, func(it listItem) bool { return it.target == "remote:lab:mono" })
+	base.marked = map[string]bool{"remote:lab:mono": true}
+	base.attach = &attachState{id: 7, run: run, host: "lab", sess: "mono", label: "lab/mono", phase: phaseConnect}
+	wantCursor := base.cursor
+
 	for _, key := range []string{"enter", "j", "ctrl+x", "tab", "ctrl+t", "down"} {
 		next, cmd := base.Update(wallKey(key))
 		nm := next.(tuiModel)
@@ -167,14 +174,14 @@ func TestAttachKeysIgnoredDuringAttach(t *testing.T) {
 		if nm.attach == nil || nm.attach.id != 7 {
 			t.Errorf("%s: attach.id changed: %+v", key, nm.attach)
 		}
-		if nm.query != "q" || nm.cursor != 2 || !nm.marked["remote:lab:mono"] {
+		if nm.query != "q" || nm.cursor != wantCursor || !nm.marked["remote:lab:mono"] {
 			t.Errorf("%s: model mutated: query=%q cursor=%d marked=%v", key, nm.query, nm.cursor, nm.marked)
 		}
 	}
 }
 
-// 9(c): esc starts cancelling; a second ctrl+c while cancelling quits outright
-// (the launcher rolls back on its own, unsupervised).
+// 9(c): esc starts cancelling; a second ctrl+c while cancelling ends the TUI,
+// but runTUI still waits (bounded) for the launcher's rollback before returning.
 func TestAttachEscCancelsCtrlCQuitsWhileCancelling(t *testing.T) {
 	run := newAttachRun(attachSpec{bin: fakeLauncher(t, "sleep 30"), host: "lab", sess: "mono"})
 	m := tuiModel{attach: &attachState{id: 1, run: run, host: "lab", sess: "mono", label: "lab/mono", phase: phaseConnect}}

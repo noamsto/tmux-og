@@ -394,8 +394,9 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 
 	p := tea.NewProgram(m)
 	// The popup pane dying under the picker (window closed, client detached)
-	// delivers SIGHUP; bubbletea only restores the terminal on a clean Run
-	// return, so it has to become a Kill rather than the default disposition.
+	// delivers SIGHUP; its default disposition would kill the picker before
+	// sup.stop below cancels the Setsid'd launcher, so turn it into a Kill
+	// to let Run return.
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	go func() {
@@ -1656,8 +1657,9 @@ func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 
 // handleAttachKey is the whole keymap while an attach is in flight (D5):
 // every key but esc/ctrl+c is ignored, so a second concurrent attach can
-// never start. A second ctrl+c while already cancelling quits outright — the
-// launcher runs in its own session and finishes its own rollback unsupervised.
+// never start. A second ctrl+c while already cancelling ends the TUI, but
+// runTUI still waits (bounded by attachKillGrace+1s) for the launcher's
+// rollback before returning.
 func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc":
