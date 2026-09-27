@@ -133,7 +133,10 @@ func TestAttachUpdateNeverLaunchesSynchronously(t *testing.T) {
 		t.Fatalf("attach.cancelling = %+v, want true", nm.attach)
 	}
 
-	msg = awaitAttachMsg(t, ch2, 5*time.Second, func(m tea.Msg) bool {
+	// attachKillGrace, not a fixed 5s: a TERM that doesn't land forces the
+	// production code itself to wait out the grace before KILL, so the test's
+	// own deadline must never race that constant (cf. TestAttachCancelEscalatesToKill).
+	msg = awaitAttachMsg(t, ch2, attachKillGrace+2*time.Second, func(m tea.Msg) bool {
 		d, ok := m.(attachDoneMsg)
 		return ok && d.id == id
 	})

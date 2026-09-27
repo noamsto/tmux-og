@@ -13,6 +13,21 @@
 # limit_remaining are "credits", same unit as usage_monthly; OpenRouter's own
 # docs (openrouter.ai/docs/faq) say credits are USD-denominated 1:1, so no
 # conversion is needed.
+#
+# spend.remaining_usd is limit_remaining verbatim — same "credits" unit as
+# usage_monthly/limit, no conversion needed — and is written only alongside a
+# resolvable, capped key, mirroring the `monthly` gating above.
+#
+# When the key has no cap, a fallback call to /api/v1/credits fetches the
+# account's remaining balance (total_credits - total_usage) instead, written
+# as a top-level `balance` field. That endpoint requires a management key;
+# pi's own auth.json key is an ordinary inference key, which OpenRouter
+# refuses ("Only management keys can perform this operation", a 403), hence
+# the separate key. It's resolved from $OG_OPENROUTER_MGMT_KEY_FILE (default
+# $XDG_CONFIG_HOME/tmux-og/openrouter-mgmt-key) or, failing that, the
+# $OPENROUTER_MANAGEMENT_KEY env var. A missing file, unset env, or a refused
+# or malformed response all degrade silently — no `balance` field, and
+# `spend`/`monthly`/`remaining_usd` are unaffected either way.
 set -uo pipefail
 
 CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
@@ -46,23 +61,50 @@ esac
 [[ -n $token ]] || token="${OPENROUTER_API_KEY:-}"
 [[ -n $token ]] || exit 0
 
+mgmt_key_file="${OG_OPENROUTER_MGMT_KEY_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/tmux-og/openrouter-mgmt-key}"
+mgmt_key=""
+[[ -r $mgmt_key_file ]] && mgmt_key=$(<"$mgmt_key_file")
+[[ -n $mgmt_key ]] || mgmt_key="${OPENROUTER_MANAGEMENT_KEY:-}"
+
 resp=$(curl -fsS --max-time 10 \
 	-H "Authorization: Bearer $token" \
 	https://openrouter.ai/api/v1/key 2>/dev/null) || exit 0
 
-out=$(jq -c '
+has_cap_remaining=false
+jq -e '(.data.limit // 0) > 0 and .data.limit_remaining != null' <<<"$resp" >/dev/null 2>&1 && has_cap_remaining=true
+
+credits=''
+if [[ $has_cap_remaining != true && -n $mgmt_key ]]; then
+	credits=$(curl -fsS --max-time 10 \
+		-H "Authorization: Bearer $mgmt_key" \
+		https://openrouter.ai/api/v1/credits 2>/dev/null) || credits=''
+fi
+
+out=$(jq -c --arg credits "$credits" '
 	.data as $d |
+	($d.limit) as $limit |
+	($d.limit_remaining) as $limit_remaining |
+	({daily: "day", weekly: "wk", monthly: "mo"}[$d.limit_reset // ""] // "cap") as $label |
+	($credits | try fromjson catch null) as $c |
 	{
 		windows: [],
-		monthly: (if ($d.limit // 0) > 0 and $d.limit_remaining != null
+		monthly: (if ($limit // 0) > 0 and $limit_remaining != null
 			then {
-				label: ({daily: "day", weekly: "wk", monthly: "mo"}[$d.limit_reset // ""] // "cap"),
-				pct: (100 * ($d.limit - $d.limit_remaining) / $d.limit | floor)
+				label: $label,
+				pct: (100 * ($limit - $limit_remaining) / $limit | floor)
 			}
 			else null end),
 		spend: ({label: "mo", usd: ($d.usage_monthly // 0), period: "month"}
-			+ (if ($d.limit // 0) > 0 then {limit_usd: $d.limit} else {} end))
-	}' <<<"$resp" 2>/dev/null) || exit 0
+			+ (if ($limit // 0) > 0 then {limit_usd: $limit} else {} end)
+			+ (if ($limit // 0) > 0 and $limit_remaining != null
+				then {remaining_usd: $limit_remaining, remaining_label: $label}
+				else {} end))
+	}
+	+ (if ($c | type) == "object" and ($c.data | type) == "object"
+			and ($c.data.total_credits | type) == "number"
+			and ($c.data.total_usage | type) == "number"
+		then {balance: {usd_remaining: ($c.data.total_credits - $c.data.total_usage)}}
+		else {} end)' <<<"$resp" 2>/dev/null) || exit 0
 
 mkdir -p "$CACHE_DIR" 2>/dev/null
 tmp="$CACHE_DIR/.pi.json.$$"

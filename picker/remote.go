@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/mirrorname"
 )
 
 // remoteProbeTimeout bounds each per-host ssh list-sessions probe so a down
@@ -411,9 +413,10 @@ func firstPaintBridges(items []listItem) map[string]bool {
 	return bridges
 }
 
-// localBridgeSession is the local mirror name for a remote host+session pair.
+// localBridgeSession is the local mirror name og-remote-open derives for a
+// remote host+session pair.
 func localBridgeSession(host, sess string) string {
-	return host + "-" + sess
+	return mirrorname.Local(host, sess)
 }
 
 // bridgeMirror is one local session already mirroring a remote host+session.
@@ -1066,7 +1069,7 @@ func sessionDisplayName(name, bridgeHost string) string {
 	if bridgeHost == "" {
 		return name
 	}
-	trimmed := strings.TrimPrefix(name, bridgeHost+"-")
+	trimmed := strings.TrimPrefix(name, mirrorname.Part(bridgeHost)+"-")
 	if trimmed == "" {
 		return name
 	}
