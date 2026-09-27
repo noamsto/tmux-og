@@ -1301,6 +1301,23 @@ wait_mirror_modes() {
 	return 1
 }
 
+# wait_mirror_paste_focus polls the mirror pane's bracketed-paste flag and
+# focus-reporting mode until they read $1 ("1 1" with both set, "0 0" with
+# both cleared). Focus reporting has no scalar format, so it is read out of
+# #{pane_private_modes} with the format regex matcher, the same list the daemon
+# seeds from (#804).
+wait_mirror_paste_focus() {
+	local got=""
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		got="$($DST display-message -p -t host-sess:1.0 '#{bracket_paste_flag} #{m/r:1004,#{pane_private_modes}}' 2>/dev/null)"
+		[ "$got" = "$1" ] && return 0
+		sleep 0.1
+	done
+	echo "mirror paste/focus modes: got '$got', want '$1'" >&3
+	return 1
+}
+
 # mouse_probe starts a remote program in a new pane that turns on the DECSET
 # mouse modes for encoding $2 (sgr: 1000/1002 + 1006, x10: 1000 alone) and
 # then logs its raw input to $3. $1 picks the pane: "tiled" splits the window,
@@ -1579,6 +1596,77 @@ EOF
 	# The daemon's %pause -> %continue -> reseed is what must clear both.
 	cleared=yes
 	wait_mirror_modes "0 0" || cleared=no
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	# Without the pause, the mode-off arrives live and clears the mirror
+	# whether or not the reseed does.
+	[ "$paused" = yes ]
+	[ "$cleared" = yes ]
+}
+
+@test "bracketed paste and focus modes set before the mirror attached reach the mirror pane" {
+	prog="$BATS_TEST_TMPDIR/pastepre-prog.sh"
+	cat >"$prog" <<'EOF'
+printf '\033[?2004h\033[?1004h'
+exec cat -v
+EOF
+	$SRC new-session -d -s rem -x 100 -y 30 "bash $prog"
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	# The modes must be on before the daemon attaches, or they reach the mirror
+	# as live output and the seed goes untested.
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$($SRC display-message -p -t rem '#{bracket_paste_flag} #{m/r:1004,#{pane_private_modes}}')" = "1 1" ] && break
+		sleep 0.1
+	done
+	[ "$($SRC display-message -p -t rem '#{bracket_paste_flag} #{m/r:1004,#{pane_private_modes}}')" = "1 1" ]
+
+	bridge_up 1 pastepre
+	wait_mirror_paste_focus "1 1"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
+@test "a reseed clears bracketed paste and focus modes the remote left while its pane was paused" {
+	go="$BATS_TEST_TMPDIR/pf-go"
+	prog="$BATS_TEST_TMPDIR/pf-prog.sh"
+	cat >"$prog" <<EOF
+until [ -e $go.1 ]; do sleep 0.1; done
+printf '\\033[?2004h\\033[?1004h'
+until [ -e $go.2 ]; do sleep 0.1; done
+printf '\\033[?2004l\\033[?1004l'
+exec cat -v
+EOF
+	$SRC new-session -d -s rem -x 100 -y 30 "bash $prog"
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 pfstale
+	# Turned on live, after the seed: the mirror follows the stream.
+	touch "$go.1"
+	wait_mirror_paste_focus "1 1"
+
+	# Hold the daemon off its control stream and pause the pane for its client,
+	# so tmux discards the remote's mode-off instead of sending it. Nothing
+	# between STOP and CONT may fail: a stopped daemon would outlive the test.
+	kill -STOP "$daemon_pid"
+	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)" || true
+	paused=no
+	[ -n "$cc" ] && $SRC refresh-client -t "$cc" -A "$($SRC display-message -p -t rem '#{pane_id}'):pause" && paused=yes
+	touch "$go.2"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$($SRC display-message -p -t rem '#{bracket_paste_flag} #{m/r:1004,#{pane_private_modes}}')" = "0 0" ] && break
+		sleep 0.1
+	done
+	kill -CONT "$daemon_pid"
+
+	# The daemon's %pause -> %continue -> reseed is what must clear both.
+	cleared=yes
+	wait_mirror_paste_focus "0 0" || cleared=no
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
