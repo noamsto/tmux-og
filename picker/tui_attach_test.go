@@ -82,7 +82,7 @@ func waitForFile(t *testing.T, path string, within time.Duration) {
 	t.Fatalf("%s never appeared", path)
 }
 
-// 9(a): Update never launches synchronously. Enter returns almost instantly
+// Update never launches synchronously. Enter returns almost instantly
 // with attach set and a Cmd that has not run yet; only once that Cmd is
 // actually driven (as bubbletea's runtime would) does the launcher fork, and
 // cancel rolls all the way through to a cleared attach.
@@ -150,7 +150,7 @@ func TestAttachUpdateNeverLaunchesSynchronously(t *testing.T) {
 	}
 }
 
-// 9(b): every key but esc/ctrl+c is a no-op while an attach is in flight, so
+// Every key but esc/ctrl+c is a no-op while an attach is in flight, so
 // a second concurrent attach can never start. The base model's cursor sits on
 // a real Remote-section row (remote:lab:mono) precisely so an un-gated enter
 // would reach activateCurrent and return a Cmd and a new attach.id — with no
@@ -179,7 +179,7 @@ func TestAttachKeysIgnoredDuringAttach(t *testing.T) {
 	}
 }
 
-// 9(c): esc starts cancelling; a second ctrl+c while cancelling ends the TUI,
+// Esc starts cancelling; a second ctrl+c while cancelling ends the TUI,
 // but runTUI still waits (bounded) for the launcher's rollback before returning.
 func TestAttachEscCancelsCtrlCQuitsWhileCancelling(t *testing.T) {
 	run := newAttachRun(attachSpec{bin: fakeLauncher(t, "sleep 30"), host: "lab", sess: "mono"})
@@ -216,7 +216,7 @@ func TestAttachEscCancelsCtrlCQuitsWhileCancelling(t *testing.T) {
 	}
 }
 
-// 9(d): mouse clicks and wheel events are ignored while an attach is in
+// Mouse clicks and wheel events are ignored while an attach is in
 // flight, same as every other key.
 func TestAttachMouseIgnoredDuringAttach(t *testing.T) {
 	run := newAttachRun(attachSpec{bin: fakeLauncher(t, "sleep 30"), host: "lab", sess: "mono"})
@@ -238,7 +238,7 @@ func TestAttachMouseIgnoredDuringAttach(t *testing.T) {
 	}
 }
 
-// 9(e): the four outcomes finishAttach can land on.
+// The four outcomes finishAttach can land on.
 func TestAttachOutcomes(t *testing.T) {
 	t.Run("ok launches the rest in order, quits, clears marks", func(t *testing.T) {
 		var launched []string
@@ -324,7 +324,7 @@ func TestAttachOutcomes(t *testing.T) {
 	})
 }
 
-// 9(f): a failure or timeout leaves the cursor where it was, so Enter retries
+// A failure or timeout leaves the cursor where it was, so Enter retries
 // the same row — as a fresh attempt, with a higher id than the one it replaces.
 func TestAttachRetryStartsNewAttachWithHigherID(t *testing.T) {
 	m := attachTestModel(fakeLauncher(t, "sleep 30"))
@@ -353,7 +353,7 @@ func TestAttachRetryStartsNewAttachWithHigherID(t *testing.T) {
 	}
 }
 
-// 9(g): a message from a superseded attempt (or an idle tick) is dropped.
+// A message from a superseded attempt (or an idle tick) is dropped.
 func TestAttachStaleMessagesIgnored(t *testing.T) {
 	run := newAttachRun(attachSpec{bin: fakeLauncher(t, "sleep 30"), host: "lab", sess: "mono"})
 	base := tuiModel{
@@ -386,7 +386,7 @@ func TestAttachStaleMessagesIgnored(t *testing.T) {
 	}
 }
 
-// 9(h): the status line always fits exactly m.width, and at a width wide
+// The status line always fits exactly m.width, and at a width wide
 // enough to show it, carries the phase, label and cancel hint — sanitized,
 // even when the remote-derived label carries an escape sequence.
 func TestAttachStatusLineRendering(t *testing.T) {
@@ -419,7 +419,7 @@ func TestAttachStatusLineRendering(t *testing.T) {
 	}
 }
 
-// 9(i): opening several marked sessions starts only the first as the attach;
+// Opening several marked sessions starts only the first as the attach;
 // the rest wait as its remainder until it succeeds.
 func TestAttachMultiOpenDefersRest(t *testing.T) {
 	var launched []string

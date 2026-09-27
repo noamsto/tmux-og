@@ -912,12 +912,10 @@ func bridgeCtlKillWindow(tmuxOpts map[string]string, sock, pane string) error {
 	return nil
 }
 
-// launchRemoteBridgeDetached fires the launcher for the multi-open remainder
-// (D6), without waiting for it. Setsid so tmux tearing down this popup's pane
-// doesn't take the launcher (and the daemon it backgrounds) with it — the
-// same reason og-remote-open.sh setsids the daemon it starts. The one marked
-// session this popup switches to instead runs as a supervised attach
-// (picker/attach.go), never through this path.
+// launchRemoteBridgeDetached fires og-remote-open without waiting for it.
+// Setsid so tmux tearing down this popup's pane doesn't take the launcher (and
+// the daemon it backgrounds) with it — the same reason og-remote-open.sh
+// setsids the daemon it starts.
 func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, restore bool) {
 	args := []string{host}
 	if sess != "" {

@@ -318,10 +318,9 @@ func (m tuiModel) renderHints() string {
 // would shift the reserved suffix by a column mid-spin.
 var attachSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// renderAttachStatus replaces the hint line while an attach is in flight
-// (D7): same row, so bodyHeight is unchanged. The esc:cancel (or ^c:quit
-// while cancelling) suffix gets its cells reserved first, same as the kill
-// prompt above — the label is what truncates.
+// renderAttachStatus replaces the hint line while an attach is in flight, on
+// the same row so bodyHeight is unchanged. The key-hint suffix gets its cells
+// reserved first, like the kill prompt above, so the label is what truncates.
 func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
 	frame := attachSpinnerFrames[m.attach.frame%len(attachSpinnerFrames)]
 

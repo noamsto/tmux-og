@@ -66,22 +66,20 @@ reap_daemon() {
 	kill -KILL -- "$pid" 2>/dev/null || true
 }
 
-# Rollback state for on_signal (#770 design doc D2). The runner's group TERM
-# only reaches ssh — the daemon is launched setsid, outside the group — so
-# this script owns undoing its own mirror on a signal. mirror_created means
-# there is local state (a socket dir, maybe a mirror session) worth tearing
-# down; attached means the commit point (one of the two switch-clients) has
-# already run, so a racing signal is reported as success — a complete mirror
-# exists either way.
+# Rollback state for on_signal (#770). The picker's group TERM only reaches
+# ssh — the daemon is launched setsid, outside the group — so this script owns
+# undoing its own mirror on a signal. mirror_created means there is local state
+# (a socket dir, maybe a mirror session) worth tearing down; attached means the
+# commit point (one of the two switch-clients) has already run, so a racing
+# signal is reported as success — a complete mirror exists either way.
 mirror_created="" attached="" daemon_started=""
 on_signal() {
 	[[ -n $attached ]] && exit 0
 	if [[ -n $mirror_created ]]; then
-		# daemon_started is set right before the launch attempt (deliberately —
-		# setting it after the `&` would leave a window where a launched daemon
-		# is never reaped). $! is unset until that launch because nothing
-		# earlier in the script backgrounds a job — don't add one before it,
-		# or ${!:-} below would guard the wrong pid under set -u.
+		# daemon_started is set before the launch attempt: set after the `&`, a
+		# signal in between would leave a launched daemon unreaped. $! is unset
+		# until that launch because nothing earlier in the script backgrounds a
+		# job — don't add one before it, or ${!:-} would reap the wrong pid.
 		if [[ -n $daemon_started && -n ${!:-} ]]; then
 			reap_daemon "$!"
 		fi
@@ -96,8 +94,8 @@ host="$1"
 sess="${2:-}"
 win="${3:-}"
 
-# Opt-in progress channel for the picker (#770 design doc D1): one phase name
-# per line on this fd, never on stdout (which a remote command can forge).
+# Opt-in progress channel for the picker: one phase name per line on this fd,
+# never on stdout (which a remote command can forge).
 # Never exported onward — the daemon's hand-off re-runs this script from its
 # own environment, where fd 3 may be something else entirely.
 progress_fd=""
@@ -578,7 +576,7 @@ export OG_BRIDGE_COLORTERM="$colorterm"
 export OG_BRIDGE_TERM_PROGRAM="$term_program"
 
 # The fd must not outlive the launcher: the detached daemon would otherwise
-# hold the pipe's write end open for its whole life (#770 design doc D1).
+# hold the pipe's write end open for its whole life.
 if [[ -n $progress_fd ]]; then
 	exec {progress_fd}>&-
 	progress_fd=""
@@ -593,9 +591,8 @@ if command -v setsid >/dev/null 2>&1; then     # portable-ok: guard, verified fa
 	setsid "$daemon" >/dev/null 2>"${sock}.log" & # portable-ok: guarded above; else branch is the verified macOS fallback
 else
 	# The daemon must land outside this script's process group on every
-	# platform (#770 design doc D2): bash job control (set -m) puts a
-	# backgrounded job in its own group, so a group TERM racing the commit
-	# point below never reaches it.
+	# platform: bash job control (set -m) puts a backgrounded job in its own
+	# group, so a group TERM racing the commit point below never reaches it.
 	set -m
 	nohup "$daemon" >/dev/null 2>"${sock}.log" &
 	set +m

@@ -172,15 +172,13 @@ type tuiModel struct {
 	// mark.
 	marked map[string]bool
 
-	// attach is the in-flight og-remote-open supervised by beginAttach (nil
-	// = idle). While set, every key but esc/ctrl+c and every mouse event is
-	// ignored (D5) so a second concurrent attach can never start.
+	// attach is the in-flight og-remote-open (nil = idle). While set, every
+	// key but esc/ctrl+c and every mouse event is ignored so a second
+	// concurrent attach can never start.
 	attach *attachState
 	// attachSeq mints attach ids so a stray message from a superseded attempt
 	// is recognizable and dropped.
 	attachSeq int
-	// attachSup lets runTUI cancel an in-flight attach on every exit path;
-	// set once by runTUI, read-only from the model's side.
 	attachSup *attachSupervisor
 }
 
@@ -248,34 +246,27 @@ type wallMsg struct {
 	bad     string
 }
 
-// attachPhaseMsg reports one progress line from an in-flight attach. A
-// message whose id doesn't match the current attach is from a superseded
-// attempt and is dropped.
 type attachPhaseMsg struct {
 	id    int
 	phase attachPhase
 }
 
-// attachDoneMsg reports an attach's final result.
 type attachDoneMsg struct {
 	id     int
 	result attachResult
 }
 
-// attachTickMsg drives the attach status line's spinner. Only re-armed while
-// an attach is in flight — Update stops requeuing it once attach goes nil.
+// attachTickMsg drives the attach status line's spinner.
 type attachTickMsg struct{ id int }
 
-// attachState is the model's view of one in-flight attach (D5). rest is the
-// multi-open remainder (D6): launched via launchDetached only once this
-// attach succeeds.
+// attachState is the model's view of one in-flight attach. rest is the
+// multi-open remainder, launched only once this attach succeeds.
 type attachState struct {
 	id         int
 	run        *attachRun
 	host, sess string
 	label      string // sanitized "host/sess", host alone when sess is empty
 	phase      attachPhase
-	started    time.Time
 	phaseAt    time.Time // when phase last changed, for the elapsed-in-phase clock
 	frame      int       // spinner frame, advanced by attachTickMsg
 	cancelling bool
@@ -406,10 +397,9 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 	}()
 	final, err := p.Run()
 	signal.Stop(sighup)
-	// Every exit path — quit, SIGTERM/SIGINT, or a panic bubbletea recovered
-	// (which returns a nil model) — cancels an in-flight attach and waits for
-	// its rollback: Setsid removed the incidental protection of sharing the
-	// popup pty's session (docs/agents/picker.md, "Attach").
+	// Runs before the error return because a panic bubbletea recovered comes
+	// back as an error with a nil model. The Setsid'd launcher does not die
+	// with the popup pty's session, so nothing else would cancel it.
 	sup.stop(attachKillGrace + time.Second)
 	if err != nil {
 		return err
@@ -1581,20 +1571,19 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-// openMarkedRemote opens every marked session: the first (list order) as the
-// supervised attach — the one the client switches to — and the rest as the
-// multi-open remainder, launched detached only once that attach succeeds
-// (D6). The client switches to the first marked session in list order: not
-// the cursor row, which need not itself be marked when Enter fires.
+// openMarkedRemote opens every marked session: the first in list order as the
+// supervised attach the client switches to — not the cursor row, which need
+// not itself be marked when Enter fires — and the rest detached once that
+// attach succeeds.
 func (m tuiModel) openMarkedRemote(marked []listItem) (tea.Model, tea.Cmd) {
 	logEvent("picker", "event", "open_marked", "count", strconv.Itoa(len(marked)))
 	cmd := m.beginAttach(marked[0], marked[1:])
 	return m, cmd
 }
 
-// beginAttach only allocates an attachRun and returns the Cmds that drive it
-// (D4): the fork happens in the first Cmd's goroutine, never here, so Update
-// never blocks on og-remote-open. rest is the multi-open remainder (D6).
+// beginAttach returns the Cmds that drive a new attach. The fork happens in
+// the first Cmd's goroutine, never here, so Update never blocks on
+// og-remote-open.
 func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 	m.attachSeq++
 	id := m.attachSeq
@@ -1611,7 +1600,6 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 		restore: first.remoteRestore,
 	})
 	m.attachSup.track(run)
-	now := time.Now()
 	m.attach = &attachState{
 		id:      id,
 		run:     run,
@@ -1619,8 +1607,7 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 		sess:    first.remoteSess,
 		label:   label,
 		phase:   phaseLaunch,
-		started: now,
-		phaseAt: now,
+		phaseAt: time.Now(),
 		rest:    rest,
 	}
 	return tea.Batch(
@@ -1630,9 +1617,8 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 	)
 }
 
-// finishAttach lands an attach's final result (D5): success launches the
-// multi-open remainder and quits; every other outcome clears attach and
-// leaves cursor/marks alone so Enter retries.
+// finishAttach lands an attach's final result. Any outcome but success leaves
+// the cursor and marks alone so Enter retries.
 func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 	rest := m.attach.rest
 	label := m.attach.label
@@ -1655,32 +1641,23 @@ func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleAttachKey is the whole keymap while an attach is in flight (D5):
-// every key but esc/ctrl+c is ignored, so a second concurrent attach can
-// never start. A second ctrl+c while already cancelling ends the TUI, but
-// runTUI still waits (bounded by attachKillGrace+1s) for the launcher's
-// rollback before returning.
+// handleAttachKey is the whole keymap while an attach is in flight. A second
+// ctrl+c while already cancelling ends the TUI, but runTUI still waits for the
+// launcher's rollback before returning.
 func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "esc":
-		if m.attach.cancelling {
-			return m, nil
-		}
-		next := *m.attach
-		next.cancelling = true
-		m.attach = &next
-		m.attach.run.cancel()
-		return m, nil
-	case "ctrl+c":
-		if m.attach.cancelling {
-			return m, tea.Quit
-		}
-		next := *m.attach
-		next.cancelling = true
-		m.attach = &next
-		m.attach.run.cancel()
+	if key != "esc" && key != "ctrl+c" {
 		return m, nil
 	}
+	if m.attach.cancelling {
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	next := *m.attach
+	next.cancelling = true
+	m.attach = &next
+	m.attach.run.cancel()
 	return m, nil
 }
 

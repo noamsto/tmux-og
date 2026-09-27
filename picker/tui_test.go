@@ -1671,7 +1671,7 @@ func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
 // markedRemoteItems returned marks in toggle order instead of m.allItems
 // order, this would catch it — marking in list order wouldn't, since the two
 // orders would coincide.
-func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
+func TestOpenMarkedRemoteLaunchesAllButFirst(t *testing.T) {
 	m := tuiModel{allItems: remoteFixture(), sessionItems: remoteFixture()[:1], remoteItems: remoteFixture()[1:]}
 	m = m.withFilter()
 	for _, target := range []string{"remote:lab:other", "remote:lab:mono"} {
@@ -1727,7 +1727,7 @@ func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
 // The real wiring — activateCurrent through the production openMarkedRemote
 // — starts the first marked session as the supervised attach and defers the
 // rest to it, ignoring the cursor's own row entirely once any mark exists.
-// Update never forks (D4), so asserting on m.attach is enough here; the
+// beginAttach never forks, so asserting on m.attach is enough here; the
 // returned Cmd is never run.
 func TestActivateCurrentOpensAllMarkedIgnoringCursorRow(t *testing.T) {
 	m := tuiModel{allItems: remoteFixture(), sessionItems: remoteFixture()[:1], remoteItems: remoteFixture()[1:]}
@@ -1756,7 +1756,7 @@ func TestActivateCurrentOpensAllMarkedIgnoringCursorRow(t *testing.T) {
 		t.Fatalf("attach.rest = %+v, want [lab/other]", nm.attach.rest)
 	}
 	// Marks stay until the attach resolves — a cancel or failure must retry
-	// all of them (D6).
+	// all of them.
 	if len(nm.marked) != 2 {
 		t.Errorf("marks cleared before the attach resolved: %v", nm.marked)
 	}
