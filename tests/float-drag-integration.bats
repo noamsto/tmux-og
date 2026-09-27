@@ -21,8 +21,9 @@ setup() {
 
 	# A short fixed dir: tmux -L resolves under $TMUX_TMPDIR and the unix
 	# socket path limit is 108 chars.
-	export TMUX_TMPDIR="/tmp/og-fd-bats-$$"
-	rm -rf "$TMUX_TMPDIR"
+	OG_TMUX_DIR="/tmp/og-fd-bats-$$"
+	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
 
@@ -54,7 +55,7 @@ teardown() {
 	$OBS kill-server 2>/dev/null || true
 	$DST kill-server 2>/dev/null || true
 	$SRC kill-server 2>/dev/null || true
-	rm -rf "$TMUX_TMPDIR"
+	rm -rf "${OG_TMUX_DIR:-}"
 	return 0
 }
 
