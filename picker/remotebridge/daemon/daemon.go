@@ -472,6 +472,21 @@ type stream struct {
 	// fans is the FIFO of if-shell commands whose branch replies are still
 	// being swallowed; see fanout.
 	fans []fanout
+	// awaitHigh is the highest command ordinal any round-trip batch has asked
+	// to read, raised in newRoundTrip after stampAll. routeWhile parks a reply
+	// at or below it rather than routing it as %output-adjacent noise: it may
+	// belong to a batch whose next() hasn't run yet (PaneSeeds' iterator reads
+	// lazily). Fire-and-forget sends never raise it.
+	awaitHigh uint64
+	// parked is the one reply routeWhile set aside to keep reading; see park.
+	parked *parkedReply
+}
+
+// parkedReply is the reply routeWhile parked instead of routing: seq is the
+// ordinal claimSeq gave it, l the line itself.
+type parkedReply struct {
+	seq uint64
+	l   controlmode.Line
 }
 
 // fanout marks one command written with its own barrier behind it. tmux runs
@@ -580,6 +595,62 @@ func (s *stream) close() {
 	s.mu.Unlock()
 }
 
+// awaitUpTo raises awaitHigh to seq, monotonically: a later batch's floor
+// never retreats one an earlier batch already set.
+func (s *stream) awaitUpTo(seq uint64) {
+	s.mu.Lock()
+	if seq > s.awaitHigh {
+		s.awaitHigh = seq
+	}
+	s.mu.Unlock()
+}
+
+// awaited reports whether seq may still be read by some batch's next(): a
+// nonzero ordinal at or below awaitHigh.
+func (s *stream) awaited(seq uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return seq != 0 && seq <= s.awaitHigh
+}
+
+// park sets aside the one reply routeWhile stopped reading at.
+func (s *stream) park(seq uint64, l controlmode.Line) {
+	s.mu.Lock()
+	s.parked = &parkedReply{seq: seq, l: l}
+	s.mu.Unlock()
+}
+
+// takeParked returns the parked reply and clears the slot, so a stale or
+// matched reply is never handed out twice.
+func (s *stream) takeParked() (parkedReply, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.parked == nil {
+		return parkedReply{}, false
+	}
+	p := *s.parked
+	s.parked = nil
+	return p, true
+}
+
+// parkedSeq reports the parked reply's ordinal, 0 when the slot is empty.
+func (s *stream) parkedSeq() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.parked == nil {
+		return 0
+	}
+	return s.parked.seq
+}
+
+// dropParked discards a parked reply without returning it — runConn's abandon
+// at the top of every pass, since no operation is in flight there to read it.
+func (s *stream) dropParked() {
+	s.mu.Lock()
+	s.parked = nil
+	s.mu.Unlock()
+}
+
 // newRoundTrip builds the roundTrip seam over one control connection: the whole
 // batch is written first, then each next() reads the reply block of the next
 // command in issue order.
@@ -588,6 +659,12 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 		seqs, ok := st.stampAll(cmds...)
 		if !ok {
 			return func() (controlmode.Line, bool) { return controlmode.Line{}, false }
+		}
+		// Raise the floor before any reply is read: routeWhile checks it on
+		// every line off the stream, including one that arrives before this
+		// batch's own next() has run once (PaneSeeds' iterator reads lazily).
+		if len(seqs) > 0 {
+			st.awaitUpTo(seqs[len(seqs)-1])
 		}
 		i := 0
 		return func() (controlmode.Line, bool) {
@@ -1799,7 +1876,16 @@ func nextLine(reader lineReader, st *stream) (l controlmode.Line, seq uint64, ok
 
 // readReplyRouting returns the reply block to command number want, passing every
 // other line to handleAsideLine.
+//
+// A parked reply is checked first, before any read: routeWhile may have
+// stopped reading with want's own reply already off the stream and set aside.
+// takeParked always clears the slot, matched or not — an earlier ordinal in
+// it is one the old walk would have dropped in passing, and the reply order
+// in the stream means it can never hold an ordinal above want.
 func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *stream, want uint64) (controlmode.Line, bool) {
+	if p, ok := st.takeParked(); ok && p.seq == want {
+		return p.l, true
+	}
 	for {
 		l, seq, ok := nextLine(reader, st)
 		if !ok {
