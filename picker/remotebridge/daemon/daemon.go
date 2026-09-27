@@ -2517,9 +2517,23 @@ func (s *outputSink) Close() {
 	close(s.ch)
 }
 
+// escCarryGrace bounds how long a trailing incomplete escape sequence waits for
+// the rest of its bytes before it is delivered as a lone key. The renderer's
+// read boundary is not a key boundary, so a sequence held for this long must not
+// stall input forever; tmux uses a similar escape-time window.
+var escCarryGrace = 50 * time.Millisecond
+
 // pumpInput forwards conn's FrameInput frames to the remote pane as
 // send-keys commands, until conn closes. A non-nil paste handler intercepts
 // ctrl+v image pastes first (see paste.go); nil forwards input verbatim.
+//
+// A frame boundary is not an input-event boundary: the renderer reads its pty
+// 4096 bytes at a time, so a mouse report or other escape sequence can straddle
+// two frames. An incomplete trailing escape sequence is carried over to the next
+// frame instead of being classified — without that, the tail of a split mouse
+// report starts the next frame and reads as a key, dismissing a dead
+// `remain-on-exit key` pane on a click (#790). A carry no later frame completes
+// is flushed after escCarryGrace, so a real lone Escape is still delivered.
 //
 // died fires for every connection close, not just crashes — the caller
 // (sweeper.sweep, once the debounced timer forces it) re-derives which
@@ -2530,26 +2544,45 @@ func (s *outputSink) Close() {
 // parked mirror (Config.InputSeen). The keystroke itself is not held for the
 // reconnect — send fails closed with no connection, as it does for any outage.
 func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func()) {
-	for {
-		f, err := wire.ReadFrame(conn)
-		if err != nil {
-			if died != nil {
-				died()
+	// Read the grace once, before the reader goroutine exists, so the mutable
+	// package var is never read concurrently with a test that sets it.
+	grace := escCarryGrace
+
+	// A dedicated reader goroutine so a pending escape sequence can be flushed
+	// on a timer while this goroutine is otherwise blocked on the next frame.
+	// The channel is small and the reader exits with the read error, so it
+	// cannot outlive pumpInput; quit unblocks a reader parked on the send.
+	type frameOrErr struct {
+		f   wire.Frame
+		err error
+	}
+	results := make(chan frameOrErr, 4)
+	quit := make(chan struct{})
+	defer close(quit)
+	go func() {
+		for {
+			f, err := wire.ReadFrame(conn)
+			select {
+			case results <- frameOrErr{f, err}:
+			case <-quit:
+				return
 			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// deliver classifies and forwards one reassembled input chunk. The dead-key
+	// guard goes first: tmux checks deadness before it delivers the key.
+	deliver := func(payload []byte) {
+		if len(payload) == 0 {
 			return
 		}
-		if f.Type != wire.FrameInput {
-			continue
-		}
-		if seen != nil {
-			seen()
-		}
-		payload := f.Payload
 		if paste != nil {
 			payload = paste.handle(remotePane, payload)
 		}
-		// The guard goes first: tmux checks deadness before it delivers the key.
-		if len(payload) > 0 && isDismissKey(payload) {
+		if isDismissKey(payload) {
 			send(deadKeyCmd(remotePane))
 		}
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
@@ -2557,6 +2590,60 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		}
 		if isCancelKey(payload) {
 			send(modalClearCmd(remotePane))
+		}
+	}
+
+	var (
+		carry []byte
+		timer *time.Timer
+		fire  <-chan time.Time
+	)
+	stopTimer := func() {
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+			fire = nil
+		}
+	}
+	defer stopTimer()
+
+	for {
+		select {
+		case r := <-results:
+			if r.err != nil {
+				// Deliver whatever is still carried, then report the close.
+				stopTimer()
+				deliver(carry)
+				carry = nil
+				if died != nil {
+					died()
+				}
+				return
+			}
+			if r.f.Type != wire.FrameInput {
+				continue
+			}
+			if seen != nil {
+				seen()
+			}
+			stopTimer()
+			payload := r.f.Payload
+			if len(carry) > 0 {
+				payload = append(append([]byte(nil), carry...), payload...)
+				carry = nil
+			}
+			complete, tail := splitIncompleteEscape(payload)
+			if len(tail) > 0 {
+				carry = append([]byte(nil), tail...)
+				timer = time.NewTimer(grace)
+				fire = timer.C
+			}
+			deliver(complete)
+		case <-fire:
+			timer = nil
+			fire = nil
+			deliver(carry)
+			carry = nil
 		}
 	}
 }
@@ -2615,6 +2702,142 @@ func skipSGRMouse(b []byte) []byte {
 	return b[i:]
 }
 
+// x10UTF8End reports where the three X10/1005 parameters at b[3:] end (end)
+// and how many UTF-8 steps that took (params); incomp is true when a step hit a
+// rune truncated by the end of the buffer. end is byte-identical to decoding
+// three runes in a loop — a truncated rune still advances by one byte. The
+// splitter uses params/incomp to hold a still-open report; skipX10Mouse uses
+// end, so both share one length rule and cannot drift.
+func x10UTF8End(b []byte) (end, params int, incomp bool) {
+	end = 3
+	for params = 0; params < 3 && end < len(b); params++ {
+		if incompleteUTF8(b[end:]) {
+			incomp = true
+		}
+		_, size := utf8.DecodeRune(b[end:])
+		end += size
+	}
+	return end, params, incomp
+}
+
+// incompleteUTF8 reports whether p is a strict, valid prefix of a multi-byte
+// UTF-8 rune ending mid-rune: the lead byte needs more bytes, and every present
+// byte after it is a valid continuation. An invalid sequence (a wrong
+// continuation byte) is not incomplete, so it resolves rather than waits.
+func incompleteUTF8(p []byte) bool {
+	if len(p) == 0 {
+		return false
+	}
+	first := p[0]
+	var need int
+	switch {
+	case first < 0x80:
+		return false
+	case first < 0xc2:
+		return false // continuation byte or overlong lead
+	case first < 0xe0:
+		need = 2
+	case first < 0xf0:
+		need = 3
+	case first < 0xf5:
+		need = 4
+	default:
+		return false
+	}
+	if len(p) >= need {
+		return false
+	}
+	for i := 1; i < len(p); i++ {
+		if p[i]&0xc0 != 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// splitIncompleteEscape splits b at the start of a trailing incomplete escape
+// sequence: complete is everything safe to classify and forward now, tail is the
+// suffix a later frame may complete. It walks b consuming each plain byte and
+// each complete sequence, and stops at the first still-open one.
+func splitIncompleteEscape(b []byte) (complete, tail []byte) {
+	i := 0
+	for i < len(b) {
+		if b[i] != 0x1b {
+			i++
+			continue
+		}
+		end, ok := escapeEnd(b[i:])
+		if !ok {
+			return b[:i], b[i:]
+		}
+		i += end
+	}
+	return b, nil
+}
+
+// escapeEnd returns the length of the complete escape sequence at the start of
+// b, or ok=false when b is a prefix of one a later byte could complete.
+func escapeEnd(b []byte) (int, bool) {
+	if len(b) < 2 {
+		return 0, false // a lone ESC may open a sequence
+	}
+	switch b[1] {
+	case '[':
+		return csiEnd(b)
+	case 'O':
+		if len(b) < 3 {
+			return 0, false // SS3 introducer awaiting its final byte
+		}
+		return 3, true
+	default:
+		return 2, true // ESC + one byte (Alt), or ESC ESC
+	}
+}
+
+// csiEnd returns the length of the CSI sequence at the start of b (which begins
+// ESC '['), or ok=false when it is still open.
+func csiEnd(b []byte) (int, bool) {
+	if len(b) >= 3 && b[2] == 'M' {
+		// X10/1005 mouse. Cannot resolve the report until all three UTF-8 params
+		// are present: a 6-byte legacy report (three raw bytes) is also a valid
+		// prefix of a 7-byte 1005 report, so a still-short one waits for the next
+		// frame or the grace flush, which delivers it without re-splitting.
+		end, params, incomp := x10UTF8End(b)
+		if params < 3 || incomp {
+			return 0, false
+		}
+		raw := 3 + 3
+		if raw > len(b) {
+			raw = len(b)
+		}
+		if end != raw && (b[3] >= 0xc2 || (raw < len(b) && b[raw]&0xc0 == 0x80)) {
+			return end, true
+		}
+		return raw, true
+	}
+	if len(b) >= 3 && b[2] == '<' {
+		// SGR mouse: private marker '<', terminated by 'M' or 'm'.
+		for j := 3; j < len(b); j++ {
+			if b[j] == 'M' || b[j] == 'm' {
+				return j + 1, true
+			}
+		}
+		return 0, false
+	}
+	// Generic CSI: parameter/intermediate bytes 0x20-0x3f, then a final byte
+	// 0x40-0x7e.
+	for j := 2; j < len(b); j++ {
+		c := b[j]
+		if c >= 0x40 && c <= 0x7e {
+			return j + 1, true
+		}
+		if c < 0x20 || c > 0x3f {
+			return j + 1, true // malformed; consume it so the walk advances
+		}
+	}
+	return 0, false
+}
+
 // skipX10Mouse consumes a "\x1b[M" report and its three parameters, returning
 // the frame after it. tmux writes this report in one of two encodings: the
 // legacy X10 form, three raw bytes (button, x, y, each offset by 32), and the
@@ -2632,17 +2855,14 @@ func skipSGRMouse(b []byte) []byte {
 //
 // Otherwise the legacy reading wins, matching tmux's own input parser, which
 // reads the three parameters as raw bytes. Fewer than three params left in b
-// consumes to the end.
+// consumes to the end. The UTF-8 length comes from x10UTF8End, the same rule
+// splitIncompleteEscape uses.
 func skipX10Mouse(b []byte) []byte {
 	raw := 3 + 3
 	if raw > len(b) {
 		raw = len(b)
 	}
-	utf8End := 3
-	for p := 0; p < 3 && utf8End < len(b); p++ {
-		_, size := utf8.DecodeRune(b[utf8End:])
-		utf8End += size
-	}
+	utf8End, _, _ := x10UTF8End(b)
 	if utf8End != raw && (b[3] >= 0xc2 || (raw < len(b) && b[raw]&0xc0 == 0x80)) {
 		return b[utf8End:]
 	}

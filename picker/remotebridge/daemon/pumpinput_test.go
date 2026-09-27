@@ -1,8 +1,12 @@
 package daemon
 
 import (
+	"bytes"
+	"fmt"
 	"net"
 	"slices"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,6 +119,267 @@ func TestPumpInputCallsSeenBeforeForwarding(t *testing.T) {
 	}
 }
 
+// splitMouseReports are complete mouse reports used to check that a report
+// split across two FrameInput reads is reassembled before classification. The
+// ambiguous legacy report is the col 162+/row 96+ case whose raw bytes also
+// read as valid UTF-8.
+var splitMouseReports = map[string]string{
+	"sgr":              "\x1b[<0;5;5M",
+	"utf8-1005":        "\x1b[M\xc3\xa9!!",
+	"legacy-x10":       "\x1b[M !!",
+	"legacy-ambiguous": "\x1b[M \xc3\xa9",
+}
+
+// splitMouseSentinel is a non-dismiss mouse report that terminates the read.
+// Because it is a mouse report itself, any deadKeyCmd seen while reading the
+// split report is the bug under test, never the sentinel.
+const splitMouseSentinel = "\x1b[<9;9;9M"
+
+// sendKeysBytes decodes one send-keys -H command's hex payload, reporting
+// whether cmd was one.
+func sendKeysBytes(t *testing.T, cmd string) ([]byte, bool) {
+	t.Helper()
+	if !strings.HasPrefix(cmd, "send-keys -H -t %7 ") {
+		return nil, false
+	}
+	fields := strings.Fields(cmd)
+	var out []byte
+	for _, h := range fields[4:] {
+		v, err := strconv.ParseUint(h, 16, 8)
+		if err != nil {
+			t.Fatalf("bad hex token %q in %q", h, cmd)
+		}
+		out = append(out, byte(v))
+	}
+	return out, true
+}
+
+// A mouse report split across two FrameInput reads must be reassembled, so no
+// dead-key guard fires for any byte offset and the forwarded bytes stay in
+// order. On the pre-fix classifier the tail of the report starts the next frame
+// and counts as a key, dismissing a dead `remain-on-exit key` pane on a click.
+func TestPumpInputCarriesSplitMouseReport(t *testing.T) {
+	for name, report := range splitMouseReports {
+		reportB := []byte(report)
+		sent := []byte(splitMouseSentinel)
+		want := append(append([]byte{}, reportB...), sent...)
+		for i := 0; i <= len(reportB); i++ {
+			t.Run(fmt.Sprintf("%s/offset-%d", name, i), func(t *testing.T) {
+				conn, peer := net.Pipe()
+				defer conn.Close()
+				defer peer.Close()
+				sendCh := make(chan string, 16)
+				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+
+				for _, p := range [][]byte{reportB[:i], reportB[i:], sent} {
+					if err := wire.WriteFrame(peer, wire.FrameInput, p); err != nil {
+						t.Fatalf("write frame: %v", err)
+					}
+				}
+
+				var got []byte
+				deadKeys := 0
+				deadline := time.After(2 * time.Second)
+				for len(got) < len(want) {
+					select {
+					case cmd := <-sendCh:
+						if cmd == deadKeyCmd("%7") {
+							deadKeys++
+							continue
+						}
+						if b, ok := sendKeysBytes(t, cmd); ok {
+							got = append(got, b...)
+						}
+					case <-deadline:
+						t.Fatalf("timed out: got %q (%d bytes), want %q", got, len(got), want)
+					}
+				}
+				if deadKeys != 0 {
+					t.Errorf("deadKeyCmd sent %d time(s) for a mouse report split at offset %d", deadKeys, i)
+				}
+				if !bytes.Equal(got, want) {
+					t.Errorf("forwarded %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+// The other half of the invariant: a real key split across two frames still
+// dismisses.
+func TestPumpInputRealKeySplitStillDismisses(t *testing.T) {
+	for _, key := range []string{"\x1b[A", "x"} {
+		keyB := []byte(key)
+		for i := 0; i <= len(keyB); i++ {
+			t.Run(fmt.Sprintf("%q/offset-%d", key, i), func(t *testing.T) {
+				conn, peer := net.Pipe()
+				defer conn.Close()
+				defer peer.Close()
+				sendCh := make(chan string, 16)
+				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+
+				for _, p := range [][]byte{keyB[:i], keyB[i:]} {
+					if err := wire.WriteFrame(peer, wire.FrameInput, p); err != nil {
+						t.Fatalf("write frame: %v", err)
+					}
+				}
+				// A sentinel key after the split; the dead-key guard must land by
+				// the time its own send-keys arrives.
+				if err := wire.WriteFrame(peer, wire.FrameInput, []byte("z")); err != nil {
+					t.Fatalf("write sentinel: %v", err)
+				}
+
+				deadKeys := 0
+				deadline := time.After(2 * time.Second)
+				for {
+					select {
+					case cmd := <-sendCh:
+						if cmd == deadKeyCmd("%7") {
+							deadKeys++
+						}
+						if cmd == "send-keys -H -t %7 7a" {
+							if deadKeys == 0 {
+								t.Errorf("split real key %q at offset %d did not dismiss", key, i)
+							}
+							return
+						}
+					case <-deadline:
+						t.Fatalf("sentinel never arrived for key %q offset %d", key, i)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestIncompleteUTF8(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"empty", "", false},
+		{"ascii", "A", false},
+		{"continuation only", "\x80", false},
+		{"two-byte lead alone", "\xc3", true},
+		{"two-byte complete", "\xc3\xa9", false},
+		{"two-byte lead then invalid", "\xc3q", false},
+		{"three-byte lead alone", "\xe0", true},
+		{"three-byte partial", "\xe0\xa0", true},
+		{"three-byte complete", "\xe0\xa0\x80", false},
+		{"four-byte partial", "\xf0\x9f\x98", true},
+		{"four-byte complete", "\xf0\x9f\x98\x80", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := incompleteUTF8([]byte(tt.in)); got != tt.want {
+				t.Errorf("incompleteUTF8(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// splitIncompleteEscape's complete/tail split. The ambiguous legacy report is
+// deliberately held: the same six bytes are a valid prefix of a 7-byte 1005
+// report, so only the next frame or the grace flush can resolve them.
+func TestSplitIncompleteEscape(t *testing.T) {
+	tests := []struct {
+		name         string
+		in           string
+		wantComplete string
+		wantTail     string
+	}{
+		{"plain keys", "abc", "abc", ""},
+		{"up arrow", "\x1b[A", "\x1b[A", ""},
+		{"alt key", "\x1bz", "\x1bz", ""},
+		{"lone esc", "\x1b", "", "\x1b"},
+		{"esc esc", "\x1b\x1b", "\x1b\x1b", ""},
+		{"open csi", "\x1b[", "", "\x1b["},
+		{"open ss3", "\x1bO", "", "\x1bO"},
+		{"ss3 final", "\x1bOA", "\x1bOA", ""},
+		{"sgr mouse", "\x1b[<0;5;5M", "\x1b[<0;5;5M", ""},
+		{"sgr mouse open", "\x1b[<0;5;", "", "\x1b[<0;5;"},
+		{"sgr release", "\x1b[<0;5;5m", "\x1b[<0;5;5m", ""},
+		{"legacy x10", "\x1b[M !!", "\x1b[M !!", ""},
+		{"x10 one param", "\x1b[M x", "", "\x1b[M x"},
+		{"1005 two-byte param", "\x1b[M\xc3\xa9!!", "\x1b[M\xc3\xa9!!", ""},
+		{"1005 truncated rune", "\x1b[M A\xc3", "", "\x1b[M A\xc3"},
+		{"ambiguous legacy held", "\x1b[M \xc3\xa9", "", "\x1b[M \xc3\xa9"},
+		{"bracketed paste", "\x1b[200~hi\x1b[201~", "\x1b[200~hi\x1b[201~", ""},
+		{"open bracketed paste", "\x1b[200~hi", "\x1b[200~hi", ""},
+		{"complete then open", "ab\x1b[<0;5;", "ab", "\x1b[<0;5;"},
+		{"key then open", "a\x1b[M", "a", "\x1b[M"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			complete, tail := splitIncompleteEscape([]byte(tt.in))
+			if string(complete) != tt.wantComplete || string(tail) != tt.wantTail {
+				t.Errorf("splitIncompleteEscape(%q) = (%q, %q), want (%q, %q)",
+					tt.in, complete, tail, tt.wantComplete, tt.wantTail)
+			}
+		})
+	}
+}
+
+// skipX10Mouse's return pins the pre-refactor length rule, including the
+// truncated-rune and fewer-than-three-param cases.
+func TestSkipX10Mouse(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"legacy three bytes", "\x1b[M !!", ""},
+		{"one param", "\x1b[M x", ""},
+		{"two params", "\x1b[M xy", ""},
+		{"truncated two-byte rune", "\x1b[M\xc3", ""},
+		{"two truncated leads", "\x1b[M\xc3\xc3", ""},
+		{"three params then leftover", "\x1b[M !!\xc3", "\xc3"},
+		{"1005 two-byte param", "\x1b[M\xc3\xa9!!", ""},
+		{"ambiguous legacy", "\x1b[M \xc3\xa9", ""},
+		{"ambiguous legacy then here", "\x1b[M A\xc3\xa9", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(skipX10Mouse([]byte(tt.in))); got != tt.want {
+				t.Errorf("skipX10Mouse(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A carried lone Escape must still be delivered once the grace expires, with no
+// further input.
+func TestPumpInputLoneEscDeliveredAfterGrace(t *testing.T) {
+	oldGrace := escCarryGrace
+	escCarryGrace = 20 * time.Millisecond
+	t.Cleanup(func() { escCarryGrace = oldGrace })
+
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	sendCh := make(chan string, 8)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+
+	if err := wire.WriteFrame(peer, wire.FrameInput, []byte{0x1b}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	want := []string{deadKeyCmd("%7"), "send-keys -H -t %7 1b", modalClearCmd("%7")}
+	var got []string
+	deadline := time.After(2 * time.Second)
+	for len(got) < len(want) {
+		select {
+		case s := <-sendCh:
+			got = append(got, s)
+		case <-deadline:
+			t.Fatalf("lone ESC not delivered after the grace; got %q", got)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("sends = %q, want %q", got, want)
+	}
+}
+
 func TestModalClearCmd(t *testing.T) {
 	got := modalClearCmd("%7")
 	want := `if -F -t %7 '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %7'`
@@ -181,15 +446,23 @@ func TestIsDismissKey(t *testing.T) {
 func TestPumpInputSendOrder(t *testing.T) {
 	guard := deadKeyCmd("%7")
 	modalClear := modalClearCmd("%7")
+	// A lone Escape is now carried until the grace expires or a next frame
+	// completes it, so this test drives a short grace and waits it out for the
+	// lone-escape case (which must then land alone, before the sentinel).
+	oldGrace := escCarryGrace
+	escCarryGrace = 20 * time.Millisecond
+	t.Cleanup(func() { escCarryGrace = oldGrace })
 	tests := []struct {
-		name  string
-		frame []byte
-		want  []string
+		name      string
+		frame     []byte
+		want      []string
+		graceWait bool
 	}{
 		{
-			name:  "lone escape",
-			frame: []byte{0x1b},
-			want:  []string{guard, "send-keys -H -t %7 1b", modalClear, guard},
+			name:      "lone escape",
+			frame:     []byte{0x1b},
+			want:      []string{guard, "send-keys -H -t %7 1b", modalClear, guard},
+			graceWait: true,
 		},
 		{
 			name:  "lone ctrl-c",
@@ -240,6 +513,9 @@ func TestPumpInputSendOrder(t *testing.T) {
 			peer.SetDeadline(time.Now().Add(5 * time.Second))
 			if err := wire.WriteFrame(peer, wire.FrameInput, tt.frame); err != nil {
 				t.Fatalf("write input: %v", err)
+			}
+			if tt.graceWait {
+				time.Sleep(100 * time.Millisecond)
 			}
 			if err := wire.WriteFrame(peer, wire.FrameInput, []byte("z")); err != nil {
 				t.Fatalf("write sentinel: %v", err)
