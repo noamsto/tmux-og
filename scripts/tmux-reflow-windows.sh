@@ -87,15 +87,14 @@ IFS='|' read -r win_count prev_key HEIGHT NUDGE < <(tmux display-message -t "$SE
 # the way an empty width has to. Resolve it before it reaches the cache key so
 # the key can never be stamped with a trailing blank field.
 [[ $HEIGHT =~ ^[1-9][0-9]*$ ]] || HEIGHT=0
-# Remote-bridge resize nudge (#433/#820): a mirror session carries
-# @bridge_nudge — the file its daemon's watcher stats each tick instead of
-# forking a size query — and this pass touches it on the way through, a cache
-# hit included, so the watcher sees the event even when nothing renders. The
-# push cannot live in a session-scoped hook: a session hook array replaces the
-# session's view of the global one (#647), which is how client-resized and
-# client-session-changed stopped reaching this script inside a mirror and left
-# its window bar stale until an unrelated event (#820). Set by the bridge as a
-# session option; absent everywhere else, where the touch costs nothing.
+# Remote-bridge resize nudge (#433): a mirror session carries @bridge_nudge —
+# the file its daemon's watcher stats each tick instead of forking a size
+# query — and this pass touches it on the way through, a cache hit included, so
+# the watcher sees the event even when nothing renders. It cannot live in a
+# session-scoped hook: one replaces the session's view of the global array
+# (#647) and would shadow the hooks that reach this script (#820). Set by the
+# bridge as a session option; absent everywhere else, where the touch costs
+# nothing.
 if [[ -n $NUDGE ]]; then
 	touch -- "$NUDGE" 2>/dev/null || true
 fi

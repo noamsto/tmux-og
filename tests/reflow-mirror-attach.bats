@@ -176,9 +176,8 @@ bridge_up() {
 	DAEMON_PID=$!
 
 	# Every mirror window exists and the shipper has stamped a label on the
-	# first one; reflow-derived options are only written by reflow, so a
-	# settled shipper means the forced passes that skipped on empty width
-	# happened (or are about to be no-ops).
+	# first one, so the state compared below is fully shipped; the settle sleep
+	# gives any last forced pass room to land.
 	poll 15 mirror_windows_ready || {
 		echo "mirror windows never reached four" >&3
 		sed -n '1,40p' "$TMUX_TMPDIR/daemon.log" >&3 2>&1 || true

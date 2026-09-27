@@ -419,13 +419,11 @@ var legacyResizeHooks = [...]string{"client-resized", "window-resized", "client-
 
 // bridgeNudgeOption is the session option carrying the resize-nudge path — the
 // file watchLocalClient stats each tick instead of forking a size query
-// (#433). The config's own hooks read it: tmux-reflow-windows touches it on the
-// two events that already run a reflow, and window-resized/client-detached
-// carry their own gated hooks. The bridge publishes the path, never a hook of
-// its own: a session-scoped hook array REPLACES the session's view of the
-// global one (measured, #647), which is how client-resized and
-// client-session-changed stopped reaching the reflow hooks inside a mirror and
-// left its window bar stale until an unrelated event (#820).
+// (#433). The config's own hooks touch it: tmux-reflow-windows for the two
+// events that already reflow, gated hooks for window-resized/client-detached.
+// Never a session-scoped hook of the daemon's own — one replaces the
+// session's view of the global array and shadows every one of them (#647,
+// #820; the full account is in docs/agents/bridge-daemon.md).
 const bridgeNudgeOption = "@bridge_nudge"
 
 // registerResizeNudge publishes nudgePath as a session option the config's own

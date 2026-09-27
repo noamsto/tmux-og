@@ -2990,10 +2990,9 @@ m2_pane_gate_failed() {
 	[ "$got_panes" -eq "$want_panes" ]
 
 	# registerResizeNudge (daemon.go) publishes @bridge_nudge on host-sess
-	# BEFORE the per-window setup loop above, so the option is already there;
-	# gate on it rather than on the old session-scoped hook, which is exactly
-	# the shadowing this suite's config now mirrors around (#820).
-	# Not a resize-converge wait: BRIDGE_UP is enough to see the option land.
+	# before the per-window setup loop, so BRIDGE_UP is enough to see the option
+	# land — the daemon registers no session-scoped hook any more.
+	# Not a resize-converge wait.
 	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
 		[ -n "$($DST show-options -t host-sess -qv @bridge_nudge 2>/dev/null)" ] && break
 		sleep 0.1
