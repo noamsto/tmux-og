@@ -158,6 +158,12 @@ func TestIsDismissKey(t *testing.T) {
 		{"sgr mouse then a real key", []byte("\x1b[<0;5;5Mx"), true},
 		{"x10 mouse then a real key", []byte("\x1b[M !!q"), true},
 		{"x10/utf-8 mouse two-byte param", []byte("\x1b[M\xc3\xa9!!"), false},
+		{"x10/utf-8 mouse two-byte y after a one-byte x", []byte("\x1b[M A\xc3\xa9"), false},
+		// Legacy raw X10 reports whose coordinate bytes are also valid UTF-8
+		// (x in 0xc2-0xdf, y in 0x80-0xbf: column 162+, row 96+) — the
+		// ambiguity skipX10Mouse resolves.
+		{"two raw x10 clicks whose coordinates form UTF-8", []byte("\x1b[M \xc3\xa9\x1b[M#\xc3\xa9"), false},
+		{"raw x10 click whose coordinates form UTF-8 then a real key", []byte("\x1b[M \xc3\xa9q"), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
