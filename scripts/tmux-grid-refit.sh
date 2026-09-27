@@ -157,9 +157,7 @@ fi
 # later confirming run (#827). A failed command aborts the rest of the list
 # (verified: an unknown command drops a trailing set-option too), so the sig
 # still only lands on a decision that actually applied.
-if [[ $lead == "$first" ]]; then
-	tmux set-window-option -t "$target" "$opt" "${pct}%" \; select-layout -t "$target" "$layout" \; set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null
-else
-	tmux swap-pane -d -s "$lead" -t "$first" \; set-window-option -t "$target" "$opt" "${pct}%" \; select-layout -t "$target" "$layout" \; set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null
-fi
+swap=()
+[[ $lead == "$first" ]] || swap=(swap-pane -d -s "$lead" -t "$first" \;)
+tmux "${swap[@]}" set-window-option -t "$target" "$opt" "${pct}%" \; select-layout -t "$target" "$layout" \; set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null
 exit 0

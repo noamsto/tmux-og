@@ -211,9 +211,11 @@ settle() {
 		started=$(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* run job ' || true)
 		died=$(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* job died ' || true)
 		[ "$started" = "$died" ] && return 0
-		sleep 0.2
+		sleep 0.1
 		((tries++)) || true
 	done
+	echo "settle: $started refit job(s) started, $died finished" >&2
+	return 1
 }
 
 # #760 reproduces only on the pinned next-3.9: upstream <=3.7c already collapses
@@ -356,11 +358,12 @@ layout_bug_reproduces() {
 	mkdir -p "$wrapdir"
 	cat >"$wrapdir/tmux" <<WRAP
 #!$BASH
-if [[ \$1 == set-option ]]; then
-	for a in "\$@"; do
-		[[ \$a == "@grid_refit_sig" ]] && sleep 2 && break
-	done
-fi
+sig=0 layout=0
+for a in "\$@"; do
+	[[ \$a == "@grid_refit_sig" ]] && sig=1
+	[[ \$a == "select-layout" ]] && layout=1
+done
+((sig && !layout)) && sleep 2
 exec "$real_tmux" "\$@"
 WRAP
 	chmod +x "$wrapdir/tmux"

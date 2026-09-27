@@ -306,11 +306,11 @@ foreground run is deliberate ordering.
   a different state (it still blocks its own exact state, above).
 - A #827 test forces the apply branch's own peer-read race deterministically:
   a `tmux` wrapper placed on the server's `PATH` before it starts delays only
-  the exact standalone `set-option ... @grid_refit_sig ...` call the
-  pre-#827 apply path issued as a separate command. `make_grid 1` makes
+  a `set-option` call carrying `@grid_refit_sig`, which the pre-#827 apply
+  path issued as a separate command. `make_grid 1` makes
   `select-layout` the apply's only layout-mutating command, so its hook
-  forks a peer while that delayed write is still pending. Red on
-  `origin/main`'s three-separate-calls apply (the peer reads the stale sig,
+  forks a peer while that delayed write is still pending. Red on the
+  pre-#827 separate-calls apply (the peer reads the stale sig,
   lands on the apply branch too, and — since only the fast path stamps
   `@grid_refit_layout` — leaves it unset with nothing left to trigger a
   later confirming run); green on the branch, where the wrapper's pattern
