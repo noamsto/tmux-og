@@ -180,6 +180,14 @@ type tuiModel struct {
 	// is recognizable and dropped.
 	attachSeq int
 	attachSup *attachSupervisor
+
+	// killRun is the in-flight remote kill batch (nil = idle). While set,
+	// every key but esc/ctrl+c and every mouse event is ignored, mirroring
+	// attach.
+	killRun *killRunState
+	// killSeq mints kill run ids so a stray message from a superseded run
+	// is recognizable and dropped.
+	killSeq int
 }
 
 // --- Catppuccin palette (dark/light) ---
@@ -291,6 +299,55 @@ const attachTickInterval = 100 * time.Millisecond
 
 func attachTickCmd(id int) tea.Cmd {
 	return tea.Tick(attachTickInterval, func(time.Time) tea.Msg { return attachTickMsg{id: id} })
+}
+
+type killProgressMsg struct {
+	id       int
+	progress killProgress
+}
+
+type killDoneMsg struct {
+	id     int
+	result killResult
+}
+
+// killTickMsg drives the kill status line's spinner.
+type killTickMsg struct{ id int }
+
+// killRunState is the model's view of one in-flight kill batch.
+type killRunState struct {
+	id         int
+	run        *killRun
+	targets    []listItem
+	index      int
+	total      int
+	label      string // sanitized "host/sess", host alone when sess is empty
+	cancelling bool
+	frame      int // spinner frame, advanced by killTickMsg
+}
+
+// waitKillCmd blocks on r's progress/done for one event; Update re-issues it
+// after every non-final event so the run's fork and its supervision never
+// touch the Update goroutine. Any already-ready progress is drained first so
+// a fast run's last progress message never loses a race against done.
+func waitKillCmd(id int, r *killRun) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case p := <-r.progress:
+			return killProgressMsg{id: id, progress: p}
+		default:
+		}
+		select {
+		case p := <-r.progress:
+			return killProgressMsg{id: id, progress: p}
+		case <-r.done:
+			return killDoneMsg{id: id, result: r.result()}
+		}
+	}
+}
+
+func killTickCmd(id int) tea.Cmd {
+	return tea.Tick(attachTickInterval, func(time.Time) tea.Msg { return killTickMsg{id: id} })
 }
 
 // launchDetached is a test seam over launchRemoteBridgeDetached.
@@ -558,6 +615,32 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.attach = &next
 		return m, attachTickCmd(msg.id)
 
+	case killProgressMsg:
+		if m.killRun == nil || msg.id != m.killRun.id {
+			return m, nil
+		}
+		next := *m.killRun
+		next.index = msg.progress.index
+		next.total = msg.progress.total
+		next.label = remoteRowLabel(msg.progress.item)
+		m.killRun = &next
+		return m, waitKillCmd(msg.id, m.killRun.run)
+
+	case killDoneMsg:
+		if m.killRun == nil || msg.id != m.killRun.id {
+			return m, nil
+		}
+		return m.finishKill(msg.result)
+
+	case killTickMsg:
+		if m.killRun == nil || msg.id != m.killRun.id {
+			return m, nil
+		}
+		next := *m.killRun
+		next.frame++
+		m.killRun = &next
+		return m, killTickCmd(msg.id)
+
 	case previewMsg:
 		if msg.target == m.currentTarget() {
 			sameTarget := msg.target == m.previewFor
@@ -583,7 +666,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// doesn't have — a stray click there would resolve to an arbitrary row and,
 	// when it matched the cursor, switch to it and quit.
 	case tea.MouseWheelMsg:
-		if m.mode != modeList || m.attach != nil {
+		if m.mode != modeList || m.attach != nil || m.killRun != nil {
 			return m, nil
 		}
 		mouse := msg.Mouse()
@@ -601,7 +684,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadPreviewCmd()
 
 	case tea.MouseClickMsg:
-		if m.mode != modeList || m.attach != nil {
+		if m.mode != modeList || m.attach != nil || m.killRun != nil {
 			return m, nil
 		}
 		mouse := msg.Mouse()
@@ -656,6 +739,9 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if m.attach != nil {
 		return m.handleAttachKey(key)
+	}
+	if m.killRun != nil {
+		return m.handleKillRunKey(key)
 	}
 	if len(m.killConfirm) > 0 {
 		return m.handleKillConfirm(key)
@@ -1578,11 +1664,7 @@ func (m tuiModel) openMarkedRemote(marked []listItem) (tea.Model, tea.Cmd) {
 func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 	m.attachSeq++
 	id := m.attachSeq
-	label := first.remoteHost
-	if first.remoteSess != "" {
-		label += "/" + first.remoteSess
-	}
-	label = sanitizeStatusText(label)
+	label := remoteRowLabel(first)
 
 	run := newAttachRun(attachSpec{
 		bin:     remoteOpenBin(m.tmuxOpts),
@@ -1687,37 +1769,94 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 	}
 	targets := m.killConfirm
 	m.killConfirm = nil
-	return m.killRemoteSessions(targets)
+	cmd := m.beginKill(targets)
+	return m, cmd
 }
 
-// killRemoteSessions runs the staged remote kills. Each row is killed on its
-// host over ssh. A host that answers "already gone" still forgets its row; an
-// unreachable host (or a refused ssh state) keeps the row and explains itself
-// in the hint line. Synchronous, unlike an attach: no background result
-// channel exists for a kill, so each round trip blocks Update, bounded by the
-// same remoteProbeTimeout the probe path carries.
-func (m tuiModel) killRemoteSessions(targets []listItem) (tea.Model, tea.Cmd) {
+// remoteRowLabel is the sanitized "host" or "host/sess" text used to name a
+// remote row in status/hint lines.
+func remoteRowLabel(it listItem) string {
+	label := it.remoteHost
+	if it.remoteSess != "" {
+		label += "/" + it.remoteSess
+	}
+	return sanitizeStatusText(label)
+}
+
+// beginKill returns the Cmds that drive a new kill batch. The fork happens in
+// the first Cmd's goroutine, never here, so Update never blocks on ssh.
+func (m *tuiModel) beginKill(targets []listItem) tea.Cmd {
+	m.killSeq++
+	id := m.killSeq
+	label := remoteRowLabel(targets[0])
+
+	run := newKillRun(targets)
+	m.killRun = &killRunState{
+		id:      id,
+		run:     run,
+		targets: targets,
+		total:   len(targets),
+		label:   label,
+	}
+	return tea.Batch(
+		func() tea.Msg { run.run(); return nil },
+		waitKillCmd(id, run),
+		killTickCmd(id),
+	)
+}
+
+// finishKill lands a kill batch's final result. A target caught mid-flight by
+// a cancel is kept and reported as cancelled, since whether the remote kill
+// landed is unknown.
+func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
+	label := m.killRun.label
+	m.killRun = nil
 	var forget []listItem
 	var msgs []string
-	for _, it := range targets {
-		err := sshKillRemoteSession(it.remoteHost, it.remoteSess)
+	for _, it := range res.results {
 		switch {
-		case err == nil:
-			logEvent("picker", "event", "kill_remote_session", "host", it.remoteHost, "sess", it.remoteSess)
-			forget = append(forget, it)
-		case errors.Is(err, errRemoteSessionGone):
-			logEvent("picker", "event", "kill_remote_session_gone", "host", it.remoteHost, "sess", it.remoteSess)
-			msgs = append(msgs, it.remoteHost+"/"+it.remoteSess+" was already gone")
-			forget = append(forget, it)
+		case it.cancelled:
+			msgs = append(msgs, sanitizeStatusText("cancelled killing "+it.item.remoteHost+"/"+it.item.remoteSess))
+		case it.err == nil:
+			logEvent("picker", "event", "kill_remote_session", "host", it.item.remoteHost, "sess", it.item.remoteSess)
+			forget = append(forget, it.item)
+		case errors.Is(it.err, errRemoteSessionGone):
+			logEvent("picker", "event", "kill_remote_session_gone", "host", it.item.remoteHost, "sess", it.item.remoteSess)
+			msgs = append(msgs, sanitizeStatusText(it.item.remoteHost+"/"+it.item.remoteSess+" was already gone"))
+			forget = append(forget, it.item)
 		default:
-			logEvent("picker", "event", "kill_remote_session_failed", "host", it.remoteHost, "sess", it.remoteSess, "error", err.Error())
-			msgs = append(msgs, remoteKillFailure(it.remoteHost, it.remoteSess, err))
+			logEvent("picker", "event", "kill_remote_session_failed", "host", it.item.remoteHost, "sess", it.item.remoteSess, "error", it.err.Error())
+			msgs = append(msgs, sanitizeStatusText(remoteKillFailure(it.item.remoteHost, it.item.remoteSess, it.err)))
 		}
 	}
 	m = m.forgetRemoteRows(forget)
-	if len(msgs) > 0 {
+	switch {
+	case len(msgs) > 0:
 		m.statusMsg = strings.Join(msgs, "; ")
+	case res.outcome == killRunCancelled:
+		// No target was attempted before the cancel landed, so res.results is
+		// empty and the per-item branches above never ran.
+		m.statusMsg = sanitizeStatusText("cancelled remote kill of " + label)
 	}
+	return m, nil
+}
+
+// handleKillRunKey is the whole keymap while a kill batch is in flight. A
+// second ctrl+c while already cancelling ends the TUI.
+func (m tuiModel) handleKillRunKey(key string) (tea.Model, tea.Cmd) {
+	if key != "esc" && key != "ctrl+c" {
+		return m, nil
+	}
+	if m.killRun.cancelling {
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	next := *m.killRun
+	next.cancelling = true
+	m.killRun = &next
+	m.killRun.run.cancel()
 	return m, nil
 }
 

@@ -200,6 +200,10 @@ func (m tuiModel) renderHints() string {
 		return m.renderAttachStatus(dim, key)
 	}
 
+	if m.killRun != nil {
+		return m.renderKillStatus(dim, key)
+	}
+
 	if len(m.killConfirm) > 0 {
 		warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
 		prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
@@ -330,6 +334,26 @@ func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
 	if m.attach.cancelling {
 		hintKey, hintDesc = "^c", "quit"
 		head = frame + " cancelling " + m.attach.label + "…"
+	}
+
+	suffix := "  " + key.Render(hintKey) + dim.Render(":"+hintDesc)
+	suffixWidth := visibleWidth(suffix)
+	if suffixWidth >= m.width {
+		return fitVisibleWidth("  "+head+suffix, m.width)
+	}
+	return fitVisibleWidth("  "+head, m.width-suffixWidth) + suffix
+}
+
+// renderKillStatus replaces the hint line while a kill batch is in flight,
+// mirroring renderAttachStatus's reserved-suffix layout.
+func (m tuiModel) renderKillStatus(dim, key lipgloss.Style) string {
+	frame := attachSpinnerFrames[m.killRun.frame%len(attachSpinnerFrames)]
+
+	hintKey, hintDesc := "esc", "cancel"
+	head := frame + " killing " + m.killRun.label + " (" + strconv.Itoa(m.killRun.index+1) + "/" + strconv.Itoa(m.killRun.total) + ")"
+	if m.killRun.cancelling {
+		hintKey, hintDesc = "^c", "quit"
+		head = frame + " cancelling " + m.killRun.label + "…"
 	}
 
 	suffix := "  " + key.Render(hintKey) + dim.Render(":"+hintDesc)
