@@ -170,6 +170,9 @@
     + " '' Kill X { "
     + menuEsc1 (menuCtlRun "kill-window" "")
     + " }"
+    + " Respawn R { "
+    + menuEsc1 (menuCtlRun "respawn-window" "")
+    + " }"
     + " Rename n { "
     + menuEsc1 menuRenamePrompt
     + " }"
@@ -192,9 +195,10 @@
     + " \"#{?mouse_hyperlink,Type #[underscore]#{=/9/...:mouse_hyperlink},}\" C-h { copy-mode -q ; send-keys -l \"#{q:mouse_hyperlink}\" }"
     + " \"#{?mouse_hyperlink,Copy #[underscore]#{=/9/...:mouse_hyperlink},}\" h { copy-mode -q ; set-buffer \"#{q:mouse_hyperlink}\" } ''";
 
-  # mirrorPaneMenu keeps Respawn as the one local structural item, relabelled:
-  # on a mirror it redials the renderer (#547) rather than restarting a
-  # program.
+  # mirrorPaneMenu keeps two distinct gestures: Respawn asks the REMOTE to
+  # restart the program in the pane (stock label and key), and Reconnect redials
+  # the local renderer (#547), moved off R because one menu cannot carry two
+  # items on one key.
   mirrorPaneMenu = pos:
     "display-menu -T \"#[align=centre]#{pane_index} (#{pane_id})\" "
     + pos
@@ -215,7 +219,10 @@
     + " '' Kill X { "
     + menuEsc1 (menuCtlRun "kill-pane" "")
     + " }"
-    + " Reconnect R { respawn-pane -k }"
+    + " Respawn R { "
+    + menuEsc1 (menuCtlRun "respawn-pane" "")
+    + " }"
+    + " Reconnect e { respawn-pane -k }"
     + " \"#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}\" z { "
     + menuEsc1 (menuCtlRun "zoom" "")
     + " }";
@@ -645,6 +652,25 @@
     bind-key -N 'Rename current window' , if-shell -F '${bridgeGate}' { command-prompt -I'#{@window_bridge_name}' { run-shell "${bridgeCtl} rename #{q:@bridge_pane} #{qs:1}" %1 } } { command-prompt -I'#W' { rename-window -- '%%' ; set-window-option @window_manual_name 1 } }
     bind-key -N 'Swap the active pane with the pane above' '{' if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} swap #{q:@bridge_pane} U" } { swap-pane -U }
     bind-key -N 'Swap the active pane with the pane below' '}' if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} swap #{q:@bridge_pane} D" } { swap-pane -D }
+
+    # Layout presets, cycles and rotations. A local select-layout on a mirror
+    # reshapes only the renderer panes: the remote panes keep their sizes, the
+    # programs in them render at the old ones, and the next remote %layout-change
+    # reverts the local shape. So the gesture runs on the remote through the same
+    # ctl path, and the mirror repaints from the remote's new layout. The else
+    # branches are next-3.9's stock prefix bindings verbatim; none of these keys
+    # was bound by this config before.
+    bind-key -N 'Select even-horizontal layout' M-1 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} even-horizontal" } { select-layout even-horizontal }
+    bind-key -N 'Select even-vertical layout' M-2 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} even-vertical" } { select-layout even-vertical }
+    bind-key -N 'Select main-horizontal layout' M-3 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} main-horizontal" } { select-layout main-horizontal }
+    bind-key -N 'Select main-vertical layout' M-4 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} main-vertical" } { select-layout main-vertical }
+    bind-key -N 'Select tiled layout' M-5 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} tiled" } { select-layout tiled }
+    bind-key -N 'Select main-horizontal-mirrored layout' M-6 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} main-horizontal-mirrored" } { select-layout main-horizontal-mirrored }
+    bind-key -N 'Select main-vertical-mirrored layout' M-7 if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} main-vertical-mirrored" } { select-layout main-vertical-mirrored }
+    bind-key -N 'Select next layout' Space if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} next" } { next-layout }
+    bind-key -N 'Spread panes out' E if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} layout #{q:@bridge_pane} spread" } { select-layout -E }
+    bind-key -N 'Rotate panes up' C-o if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} rotate #{q:@bridge_pane}" } { rotate-window }
+    bind-key -N 'Rotate panes down' M-o if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} rotate #{q:@bridge_pane} D" } { rotate-window -D }
 
     # Alt-shift window navigation: H/L step within a row, J/K move row-to-row in
     # the reflowed multi-line window grid (no-op when there is no row that way).

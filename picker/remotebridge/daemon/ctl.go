@@ -50,6 +50,13 @@ type ctlState struct {
 	// Intents coalesce, so a burst of gestures in one window is one reconcile.
 	wantWindows bool
 	wantLayout  map[string]bool
+	// wantReseed names remote WINDOWS whose mirror needs a fresh screen —
+	// respawn-pane/-window clear the remote screen, and control mode never
+	// carries the clear, so the mirror keeps stale bytes until the pane is
+	// re-seeded from the remote. Keyed by window, not pane: respawn-window
+	// keeps the window's FIRST pane, which is not necessarily the active pane
+	// the ctl request carried, so no pane id is trustworthy at command time.
+	wantReseed map[string]bool
 }
 
 func newCtlState() *ctlState {
@@ -57,6 +64,7 @@ func newCtlState() *ctlState {
 		paneToWin:  map[string]string{},
 		focus:      map[string]*focusState{},
 		wantLayout: map[string]bool{},
+		wantReseed: map[string]bool{},
 	}
 }
 
@@ -91,10 +99,11 @@ func (c *ctlState) forgetWindow(remoteWin string) {
 	}
 	delete(c.focus, remoteWin)
 	delete(c.wantLayout, remoteWin)
+	delete(c.wantReseed, remoteWin)
 }
 
 // takeIntents removes and returns the pending reconcile work.
-func (c *ctlState) takeIntents() (windows bool, layouts []string) {
+func (c *ctlState) takeIntents() (windows bool, layouts []string, reseeds []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	windows = c.wantWindows
@@ -103,7 +112,11 @@ func (c *ctlState) takeIntents() (windows bool, layouts []string) {
 		layouts = append(layouts, w)
 		delete(c.wantLayout, w)
 	}
-	return windows, layouts
+	for w := range c.wantReseed {
+		reseeds = append(reseeds, w)
+		delete(c.wantReseed, w)
+	}
+	return windows, layouts, reseeds
 }
 
 // ctlRequest is a decoded, validated FrameCtl: the remote commands to run and
@@ -112,6 +125,10 @@ type ctlRequest struct {
 	cmds        []string // control-mode command lines, in order
 	wantWindows bool
 	wantLayout  string // remote window id, or "" for none
+	// wantReseed names the remote window whose mirror needs a fresh screen
+	// after this verb, or "" for none. See ctlState.wantReseed for why it is
+	// window-scoped rather than a pane id.
+	wantReseed string
 	// invalidate names the window whose remote-active-pane belief this verb
 	// makes unknowable (the new pane does not exist at command time).
 	invalidate string
@@ -138,6 +155,9 @@ type verb struct {
 	optArgs int
 	windows bool
 	layout  bool
+	// reseed marks a verb that clears the remote screen (respawn-*), so the
+	// mirror must be re-seeded from the remote or it keeps stale bytes.
+	reseed bool
 	// moves is true when the verb implicitly changes the remote's current pane.
 	moves bool
 	// needsView marks a verb whose effect on the remote depends on WHICH
@@ -162,6 +182,7 @@ type verb struct {
 var (
 	resizeDirs = map[string]string{"U": "-U", "D": "-D", "L": "-L", "R": "-R"}
 	swapDirs   = map[string]string{"U": "-U", "D": "-D"}
+	rotateDirs = map[string]string{"U": "-U", "D": "-D"}
 	// The closed set of tools a bind may launch on the remote: a name reaches a
 	// remote shell only by being a key here, so the socket peer cannot smuggle
 	// one in.
@@ -179,6 +200,30 @@ var (
 		"lazygit": remoteFloatFull,
 	}
 )
+
+// layoutCommand is one allow-listed entry of the layout verb: the remote
+// command's own verb, plus a trailing preset name or flag (empty for the plain
+// cycle commands). The pane target is spliced in at build time, so nothing the
+// socket peer sends reaches the remote command line as free-form layout text.
+type layoutCommand struct {
+	verb string
+	arg  string
+}
+
+// layoutCommands is the closed set of layout gestures a bind may ask for: the
+// seven select-layout presets, the two cycle commands, and the -E spread.
+var layoutCommands = map[string]layoutCommand{
+	"even-horizontal":          {verb: "select-layout", arg: "even-horizontal"},
+	"even-vertical":            {verb: "select-layout", arg: "even-vertical"},
+	"main-horizontal":          {verb: "select-layout", arg: "main-horizontal"},
+	"main-vertical":            {verb: "select-layout", arg: "main-vertical"},
+	"tiled":                    {verb: "select-layout", arg: "tiled"},
+	"main-horizontal-mirrored": {verb: "select-layout", arg: "main-horizontal-mirrored"},
+	"main-vertical-mirrored":   {verb: "select-layout", arg: "main-vertical-mirrored"},
+	"next":                     {verb: "next-layout"},
+	"previous":                 {verb: "previous-layout"},
+	"spread":                   {verb: "select-layout", arg: "-E"},
+}
 
 // remoteFloatShort and remoteFloatFull are config/tmux.conf.nix's
 // floatShort/floatFull mkFloat shapes, always carrying -A: the local bind's
@@ -229,6 +274,17 @@ var verbs = map[string]verb{
 	"kill-pane": {layout: true, windows: true, moves: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
 		return []string{fmt.Sprintf("kill-pane -t %s", pane)}, nil
 	}},
+	// respawn-pane -k restarts the remote program in place (same pane id, same
+	// active pane), so only the re-seed is owed — not a layout/moves reconcile.
+	"respawn-pane": {reseed: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
+		return []string{fmt.Sprintf("respawn-pane -k -t %s", pane)}, nil
+	}},
+	// respawn-window -k destroys every remote pane but the window's FIRST
+	// (spawn.c), so the layout reconcile drops the lost renderers and the first
+	// pane becomes active (moves) — use the window-scoped re-seed, never a pane id.
+	"respawn-window": {layout: true, moves: true, reseed: true, build: func(_, win, _ string, _ []string) ([]string, error) {
+		return []string{fmt.Sprintf("respawn-window -k -t %s", win)}, nil
+	}},
 	"resize": {args: 2, layout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
 		dir, ok := resizeDirs[a[0]]
 		if !ok {
@@ -262,6 +318,42 @@ var verbs = map[string]verb{
 			return nil, fmt.Errorf("swap: bad direction %q", a[0])
 		}
 		return []string{fmt.Sprintf("swap-pane -t %s %s", pane, dir)}, nil
+	}},
+	// Layout goes to the remote for the same reason zoom does: a local
+	// select-layout reshapes only the renderer panes, so the remote panes keep
+	// their sizes, the programs in them render at the old ones, and the next
+	// remote %layout-change reverts the local shape. The layout name is
+	// allow-listed rather than forwarded: the socket peer may only pick a verb
+	// and a target, never a free-form layout string.
+	//
+	// None of these presets, nor next/previous/spread, changes which pane id is
+	// active (measured on next-3.9), so no `moves` — the daemon's active-pane
+	// belief stays valid and the reconcile it schedules refreshes the geometry.
+	"layout": {args: 1, layout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+		c, ok := layoutCommands[a[0]]
+		if !ok {
+			return nil, fmt.Errorf("layout: bad layout %q", a[0])
+		}
+		cmd := c.verb + " -t " + pane
+		if c.arg != "" {
+			cmd += " " + c.arg
+		}
+		return []string{cmd}, nil
+	}},
+	// rotate-window DOES change which pane id is active (measured: %2 -> %0 on
+	// a three-pane window), so it carries `moves` and the daemon invalidates its
+	// active-pane belief for the reconcile to re-learn. Without that the focus
+	// echo guard would suppress a later focus command against a stale belief.
+	"rotate": {optArgs: 1, layout: true, moves: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+		dir := ""
+		if len(a) == 1 {
+			d, ok := rotateDirs[a[0]]
+			if !ok {
+				return nil, fmt.Errorf("rotate: bad direction %q", a[0])
+			}
+			dir = d + " "
+		}
+		return []string{fmt.Sprintf("rotate-window %s-t %s", dir, pane)}, nil
 	}},
 	// -t '<sess>:' is a session target with the index unspecified: tmux picks the
 	// lowest free index and makes the new window active (verified), matching the
@@ -657,6 +749,9 @@ func (c *ctlState) parseCtl(argv []string, sess string) (ctlRequest, error) {
 	if v.layout {
 		req.wantLayout = win
 	}
+	if v.reseed {
+		req.wantReseed = win
+	}
 	if v.moves {
 		req.invalidate = win
 	}
@@ -688,6 +783,9 @@ func (c *ctlState) submit(req ctlRequest, send func(...string) bool) bool {
 	}
 	if req.wantLayout != "" {
 		c.wantLayout[req.wantLayout] = true
+	}
+	if req.wantReseed != "" {
+		c.wantReseed[req.wantReseed] = true
 	}
 	// A verb that implicitly moves the remote's current pane leaves the belief
 	// unknowable at command time (the new pane does not exist yet), so invalidate

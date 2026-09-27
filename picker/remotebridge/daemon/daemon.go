@@ -1103,8 +1103,8 @@ func Run(cfg Config) error {
 	settle := func(c *ctlConn) (done bool) {
 		for {
 			queued := c.async.take()
-			wantWindows, layouts := cst.takeIntents()
-			if len(queued) == 0 && !wantWindows && len(layouts) == 0 {
+			wantWindows, layouts, reseeds := cst.takeIntents()
+			if len(queued) == 0 && !wantWindows && len(layouts) == 0 && len(reseeds) == 0 {
 				return false
 			}
 			for _, q := range coalesceLayoutChanges(queued) {
@@ -1126,6 +1126,12 @@ func Run(cfg Config) error {
 						retireMirror(cfg, send, router, waitHellosFn, cst, reg, cv, rt, remoteID)
 					}
 				}
+			}
+			// After the layout loop, never before: a respawn-window's reconcile
+			// removes the lost renderers first, so the re-seed reaches the
+			// panes that survive. A window the reconcile retired is gone.
+			for _, remoteWin := range reseeds {
+				reseedWindow(reg, router, rt, remoteWin, "after respawn")
 			}
 		}
 	}
@@ -1831,6 +1837,36 @@ func handleContinue(router *Router, rt roundTrip, paneID string) {
 		fmt.Fprintf(os.Stderr, "daemon: %%continue reseed for %s: %v\n", paneID, err)
 	}
 	s.resume()
+}
+
+// reseedWindow repaints every mirrored pane of one remote window from the
+// remote's own screens. It is the respawn re-seed: respawn-* clears the remote
+// screen, control mode carries no clear, and without this the mirror keeps the
+// old program's bytes until the new one repaints over them. Reuses PaneSeeds so
+// the seed-before-output ordering holds and #802's mouse-mode reassert applies.
+//
+// Called from the main loop (settle), the only place a round-trip may run.
+func reseedWindow(reg *registry, router *Router, rt roundTrip, remoteWin, reason string) {
+	mw, ok := reg.byRemoteID(remoteWin)
+	if !ok {
+		return
+	}
+	panes := mw.allRemotePanes()
+	ids := make([]string, 0, len(panes))
+	sinks := make([]*outputSink, 0, len(panes))
+	for _, id := range panes {
+		if s := router.sink(id); s != nil {
+			ids = append(ids, id)
+			sinks = append(sinks, s)
+		}
+	}
+	PaneSeeds(rt, ids, func(i int, seed []byte, err error) {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "daemon: reseed %s %s: %v\n", ids[i], reason, err)
+			return
+		}
+		enqueueSeedWithReplay(sinks[i], seed)
+	})
 }
 
 // reseedDropped repaints every pane that lost frames to a full buffer.

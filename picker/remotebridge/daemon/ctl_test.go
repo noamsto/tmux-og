@@ -31,6 +31,7 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 		want    []string
 		windows bool
 		layout  string
+		reseed  string
 	}{
 		{
 			name:   "split -h carries the pane cwd and targets the pane by id",
@@ -118,6 +119,106 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			want: []string{fmt.Sprintf("run-shell -b -t %%3 %s",
 				tmuxQuote("exec /bin/sh -c "+tmuxQuote(enrichRefreshScript("@1"))))},
 		},
+		{
+			// The seven preset names, allow-listed on the daemon side so the
+			// socket peer can never name an arbitrary layout.
+			name:   "layout even-horizontal is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "even-horizontal"},
+			want:   []string{"select-layout -t %3 even-horizontal"},
+			layout: "@1",
+		},
+		{
+			name:   "layout even-vertical is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "even-vertical"},
+			want:   []string{"select-layout -t %3 even-vertical"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-horizontal is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-horizontal"},
+			want:   []string{"select-layout -t %3 main-horizontal"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-vertical is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-vertical"},
+			want:   []string{"select-layout -t %3 main-vertical"},
+			layout: "@1",
+		},
+		{
+			name:   "layout tiled is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "tiled"},
+			want:   []string{"select-layout -t %3 tiled"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-horizontal-mirrored is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-horizontal-mirrored"},
+			want:   []string{"select-layout -t %3 main-horizontal-mirrored"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-vertical-mirrored is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-vertical-mirrored"},
+			want:   []string{"select-layout -t %3 main-vertical-mirrored"},
+			layout: "@1",
+		},
+		{
+			// Space's stock next-layout has no layout name and preserves the
+			// active pane, so it is a distinct command behind the same verb.
+			name:   "layout next is the next-layout command",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "next"},
+			want:   []string{"next-layout -t %3"},
+			layout: "@1",
+		},
+		{
+			name:   "layout previous is the previous-layout command",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "previous"},
+			want:   []string{"previous-layout -t %3"},
+			layout: "@1",
+		},
+		{
+			// E's stock spread. select-layout -E takes no layout name.
+			name:   "layout spread is select-layout -E",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "spread"},
+			want:   []string{"select-layout -t %3 -E"},
+			layout: "@1",
+		},
+		{
+			// rotate-window with no direction flag: the stock C-o command.
+			name:   "rotate defaults to the stock rotate-window",
+			argv:   []string{wire.CtlProtocolVersion, "rotate", "%3"},
+			want:   []string{"rotate-window -t %3"},
+			layout: "@1",
+		},
+		{
+			name:   "rotate U maps to -U",
+			argv:   []string{wire.CtlProtocolVersion, "rotate", "%3", "U"},
+			want:   []string{"rotate-window -U -t %3"},
+			layout: "@1",
+		},
+		{
+			// M-o's stock rotate-window -D.
+			name:   "rotate D maps to -D",
+			argv:   []string{wire.CtlProtocolVersion, "rotate", "%3", "D"},
+			want:   []string{"rotate-window -D -t %3"},
+			layout: "@1",
+		},
+		{
+			name:   "respawn-pane restarts the remote pane and asks for a re-seed",
+			argv:   []string{wire.CtlProtocolVersion, "respawn-pane", "%3"},
+			want:   []string{"respawn-pane -k -t %3"},
+			reseed: "@1",
+		},
+		{
+			// respawn-window destroys every remote pane but the FIRST, so it
+			// re-seeds the window, reconciles the layout, and moves the active pane.
+			name:   "respawn-window restarts the remote window with a layout reconcile and a re-seed",
+			argv:   []string{wire.CtlProtocolVersion, "respawn-window", "%3"},
+			want:   []string{"respawn-window -k -t @1"},
+			layout: "@1",
+			reseed: "@1",
+		},
 	}
 
 	for _, tc := range tests {
@@ -136,6 +237,9 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			if req.wantLayout != tc.layout {
 				t.Errorf("wantLayout = %q, want %q", req.wantLayout, tc.layout)
 			}
+			if req.wantReseed != tc.reseed {
+				t.Errorf("wantReseed = %q, want %q", req.wantReseed, tc.reseed)
+			}
 		})
 	}
 }
@@ -152,6 +256,9 @@ func TestParseCtlRejects(t *testing.T) {
 		{"bad resize amount", []string{wire.CtlProtocolVersion, "resize", "%3", "U", "abc"}, "bad amount"},
 		{"resize amount out of range", []string{wire.CtlProtocolVersion, "resize", "%3", "U", "0"}, "bad amount"},
 		{"bad swap direction", []string{wire.CtlProtocolVersion, "swap", "%3", "L"}, "bad direction"},
+		{"layout rejects an unknown name", []string{wire.CtlProtocolVersion, "layout", "%3", "bogus"}, "bad layout"},
+		{"layout rejects a free-form layout string", []string{wire.CtlProtocolVersion, "layout", "%3", "even-horizontal; kill-server"}, "bad layout"},
+		{"rotate rejects an unknown direction", []string{wire.CtlProtocolVersion, "rotate", "%3", "X"}, "bad direction"},
 		{"wrong arity", []string{wire.CtlProtocolVersion, "resize", "%3", "U"}, "wants 2 argument"},
 		{"empty rename", []string{wire.CtlProtocolVersion, "rename", "%3", "|||"}, "empty name"},
 		{"truncated frame", []string{wire.CtlProtocolVersion, "split-h"}, "at least version"},
@@ -171,6 +278,70 @@ func TestParseCtlRejects(t *testing.T) {
 				t.Errorf("error %q, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// rotate-window rotates which pane id is active (measured on next-3.9: %2 ->
+// %0), so its verb must invalidate the daemon's active-pane belief; the layout
+// presets and next/previous/spread preserve it and must not. A missed
+// invalidation would leave the focus echo guard suppressing a needed focus.
+func TestParseCtlRotateInvalidatesActiveBelief(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+
+	for _, arg := range [][]string{{}, {"U"}, {"D"}} {
+		argv := append([]string{wire.CtlProtocolVersion, "rotate", "%3"}, arg...)
+		req, err := c.parseCtl(argv, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl(%q): %v", argv, err)
+		}
+		if req.invalidate != "@1" {
+			t.Errorf("rotate invalidate = %q, want @1", req.invalidate)
+		}
+		if req.wantLayout != "@1" {
+			t.Errorf("rotate wantLayout = %q, want @1", req.wantLayout)
+		}
+	}
+
+	for _, name := range []string{"even-horizontal", "main-vertical", "next", "previous", "spread"} {
+		req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "layout", "%3", name}, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl layout %s: %v", name, err)
+		}
+		if req.invalidate != "" {
+			t.Errorf("layout %s invalidate = %q, want none", name, req.invalidate)
+		}
+		if req.wantLayout != "@1" {
+			t.Errorf("layout %s wantLayout = %q, want @1", name, req.wantLayout)
+		}
+	}
+}
+
+// respawn-pane keeps the same pane id and active pane, so it must NOT
+// invalidate the focus belief; respawn-window destroys every pane but the
+// window's first and re-activates it, so it must.
+func TestParseCtlRespawnInvalidatesActiveBelief(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "respawn-pane", "%3"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl respawn-pane: %v", err)
+	}
+	if req.invalidate != "" {
+		t.Errorf("respawn-pane invalidate = %q, want none", req.invalidate)
+	}
+	if req.wantLayout != "" {
+		t.Errorf("respawn-pane wantLayout = %q, want none", req.wantLayout)
+	}
+
+	req, err = c.parseCtl([]string{wire.CtlProtocolVersion, "respawn-window", "%3"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl respawn-window: %v", err)
+	}
+	if req.invalidate != "@1" {
+		t.Errorf("respawn-window invalidate = %q, want @1", req.invalidate)
+	}
+	if req.wantWindows {
+		t.Error("respawn-window wants a window reconcile, want none (the window survives)")
 	}
 }
 
@@ -263,6 +434,9 @@ func TestTakeIntentsCoalescesAndDrains(t *testing.T) {
 		{wire.CtlProtocolVersion, "split-v", "%3"}, // same window: coalesces
 		{wire.CtlProtocolVersion, "split-h", "%9"}, // different window
 		{wire.CtlProtocolVersion, "new-window", "%2"},
+		{wire.CtlProtocolVersion, "respawn-pane", "%2"},   // reseed @1
+		{wire.CtlProtocolVersion, "respawn-window", "%3"}, // reseed + layout @1, coalesces
+		{wire.CtlProtocolVersion, "respawn-pane", "%9"},   // reseed @2
 	} {
 		req, err := c.parseCtl(argv, "rem")
 		if err != nil {
@@ -271,17 +445,23 @@ func TestTakeIntentsCoalescesAndDrains(t *testing.T) {
 		c.submit(req, func(...string) bool { return true })
 	}
 
-	windows, layouts := c.takeIntents()
+	windows, layouts, reseeds := c.takeIntents()
 	if !windows {
 		t.Error("new-window should have registered the window reconcile")
 	}
 	if len(layouts) != 2 {
 		t.Errorf("layouts = %v, want 2 distinct windows", layouts)
 	}
+	// @1 and @2 each got respawns; @1 coalesces its respawn-pane and
+	// respawn-window into one entry, so exactly the two respawned windows
+	// remain.
+	if len(reseeds) != 2 {
+		t.Errorf("reseeds = %v, want 2 distinct windows", reseeds)
+	}
 
-	windows, layouts = c.takeIntents()
-	if windows || len(layouts) != 0 {
-		t.Errorf("second take should be empty, got %v %v", windows, layouts)
+	windows, layouts, reseeds = c.takeIntents()
+	if windows || len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("second take should be empty, got %v %v %v", windows, layouts, reseeds)
 	}
 }
 
@@ -293,8 +473,8 @@ func TestForgetWindowDropsState(t *testing.T) {
 
 	c.forgetWindow("@1")
 
-	if _, layouts := c.takeIntents(); len(layouts) != 0 {
-		t.Errorf("layouts = %v, want none after forgetWindow", layouts)
+	if _, layouts, reseeds := c.takeIntents(); len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("layouts = %v reseeds = %v, want none after forgetWindow", layouts, reseeds)
 	}
 	if _, err := c.parseCtl([]string{wire.CtlProtocolVersion, "split-h", "%3"}, "rem"); err == nil {
 		t.Error("a pane of a forgotten window must no longer resolve")
@@ -1278,8 +1458,8 @@ func TestHandleCtlNacksAndRaisesOnAStaleViewer(t *testing.T) {
 	}
 	// No intent may be registered either, or the next drain reconciles a
 	// window for a command that was never sent.
-	if windows, layouts := cst.takeIntents(); windows || len(layouts) != 0 {
-		t.Errorf("intents = (%v, %v), want none", windows, layouts)
+	if windows, layouts, reseeds := cst.takeIntents(); windows || len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("intents = (%v, %v, %v), want none", windows, layouts, reseeds)
 	}
 	if got := view.Desired(); got != "foot" {
 		t.Errorf("Desired = %q, want foot — the raised dial reads it", got)
