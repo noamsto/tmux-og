@@ -18,8 +18,9 @@ load helper
 
 setup() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
-	export TMUX_TMPDIR="/tmp/og-notify-$$-${BATS_TEST_NUMBER}"
-	rm -rf "$TMUX_TMPDIR"
+	OG_TMUX_DIR="/tmp/og-notify-$$-${BATS_TEST_NUMBER}"
+	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX TMUX_PANE
 
@@ -47,7 +48,7 @@ setup() {
 
 teardown() {
 	[ -n "${SOCK:-}" ] && "$REAL_TMUX" -L "$SOCK" kill-server 2>/dev/null
-	[ -n "${TMUX_TMPDIR:-}" ] && rm -rf "$TMUX_TMPDIR"
+	rm -rf "${OG_TMUX_DIR:-}"
 	return 0
 }
 

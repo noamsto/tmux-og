@@ -44,8 +44,8 @@ setup() {
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/og-enrich-lock"
 
-	TMUX_TMPDIR="$(mktemp -d /tmp/og783.XXXXXX)"
-	export TMUX_TMPDIR
+	OG_TMUX_DIR="$(mktemp -d /tmp/og783.XXXXXX)"
+	export TMUX_TMPDIR="$OG_TMUX_DIR"
 
 	# In the server's GLOBAL environment before it starts: run-shell's spawned
 	# shell inherits it there, and no path characters ride inside a session
@@ -150,7 +150,7 @@ teardown() {
 	inner kill-server 2>/dev/null || true
 	outer kill-server 2>/dev/null || true
 	[[ -n ${SLEEP_PID:-} ]] && kill "$SLEEP_PID" 2>/dev/null
-	rm -rf "$TMUX_TMPDIR" 2>/dev/null || true
+	rm -rf "${OG_TMUX_DIR:-}" 2>/dev/null || true
 	return 0
 }
 

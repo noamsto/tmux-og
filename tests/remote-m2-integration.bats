@@ -18,8 +18,9 @@ bats_require_minimum_version 1.5.0 # run !
 # before the assertions below get to read pane dims.
 
 setup() {
-	export TMUX_TMPDIR="/tmp/og-m2-bats-$$"
-	rm -rf "$TMUX_TMPDIR"
+	OG_TMUX_DIR="/tmp/og-m2-bats-$$"
+	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	# DST sets global pane-base-index 1, matching the real host's render
 	# config (this bit the M2.1 smoke test): spawnRenderer/kill-pane target
@@ -75,7 +76,7 @@ teardown() {
 	$SRC kill-server 2>/dev/null || true
 	$DST kill-server 2>/dev/null || true
 	tmux -L m2obs kill-server 2>/dev/null || true # pty host for the attached-client test
-	rm -rf "$TMUX_TMPDIR"
+	rm -rf "${OG_TMUX_DIR:-}"
 }
 
 # sorted_dims prints TARGET_ARGS's pane dims, one "WxH" per line, sorted —

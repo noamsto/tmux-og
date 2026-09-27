@@ -19,8 +19,9 @@ setup() {
 	GRID="$REPO_ROOT/scripts/tmux-grid-refit.sh"
 	FLOAT_SCRIPT="$REPO_ROOT/scripts/tmux-float-refit.sh"
 
-	export TMUX_TMPDIR="/tmp/og-gr-$$-${BATS_TEST_NUMBER}"
-	rm -rf "$TMUX_TMPDIR"
+	OG_TMUX_DIR="/tmp/og-gr-$$-${BATS_TEST_NUMBER}"
+	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
 	# A private TMUX_TMPDIR does not isolate CLAUDE_STATUS_DIR (CLAUDE.md: it
@@ -49,7 +50,7 @@ setup() {
 teardown() {
 	[[ -n ${LOCKDIR:-} ]] && rmdir "$LOCKDIR" 2>/dev/null || true
 	tmux kill-server 2>/dev/null || true
-	rm -rf "$TMUX_TMPDIR"
+	rm -rf "${OG_TMUX_DIR:-}"
 }
 
 # make_grid <lead_position>: tag the pane at the 1-based position

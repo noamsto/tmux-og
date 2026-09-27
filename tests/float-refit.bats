@@ -27,8 +27,9 @@
 setup() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
 
-	export TMUX_TMPDIR="/tmp/og-fr-$$-${BATS_TEST_NUMBER}"
-	rm -rf "$TMUX_TMPDIR"
+	OG_TMUX_DIR="/tmp/og-fr-$$-${BATS_TEST_NUMBER}"
+	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
 	# A private TMUX_TMPDIR does not isolate CLAUDE_STATUS_DIR (CLAUDE.md: it
@@ -49,7 +50,7 @@ setup() {
 
 teardown() {
 	tmux kill-server 2>/dev/null || true
-	rm -rf "$TMUX_TMPDIR"
+	rm -rf "${OG_TMUX_DIR:-}"
 }
 
 # Echoes "width|height|left|top" for a -B heavy floating pane created (or
