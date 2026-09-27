@@ -330,6 +330,87 @@ func TestBranchBlockLongBranchStaysInsideCardWidth(t *testing.T) {
 	}
 }
 
+// TestIssueBlockLongIDStaysInsideCardWidth: issueBlock() must truncate its
+// head line (glyph + "  " + issueID) — it renders raw provider data with no
+// upper bound and previously skipped truncate() entirely.
+func TestIssueBlockLongIDStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{
+			name: "long-ascii",
+			id:   "ENG-67891011121314151617181920212223242526",
+		},
+		{
+			name: "wide-rune",
+			id:   "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴-id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+				issueProvider: "linear", issueID: tc.id,
+				issueTitle: "carousel nav", issueURL: "https://linear.app/x/issue/1",
+			}}
+			out := render(m)
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
+	}
+}
+
+// TestPRBlockLongBadgeStaysInsideCardWidth: prBlock() must truncate its
+// badge line (glyph + " #" + prNumber + optional progress fraction) — it
+// renders raw data with no upper bound and previously skipped truncate().
+func TestPRBlockLongBadgeStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name     string
+		prNumber string
+		prCheck  string
+	}{
+		{
+			name:     "long-ascii",
+			prNumber: "123456789012345678901234567890",
+			prCheck:  "pending",
+		},
+		{
+			name:     "wide-rune",
+			prNumber: "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴-num",
+			prCheck:  "pending",
+		},
+		{
+			name:     "long-progress",
+			prNumber: "42",
+			prCheck:  "pending",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+				prNumber:   tc.prNumber,
+				prState:    "open",
+				prCheck:    tc.prCheck,
+				prProgress: "999998/999999",
+				prMergeable: "mergeable",
+				prTitle:    "kitty nav",
+				branch:     "b",
+			}}
+			out := render(m)
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
+	}
+}
+
 // TestFooterLongFlashStaysInsideCardWidth: footer() must truncate m.flash to
 // the room actually left on its row, not the full panel width, or a long
 // flash (an exec error, a CLI stderr line) overflows the card's border.

@@ -122,7 +122,7 @@ func (m model) issueBlock() string {
 	if w.issueProvider == "linear" {
 		glyph = c.icLinear
 	}
-	head := m.sty(c.blue).Bold(true).Render(glyph + "  " + w.issueID)
+	head := m.sty(c.blue).Bold(true).Render(truncate(glyph+"  "+w.issueID, m.titleWidth()))
 	title := m.sty(c.fg).Render(truncate(w.issueTitle, m.titleWidth()))
 	if w.issueURL == "" {
 		noURL := m.sty(c.overlay0).Render(truncate("no url — "+w.noURLReason(), m.titleWidth()))
@@ -161,6 +161,7 @@ func (m model) prBlock() string {
 	if progress != "" {
 		badge += m.sty(c.overlay0).Render("  " + progress + " checks")
 	}
+	badge = truncate(badge, m.titleWidth())
 	title := m.sty(c.fg).Render(truncate(w.prTitle, m.titleWidth()))
 	return lipgloss.JoinVertical(lipgloss.Left, badge, title)
 }
