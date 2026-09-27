@@ -8,6 +8,10 @@
 // client and reads the pane's echo back as `%output` notifications, so
 // probing a pane the same way measures the same server-side latency the
 // daemon would see, without running the bridge itself.
+//
+// -pane must name a quiet echo pane (e.g. one running `cat`): the marker is
+// matched in the pane's contiguous output, so a pane printing its own output
+// could split the marker across two `%output` notifications or bury it.
 package main
 
 import (
@@ -23,9 +27,9 @@ import (
 )
 
 // unescape reverses tmux control mode's octal escaping of %output payloads:
-// any byte outside printable ASCII is written as a backslash followed by
-// three octal digits. A trailing backslash not followed by three octal
-// digits is not an escape and is kept as-is.
+// tmux escapes every backslash and every byte outside printable ASCII as a
+// backslash followed by three octal digits. A trailing backslash not
+// followed by three octal digits is not an escape and is kept as-is.
 func unescape(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -65,7 +69,7 @@ func main() {
 	tmuxBin := flag.String("tmux", "tmux", "tmux binary")
 	sock := flag.String("L", "probe", "socket name")
 	sess := flag.String("t", "probe", "session to attach the control client to")
-	pane := flag.String("pane", "", "pane id to type into")
+	pane := flag.String("pane", "", "pane id to type into (must be a quiet echo pane, e.g. running cat)")
 	n := flag.Int("n", 200, "samples")
 	interval := flag.Duration("interval", 50*time.Millisecond, "gap between keystrokes")
 	timeout := flag.Duration("timeout", 5*time.Second, "per-sample timeout")
@@ -90,9 +94,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "latencyprobe: start:", err)
 		os.Exit(1)
 	}
+	done := make(chan struct{})
 	defer func() {
 		in.Close()
 		cmd.Process.Kill()
+		<-done
 		cmd.Wait()
 	}()
 
@@ -102,6 +108,7 @@ func main() {
 	buf := ""
 	prefix := "%output " + *pane + " "
 	go func() {
+		defer close(done)
 		sc := bufio.NewScanner(out)
 		sc.Buffer(make([]byte, 1<<20), 1<<24)
 		for sc.Scan() {
@@ -127,6 +134,9 @@ func main() {
 				buf = buf[len(buf)-64:]
 			}
 			mu.Unlock()
+		}
+		if err := sc.Err(); err != nil {
+			fmt.Fprintln(os.Stderr, "latencyprobe: reading control client output:", err)
 		}
 	}()
 

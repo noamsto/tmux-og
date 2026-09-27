@@ -25,10 +25,13 @@ set -uo pipefail
 target=${1:-}
 [[ -z $target ]] && exit 0
 
-# Must stay byte-identical to the grid gate's geometry signature in
+# Must stay byte-identical to the grid gate's signature in
 # config/tmux.conf.tmpl (window-resized[10] / window-layout-changed) — a bats
-# guard fails the build if they drift.
-grid_sig_fmt='#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}'
+# guard fails the build if they drift. Covers every decision input below
+# (main-pane %, min role columns, aspect, and each tiled pane's @crew_role),
+# not just geometry, so the gate never skips an event that would change the
+# decision.
+grid_sig_fmt='#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}'
 
 # read_opt <option> <default> -> stdout: the window option's value, or <default>
 # when it is unset (show-options prints "invalid option" to stderr and exits 1).

@@ -97,8 +97,10 @@ evaluated in-process with no fork:
 - **Float gate.** Runs only when some floating pane carries `@float_geom`
   and its pane-scoped `@float_refit_size` differs from the window's current
   `WxH`.
-- **Grid gate.** Runs only when `@crew_grid=1` and the window's geometry
-  signature differs from `@grid_refit_layout`.
+- **Grid gate.** Runs only when `@crew_grid=1`, the window is not zoomed
+  (zoom is user state, mirroring the script's own zoom exit), and the
+  window's decision signature — every input the layout decision reads, not
+  just geometry — differs from `@grid_refit_layout`.
 
 Each script stamps the state it last verified. Crew grids needed their own
 gate because they are the busy windows: every dispatched worker window is

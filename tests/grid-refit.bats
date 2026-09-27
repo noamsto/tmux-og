@@ -431,9 +431,8 @@ layout_bug_reproduces() {
 	bash "$GRID" "$WIN"
 
 	# Poll for the post-apply window-layout-changed run to stamp
-	# @grid_refit_layout. On the CURRENT (unfixed) conf nothing ever stamps
-	# it, so a timeout here must not fail the test — only the count
-	# assertions below are the red/green signal.
+	# @grid_refit_layout. On a pre-#793 conf nothing stamps it; only the
+	# count assertions below are the signal.
 	local tries stamp
 	tries=0
 	stamp=""
@@ -588,4 +587,97 @@ layout_bug_reproduces() {
 	# A same-size storm against a float the script already stamped must fork
 	# no further float-refit job.
 	[ "$(refit_jobs tmux-float-refit)" = "$f0" ]
+}
+
+@test "a zoomed grid forks no refit on a same-size storm (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the post-apply window-layout-changed run to stamp
+	# @grid_refit_layout. On a pre-#793 conf nothing stamps it; only the
+	# count assertions below are the signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	tmux resize-pane -Z -t "$LEAD"
+	settle
+	local g0
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	# Without the zoom conjunct in the gate, the zoomed pane's geometry (it
+	# fills the window) differs from the pre-zoom stamp, so a same-size storm
+	# would fork on every event even though the script always exits on zoom.
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
+
+	tmux resize-pane -Z -t "$LEAD"
+
+	local gw lw first ok tries2
+	ok=0
+	tries2=0
+	while ((tries2 < 30)); do
+		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
+		first="$(first_pane)"
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ $gw == "60%" && $first == "$LEAD" && ${lw:-0} -ge 115 ]]; then
+			ok=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	# Unzooming restores the grid the script laid out before the zoom.
+	[ "$ok" -eq 1 ]
+}
+
+@test "a changed lead share is applied on the next event (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the post-apply window-layout-changed run to stamp
+	# @grid_refit_layout. On a pre-#793 conf nothing stamps it; only the
+	# lead-width assertion below is the signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	# A geometry-only gate signature never notices this option change, so the
+	# storm below skips the event and the lead share never shrinks — the
+	# regression the extended signature (fix A) covers.
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
+	storm
+
+	local lw tries2 shrunk
+	shrunk=0
+	tries2=0
+	while ((tries2 < 30)); do
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ -n $lw && $lw -le 85 ]]; then
+			shrunk=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$shrunk" -eq 1 ]
 }

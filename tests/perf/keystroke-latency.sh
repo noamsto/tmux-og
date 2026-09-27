@@ -12,10 +12,13 @@
 #      SAMPLES (probe sample count, default 400),
 #      VLOG=1 (run the remote server under `tmux -v` and print refit-hook
 #      fork counts after busy and reattach).
+# Needs GNU coreutils (`base64 -w`, `date +%s%N`) -- run inside the devshell.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TMUX_BIN="${TMUX_BIN:-./result/bin/tmux}"
+# Resolved once, absolute: several scenarios `cd` into $W/vlog before invoking
+# it, so a relative default would stop resolving after the first cd.
+TMUX_BIN="$(realpath "${TMUX_BIN:-./result/bin/tmux}")"
 SAMPLES="${SAMPLES:-400}"
 
 W="$(mktemp -d /tmp/og-perf.XXXX)"
@@ -185,7 +188,10 @@ run_probe() {
 report_refit_forks() {
 	[ "${VLOG:-0}" = 1 ] || return 0
 	local count jobs
-	count="$(grep -hoE 'job_run: cmd=.*/tmux-(grid|float)-refit ' "$W"/vlog/*.log 2>/dev/null | wc -l)"
+	# grep exits 1 with no match, which pipefail would propagate through
+	# `| wc -l` and trip set -e on a scenario that forked nothing -- exactly
+	# the passing case this reports on.
+	count="$({ grep -hoE 'job_run: cmd=.*/tmux-(grid|float)-refit ' "$W"/vlog/*.log 2>/dev/null || true; } | wc -l)"
 	jobs=$((count / 2))
 	echo "$1 refit_jobs=$jobs (log lines=$count)"
 }
@@ -225,10 +231,21 @@ scenario_churn() {
 scenario_attach() {
 	rm -f "$W/attach_t0"
 	start_chain load &
-	local chain_pid=$! t0 watch_pid
+	local chain_pid=$! t0 watch_pid deadline
 	# Both times count from the first daemon's launch (attach_t0), not from
 	# building the synthetic remote load.
-	until [ -s "$W/attach_t0" ]; do sleep 0.05; done
+	deadline=$((SECONDS + 30))
+	until [ -s "$W/attach_t0" ]; do
+		if ! kill -0 "$chain_pid" 2>/dev/null; then
+			echo "keystroke-latency: start_chain died before attach_t0 was written" >&2
+			return 1
+		fi
+		if [ "$SECONDS" -ge "$deadline" ]; then
+			echo "keystroke-latency: timed out waiting for attach_t0" >&2
+			return 1
+		fi
+		sleep 0.05
+	done
 	t0=$(<"$W/attach_t0")
 	# Timed in the background: the probe below runs for longer than the
 	# mirror takes to fill, so a check after it would only time the probe.
