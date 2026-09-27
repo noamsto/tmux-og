@@ -171,9 +171,11 @@ func TestSSHControlArgsCarryKeepalives(t *testing.T) {
 		}
 	}
 
-	// The session is the attach target and must stay one token even with spaces.
-	if got := args[len(args)-1]; got != shellQuote("tmux-og") {
-		t.Errorf("last arg = %q, want the shell-quoted session", got)
+	// The session is the attach target and must stay one token even with
+	// spaces, and must be pinned exact ("=" prefix) so tmux never resolves it
+	// as a unique PREFIX match onto a sibling session (#817).
+	if got := args[len(args)-1]; got != shellQuote("=tmux-og") {
+		t.Errorf("last arg = %q, want the shell-quoted exact session target", got)
 	}
 }
 
@@ -250,7 +252,7 @@ func TestTestLocalDialArgvHonoursOutageFile(t *testing.T) {
 	}
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	want := []string{"tmux", "-L", "src", "-C", "attach-session", "-t", "sess"}
+	want := []string{"tmux", "-L", "src", "-C", "attach-session", "-t", "=sess"}
 	if got := testLocalDialArgv(missing, "src", "sess"); !slices.Equal(got, want) {
 		t.Fatalf("outage file absent: got argv %v, want %v", got, want)
 	}

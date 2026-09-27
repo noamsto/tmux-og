@@ -90,7 +90,13 @@ func sshControlArgs(ctlSock, host, tmpdir, term, colorterm, termProgram, session
 	// ssh space-joins the post-host argv into one string run by the remote
 	// login shell, so shell-quote the session name (may contain spaces) to keep
 	// it a single target token.
-	return append(args, "-C", "attach-session", "-t", shellQuote(session))
+	//
+	// "=" pins the target to an exact name: tmux otherwise resolves an
+	// unambiguous name by unique PREFIX, so an attach meant for "rem" would
+	// silently land on a sibling like "rem-sibling" instead of refusing. A
+	// reattach/re-open must never land on a prefix-sibling session — a missing
+	// exact name has to answer as a refused attach, not a wrong one (#817).
+	return append(args, "-C", "attach-session", "-t", shellQuote("="+session))
 }
 
 // newSSHDialCmd builds one ssh-branch dial's *exec.Cmd. Extracted out of the
@@ -127,7 +133,8 @@ func testLocalDialArgv(outage, src, session string) []string {
 			return []string{"false"}
 		}
 	}
-	return []string{"tmux", "-L", src, "-C", "attach-session", "-t", session}
+	// exact, as sshControlArgs.
+	return []string{"tmux", "-L", src, "-C", "attach-session", "-t", "=" + session}
 }
 
 // remoteStoreScript is the paste upload's remote half (#361): it lands the
@@ -254,8 +261,9 @@ func main() {
 		tmuxArgv := strings.Fields(*remoteTmux)
 		if *sshCmd == "" {
 			newCtlCmd = func() (*exec.Cmd, string) {
+				// exact, as sshControlArgs.
 				cmd := exec.Command(tmuxArgv[0], append(append([]string{}, tmuxArgv[1:]...),
-					"-C", "attach-session", "-t", *session)...)
+					"-C", "attach-session", "-t", "="+*session)...)
 				cmd.Env = localCtlCmdEnv(view)
 				return cmd, ""
 			}

@@ -3934,8 +3934,10 @@ wait_daemon_exit() {
 	wait_bridge_state parked tmb "$BATS_TEST_TMPDIR/tmb.log"
 
 	# A fresh server on the original socket path, but with no "rem" session on
-	# it at all — the restart this test is named for.
-	server_restart other
+	# it at all — the restart this test is named for. Named "rem-sibling", not
+	# "other": a session that only extends "rem" must read as a refusal, never
+	# get attached as "rem" via tmux's unique-prefix resolution (#817 F1).
+	server_restart rem-sibling
 
 	refused=no
 	press_until_log "$BATS_TEST_TMPDIR/tmb.log" "refused the attach" tmb && refused=yes
@@ -4081,10 +4083,17 @@ wait_daemon_exit() {
 	outage_start
 	wait_bridge_state parked rsw "$BATS_TEST_TMPDIR/rsw.log"
 
-	server_restart other
+	# Named "rem-sibling", not "other": a session that only extends "rem" must
+	# read as a refusal, never get attached as "rem" via tmux's unique-prefix
+	# resolution (#817 F1).
+	server_restart rem-sibling
 
 	refused=no
 	press_until_log "$BATS_TEST_TMPDIR/rsw.log" "refused the attach" rsw && refused=yes
+	if [ "$refused" != yes ]; then
+		kill "$daemon_pid" 2>/dev/null || true
+		wait "$daemon_pid" 2>/dev/null || true
+	fi
 	[ "$refused" = yes ]
 
 	# The session comes back on the SAME (new) server, inside the 15s restore

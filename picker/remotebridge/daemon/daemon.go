@@ -1033,7 +1033,7 @@ func runMirror(cfg Config) error {
 		case endReplaced:
 			resetMirrorSession(cfg, "sleep", "2147483647")
 		case endGone:
-			tombstoneMirror(cfg)
+			tombstoneMirror(cfg, tombstoneText(cfg.RemoteHost, cfg.RemoteSession))
 		default:
 			cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
 		}
@@ -1066,13 +1066,13 @@ func runMirror(cfg Config) error {
 		}
 		if err != nil {
 			teardown()
-			return err
+			return tornDown{err}
 		}
 		stampMirrorWindow(cfg, localWin, rw.name)
 		mw := reg.add(rw.id, localWin)
 		if err := setupWindow(cfg, send, router, waitHellosFn, cst, mw, cv, rt); err != nil {
 			teardown()
-			return err
+			return tornDown{err}
 		}
 	}
 

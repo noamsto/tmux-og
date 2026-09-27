@@ -440,7 +440,7 @@ func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdent
 				// the deadline closed never reached tmux's answer at all.
 				if live {
 					if refusal, ok := next.attachRefusal(min(refusalDrainTimeout, cfg.identityTimeout())); ok {
-						fmt.Fprintf(os.Stderr, "daemon: %s refused the attach to %s (%s)\n", cfg.RemoteHost, cfg.RemoteSession, refusal)
+						fmt.Fprintf(os.Stderr, "daemon: %s refused the attach to %s (%s)\n", cfg.RemoteHost, cfg.RemoteSession, printable(refusal))
 						next.close()
 						refused = true
 						if !restoring {

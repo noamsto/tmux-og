@@ -14,6 +14,14 @@ import (
 // rebuild.
 var errServerReplaced = errors.New("daemon: remote tmux server replaced")
 
+// tornDown marks a runMirror error returned after its own teardown ran: the
+// local session is already killed and the pidfile gone, so the loop must not
+// tombstone, kill or retry — a session og-remote-open recreated under the same
+// name in that gap is never this daemon's to touch (#680).
+type tornDown struct{ error }
+
+func (e tornDown) Unwrap() error { return e.error }
+
 // Run mirrors every window of the bridged remote session, each into its own
 // local window, over a -CC connection, until %exit, an emptied mirror, the
 // local mirror session going away, or a stop — re-opening the mirror when a
@@ -35,37 +43,66 @@ var errServerReplaced = errors.New("daemon: remote tmux server replaced")
 // answered the mismatch would hand a verified-foreign stream to a half-built
 // mirror.
 func Run(cfg Config) error {
+	return runLoop(cfg, runMirror)
+}
+
+// runLoop is Run over an injectable run. A rebuild that fails before its
+// mirror stood is retried on the restore schedule: the new server confirmed
+// the session moments earlier, so the likely failure is the link still
+// flapping as the outage clears, and calling that "gone" would turn a
+// recoverable drop into a closed mirror. Only an exhausted schedule gives up.
+func runLoop(cfg Config, run func(Config) error) error {
+	bo := cfg.restoreSchedule()
+	var (
+		attempt int
+		start   time.Time
+	)
 	for {
-		err := runMirror(cfg)
+		err := run(cfg)
 		if errors.Is(err, errServerReplaced) {
 			if stopped(cfg.Shutdown) {
-				endReopen(cfg, false)
+				endReopen(cfg, "")
 				return nil
 			}
 			fmt.Fprintf(os.Stderr, "daemon: %s: re-opening %s on the new tmux server\n", cfg.RemoteHost, cfg.RemoteSession)
 			cfg.reopened = true
+			attempt, start = 0, bo.Now()
 			continue
 		}
-		if cfg.reopened && err != nil {
-			// A rebuild that never stood: runMirror's early returns (dial,
-			// identity timeout, list-windows, no windows) precede its
-			// teardown, so only the placeholder is left.
-			endReopen(cfg, !stopped(cfg.Shutdown))
+		if !cfg.reopened || err == nil || errors.As(err, new(tornDown)) {
+			return err
 		}
-		return err
+		// Every other return precedes runMirror's teardown, so only the
+		// placeholder the replaced run left is standing.
+		if stopped(cfg.Shutdown) {
+			endReopen(cfg, "")
+			return nil
+		}
+		attempt++
+		d, ok := bo.Next(attempt, start)
+		if !ok {
+			endReopen(cfg, reopenFailedText(cfg.RemoteHost, cfg.RemoteSession))
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "daemon: %s: re-open of %s failed (%v); retrying\n", cfg.RemoteHost, cfg.RemoteSession, err)
+		if Wait(d, cfg.Shutdown) {
+			endReopen(cfg, "")
+			return nil
+		}
 	}
 }
 
-// endReopen ends a rebuild that will not stand: the session is killed on a
-// stop, which is what og-remote-detach expects, and tombstoned otherwise. The
-// pidfile goes too, since the replaced run's teardown kept it for the rebuild.
-func endReopen(cfg Config, tombstone bool) {
+// endReopen ends a rebuild that will not stand: with no tombstone text it is a
+// stop and kills the session, which is what og-remote-detach expects;
+// otherwise the session is tombstoned with that text. The pidfile goes either
+// way, since the replaced run's teardown kept it for the rebuild.
+func endReopen(cfg Config, tombstone string) {
 	os.Remove(cfg.SockPath + ".pid")
 	if cfg.LocalSess == "" {
 		return
 	}
-	if tombstone {
-		tombstoneMirror(cfg)
+	if tombstone != "" {
+		tombstoneMirror(cfg, tombstone)
 		return
 	}
 	cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
@@ -117,6 +154,13 @@ func tombstoneText(host, session string) string {
 		printable(host), printable(session))
 }
 
+// reopenFailedText is what a mirror whose rebuild never stood tells whoever
+// finds it; sanitized like tombstoneText.
+func reopenFailedText(host, session string) string {
+	return fmt.Sprintf("%s: could not re-open %s on the restarted tmux server — this mirror is closed",
+		printable(host), printable(session))
+}
+
 // printable drops every control rune from s.
 func printable(s string) string {
 	return strings.Map(func(r rune) rune {
@@ -127,13 +171,12 @@ func printable(s string) string {
 	}, s)
 }
 
-// tombstoneMirror resets the mirror session to one window explaining that the
-// remote session is gone. It is persistent by construction: the ending
-// usually happens with nobody looking — a probe or wake hours later — so a
-// transient message would be lost, while the tombstone waits in the session
-// for whoever comes back to it.
-func tombstoneMirror(cfg Config) {
-	text := tombstoneText(cfg.RemoteHost, cfg.RemoteSession)
+// tombstoneMirror resets the mirror session to one window showing text — why
+// the mirror ended. It is persistent by construction: the ending usually
+// happens with nobody looking — a probe or wake hours later — so a transient
+// message would be lost, while the tombstone waits in the session for whoever
+// comes back to it.
+func tombstoneMirror(cfg Config, text string) {
 	id, ok := resetMirrorSession(cfg, "sh", "-c", tombstoneScript, "sh", text)
 	if !ok {
 		return

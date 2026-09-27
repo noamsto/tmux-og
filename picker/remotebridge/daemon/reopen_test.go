@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,7 +179,7 @@ func TestTombstoneMirrorUnsetsTheDaemonOptions(t *testing.T) {
 		},
 	}
 
-	tombstoneMirror(cfg)
+	tombstoneMirror(cfg, tombstoneText(cfg.RemoteHost, cfg.RemoteSession))
 
 	calls := log.snapshot()
 	got := map[string]bool{}
@@ -407,5 +410,245 @@ func TestShowReopenNoticeShowsAtOnceToACurrentViewer(t *testing.T) {
 	}
 	if n := f.displayCount(); n != 1 {
 		t.Errorf("display-message sent %d times, want exactly 1", n)
+	}
+}
+
+var errRebuild = errors.New("daemon: identity read for sess timed out")
+
+// runLoopConfig is a Config for driving runLoop: recording local tmux fakes, a
+// pidfile to watch, and a restore schedule of two zero-delay retries, bounded
+// by attempts alone so the count is exact.
+func runLoopConfig(t *testing.T, log *callLog, shutdown chan struct{}) (Config, string) {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "sock")
+	pidFile := sock + ".pid"
+	if err := os.WriteFile(pidFile, []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return Config{
+		LocalSess:     "m",
+		RemoteHost:    "host",
+		RemoteSession: "sess",
+		SockPath:      sock,
+		Shutdown:      shutdown,
+		RestoreRetry: &Backoff{
+			Base:        time.Millisecond,
+			Ceiling:     time.Millisecond,
+			MaxAttempts: 2,
+			Now:         time.Now,
+			Jitter:      func() float64 { return 0 },
+		},
+		LocalTmuxOut: func(args ...string) (string, error) {
+			log.add(args)
+			switch args[0] {
+			case "list-windows":
+				return "@1\n", nil
+			case "new-window":
+				return "@9\n", nil
+			}
+			return "", nil
+		},
+		LocalTmux: func(args ...string) error {
+			log.add(args)
+			return nil
+		},
+	}, pidFile
+}
+
+// scriptedRun answers runLoop's calls from results in order, repeating the
+// last one past the end, and records the cfg.reopened each call saw.
+func scriptedRun(results ...error) (func(Config) error, *[]bool) {
+	var seen []bool
+	return func(cfg Config) error {
+		seen = append(seen, cfg.reopened)
+		return results[min(len(seen), len(results))-1]
+	}, &seen
+}
+
+func findCall(calls [][]string, verb string) []string {
+	for _, argv := range calls {
+		if argv[0] == verb {
+			return argv
+		}
+	}
+	return nil
+}
+
+func pidFileExists(t *testing.T, path string) bool {
+	t.Helper()
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// TestRunLoopRebuildsOnAReplacedServer checks a replaced server re-runs the
+// mirror as a re-open: only the rebuild carries reopened, which is what shows
+// the fresh-server notice.
+func TestRunLoopRebuildsOnAReplacedServer(t *testing.T) {
+	var log callLog
+	cfg, _ := runLoopConfig(t, &log, make(chan struct{}))
+	run, seen := scriptedRun(errServerReplaced, nil)
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil", err)
+	}
+	if want := []bool{false, true}; !slices.Equal(*seen, want) {
+		t.Errorf("reopened per run = %v, want %v", *seen, want)
+	}
+}
+
+// TestRunLoopStopBetweenRunsKillsTheSession checks a stop landing as the old
+// mirror is torn down never rebuilds: the placeholder session is killed, as
+// og-remote-detach expects, and the pidfile the replaced run kept goes too.
+func TestRunLoopStopBetweenRunsKillsTheSession(t *testing.T) {
+	var log callLog
+	shutdown := make(chan struct{})
+	cfg, pidFile := runLoopConfig(t, &log, shutdown)
+	calls := 0
+	run := func(Config) error {
+		calls++
+		close(shutdown)
+		return errServerReplaced
+	}
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil on a stop", err)
+	}
+	if calls != 1 {
+		t.Errorf("run called %d times, want 1 — a stop must not rebuild", calls)
+	}
+	if kill := findCall(log.snapshot(), "kill-session"); argvKey(kill) != argvKey([]string{"kill-session", "-t", "m"}) {
+		t.Errorf("kill-session call = %v, want kill-session -t m among %v", kill, log.snapshot())
+	}
+	if pidFileExists(t, pidFile) {
+		t.Error("pidfile still present after a stop between runs")
+	}
+}
+
+// TestRunLoopRetriesAFailedRebuild checks a rebuild that fails before its
+// mirror stood — typically the link still flapping as the outage clears — is
+// retried rather than declared gone.
+func TestRunLoopRetriesAFailedRebuild(t *testing.T) {
+	var log callLog
+	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
+	run, seen := scriptedRun(errServerReplaced, errRebuild, nil)
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil", err)
+	}
+	if want := []bool{false, true, true}; !slices.Equal(*seen, want) {
+		t.Errorf("reopened per run = %v, want %v", *seen, want)
+	}
+	if nw := findCall(log.snapshot(), "new-window"); nw != nil {
+		t.Errorf("a retried rebuild was tombstoned: %v", nw)
+	}
+	if !pidFileExists(t, pidFile) {
+		t.Error("pidfile removed under a rebuild that went on to stand")
+	}
+}
+
+// TestRunLoopTombstonesARebuildThatNeverStands checks the retry is bounded by
+// the restore schedule and ends in a tombstone that says the re-open failed —
+// not that the session is gone, which the new server confirmed moments before.
+func TestRunLoopTombstonesARebuildThatNeverStands(t *testing.T) {
+	var log callLog
+	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
+	run, seen := scriptedRun(errServerReplaced, errRebuild)
+
+	if err := runLoop(cfg, run); !errors.Is(err, errRebuild) {
+		t.Fatalf("runLoop(...) = %v, want %v", err, errRebuild)
+	}
+	// The replaced run, the first rebuild, then one per retry the schedule allows.
+	if want := 1 + 1 + cfg.RestoreRetry.MaxAttempts; len(*seen) != want {
+		t.Errorf("run called %d times, want %d", len(*seen), want)
+	}
+	nw := findCall(log.snapshot(), "new-window")
+	if nw == nil {
+		t.Fatalf("no tombstone new-window among %v", log.snapshot())
+	}
+	if last, want := nw[len(nw)-1], reopenFailedText("host", "sess"); last != want {
+		t.Errorf("tombstone text = %q, want %q", last, want)
+	}
+	if pidFileExists(t, pidFile) {
+		t.Error("pidfile still present after the rebuild was abandoned")
+	}
+}
+
+// TestRunLoopStopDuringAFailedRebuildKillsTheSession checks a stop that
+// arrives while a rebuild is failing ends like any other stop: kill-session,
+// no tombstone, no retry.
+func TestRunLoopStopDuringAFailedRebuildKillsTheSession(t *testing.T) {
+	var log callLog
+	shutdown := make(chan struct{})
+	cfg, pidFile := runLoopConfig(t, &log, shutdown)
+	calls := 0
+	run := func(cfg Config) error {
+		calls++
+		if !cfg.reopened {
+			return errServerReplaced
+		}
+		close(shutdown)
+		return errRebuild
+	}
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil on a stop", err)
+	}
+	if calls != 2 {
+		t.Errorf("run called %d times, want 2", calls)
+	}
+	if nw := findCall(log.snapshot(), "new-window"); nw != nil {
+		t.Errorf("a stopped rebuild was tombstoned: %v", nw)
+	}
+	if findCall(log.snapshot(), "kill-session") == nil {
+		t.Errorf("no kill-session among %v", log.snapshot())
+	}
+	if pidFileExists(t, pidFile) {
+		t.Error("pidfile still present after a stop")
+	}
+}
+
+// TestRunLoopLeavesATornDownRebuildAlone checks an error runMirror returns
+// after its own teardown is passed straight through: that teardown already
+// killed the session and removed the pidfile, and a session og-remote-open
+// recreated under the same name since must never be touched (#680).
+func TestRunLoopLeavesATornDownRebuildAlone(t *testing.T) {
+	var log callLog
+	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
+	run, seen := scriptedRun(errServerReplaced, tornDown{errRebuild})
+
+	err := runLoop(cfg, run)
+	if !errors.As(err, new(tornDown)) || !errors.Is(err, errRebuild) {
+		t.Fatalf("runLoop(...) = %v, want tornDown{%v}", err, errRebuild)
+	}
+	if len(*seen) != 2 {
+		t.Errorf("run called %d times, want 2 — a torn-down rebuild is not retried", len(*seen))
+	}
+	if calls := log.snapshot(); len(calls) != 0 {
+		t.Errorf("runLoop touched the local server after runMirror's teardown: %v", calls)
+	}
+	if !pidFileExists(t, pidFile) {
+		t.Error("runLoop removed the pidfile runMirror's teardown owns")
+	}
+}
+
+// TestRunLoopFirstRunErrorIsNotARebuild checks a first open's failure is the
+// daemon's error, unretried: there is no replaced server behind it, and the
+// launcher owns what a failed first open leaves.
+func TestRunLoopFirstRunErrorIsNotARebuild(t *testing.T) {
+	var log callLog
+	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
+	run, seen := scriptedRun(errRebuild)
+
+	if err := runLoop(cfg, run); err != errRebuild {
+		t.Fatalf("runLoop(...) = %v, want %v as-is", err, errRebuild)
+	}
+	if len(*seen) != 1 {
+		t.Errorf("run called %d times, want 1", len(*seen))
+	}
+	if calls := log.snapshot(); len(calls) != 0 {
+		t.Errorf("runLoop touched the local server after a first-run error: %v", calls)
+	}
+	if !pidFileExists(t, pidFile) {
+		t.Error("runLoop removed the pidfile after a first-run error")
 	}
 }
