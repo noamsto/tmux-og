@@ -266,7 +266,15 @@ exec blocks the stream's only reader.
 which keeps reading the stream while the exec runs. Mechanism and scope are
 in `bridge-daemon.md`.
 
-**Before / after.** `churn`, 400 samples, run interleaved A/B under
+**Before / after — pre-fix build.** This table was taken on B at c07468a,
+before review added the `%layout-change` hold (4fb55d3) and settle's
+in-place drain (893adae). Those only hold output while a `%layout-change`
+is read but undispatched (`routedexec_test.go`), so they can only shorten
+the routing window, never lengthen a stall. Post-fix pair numbers are
+still owed. The host stayed too loaded, and the post-fix pairs kept
+aborting on the `%0` race under Residuals.
+
+`churn`, 400 samples, run interleaved A/B under
 `systemd-run --scope -p CPUQuota=400%` on a shared 32-core host. The
 comparison is only valid within this table: the uncapped #793
 figures above are a different setup. A is `main` a9e2ceb, B is this change.
@@ -295,6 +303,15 @@ traced B runs had these probe results:
 The rest of the probe's tail is spent outside the daemon's routing, in the
 tmux servers or the host.
 
+**Post-fix, partial.** After the fix and the rebase onto 4b7bb0a, one B
+run completed:
+- setup: `taskset -c 0-3`, because the user systemd bus had gone;
+  1-minute load 4.4;
+- B: p99 25.7 ms, max 43.2 ms;
+- A, run the same hour: p99 48.4–52.6 ms, max 88 ms.
+
+These are not interleaved pairs.
+
 ## What did not matter (measured)
 
 | Suspect | Measured |
@@ -316,11 +333,23 @@ foreground run is deliberate ordering.
   `Config` on purpose: they run after the pass's `settle`, and a
   notification a routed exec queued there would wait for the next stream
   line (`docs/agents/bridge-daemon.md`).
-- **Churn aborts on a `%0` rebuild.** The first churned window add sometimes
-  makes the daemon drop and rebuild the mirror of `%0` (`%0: dropped 1
-  output frame(s) (pane is gone)` after a failed `%24` reseed). The mirror
-  pane then has a new local id, so the probe times out and aborts. `main`
-  does it too.
+- **Churn aborts: a window that dies mid-add steals `%0`'s sink.** Each
+  aborted run happens on both `main` and #808. This is the sequence:
+  1. `addWindow` confirms a churned window with `list-windows`.
+  2. The window is killed before `setupWindow`'s `readLayout`.
+  3. `readLayout` targets `'work':@N` with `display-message`. Its target is
+     `CMD_FIND_CANFAIL`, so from the daemon's control client a dead window
+     falls back to the client's current pane. That is `@0 %0`, verified on
+     a scratch server.
+  4. The new mirror window is built from window 0's layout, and
+     `wireRenderer` registers a second sink for `%0`.
+  5. The churned window's `%window-close` then `closeWindow`s it, and
+     `Unregister("%0")` leaves the real mirror of `%0` dead. The log shows
+     `%0: dropped 1 output frame(s) (pane is gone)`, and the probe times
+     out.
+
+  Traced by a stack at `Unregister("%0")`: `closeWindow` ← dispatch
+  `%window-close` ← `asyncQueue.drain`.
 - **Fixed (#809): the Nix `tmux` wrapper's `--prefix PATH` now names one
   merged bin dir** (`wrapperBinDir` in `config/tmux.conf.nix`, a `symlinkJoin`
   of the same packages) instead of 66 separate packages. `make-wrapper.sh`'s
