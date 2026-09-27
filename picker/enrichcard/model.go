@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/noamsto/tmux-og/picker/enrichstate"
 )
 
@@ -99,14 +100,10 @@ func (m model) titleWidth() int {
 }
 
 func truncate(s string, max int) string {
-	if max <= 1 || lipgloss.Width(s) <= max {
+	if max <= 1 {
 		return s
 	}
-	r := []rune(s)
-	if len(r) > max-1 {
-		r = r[:max-1]
-	}
-	return string(r) + "…"
+	return ansi.Truncate(s, max, "…")
 }
 
 func (w winState) noURLReason() string {
