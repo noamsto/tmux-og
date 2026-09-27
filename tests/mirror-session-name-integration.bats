@@ -8,10 +8,10 @@ bats_require_minimum_version 1.5.0 # run !
 # again drawing display-menu's title and its "Switch To" loop over every other
 # session. A quote break-out or a `#(...)` in a remote session name therefore
 # runs local commands on a right-click of the session pill. Same harness shape
-# as tests/rename-bind-integration.bats (#367) and tests/menu-bind-integration.bats
-# (#769, reference: `git show origin/feat/769-bridge-propagate-tmux-menu-actions-on-mi:tests/menu-bind-integration.bats`)
-# — a conf grep can only say the bind text is there; only a real attached
-# client's real right-click can prove what tmux does with it.
+# as tests/rename-bind-integration.bats (#367) and
+# tests/menu-bind-integration.bats (#769) — a conf grep can only say the bind
+# text is there; only a real attached client's real right-click can prove what
+# tmux does with it.
 #
 # ssh/the bridge daemon/renderer/ctl/tmux-reflow-windows are fakes on PATH; the
 # launcher (scripts/og-remote-open.sh, or $OPEN_SRC) is the real script, driving
@@ -106,8 +106,8 @@ setup() {
 	chmod +x "$FAKEBIN"/*
 	export PATH="$FAKEBIN:$PATH"
 
-	# Same @lib_remote@ substitution Nix does at build time. OPEN_SRC lets
-	# Step 8's counterfactual point this same suite at an old revision.
+	# Same @lib_remote@ substitution Nix does at build time. OPEN_SRC points
+	# this same suite at an older launcher, to check it goes red there.
 	LAUNCHER="$BATS_TEST_TMPDIR/og-remote-open"
 	sed "s|@lib_remote@|$PWD/scripts/lib-remote.sh|g" \
 		"${OPEN_SRC:-scripts/og-remote-open.sh}" >"$LAUNCHER"
@@ -246,11 +246,9 @@ open_remote() { # remote-sess-name [no_switch]
 	inner set-option -t "$sid" @bridge_host h
 	inner set-option -t "$sid" @bridge_session "$SUBST"
 
-	# Merely switching the attached client onto a hostile session already
-	# renders its name in the status line's own session pill, which can
-	# trigger the same recursive expansion (measured) before any click — so
-	# sentinels are cleared right after each switch, isolating what the CLICK
-	# itself adds, rather than asserted absent beforehand.
+	# A bare switch onto the QUOTE session has been seen to fire its payload
+	# in this two-server harness, so sentinels are cleared right after each
+	# switch: what is asserted is what the CLICK adds.
 
 	# Click 1: attached to QUOTE, title x quote. run-shell -C splits QUOTE's own
 	# breakout into its own top-level command (measured), which runs directly —
