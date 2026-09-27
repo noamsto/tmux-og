@@ -242,3 +242,104 @@ wait_agree() {
 	sgr 0 $((x - 5)) "$y" m
 	wait_agree "$before"
 }
+
+# The cases below put a float on a row where resize-pane -y adds a row under
+# pane-border-status top (pane_top 1) or bottom (bottom edge one above the
+# window's last row). Each asserts the height, not just agreement: the bump
+# can land on both servers alike.
+
+# rel prints the local float's "pane_top pane_height".
+rel() {
+	printf '%s %s' "$(field pane_top)" "$(field pane_height)"
+}
+
+@test "a top-border drag onto the top row keeps the float's height" {
+	mirror_up
+	local before x y h
+	before="$(geom "$DST" "$LF")"
+	h="$(field pane_height)"
+	x=$(($(field pane_left) + 5))
+	y=$(($(field pane_top) - 1))
+	sgr 0 "$x" "$y" M
+	sgr 32 "$x" 0 M
+	sgr 0 "$x" 0 m
+	wait_agree "$before"
+	[[ "$(rel)" == "1 $h" ]]
+}
+
+@test "an Alt-drag past the top edge lands on the top row with its height" {
+	mirror_up
+	local before x y h
+	before="$(geom "$DST" "$LF")"
+	h="$(field pane_height)"
+	x=$(($(field pane_left) + 5))
+	y=$(($(field pane_top) + 3))
+	# Grabbed 4 rows into the float, released on row 0: the float overshoots
+	# the top edge and the clamp brings it back to the top row.
+	sgr 8 "$x" "$y" M
+	sgr 40 "$x" 0 M
+	sgr 8 "$x" 0 m
+	wait_agree "$before"
+	[[ "$(rel)" == "1 $h" ]]
+}
+
+@test "a top-left-corner drag up to row 0 grows the float by the rows dragged" {
+	mirror_up
+	local before x y h
+	before="$(geom "$DST" "$LF")"
+	h="$(field pane_height)"
+	x=$(($(field pane_left) - 1))
+	y=$(($(field pane_top) - 1))
+	sgr 0 "$x" "$y" M
+	sgr 32 $((x - 2)) 0 M
+	sgr 0 $((x - 2)) 0 m
+	wait_agree "$before"
+	[[ "$(rel)" == "1 $((h + y))" ]]
+}
+
+@test "under pane-border-status bottom, a bottom-border drag to the last row grows the float by the rows dragged" {
+	mirror_up
+	$SRC set -g pane-border-status bottom
+	$DST set -g pane-border-status bottom
+	[[ "$($DST display-message -p -t "$LF" '#{pane-border-status}')" == bottom ]]
+	# The option change re-lays the tiled panes; let the mirror settle on the
+	# remote's geometry before measuring.
+	wait_agree "" allow_same
+	local before x y h top last
+	before="$(geom "$DST" "$LF")"
+	h="$(field pane_height)"
+	top="$(field pane_top)"
+	last=$(($($DST display-message -p -t "$LF" '#{window_height}') - 1))
+	x=$(($(field pane_left) + 5))
+	y=$((top + h))
+	sgr 0 "$x" "$y" M
+	sgr 32 "$x" "$last" M
+	sgr 0 "$x" "$last" m
+	wait_agree "$before"
+	[[ "$(rel)" == "$top $((h + last - y))" ]]
+}
+
+@test "a borderless remote float on the top row keeps its height when dragged along it" {
+	mirror_up -B none -x 40 -y 12 -X 10 -Y 1
+	local before x y h
+	before="$(geom "$DST" "$LF")"
+	h="$(field pane_height)"
+	[[ "$(field pane_top)" == 1 ]]
+	# An Alt-drag from inside: a press on window row 0 resolves to the tiled
+	# pane's border status line, not the float's top border.
+	x=$(($(field pane_left) + 5))
+	y=$(($(field pane_top) + 3))
+	sgr 8 "$x" "$y" M
+	sgr 40 $((x + 6)) "$y" M
+	sgr 8 $((x + 6)) "$y" m
+	wait_agree "$before"
+	[[ "$(rel)" == "1 $h" ]]
+}
+
+@test "a remote resize of a float on the top row reaches the mirror exactly" {
+	mirror_up -x 40 -y 12 -X 10 -Y 0
+	local before
+	before="$(geom "$DST" "$LF")"
+	$SRC resize-pane -t "$RF" -y 9
+	wait_agree "$before"
+}

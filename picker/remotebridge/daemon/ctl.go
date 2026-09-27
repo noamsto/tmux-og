@@ -276,16 +276,16 @@ func floatLookup(tool string) string {
 // window_pane_get_pane_lines reads pane-border-lines from the pane's own
 // options, exactly what #{pane-border-lines} evaluates to on the target — so
 // the branch is chosen remote-side rather than assumed from the local float's
-// style. Move before resize: resize-pane -y bumps the height by one under
-// pane-border-status top when yoff == 1, and that test reads the CURRENT
-// yoff, so moving first is what makes it see the final position. The
+// style. The resize is floatResizeCmd, which compensates resize-pane -y's
+// pane-border-status bump against the position the float has when the resize
+// runs, so the box is exact whichever row the move lands on. The
 // pane_floating_flag guard means a remote pane re-tiled while the drag was in
 // flight is left alone rather than resized as though it were still floating.
 func floatGeomCommand(pane string, c controlmode.PaneCell) string {
-	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; resize-pane -t %s -x %d -y %d",
-		pane, c.X, c.Y, pane, c.W, c.H)
-	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; resize-pane -t %s -x %d -y %d",
-		pane, c.X-1, c.Y-1, pane, c.W+2, c.H+2)
+	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s",
+		pane, c.X, c.Y, floatResizeCmd(pane, c.W, c.H))
+	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s",
+		pane, c.X-1, c.Y-1, floatResizeCmd(pane, c.W+2, c.H+2))
 	inner := fmt.Sprintf("if-shell -t %s -F %s %s %s",
 		pane, tmuxQuote("#{==:#{pane-border-lines},none}"), tmuxQuote(none), tmuxQuote(bordered))
 	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
@@ -549,7 +549,7 @@ var verbs = map[string]verb{
 	// float flush against an edge and dragged past it changes nothing
 	// remotely and would otherwise stay where the drag left it. See
 	// floatGeomCommand for why the remote command branches on the target
-	// float's own border and moves before it resizes.
+	// float's own border and how its resize stays exact.
 	//
 	// Bounds: w/h are at least 1 and at most 4 digits; winW/winH are at least
 	// 3, the smallest window a bordered box fits in; x/y range negative,

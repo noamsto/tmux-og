@@ -282,15 +282,15 @@ func TestReconcileFloatsMoveResizesThenMovesAndRepaints(t *testing.T) {
 
 	reconcileFloats(f.config(), w, L, func(string) {}, router, noHellos, setupWindowRT(oneSeedScript("MOVED-REPAINT")))
 
-	wantResize := []string{"resize-pane", "-t", "%l9", "-x", "70", "-y", "24"}
-	if got := f.find("resize-pane"); !reflect.DeepEqual(got, wantResize) {
-		t.Errorf("resize-pane argv = %v, want %v", got, wantResize)
+	wantResize := wantLocalFloatResize("%l9", 70, 24)
+	if got := f.find("if-shell", "-t", "%l9"); !reflect.DeepEqual(got, wantResize) {
+		t.Errorf("guarded resize argv = %v, want %v", got, wantResize)
 	}
 	wantMove := []string{"move-pane", "-t", "%l9", "-X", "20", "-Y", "8"}
 	if got := f.find("move-pane"); !reflect.DeepEqual(got, wantMove) {
 		t.Errorf("move-pane argv = %v, want %v", got, wantMove)
 	}
-	if r, m := f.at("resize-pane", "%l9"), f.at("move-pane", "%l9"); r < 0 || m < 0 || r > m {
+	if r, m := f.at("if-shell", "%l9"), f.at("move-pane", "%l9"); r < 0 || m < 0 || r > m {
 		t.Errorf("resize at %d, move at %d: want the size asserted before the position", r, m)
 	}
 	wantStamp := []string{"set-option", "-p", "-t", "%l9", "@float_geom", "70 24 20 8"}

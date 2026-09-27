@@ -28,11 +28,23 @@ func newCtlStateWith(win string, panes ...string) *ctlState {
 // plain x/y/w/h a float-geom argv carries rather than by calling the
 // production helper, so the test pins the wire shape independently of it.
 func wantFloatGeom(pane string, x, y, w, h int) string {
-	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; resize-pane -t %s -x %d -y %d", pane, x, y, pane, w, h)
-	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; resize-pane -t %s -x %d -y %d", pane, x-1, y-1, pane, w+2, h+2)
+	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s", pane, x, y, wantFloatResize(pane, w, h))
+	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s", pane, x-1, y-1, wantFloatResize(pane, w+2, h+2))
 	inner := fmt.Sprintf("if-shell -t %s -F %s %s %s",
 		pane, tmuxQuote("#{==:#{pane-border-lines},none}"), tmuxQuote(none), tmuxQuote(bordered))
 	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
+}
+
+// wantFloatResize builds floatResizeCmd's text by hand, for the same reason.
+func wantFloatResize(pane string, w, h int) string {
+	return fmt.Sprintf("if-shell -t %s -F %s %s %s", pane, tmuxQuote(wantResizeTrigger),
+		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h-1)),
+		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h)))
+}
+
+// wantLocalFloatResize is floatResizeArgv's argv for an outer w x h box.
+func wantLocalFloatResize(pane string, w, h int) []string {
+	return []string{"if-shell", "-t", pane, "-F", "#{pane_floating_flag}", wantFloatResize(pane, w, h)}
 }
 
 func TestParseCtlVerbTranslation(t *testing.T) {
@@ -238,7 +250,7 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			// (bordered), and the local float is already where it belongs.
 			name:   "float-geom builds the nested if-shell from the clamped inner box",
 			argv:   []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11", "6", "38", "10", "100", "30"},
-			want:   []string{`if-shell -t %3 -F '#{pane_floating_flag}' 'if-shell -t %3 -F '\''#{==:#{pane-border-lines},none}'\'' '\''move-pane -t %3 -X 11 -Y 6 ; resize-pane -t %3 -x 38 -y 10'\'' '\''move-pane -t %3 -X 10 -Y 5 ; resize-pane -t %3 -x 40 -y 12'\'''`},
+			want:   []string{`if-shell -t %3 -F '#{pane_floating_flag}' 'if-shell -t %3 -F '\''#{==:#{pane-border-lines},none}'\'' '\''move-pane -t %3 -X 11 -Y 6 ; if-shell -t %3 -F '\''\'\'''\''#{||:#{&&:#{==:#{pane-border-status},top},#{==:#{pane_top},1}},#{&&:#{==:#{pane-border-status},bottom},#{==:#{e|+:#{pane_top},#{pane_height}},#{e|-:#{window_height},1}}}}'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 38 -y 9'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 38 -y 10'\''\'\'''\'''\'' '\''move-pane -t %3 -X 10 -Y 5 ; if-shell -t %3 -F '\''\'\'''\''#{||:#{&&:#{==:#{pane-border-status},top},#{==:#{pane_top},1}},#{&&:#{==:#{pane-border-status},bottom},#{==:#{e|+:#{pane_top},#{pane_height}},#{e|-:#{window_height},1}}}}'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 40 -y 11'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 40 -y 12'\''\'\'''\'''\'''`},
 			layout: "@1",
 		},
 		{
@@ -248,7 +260,7 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			argv: []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "-5", "6", "45", "10", "100", "30"},
 			want: []string{wantFloatGeom("%3", 1, 6, 45, 10)},
 			local: [][]string{
-				{"resize-pane", "-t", "%9", "-x", "47", "-y", "12"},
+				wantLocalFloatResize("%9", 47, 12),
 				{"move-pane", "-t", "%9", "-X", "0", "-Y", "5"},
 			},
 			layout: "@1",
@@ -262,7 +274,7 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			argv: []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "-7", "6", "38", "10", "100", "30"},
 			want: []string{wantFloatGeom("%3", 1, 6, 38, 10)},
 			local: [][]string{
-				{"resize-pane", "-t", "%9", "-x", "40", "-y", "12"},
+				wantLocalFloatResize("%9", 40, 12),
 				{"move-pane", "-t", "%9", "-X", "0", "-Y", "5"},
 			},
 			layout: "@1",
@@ -1661,7 +1673,7 @@ func TestHandleCtlRunsLocalCommandsBeforeTheRemoteSend(t *testing.T) {
 		t.Fatalf("handleCtl: %v, want no error", err)
 	}
 	want := []string{
-		"local resize-pane -t %9 -x 40 -y 12",
+		"local " + strings.Join(wantLocalFloatResize("%9", 40, 12), " "),
 		"local move-pane -t %9 -X 0 -Y 5",
 		"send " + wantFloatGeom("%3", 1, 6, 38, 10),
 	}
