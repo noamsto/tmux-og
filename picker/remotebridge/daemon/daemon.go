@@ -8,6 +8,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -2510,6 +2511,10 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		if paste != nil {
 			payload = paste.handle(remotePane, payload)
 		}
+		// The guard goes first: tmux checks deadness before it delivers the key.
+		if len(payload) > 0 && isDismissKey(payload) {
+			send(deadKeyCmd(remotePane))
+		}
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
 			send(strings.Join(args, " "))
 		}
@@ -2533,4 +2538,29 @@ func isCancelKey(b []byte) bool {
 // server-side. Unlike tmux, a live modal pane keeps its cancel key.
 func modalClearCmd(pane string) string {
 	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %s'", pane, pane)
+}
+
+// isDismissKey reports a frame the dead-key rule would see as a key: not a
+// mouse report (SGR or X10/UTF-8), a focus report, or a bracketed paste.
+// tmux excludes all three from server_client_handle_dead_key, and forwarding
+// a mouse click or a focus change as a dismissal would kill a pane the user
+// only meant to select or click on. Callers never pass it an empty slice.
+func isDismissKey(b []byte) bool {
+	if bytes.HasPrefix(b, []byte("\x1b[<")) || bytes.HasPrefix(b, []byte("\x1b[M")) {
+		return false
+	}
+	if string(b) == "\x1b[I" || string(b) == "\x1b[O" {
+		return false
+	}
+	if bytes.Contains(b, []byte("\x1b[200~")) {
+		return false
+	}
+	return true
+}
+
+// deadKeyCmd mirrors server_client_handle_dead_key: a dead pane whose
+// remain-on-exit is key or failed-key is killed by any key. on/failed dead
+// panes are left for the ctl kill-pane verb (prefix + x), same as locally.
+func deadKeyCmd(pane string) string {
+	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{||:#{==:#{remain-on-exit},key},#{==:#{remain-on-exit},failed-key}}}' 'kill-pane -t %s'", pane, pane)
 }

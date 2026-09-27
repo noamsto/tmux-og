@@ -123,9 +123,52 @@ func TestModalClearCmd(t *testing.T) {
 	}
 }
 
-// Each case ends with a sentinel "z" frame, so a missing or extra clear shows
-// up as the wrong next send rather than as a timeout.
-func TestPumpInputSendsModalClearOnLoneCancel(t *testing.T) {
+func TestDeadKeyCmd(t *testing.T) {
+	got := deadKeyCmd("%7")
+	want := `if -F -t %7 '#{&&:#{pane_dead},#{||:#{==:#{remain-on-exit},key},#{==:#{remain-on-exit},failed-key}}}' 'kill-pane -t %7'`
+	if got != want {
+		t.Errorf("deadKeyCmd(%%7) = %q, want %q", got, want)
+	}
+}
+
+func TestIsDismissKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame []byte
+		want  bool
+	}{
+		{"a", []byte("a"), true},
+		{"carriage return", []byte("\r"), true},
+		{"lone escape", []byte{0x1b}, true},
+		{"lone ctrl-c", []byte{0x03}, true},
+		{"up arrow", []byte("\x1b[A"), true},
+		{"meta-x", []byte("\x1bx"), true},
+		{"utf-8", []byte("é"), true},
+		{"hello", []byte("hello"), true},
+		{"sgr mouse click", []byte("\x1b[<0;5;5M"), false},
+		{"sgr mouse release", []byte("\x1b[<0;5;5m"), false},
+		{"x10 mouse", []byte("\x1b[M !!"), false},
+		{"focus in", []byte("\x1b[I"), false},
+		{"focus out", []byte("\x1b[O"), false},
+		{"bracketed paste", []byte("\x1b[200~hi\x1b[201~"), false},
+		{"trailing bracketed paste marker", []byte("x\x1b[200~y"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDismissKey(tt.frame); got != tt.want {
+				t.Errorf("isDismissKey(%q) = %v, want %v", tt.frame, got, tt.want)
+			}
+		})
+	}
+}
+
+// Each case ends with a sentinel "z" frame, so a missing or extra send shows
+// up as the wrong next send rather than as a timeout. The sentinel is itself
+// a dismiss key, so its own guard lands in got right before the send-keys
+// that ends the case — every want ends with deadKeyCmd("%7").
+func TestPumpInputSendOrder(t *testing.T) {
+	guard := deadKeyCmd("%7")
+	modalClear := modalClearCmd("%7")
 	tests := []struct {
 		name  string
 		frame []byte
@@ -134,28 +177,37 @@ func TestPumpInputSendsModalClearOnLoneCancel(t *testing.T) {
 		{
 			name:  "lone escape",
 			frame: []byte{0x1b},
-			want: []string{
-				"send-keys -H -t %7 1b",
-				"if -F -t %7 '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %7'",
-			},
+			want:  []string{guard, "send-keys -H -t %7 1b", modalClear, guard},
 		},
 		{
 			name:  "lone ctrl-c",
 			frame: []byte{0x03},
-			want: []string{
-				"send-keys -H -t %7 03",
-				"if -F -t %7 '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %7'",
-			},
+			want:  []string{guard, "send-keys -H -t %7 03", modalClear, guard},
 		},
 		{
 			name:  "escape sequence (up arrow)",
 			frame: []byte{0x1b, 0x5b, 0x41},
-			want:  []string{"send-keys -H -t %7 1b 5b 41"},
+			want:  []string{guard, "send-keys -H -t %7 1b 5b 41", guard},
 		},
 		{
 			name:  "ordinary keystroke",
 			frame: []byte("a"),
-			want:  []string{"send-keys -H -t %7 61"},
+			want:  []string{guard, "send-keys -H -t %7 61", guard},
+		},
+		{
+			name:  "sgr mouse click",
+			frame: []byte("\x1b[<0;5;5M"),
+			want:  []string{"send-keys -H -t %7 1b 5b 3c 30 3b 35 3b 35 4d", guard},
+		},
+		{
+			name:  "focus-in",
+			frame: []byte("\x1b[I"),
+			want:  []string{"send-keys -H -t %7 1b 5b 49", guard},
+		},
+		{
+			name:  "bracketed paste",
+			frame: []byte("\x1b[200~hi\x1b[201~"),
+			want:  []string{"send-keys -H -t %7 1b 5b 32 30 30 7e 68 69 1b 5b 32 30 31 7e", guard},
 		},
 	}
 
