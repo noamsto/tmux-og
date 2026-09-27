@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/noamsto/tmux-og/picker/enrichstate"
 )
 
@@ -99,14 +100,10 @@ func (m model) titleWidth() int {
 }
 
 func truncate(s string, max int) string {
-	if max <= 1 || lipgloss.Width(s) <= max {
+	if max <= 1 {
 		return s
 	}
-	r := []rune(s)
-	if len(r) > max-1 {
-		r = r[:max-1]
-	}
-	return string(r) + "…"
+	return ansi.Truncate(s, max, "…")
 }
 
 func (w winState) noURLReason() string {
@@ -180,7 +177,7 @@ func (m model) branchBlock() string {
 		if m.baseBranch != "" {
 			head += "  →  " + m.baseBranch
 		}
-		lines = append(lines, m.sty(c.subtext0).Render(head))
+		lines = append(lines, m.sty(c.subtext0).Render(truncate(head, m.titleWidth())))
 	}
 	if dir != "" && m.width >= widthFloor {
 		lines = append(lines, m.sty(c.overlay0).Render(truncate(dir, m.titleWidth())))

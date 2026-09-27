@@ -3,6 +3,7 @@ package main
 import (
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -314,17 +315,88 @@ func TestOpenDoneMsgFlashesFailure(t *testing.T) {
 	}
 }
 
-// TestFooterLongFlashStaysInsideCardWidth: footer() must truncate m.flash to
-// the room actually left on its row, not the full panel width, or a long
-// flash (an exec error, a CLI stderr line) overflows the card's border.
-func TestFooterLongFlashStaysInsideCardWidth(t *testing.T) {
-	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{branch: "b"}}
-	m.flash = `open failed: exec: "xdg-open": executable file not found in $PATH`
+// TestBranchBlockLongBranchStaysInsideCardWidth: branchBlock() must truncate
+// the "branch → base" head line — it renders raw window/git data with no
+// upper bound, and previously skipped truncate() entirely.
+func TestBranchBlockLongBranchStaysInsideCardWidth(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, baseBranch: "main", win: winState{
+		branch: "feat/768-enrichcard-truncate-by-display-width-not-and-then-some-more",
+	}}
 	out := render(m)
 	for _, line := range strings.Split(out, "\n") {
 		if w := lipgloss.Width(line); w > m.width {
 			t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 		}
+	}
+}
+
+// TestFooterLongFlashStaysInsideCardWidth: footer() must truncate m.flash to
+// the room actually left on its row, not the full panel width, or a long
+// flash (an exec error, a CLI stderr line) overflows the card's border.
+func TestFooterLongFlashStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name  string
+		flash string
+	}{
+		{
+			name:  "ascii",
+			flash: `open failed: exec: "xdg-open": executable file not found in $PATH`,
+		},
+		{
+			// 8 leading 2-cell emoji so the old rune-count cut (which counts
+			// each emoji as one rune) lands inside them, well short of the
+			// display width it thinks it consumed.
+			name:  "emoji",
+			flash: "🚨🚨🚨🚨🚨🚨🚨🚨 open failed: xdg-open not found",
+		},
+		{
+			name:  "cjk",
+			flash: "打开失败: 找不到可执行文件 xdg-open 在 $PATH 中",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{branch: "b"}}
+			m.flash = tc.flash
+			out := render(m)
+			for _, line := range strings.Split(out, "\n") {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
+	}
+}
+
+// TestTruncateWidthAware: truncate() must cut by display width (lipgloss.Width
+// of the result), not by rune count — a 2-cell rune sitting on an odd max
+// boundary must not push the result over max cells.
+func TestTruncateWidthAware(t *testing.T) {
+	inputs := []string{
+		"hello world",
+		"a打开失败",
+		"打开失败: 找不到可执行文件",
+		"🚨🚨🚨🚨🚨🚨🚨🚨 open failed",
+	}
+	for _, s := range inputs {
+		for max := 3; max <= 12; max++ {
+			t.Run(s+"/"+strconv.Itoa(max), func(t *testing.T) {
+				got := truncate(s, max)
+				if w := lipgloss.Width(got); w > max {
+					t.Errorf("truncate(%q, %d) = %q, width %d > max %d", s, max, got, w, max)
+				}
+			})
+		}
+	}
+
+	// Exact case: rune-count cut lets a wide rune push the result past max.
+	if got := truncate("a打开失败", 4); lipgloss.Width(got) > 4 {
+		t.Errorf("truncate(%q, 4) = %q, width %d exceeds 4", "a打开失败", got, lipgloss.Width(got))
+	}
+
+	// ASCII-only spot check: current behavior is unchanged by the fix.
+	if got := truncate("hello world", 8); got != "hello w…" {
+		t.Errorf("truncate(%q, 8) = %q, want %q", "hello world", got, "hello w…")
 	}
 }
 
