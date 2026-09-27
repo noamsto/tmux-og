@@ -174,7 +174,7 @@ fi
 
 # require_session_name <sess> exits unless sess is safe to carry: shell_quote
 # is unsafe for a backslash, and a control byte never appears in a real tmux
-# session name (tmux vis-escapes them), so one can only come from a hostile
+# session name (tmux rejects them), so one can only come from a hostile
 # remote — whose newline in the raw @bridge_session would forge a line in the
 # pair lookup below. Byte-wise under LC_ALL=C, like mirror_name_part; %q keeps
 # the rejected bytes off the user's terminal.
