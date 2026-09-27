@@ -25,12 +25,9 @@ set -uo pipefail
 target=${1:-}
 [[ -z $target ]] && exit 0
 
-# Must stay byte-identical to the grid gate's signature in
-# config/tmux.conf.tmpl (window-resized[10] / window-layout-changed) — a bats
-# guard fails the build if they drift. Covers every decision input below
-# (main-pane %, min role columns, aspect, and each tiled pane's @crew_role),
-# not just geometry, so the gate never skips an event that would change the
-# decision.
+# Byte-identical to the grid gate in config/tmux.conf.tmpl (grid-refit.bats
+# fails on drift). It carries every input of the decision below, not just
+# geometry, so the gate never skips an event that could change the decision.
 grid_sig_fmt='#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}'
 
 # read_opt <option> <default> -> stdout: the window option's value, or <default>
@@ -73,19 +70,13 @@ lead=$(tmux list-panes -t "$target" -f '#{&&:#{==:#{@crew_role},lead},#{!:#{pane
 
 read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
 
-# One round-trip for the size, the tiled pane ids, the gate's geometry
-# signature and the cached decision sig — replacing separate read_panes and
-# size reads before the sig check below. The signature is read last: it
-# carries free-text option values (e.g. @crew_role) that could themselves
-# contain '|', and as the final `read` variable it absorbs any of those
-# rather than shifting the fields after it. @grid_refit_sig is written only
-# by this script from sanitized values, so it holds no '|' and is safe to
-# read before the signature.
+# One snapshot, so the stamp below describes exactly the state the verdict
+# used. The signature is the last field: it carries free-text option values,
+# and as the final `read` variable it absorbs any '|' in them.
 IFS='|' read -r w h pane_ids stored_sig geom <<<"$(tmux display-message -p -t "$target" "#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|$grid_sig_fmt" 2>/dev/null)"
 [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
-# #{P:} does not walk panes in layout order on the pinned tmux-next (after a
-# swap-pane, list-panes gives layout order but #{P:} does not) — sort on the
-# pane_index tmux tags each entry with to recover layout order in bash.
+# #{P:} is not layout order on tmux-next (a swap-pane leaves it unchanged);
+# pane_index is.
 mapfile -t ids < <(tr ' ' '\n' <<<"$pane_ids" | grep . | sort -t: -k1,1n | cut -d: -f2)
 np=${#ids[@]}
 ((np > 1)) || exit 0
@@ -115,10 +106,9 @@ fi
 sig="$layout:$pct:$np:${w}x${h}:$min_cols:$aspect:$lead"
 first=${ids[0]}
 if [[ $stored_sig == "$sig" && $lead == "$first" ]]; then
-	# Verified: this is exactly the geometry the hook gate should skip next
-	# time, so stamp it now. The under-lock re-check below never stamps — a
-	# match there means a peer applied after this read, so this snapshot was
-	# never the one verified.
+	# Stamp the verified snapshot so the hook gate skips events on it. The
+	# under-lock re-check below never stamps: a match there means a peer
+	# applied after this snapshot.
 	tmux set-option -w -t "$target" @grid_refit_layout "$geom" 2>/dev/null || true
 	exit 0
 fi

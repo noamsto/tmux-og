@@ -477,17 +477,12 @@ set-hook -g client-resized[20]      'run-shell -b "{{index .Paths.Scripts "tmux-
 # tmux commands per stamped float, and tracking a live terminal drag is the
 # point.
 #
-# Every one of these three hooks used to run-shell unconditionally. tmux-next
-# recalculates every window on the server on a single `refresh-client -C`, so
-# a mirrored session's client resize (the remote bridge's steady state) fired
-# all three hooks on every window on the server, not just the one that
-# changed — a fork storm that stalled keystroke echo under load (#793). The
-# `if -F` gates below are evaluated in-process (no fork) and only let the
-# `run-shell -b` through when the script could actually act: never for a
-# window that is neither a crew grid nor holds a stamped float, and never for
-# an event that leaves a grid/float window in a state its script already
-# verified. The stamps the gates compare against (`@float_refit_size`,
-# `@grid_refit_layout`) are owned by the scripts, not written here.
+# tmux-next re-fires window-resized/window-layout-changed on every window of
+# the server for each `refresh-client -C` (the bridge sends one per mirrored
+# window), so all three refit hooks fork only past an in-process `if -F` gate:
+# when the script could change something. The stamps the gates compare
+# against (`@float_refit_size`, `@grid_refit_layout`) are written by the
+# scripts. See docs/agents/performance.md (#793).
 set-hook -g window-resized          { if -F '#{P:#{?#{&&:#{&&:#{pane_floating_flag},#{@float_geom}},#{!=:#{window_width}x#{window_height},#{@float_refit_size}}},1,}}' { run-shell -b "{{index .Paths.Scripts "tmux-float-refit"}} #{q:window_id}" } }
 
 # Responsive dispatcher grid layout (#749). Indexed [10] beside the
@@ -496,17 +491,11 @@ set-hook -g window-resized          { if -F '#{P:#{?#{&&:#{&&:#{pane_floating_fl
 # dispatcher calls tmux-grid-refit itself after adding or removing a role
 # pane. Read-only on the @crew_* hints it consumes.
 #
-# The gate's signature (window size, every decision input the script reads —
-# main-pane %, min role columns, aspect — and every tiled pane's id, geometry
-# and @crew_role) must stay byte-identical to `grid_sig_fmt` in
-# tmux-grid-refit.sh — a bats guard fails the build if they drift. It is not
-# `#{window_layout}`: on tmux-next that format renders per client (JSON for a
-# CLI client, the legacy string for a control client), so a stamp written by
-# the script would never match a gate evaluated for the bridge's control
-# client; this signature prints identically for both. The zoom conjunct
-# mirrors the script's own zoom exit (zoom is user state, left alone) — an
-# unzoom fires window-layout-changed with the flag back at 0, so the gate
-# re-evaluates then.
+# The signature must stay byte-identical to `grid_sig_fmt` in
+# tmux-grid-refit.sh (grid-refit.bats fails on drift). Not `#{window_layout}`:
+# tmux-next renders that per client (JSON vs legacy for a control client), so
+# a stamp would never match a bridge-driven event. A zoomed grid is skipped
+# like the script skips it; unzoom re-fires window-layout-changed.
 set-hook -g window-resized[10]      { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}}}' { run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}" } }
 
 # A pane split/kill/move changes the layout without resizing the window, so

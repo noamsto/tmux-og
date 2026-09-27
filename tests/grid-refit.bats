@@ -130,7 +130,7 @@ refit_jobs() {
 # refresh-client -C @N:<WxH> per window at ITS OWN current size (nothing
 # actually changes size). tmux-next's refresh-client -C recalculates every
 # window on the server and re-fires window-resized/window-layout-changed
-# regardless (spec "Measurement"), which is the fork storm under test.
+# regardless (docs/agents/performance.md), which is the fork storm under test.
 storm() {
 	local win w h cmds
 	cmds=""
