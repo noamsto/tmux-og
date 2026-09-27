@@ -191,10 +191,17 @@ when the run is killed before its first tmux call, or `run-shell -b` fails
 to fork — blocks events for that exact state only. Any other state forks,
 and its run clears it.
 
-What still forks: events that land after a run's read and before its stamp
-(the lead read and three `read_opt`s on the grid's fast path, the per-pane
-stamp on the float path). Folding those reads into the snapshot would narrow
-it further; their values are free text, so that needs `|`-safe rendering.
+What still forks: events that land after a run's read and before its stamp.
+On the grid's fast path (#816) the lead lookup and the three `read_opt`s
+(`@crew_grid_main_pct`, `@grid_refit_min_role_cols`, `@grid_refit_aspect`)
+are folded into the one snapshot `display-message` — the lead's pane id via
+a `#{P:#{?cond,#{pane_id} ,}}` iterator reusing the same lead-boolean the
+list-panes filter used, the three option values via `#{s/[|]/ /:@opt}`
+(`|`-safe, matching `tmux-update-icons.sh`'s same idiom; an unset option
+still renders empty, so the existing default-fallback checks need no
+change). So the grid path's only remaining gap is the stamp `set-option`
+itself, which cannot be folded into the read it depends on. The float
+path's per-pane stamp is unchanged.
 
 A `set-option` of a user option fires neither `window-resized` nor
 `window-layout-changed` on tmux-next (probed), so the marker writes and the
@@ -219,6 +226,23 @@ Re-attach forks about 10× fewer refit jobs, and its p99 drops by about a
 third. Max stays noisy in both builds: one "after" round hit 510 ms. The
 busy forks vary widely before (one round hit a burst: 234 jobs) and stay
 flat after; its latency spread is noise.
+
+**Measured (#816)** — folding the grid path's lead lookup and three
+`read_opt`s into the snapshot, narrowing the gap above. `VLOG=1
+tests/perf/keystroke-latency.sh reattach`, two rounds per build, alternating
+in one session, under a `systemd-run --user --scope -p CPUQuota=400%` cap
+(other workers were on the shared host); "before" is `main` e78655a (#815),
+"after" is this branch.
+
+| Forked refit jobs | Before | After |
+| --- | --- | --- |
+| reattach | 68–70 | 61–66 |
+
+A modest reduction, as expected for a race-window narrowing rather than a
+closure: the grid path's only remaining gap is the final stamp
+`set-option`, which cannot be folded into the read it depends on, so a
+residual (now narrower) window remains alongside genuine resize-driven
+refits.
 
 ## What did not matter (measured)
 

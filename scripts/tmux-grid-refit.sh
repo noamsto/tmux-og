@@ -61,14 +61,20 @@ acquire_lock() {
 read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
 
 # One snapshot, so the stamp below describes exactly the state the verdict
-# used. The signature is the last field: it carries free-text option values,
-# and as the final `read` variable it absorbs any '|' in them.
+# used. It also folds in the lead lookup and the three read_opt values (#816):
+# every tmux call between the pending-clear and the eventual stamp widens the
+# window in which a same-signature event still forks a run, so the fast path
+# now makes only this call and the stamp. The lead's pane_id cannot contain
+# '|'; the three option values are free text, so each is rendered `|`-safe
+# with `s/[|]/ /`, matching tmux-update-icons.sh's same idiom. The signature
+# is still the last field: it absorbs any '|' left in it as the final `read`
+# variable.
 #
 # The hooks set @grid_refit_pending before forking this run, so the rest of a
 # resize burst skips while it is on its way. Clearing it in this command list
 # means every event it suppressed predates everything this run reads, so this
 # must stay the first tmux call.
-IFS='|' read -r is_grid zoomed w h pane_ids stored_sig geom <<<"$(tmux display-message -p -t "$target" "#{==:#{@crew_grid},1}|#{window_zoomed_flag}|#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|$grid_sig_fmt" \; set-option -wu -t "$target" @grid_refit_pending 2>/dev/null)"
+IFS='|' read -r is_grid zoomed w h pane_ids stored_sig lead_ids pct_raw min_cols_raw aspect_raw geom <<<"$(tmux display-message -p -t "$target" "#{==:#{@crew_grid},1}|#{window_zoomed_flag}|#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|#{P:#{?#{&&:#{==:#{@crew_role},lead},#{!:#{pane_floating_flag}}},#{pane_id} ,}}|#{s/[|]/ /:@crew_grid_main_pct}|#{s/[|]/ /:@grid_refit_min_role_cols}|#{s/[|]/ /:@grid_refit_aspect}|$grid_sig_fmt" \; set-option -wu -t "$target" @grid_refit_pending 2>/dev/null)"
 [[ $is_grid == 1 ]] || exit 0
 
 # Zoom is user state: a zoomed grid is left exactly as the user left it.
@@ -77,7 +83,9 @@ IFS='|' read -r is_grid zoomed w h pane_ids stored_sig geom <<<"$(tmux display-m
 # The lead pane is the main pane. No lead -> not a grid we can lay out.
 # Floats are excluded everywhere (#760): window-layout-changed fires on a float
 # open/close, and a float is not part of the tiled set select-layout lays out.
-lead=$(tmux list-panes -t "$target" -f '#{&&:#{==:#{@crew_role},lead},#{!:#{pane_floating_flag}}}' -F '#{pane_id}' 2>/dev/null | head -1)
+# Two panes tagged lead at once is a bug the dispatcher must not create;
+# "first" here is tmux's own iteration order, not a guaranteed tie-break.
+read -r lead _ <<<"$lead_ids"
 [[ -n $lead ]] || exit 0
 
 [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
@@ -88,13 +96,13 @@ np=${#ids[@]}
 ((np > 1)) || exit 0
 
 # Lead's share of the window; out-of-range/non-integer falls back to 60.
-pct=$(read_opt @crew_grid_main_pct 60)
+pct=$pct_raw
 [[ $pct =~ ^[0-9]+$ ]] && ((pct >= 1 && pct <= 99)) || pct=60
 # Minimum role-area width below which the roles get too narrow a column.
-min_cols=$(read_opt @grid_refit_min_role_cols 30)
+min_cols=$min_cols_raw
 [[ $min_cols =~ ^[0-9]+$ ]] || min_cols=30
 # Cells are ~2:1 tall, so main-vertical needs this much width per unit of height.
-aspect=$(read_opt @grid_refit_aspect 2)
+aspect=$aspect_raw
 [[ $aspect =~ ^[0-9]+$ ]] && ((aspect >= 1)) || aspect=2
 
 role_w=$((w - w * pct / 100))
