@@ -22,6 +22,7 @@ POLL_TRIES=300
 
 setup() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
+	ORIG_PATH="$PATH"
 
 	REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 	GRID="$REPO_ROOT/scripts/tmux-grid-refit.sh"
@@ -46,7 +47,7 @@ setup() {
 	# -f /dev/null: a real config would arm the window-resized hooks that run
 	# these very scripts, invalidating the before/after comparisons below.
 	# Four panes: one lead plus three roles, the shape a live grid has.
-	tmux -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50
+	tmux -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50 3>&-
 	WIN="$(tmux display-message -p -t S '#{window_id}')"
 	tmux split-window -t "$WIN"
 	tmux split-window -t "$WIN"
@@ -56,6 +57,10 @@ setup() {
 }
 
 teardown() {
+	# A test that put a tmux wrapper on PATH must not leave it in front of the
+	# real tmux: a broken wrapper would make the kill-server below a silent
+	# no-op, leaving a server that holds bats' output fd open forever.
+	[[ -n ${ORIG_PATH:-} ]] && PATH="$ORIG_PATH"
 	[[ -n ${LOCKDIR:-} ]] && rmdir "$LOCKDIR" 2>/dev/null || true
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"
@@ -123,7 +128,7 @@ start_logged_server() {
 	# since the stale socket can linger well past the old process's death.
 	sleep 0.2
 	mkdir -p "$BATS_TEST_TMPDIR/vlog"
-	(cd "$BATS_TEST_TMPDIR/vlog" && tmux -v -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50)
+	(cd "$BATS_TEST_TMPDIR/vlog" && tmux -v -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50 3>&-)
 	WIN="$(tmux display-message -p -t S '#{window_id}')"
 	tmux split-window -t "$WIN"
 	tmux split-window -t "$WIN"
@@ -141,7 +146,7 @@ start_logged_server() {
 start_wrapped_server() {
 	tmux kill-server 2>/dev/null || true
 	sleep 0.2
-	tmux -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50
+	tmux -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50 3>&-
 	WIN="$(tmux display-message -p -t S '#{window_id}')"
 	tmux split-window -t "$WIN"
 	tmux split-window -t "$WIN"
@@ -350,7 +355,7 @@ layout_bug_reproduces() {
 	wrapdir="$BATS_TEST_TMPDIR/tmux-delay-wrap"
 	mkdir -p "$wrapdir"
 	cat >"$wrapdir/tmux" <<WRAP
-#!/usr/bin/env bash
+#!$BASH
 if [[ \$1 == set-option ]]; then
 	for a in "\$@"; do
 		[[ \$a == "@grid_refit_sig" ]] && sleep 2 && break
