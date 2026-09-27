@@ -99,6 +99,10 @@ type Config struct {
 	// re-published on change by watchLocalClient below, and re-asserted on
 	// every reconnect by repair().
 	View *Viewing
+	// plain holds the unwrapped hooks under a routing Config (#808):
+	// routing() stashes the original here so anything handing cfg to another
+	// goroutine can restore them — routeWhile is main-goroutine only.
+	plain *Config
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.

@@ -123,6 +123,12 @@ type pasteHandler struct {
 // paster builds the handler for one pumpInput, or nil when the Config cannot
 // ship files (tests, --test-local): a nil handler forwards input verbatim.
 func (c Config) paster() *pasteHandler {
+	// A routing Config's hooks run through routeWhile, which is main-goroutine
+	// only; the handler below is used from its own goroutine, so it needs the
+	// original, unwrapped hooks (#808).
+	if c.plain != nil {
+		c = *c.plain
+	}
 	if c.PasteUpload == nil {
 		return nil
 	}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -316,5 +317,96 @@ func TestRouteWhileEOFMidExec(t *testing.T) {
 	})
 	if _, ok := readReplyRouting(pumpReaderOver(lines), router, async, st, 1); ok {
 		t.Error("readReplyRouting after EOF returned ok, want the EOF path")
+	}
+}
+
+// TestRoutingWrapsEveryExecHook pins Config.routing's contract: each
+// exec-backed hook's own call runs inside run, in the returned copy only,
+// with results passed through unchanged and a nil hook left nil.
+func TestRoutingWrapsEveryExecHook(t *testing.T) {
+	var localTmux, localTmuxOut, localArea, reflow, localPanes int
+	runCalls := 0
+	run := func(fn func()) { runCalls++; fn() }
+
+	cfg := Config{
+		LocalTmux: func(args ...string) error {
+			localTmux++
+			return nil
+		},
+		LocalTmuxOut: func(args ...string) (string, error) {
+			localTmuxOut++
+			return "out", nil
+		},
+		LocalArea: func() (int, int) {
+			localArea++
+			return 80, 24
+		},
+		Reflow: func() {
+			reflow++
+		},
+		LocalPanes: func() map[string]string {
+			localPanes++
+			return map[string]string{"%1": "%2"}
+		},
+	}
+
+	routed := cfg.routing(run)
+
+	if err := routed.LocalTmux("x"); err != nil {
+		t.Errorf("LocalTmux returned %v, want nil", err)
+	}
+	if out, err := routed.LocalTmuxOut("x"); out != "out" || err != nil {
+		t.Errorf("LocalTmuxOut = %q, %v; want %q, nil", out, err, "out")
+	}
+	if w, h := routed.LocalArea(); w != 80 || h != 24 {
+		t.Errorf("LocalArea = %d,%d; want 80,24", w, h)
+	}
+	routed.Reflow()
+	if panes := routed.LocalPanes(); len(panes) != 1 || panes["%1"] != "%2" {
+		t.Errorf("LocalPanes = %+v, want map with %%1 -> %%2", panes)
+	}
+
+	if runCalls != 5 {
+		t.Errorf("run calls = %d, want 5", runCalls)
+	}
+	if localTmux != 1 || localTmuxOut != 1 || localArea != 1 || reflow != 1 || localPanes != 1 {
+		t.Errorf("hook counters = %d,%d,%d,%d,%d, want all 1", localTmux, localTmuxOut, localArea, reflow, localPanes)
+	}
+
+	if routedNil := (Config{}).routing(run); routedNil.Reflow != nil {
+		t.Error("routing a nil Reflow hook produced a non-nil one")
+	}
+}
+
+// TestPasterUsesPlainHooks pins goroutine confinement (#808): paster()
+// restores the plain hooks from a routing Config before building its
+// closures, since routeWhile's run is only correct on the main-loop
+// goroutine and pumpInput's paste handler runs on its own.
+func TestPasterUsesPlainHooks(t *testing.T) {
+	var plainCalls int
+	plain := Config{
+		LocalSess: "host-sess",
+		LocalTmuxOut: func(args ...string) (string, error) {
+			plainCalls++
+			return "%1|claude\n", nil
+		},
+		PasteUpload: func(ctx context.Context, ext string, data []byte) (string, error) {
+			return "", nil
+		},
+	}
+	routed := plain.routing(func(fn func()) {
+		t.Error("run was called: paster() did not restore the plain hooks")
+		fn()
+	})
+
+	h := routed.paster()
+	if h == nil {
+		t.Fatal("paster() returned nil, want a handler (PasteUpload set)")
+	}
+	if got := h.procFor("%1"); got != "claude" {
+		t.Errorf("procFor = %q, want %q", got, "claude")
+	}
+	if plainCalls != 1 {
+		t.Errorf("plain LocalTmuxOut calls = %d, want 1", plainCalls)
 	}
 }

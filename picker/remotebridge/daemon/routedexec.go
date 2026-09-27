@@ -46,3 +46,44 @@ func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue
 		}
 	}
 }
+
+// routing returns a copy of c whose exec-backed hooks (LocalTmux,
+// LocalTmuxOut, LocalArea, Reflow, LocalPanes) each run their call inside
+// run, so Run's flowCfg can route %output around a window-set operation's
+// execs via routeWhile. A nil hook stays nil. The copy is for main-loop
+// operations on whole mirror windows only — never pane-shaping ones, whose
+// execs must keep output held until the reshape lands; paster() restores the original hooks before it hands any of this to a goroutine.
+func (c Config) routing(run func(func())) Config {
+	r := c
+	r.plain = &c
+	if c.LocalTmux != nil {
+		r.LocalTmux = func(args ...string) (err error) {
+			run(func() { err = c.LocalTmux(args...) })
+			return err
+		}
+	}
+	if c.LocalTmuxOut != nil {
+		r.LocalTmuxOut = func(args ...string) (out string, err error) {
+			run(func() { out, err = c.LocalTmuxOut(args...) })
+			return out, err
+		}
+	}
+	if c.LocalArea != nil {
+		r.LocalArea = func() (w, h int) {
+			run(func() { w, h = c.LocalArea() })
+			return w, h
+		}
+	}
+	if c.Reflow != nil {
+		r.Reflow = func() {
+			run(func() { c.Reflow() })
+		}
+	}
+	if c.LocalPanes != nil {
+		r.LocalPanes = func() (m map[string]string) {
+			run(func() { m = c.LocalPanes() })
+			return m
+		}
+	}
+	return r
+}
