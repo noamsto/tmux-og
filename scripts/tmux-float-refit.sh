@@ -29,6 +29,12 @@ while IFS='|' read -r pane geom; do
 	# inventing a percentage the user never chose and overwriting their
 	# hand-placed geometry with it.
 	[[ -n $yoff ]] || continue
+	# Stamped before the refit, per pane: the hook gate (config/tmux.conf.tmpl)
+	# skips a float already refit at the window's current size. Stamping first
+	# means a resize landing mid-refit differs from the stamp and forks its own
+	# run; per pane means a float opened later carries no stamp and always
+	# refits once.
+	tmux set-option -p -F -t "$pane" @float_refit_size '#{window_width}x#{window_height}'
 	tmux resize-pane -t "$pane" -x "$width" -y "$height"
 	tmux move-pane -t "$pane" -X "$xoff" -Y "$yoff"
 done < <(tmux list-panes -t "$target" -f '#{pane_floating_flag}' \

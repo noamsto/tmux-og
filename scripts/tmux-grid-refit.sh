@@ -25,6 +25,11 @@ set -uo pipefail
 target=${1:-}
 [[ -z $target ]] && exit 0
 
+# Must stay byte-identical to the grid gate's geometry signature in
+# config/tmux.conf.tmpl (window-resized[10] / window-layout-changed) — a bats
+# guard fails the build if they drift.
+grid_sig_fmt='#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}'
+
 # read_opt <option> <default> -> stdout: the window option's value, or <default>
 # when it is unset (show-options prints "invalid option" to stderr and exits 1).
 read_opt() {
@@ -64,12 +69,15 @@ lead=$(tmux list-panes -t "$target" -f '#{&&:#{==:#{@crew_role},lead},#{!:#{pane
 [[ -n $lead ]] || exit 0
 
 read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
-pane_ids=$(read_panes)
-np=$(printf '%s\n' "$pane_ids" | grep -c .) || true
-((np > 1)) || exit 0
 
-read -r w h <<<"$(tmux display-message -p -t "$target" '#{window_width} #{window_height}' 2>/dev/null)"
+# One round-trip for the size, the tiled pane ids, the gate's geometry
+# signature and the cached decision sig — replacing separate read_panes and
+# size reads before the sig check below.
+IFS='|' read -r w h pane_ids geom stored_sig <<<"$(tmux display-message -p -t "$target" "#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_id} }}|$grid_sig_fmt|#{@grid_refit_sig}" 2>/dev/null)"
 [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
+read -ra ids <<<"$pane_ids"
+np=${#ids[@]}
+((np > 1)) || exit 0
 
 # Lead's share of the window; out-of-range/non-integer falls back to 60.
 pct=$(read_opt @crew_grid_main_pct 60)
@@ -94,8 +102,13 @@ fi
 # the lead-is-first test below makes a demoted lead (a race that slipped
 # through before this lock existed) re-apply instead of caching the breakage.
 sig="$layout:$pct:$np:${w}x${h}:$min_cols:$aspect:$lead"
-first=$(printf '%s\n' "$pane_ids" | head -1)
-if [[ "$(read_opt @grid_refit_sig '')" == "$sig" && $lead == "$first" ]]; then
+first=${ids[0]}
+if [[ $stored_sig == "$sig" && $lead == "$first" ]]; then
+	# Verified: this is exactly the geometry the hook gate should skip next
+	# time, so stamp it now. The under-lock re-check below never stamps — a
+	# match there means a peer applied after this read, so this snapshot was
+	# never the one verified.
+	tmux set-option -w -t "$target" @grid_refit_layout "$geom" 2>/dev/null || true
 	exit 0
 fi
 
