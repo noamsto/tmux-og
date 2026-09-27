@@ -1298,7 +1298,9 @@ mouse_probe() {
 	*/sgr) modes="1000 1006" ;;
 	*/x10) modes="1000" ;;
 	esac
-	local prog="$BATS_TEST_TMPDIR/probe.sh"
+	# One script per pane: bash reads a script as it runs, so rewriting a
+	# shared one under a probe that is still starting cuts it short.
+	local prog="$BATS_TEST_TMPDIR/probe-$kind.sh"
 	cat >"$prog" <<'EOF'
 for m in $2; do printf '\033[?%sh' "$m"; done
 stty raw -echo
