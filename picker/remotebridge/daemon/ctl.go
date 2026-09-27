@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
@@ -122,7 +124,8 @@ func (c *ctlState) takeIntents() (windows bool, layouts []string, reseeds []stri
 // ctlRequest is a decoded, validated FrameCtl: the remote commands to run and
 // the reconcile they imply. Producing one mutates nothing and sends nothing.
 type ctlRequest struct {
-	cmds        []string // control-mode command lines, in order
+	cmds        []string   // control-mode command lines, in order
+	local       [][]string // local tmux argv lists, run in order before cmds
 	wantWindows bool
 	wantLayout  string // remote window id, or "" for none
 	// wantReseed names the remote window whose mirror needs a fresh screen
@@ -175,6 +178,10 @@ type verb struct {
 	// thing that knows what a verb means.
 	probe bool
 	build func(pane, win, sess string, args []string) ([]string, error)
+	// buildLocal, when set, returns local tmux argv lists the handler runs
+	// before build's remote commands. Called only once build has accepted
+	// the same args.
+	buildLocal func(args []string) ([][]string, error)
 }
 
 // Whitelisted direction flags, so a request cannot smuggle an arbitrary option
@@ -260,6 +267,59 @@ func floatRegister(tool string) string { return "@og_float_target_" + tool }
 // in step by hand like the float geometry above: the two modules share no code.
 func floatLookup(tool string) string {
 	return fmt.Sprintf("#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}", tool)
+}
+
+// floatGeomCommand puts remote float pane on inner box c. -X/-Y/-x/-y speak
+// the outer box, whose inset is the remote float's own border (tmux reads a
+// float's pane-border-lines from its pane options), so the inset is chosen
+// remote-side. A pane re-tiled since the drag began is left alone.
+func floatGeomCommand(pane string, c controlmode.PaneCell) string {
+	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s",
+		pane, c.X, c.Y, floatResizeCmd(pane, c.W, c.H))
+	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s",
+		pane, c.X-1, c.Y-1, floatResizeCmd(pane, c.W+2, c.H+2))
+	inner := fmt.Sprintf("if-shell -t %s -F %s %s %s",
+		pane, tmuxQuote("#{==:#{pane-border-lines},none}"), tmuxQuote(none), tmuxQuote(bordered))
+	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
+}
+
+var localPaneRe = regexp.MustCompile(`^%[0-9]+$`)
+
+// floatGeomArgs is a validated float-geom request: the local float that was
+// dragged, the inner box it was dragged to, and the window it sits in.
+type floatGeomArgs struct {
+	localPane  string
+	raw        controlmode.PaneCell
+	winW, winH int
+}
+
+// parseFloatGeom validates float-geom's [local-pane x y w h winW winH] args.
+func parseFloatGeom(a []string) (floatGeomArgs, error) {
+	if !localPaneRe.MatchString(a[0]) {
+		return floatGeomArgs{}, fmt.Errorf("float-geom: bad local pane %q", a[0])
+	}
+	spec := []struct {
+		name   string
+		lo, hi int
+	}{
+		{"x", -9999, 9999}, {"y", -9999, 9999},
+		{"w", 1, 9999}, {"h", 1, 9999},
+		{"winW", 3, 9999}, {"winH", 3, 9999},
+	}
+	vals := make([]int, len(spec))
+	for i, s := range spec {
+		n, err := strconv.Atoi(a[i+1])
+		if err != nil || n < s.lo || n > s.hi {
+			return floatGeomArgs{}, fmt.Errorf("float-geom: bad %s %q", s.name, a[i+1])
+		}
+		vals[i] = n
+	}
+	return floatGeomArgs{
+		localPane: a[0],
+		raw:       controlmode.PaneCell{X: vals[0], Y: vals[1], W: vals[2], H: vals[3]},
+		winW:      vals[4],
+		winH:      vals[5],
+	}, nil
 }
 
 var verbs = map[string]verb{
@@ -470,6 +530,35 @@ var verbs = map[string]verb{
 		cmd := fmt.Sprintf("if-shell -t %s -F %s %s %s",
 			pane, tmuxQuote(loop), tmuxQuote(focus), tmuxQuote(create))
 		return []string{cmd}, nil
+	}},
+	// A mirror float's border drag, routed from the local float's inner box
+	// and window size (the remote window is converged to the same size). The
+	// box is clamped with the reconcile's own rule. The reconcile moves the
+	// local float only when the REMOTE float changes, so when the clamp moved
+	// the box, buildLocal puts the local float there itself: a flush float
+	// dragged past its edge is a remote no-op and would stay off screen.
+	// x/y may be negative: a float dragged partly off screen reports a
+	// negative pane_left (measured -5). Not `moves`: remote move-pane and
+	// resize-pane keep the active pane.
+	"float-geom": {args: 7, layout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+		g, err := parseFloatGeom(a)
+		if err != nil {
+			return nil, err
+		}
+		return []string{floatGeomCommand(pane, clampInner(g.raw, g.winW, g.winH))}, nil
+	}, buildLocal: func(a []string) ([][]string, error) {
+		g, err := parseFloatGeom(a)
+		if err != nil {
+			return nil, err
+		}
+		inner := clampInner(g.raw, g.winW, g.winH)
+		if inner == g.raw {
+			return nil, nil
+		}
+		return [][]string{
+			floatResizeArgv(g.localPane, inner, g.winW, g.winH),
+			floatMoveArgv(g.localPane, inner, g.winW, g.winH),
+		}, nil
 	}},
 	// A mirror's pane content is bytes the remote's programs coloured from the
 	// remote's own theme state, so a local toggle cannot reach it: this asks the
@@ -743,6 +832,11 @@ func (c *ctlState) parseCtl(argv []string, sess string) (ctlRequest, error) {
 		return ctlRequest{}, err
 	}
 	req := ctlRequest{cmds: cmds, wantWindows: v.windows, needsView: v.needsView}
+	if v.buildLocal != nil {
+		if req.local, err = v.buildLocal(args); err != nil {
+			return ctlRequest{}, err
+		}
+	}
 	if v.probe {
 		req.probePane = pane
 	}
@@ -826,7 +920,7 @@ func pressAgainErr(term string) error {
 // is returned when the replacement is RAISED, not when it completes: a message
 // arriving after a multi-second dial reads as a timeout rather than an
 // instruction.
-func handleCtl(cst *ctlState, rep *viewReplacer, probe *carouselProbe, argv []string, sess string, send func(...string) bool) error {
+func handleCtl(cst *ctlState, rep *viewReplacer, probe *carouselProbe, argv []string, sess string, local func(...string) error, send func(...string) bool) error {
 	req, err := cst.parseCtl(argv, sess)
 	if err != nil {
 		return err
@@ -834,6 +928,13 @@ func handleCtl(cst *ctlState, rep *viewReplacer, probe *carouselProbe, argv []st
 	if req.needsView {
 		if v, term := rep.raise(); v != raiseNone {
 			return pressAgainErr(term)
+		}
+	}
+	// Before the submit: a reconcile the remote command triggers must be the
+	// last word on the local float, never overwritten by this apply.
+	for _, cmd := range req.local {
+		if err := local(cmd...); err != nil {
+			return fmt.Errorf("local %s: %w", cmd[0], err)
 		}
 	}
 	if !cst.submit(req, send) {

@@ -214,7 +214,7 @@ func TestHandleCtlDoesNotArmWhenTheSendFails(t *testing.T) {
 	cst, rep, _, _ := handlerFixture(t, "foot", "foot")
 	p := newCarouselProbe()
 
-	err := handleCtl(cst, rep, p, carouselPress(), "rem", func(...string) bool { return false })
+	err := handleCtl(cst, rep, p, carouselPress(), "rem", nil, func(...string) bool { return false })
 	if err == nil {
 		t.Fatal("want an error when the command could not be written")
 	}
@@ -228,7 +228,7 @@ func TestHandleCtlArmsTheProbeOnASubmittedPress(t *testing.T) {
 	cst, rep, _, sent := handlerFixture(t, "foot", "foot")
 	p := newCarouselProbe()
 
-	if err := handleCtl(cst, rep, p, carouselPress(), "rem", sender(sent)); err != nil {
+	if err := handleCtl(cst, rep, p, carouselPress(), "rem", nil, sender(sent)); err != nil {
 		t.Fatalf("handleCtl: %v", err)
 	}
 	if p.pendingCount() != 1 {

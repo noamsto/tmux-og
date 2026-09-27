@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,12 +24,36 @@ func newCtlStateWith(win string, panes ...string) *ctlState {
 	return c
 }
 
+// wantFloatGeom builds the exact command floatGeomCommand builds, from the
+// plain x/y/w/h a float-geom argv carries rather than by calling the
+// production helper, so the test pins the wire shape independently of it.
+func wantFloatGeom(pane string, x, y, w, h int) string {
+	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s", pane, x, y, wantFloatResize(pane, w, h))
+	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s", pane, x-1, y-1, wantFloatResize(pane, w+2, h+2))
+	inner := fmt.Sprintf("if-shell -t %s -F %s %s %s",
+		pane, tmuxQuote("#{==:#{pane-border-lines},none}"), tmuxQuote(none), tmuxQuote(bordered))
+	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
+}
+
+// wantFloatResize builds floatResizeCmd's text by hand, for the same reason.
+func wantFloatResize(pane string, w, h int) string {
+	return fmt.Sprintf("if-shell -t %s -F %s %s %s", pane, tmuxQuote(wantResizeTrigger),
+		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h-1)),
+		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h)))
+}
+
+// wantLocalFloatResize is floatResizeArgv's argv for an outer w x h box.
+func wantLocalFloatResize(pane string, w, h int) []string {
+	return []string{"if-shell", "-t", pane, "-F", "#{pane_floating_flag}", wantFloatResize(pane, w, h)}
+}
+
 func TestParseCtlVerbTranslation(t *testing.T) {
 	const sess = "my proj"
 	tests := []struct {
 		name    string
 		argv    []string
 		want    []string
+		local   [][]string
 		windows bool
 		layout  string
 		reseed  string
@@ -219,6 +244,41 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			layout: "@1",
 			reseed: "@1",
 		},
+		{
+			// An in-window box: clampInner round-trips it, so the branches carry
+			// the request's own x/y/w/h (none) and their +/-1 border variants
+			// (bordered), and the local float is already where it belongs.
+			name:   "float-geom builds the nested if-shell from the clamped inner box",
+			argv:   []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11", "6", "38", "10", "100", "30"},
+			want:   []string{`if-shell -t %3 -F '#{pane_floating_flag}' 'if-shell -t %3 -F '\''#{==:#{pane-border-lines},none}'\'' '\''move-pane -t %3 -X 11 -Y 6 ; if-shell -t %3 -F '\''\'\'''\''#{||:#{&&:#{==:#{pane-border-status},top},#{==:#{pane_top},1}},#{&&:#{==:#{pane-border-status},bottom},#{==:#{e|+:#{pane_top},#{pane_height}},#{e|-:#{window_height},1}}}}'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 38 -y 9'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 38 -y 10'\''\'\'''\'''\'' '\''move-pane -t %3 -X 10 -Y 5 ; if-shell -t %3 -F '\''\'\'''\''#{||:#{&&:#{==:#{pane-border-status},top},#{==:#{pane_top},1}},#{&&:#{==:#{pane-border-status},bottom},#{==:#{e|+:#{pane_top},#{pane_height}},#{e|-:#{window_height},1}}}}'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 40 -y 11'\''\'\'''\'' '\''\'\'''\''resize-pane -t %3 -x 40 -y 12'\''\'\'''\'''\'''`},
+			layout: "@1",
+		},
+		{
+			// Dragged off the left edge: clampInner slides the box back to X=1,
+			// and both branches reach the clamped box, not the raw negative one.
+			name: "float-geom clamps a negative offset before building the command",
+			argv: []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "-5", "6", "45", "10", "100", "30"},
+			want: []string{wantFloatGeom("%3", 1, 6, 45, 10)},
+			local: [][]string{
+				wantLocalFloatResize("%9", 47, 12),
+				{"move-pane", "-t", "%9", "-X", "0", "-Y", "5"},
+			},
+			layout: "@1",
+		},
+		{
+			// A float flush against the left edge, dragged further left: the
+			// clamped box is where the remote float already is, so the remote
+			// command changes nothing and no reconcile follows. The verb itself
+			// must put the local float on the clamped box.
+			name: "float-geom puts the local float on the clamped box when the clamp moved it",
+			argv: []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "-7", "6", "38", "10", "100", "30"},
+			want: []string{wantFloatGeom("%3", 1, 6, 38, 10)},
+			local: [][]string{
+				wantLocalFloatResize("%9", 40, 12),
+				{"move-pane", "-t", "%9", "-X", "0", "-Y", "5"},
+			},
+			layout: "@1",
+		},
 	}
 
 	for _, tc := range tests {
@@ -230,6 +290,9 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			}
 			if !reflect.DeepEqual(req.cmds, tc.want) {
 				t.Errorf("cmds = %q, want %q", req.cmds, tc.want)
+			}
+			if !reflect.DeepEqual(req.local, tc.local) {
+				t.Errorf("local = %q, want %q", req.local, tc.local)
 			}
 			if req.wantWindows != tc.windows {
 				t.Errorf("wantWindows = %v, want %v", req.wantWindows, tc.windows)
@@ -263,6 +326,15 @@ func TestParseCtlRejects(t *testing.T) {
 		{"empty rename", []string{wire.CtlProtocolVersion, "rename", "%3", "|||"}, "empty name"},
 		{"truncated frame", []string{wire.CtlProtocolVersion, "split-h"}, "at least version"},
 		{"enrich-refresh takes no arguments", []string{wire.CtlProtocolVersion, "enrich-refresh", "%3", "@2"}, "wants 0 argument"},
+		{"float-geom wrong arity", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11", "6", "38", "10"}, "wants 7 argument"},
+		{"float-geom rejects the form without a local pane", []string{wire.CtlProtocolVersion, "float-geom", "%3", "11", "6", "38", "10", "100", "30"}, "wants 7 argument"},
+		{"float-geom rejects a bare local pane number", []string{wire.CtlProtocolVersion, "float-geom", "%3", "9", "11", "6", "38", "10", "100", "30"}, "bad local pane"},
+		{"float-geom rejects a local pane injection attempt", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9;x", "11", "6", "38", "10", "100", "30"}, "bad local pane"},
+		{"float-geom rejects a non-integer", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "1x", "6", "38", "10", "100", "30"}, "bad x"},
+		{"float-geom rejects a zero width", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11", "6", "0", "10", "100", "30"}, "bad w"},
+		{"float-geom rejects a window narrower than a bordered box", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11", "6", "38", "10", "2", "30"}, "bad winW"},
+		{"float-geom rejects an out-of-range offset", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "10000", "6", "38", "10", "100", "30"}, "bad x"},
+		{"float-geom rejects an injection attempt", []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11;kill-server", "6", "38", "10", "100", "30"}, "bad x"},
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
@@ -342,6 +414,26 @@ func TestParseCtlRespawnInvalidatesActiveBelief(t *testing.T) {
 	}
 	if req.wantWindows {
 		t.Error("respawn-window wants a window reconcile, want none (the window survives)")
+	}
+}
+
+// float-geom only reshapes an existing float: it must not invalidate the
+// active-pane belief (not `moves`), gate on the viewing client (not
+// `needsView`), or wait on a probe stamp (not `probe`).
+func TestParseCtlFloatGeomFlags(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "11", "6", "38", "10", "100", "30"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl float-geom: %v", err)
+	}
+	if req.invalidate != "" {
+		t.Errorf("float-geom invalidate = %q, want none", req.invalidate)
+	}
+	if req.needsView {
+		t.Error("float-geom needsView = true, want false")
+	}
+	if req.probePane != "" {
+		t.Errorf("float-geom probePane = %q, want none", req.probePane)
 	}
 }
 
@@ -1429,7 +1521,7 @@ func sender(sent *[]string) func(...string) bool {
 func TestHandleCtlSubmitsWhenTheViewerMatches(t *testing.T) {
 	cst, rep, _, sent := handlerFixture(t, "foot", "foot")
 
-	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent)); err != nil {
+	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent)); err != nil {
 		t.Fatalf("handleCtl: %v, want no error", err)
 	}
 	if len(*sent) != 1 {
@@ -1446,7 +1538,7 @@ func TestHandleCtlSubmitsWhenTheViewerMatches(t *testing.T) {
 func TestHandleCtlNacksAndRaisesOnAStaleViewer(t *testing.T) {
 	cst, rep, view, sent := handlerFixture(t, "xterm-kitty", "foot")
 
-	err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent))
+	err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent))
 	if err == nil || err.Error() != pressAgain {
 		t.Fatalf("error = %v, want %q", err, pressAgain)
 	}
@@ -1471,8 +1563,8 @@ func TestHandleCtlNacksAndRaisesOnAStaleViewer(t *testing.T) {
 func TestHandleCtlGivesAnInFlightPressTheSameText(t *testing.T) {
 	cst, rep, _, sent := handlerFixture(t, "xterm-kitty", "foot")
 
-	first := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent))
-	second := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent))
+	first := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent))
+	second := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent))
 	if first == nil || second == nil {
 		t.Fatalf("errors = (%v, %v), want both nacked", first, second)
 	}
@@ -1492,7 +1584,7 @@ func TestHandleCtlGivesAnInFlightPressTheSameText(t *testing.T) {
 func TestHandleCtlSubmitsAfterAReplacementCompleted(t *testing.T) {
 	cst, rep, view, sent := handlerFixture(t, "xterm-kitty", "foot")
 
-	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent)); err == nil {
+	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent)); err == nil {
 		t.Fatal("first press was not nacked")
 	}
 	// What replaceConn does at its publish point, and what the attach loop
@@ -1500,7 +1592,7 @@ func TestHandleCtlSubmitsAfterAReplacementCompleted(t *testing.T) {
 	view.setAdvertised("foot")
 	rep.done()
 
-	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent)); err != nil {
+	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent)); err != nil {
 		t.Fatalf("second press: %v, want it to submit", err)
 	}
 	if len(*sent) != 1 {
@@ -1514,7 +1606,7 @@ func TestHandleCtlSubmitsAfterAReplacementCompleted(t *testing.T) {
 func TestHandleCtlRaisesAgainAfterAFailedReplacement(t *testing.T) {
 	cst, rep, _, sent := handlerFixture(t, "xterm-kitty", "foot")
 
-	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent)); err == nil {
+	if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent)); err == nil {
 		t.Fatal("first press was not nacked")
 	}
 	// replaceConn's notReplaced path: the loop took the wake-up, the dial
@@ -1524,7 +1616,7 @@ func TestHandleCtlRaisesAgainAfterAFailedReplacement(t *testing.T) {
 	}
 	rep.done()
 
-	err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", sender(sent))
+	err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent))
 	if err == nil || err.Error() != pressAgain {
 		t.Fatalf("error = %v, want %q again", err, pressAgain)
 	}
@@ -1543,7 +1635,7 @@ func TestHandleCtlLeavesOtherVerbsAloneOnAStaleViewer(t *testing.T) {
 	cst, rep, _, sent := handlerFixture(t, "xterm-kitty", "foot")
 
 	argv := []string{wire.CtlProtocolVersion, "split-h", "%3"}
-	if err := handleCtl(cst, rep, newCarouselProbe(), argv, "rem", sender(sent)); err != nil {
+	if err := handleCtl(cst, rep, newCarouselProbe(), argv, "rem", nil, sender(sent)); err != nil {
 		t.Fatalf("handleCtl: %v, want no error", err)
 	}
 	if len(*sent) != 1 {
@@ -1551,5 +1643,60 @@ func TestHandleCtlLeavesOtherVerbsAloneOnAStaleViewer(t *testing.T) {
 	}
 	if n := wakeUps(rep); n != 0 {
 		t.Errorf("wake-ups = %d, want none", n)
+	}
+}
+
+// floatDragPastEdge is the float-geom request for a float flush against the
+// left edge dragged further left: the clamp moves it, so the verb carries
+// local commands.
+func floatDragPastEdge() []string {
+	return []string{wire.CtlProtocolVersion, "float-geom", "%3", "%9", "-7", "6", "38", "10", "100", "30"}
+}
+
+// The local float is put on the clamped box before the remote command goes
+// out, so a reconcile that remote command triggers lands after it and wins.
+func TestHandleCtlRunsLocalCommandsBeforeTheRemoteSend(t *testing.T) {
+	cst, rep, _, _ := handlerFixture(t, "foot", "foot")
+	var log []string
+	local := func(args ...string) error {
+		log = append(log, "local "+strings.Join(args, " "))
+		return nil
+	}
+	send := func(cmds ...string) bool {
+		for _, c := range cmds {
+			log = append(log, "send "+c)
+		}
+		return true
+	}
+
+	if err := handleCtl(cst, rep, newCarouselProbe(), floatDragPastEdge(), "rem", local, send); err != nil {
+		t.Fatalf("handleCtl: %v, want no error", err)
+	}
+	want := []string{
+		"local " + strings.Join(wantLocalFloatResize("%9", 40, 12), " "),
+		"local move-pane -t %9 -X 0 -Y 5",
+		"send " + wantFloatGeom("%3", 1, 6, 38, 10),
+	}
+	if !reflect.DeepEqual(log, want) {
+		t.Errorf("order = %q, want %q", log, want)
+	}
+}
+
+// A local apply that fails nacks the drag and sends nothing: the remote
+// command alone would leave the local float where the drag left it.
+func TestHandleCtlSendsNothingWhenALocalCommandFails(t *testing.T) {
+	cst, rep, _, sent := handlerFixture(t, "foot", "foot")
+	boom := errors.New("can't find pane: %9")
+	local := func(...string) error { return boom }
+
+	err := handleCtl(cst, rep, newCarouselProbe(), floatDragPastEdge(), "rem", local, sender(sent))
+	if !errors.Is(err, boom) {
+		t.Fatalf("error = %v, want it to wrap %v", err, boom)
+	}
+	if len(*sent) != 0 {
+		t.Errorf("sent = %q, want nothing submitted", *sent)
+	}
+	if windows, layouts, reseeds := cst.takeIntents(); windows || len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("intents = (%v, %v, %v), want none", windows, layouts, reseeds)
 	}
 }

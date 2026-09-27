@@ -4,6 +4,8 @@
 // daemon's unix socket, and the daemon runs the equivalent command on the remote.
 //
 // Usage: ctl --sock <path> <verb> <remote-pane-id> [args...]
+//
+//	ctl --sock <path> float-drag <local-pane-id>
 package main
 
 import (
@@ -14,7 +16,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
@@ -35,6 +39,41 @@ var runTmux = func(args ...string) error {
 	return exec.Command("tmux", args...).Run()
 }
 
+var runTmuxOut = func(args ...string) (string, error) {
+	out, err := exec.Command("tmux", args...).Output()
+	return string(out), err
+}
+
+var panePattern = regexp.MustCompile(`^%[0-9]+$`)
+
+const floatDragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}"
+
+// resolveFloatDrag turns the local float id a drag-end bind stashed into a
+// float-geom request. The bind cannot expand the float's geometry itself:
+// its format context is wherever the button was released, and a
+// `-t '#{…}'` target is never format-expanded.
+func resolveFloatDrag(localPane string) ([]string, error) {
+	if !panePattern.MatchString(localPane) {
+		return nil, fmt.Errorf("float-drag: bad local pane %q", localPane)
+	}
+	out, err := runTmuxOut("display-message", "-p", "-t", localPane, floatDragFormat)
+	if err != nil {
+		return nil, fmt.Errorf("float-drag: resolve %s: %w", localPane, err)
+	}
+	fields := strings.Split(strings.TrimSpace(out), "|")
+	if len(fields) != 8 {
+		return nil, fmt.Errorf("float-drag: %s: want 8 fields, got %q", localPane, out)
+	}
+	bridgePane, floating := fields[0], fields[1]
+	if !panePattern.MatchString(bridgePane) {
+		return nil, fmt.Errorf("float-drag: %s: not a mirror float (bad @bridge_pane %q)", localPane, bridgePane)
+	}
+	if floating != "1" {
+		return nil, fmt.Errorf("float-drag: %s: not floating", localPane)
+	}
+	return append([]string{"float-geom", bridgePane, localPane}, fields[2:]...), nil
+}
+
 func main() {
 	sock := flag.String("sock", os.Getenv("OG_DAEMON_SOCK"), "bridge daemon unix socket")
 	displayError := flag.String("display-error", "", "tmux client to show request failures in")
@@ -44,7 +83,7 @@ func main() {
 		fail("no --sock (is this a bridge window?)")
 	}
 	if flag.NArg() < 2 {
-		fail("usage: ctl --sock <path> <verb> <remote-pane-id> [args...]")
+		fail("usage: ctl --sock <path> <verb> <remote-pane-id> [args...] | float-drag <local-pane-id>")
 	}
 
 	args := flag.Args()
@@ -53,6 +92,16 @@ func main() {
 	// have no monotonic counter — so the daemon can drop a stale one.
 	if args[0] == "focus" && len(args) == 2 {
 		args = append(args, strconv.FormatInt(time.Now().UnixNano(), 10))
+	}
+	if args[0] == "float-drag" && len(args) == 2 {
+		resolved, err := resolveFloatDrag(args[1])
+		if err != nil {
+			if *displayError != "" && showError(*displayError, err) == nil {
+				return
+			}
+			fail(err.Error())
+		}
+		args = resolved
 	}
 
 	if err := run(*sock, args); err != nil {

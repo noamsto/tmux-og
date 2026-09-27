@@ -2316,7 +2316,9 @@
               CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
               CONF = "${menuBindTmuxConfig.tmuxConf}";
               STOCK_MENUS = ./generator/render/stockmenus.txt;
+              STOCK_DRAGS = ./generator/render/stockdrags.txt;
               CTL_GO = ./picker/remotebridge/daemon/ctl.go;
+              CTL_MAIN_GO = ./picker/remotebridge/cmd/ctl/main.go;
               # A hostile window-name fixture is UTF-8, and so is the status
               # line it is read back from.
               LANG = "C.UTF-8";
@@ -2332,6 +2334,42 @@
               [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
               export CTL_PROTOCOL_VERSION
               bats tests/menu-bind-integration.bats
+              touch $out
+            '';
+
+          # A border drag on a mirrored float, driven for real (#797): the
+          # M2 daemon's --test-local seam between a raw "remote" server and a
+          # local server running the emitted conf, a real attached client fed
+          # SGR mouse input, and the conf's own ctl. A drag bind, like any
+          # mouse binding, fires only for an attached client, and whether the
+          # REMOTE float follows is only visible with a live daemon. Enrich/
+          # agent-usage off for the contention reason rename-bind-integration-
+          # tests gives.
+          float-drag-integration-tests = let
+            floatDragTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "float-drag-integration-tests" {
+              # gawk maps a remote pane id to its local mirror (mirror_of).
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk];
+              TMUX_BIN = "${floatDragTmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+              DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
+              RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/float-drag-integration.bats
               touch $out
             '';
 

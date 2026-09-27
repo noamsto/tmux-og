@@ -24,16 +24,17 @@ const stockMenuVersion = "next-3.9"
 
 type stockMenu struct{ table, key, cmd string }
 
-var stockMenus = parseStockMenus(stockMenusText)
+var stockMenus = parseStockMenus(stockMenusText, "stockmenus.txt")
 
 // parseStockMenus strips each line's `bind-key -T <table> <key>` prefix, column
-// padding included. A malformed line panics: the file is build input.
-func parseStockMenus(text string) []stockMenu {
+// padding included. A malformed line panics naming name: the file is build
+// input, shared with stockdrags.txt via this same parser.
+func parseStockMenus(text, name string) []stockMenu {
 	var out []stockMenu
 	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 5 || f[0] != "bind-key" || f[1] != "-T" {
-			panic("stockmenus.txt: malformed line: " + line)
+			panic(name + ": malformed line: " + line)
 		}
 		rest := line
 		for range 4 {

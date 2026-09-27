@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -58,6 +59,13 @@ func clampOffset(off, size, bound int) int {
 	return off
 }
 
+// clampInner is c clamped into a winW x winH window by outerFromCell's rule,
+// back in the inner box: the reconcile places a local float the same way.
+func clampInner(c controlmode.PaneCell, winW, winH int) controlmode.PaneCell {
+	ow, oh, ox, oy := outerFromCell(c, winW, winH)
+	return controlmode.PaneCell{ID: c.ID, X: ox + floatInset, Y: oy + floatInset, W: ow - 2*floatInset, H: oh - 2*floatInset}
+}
+
 // floatCreateArgv returns the argv that creates a local float mirroring cell
 // c: -d so a reconcile-driven add never yanks focus, -A so the float survives
 // a zoom (both probed against tmux next-3.8), -P -F '#{pane_id}' so the
@@ -73,11 +81,29 @@ func floatCreateArgv(localWin string, c controlmode.PaneCell, winW, winH int) []
 	}
 }
 
+// floatResizeTrigger is true exactly when resize-pane -y adds a row to the
+// height it is given: cmd-resize-pane.c bumps it under pane-border-status top
+// when the pane's yoff is 1, and under bottom when its bottom edge sits one
+// above the window's last row. Floats are not exempt, and top-floating and
+// bottom-floating count as off. new-pane -y has no such bump.
+const floatResizeTrigger = "#{||:#{&&:#{==:#{pane-border-status},top},#{==:#{pane_top},1}},#{&&:#{==:#{pane-border-status},bottom},#{==:#{e|+:#{pane_top},#{pane_height}},#{e|-:#{window_height},1}}}}"
+
+// floatResizeCmd returns the tmux command that sizes pane's outer box to
+// exactly w x h, asking for one row less where resize-pane would add one.
+// resize-pane does not format-expand -y, so the compensation is an if-shell
+// branch; it reads the pane's position when it runs, so it stays exact
+// whether it runs before or after a move.
+func floatResizeCmd(pane string, w, h int) string {
+	return fmt.Sprintf("if-shell -t %s -F %s %s %s", pane, tmuxQuote(floatResizeTrigger),
+		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h-1)),
+		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h)))
+}
+
 // floatResizeArgv returns the argv that resizes an existing local float to
-// cell c's outer box.
+// cell c's outer box, leaving the pane alone if it is no longer floating.
 func floatResizeArgv(localPane string, c controlmode.PaneCell, winW, winH int) []string {
 	w, h, _, _ := outerFromCell(c, winW, winH)
-	return []string{"resize-pane", "-t", localPane, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h)}
+	return []string{"if-shell", "-t", localPane, "-F", "#{pane_floating_flag}", floatResizeCmd(localPane, w, h)}
 }
 
 // floatMoveArgv returns the argv that moves an existing local float to cell
