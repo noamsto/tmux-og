@@ -279,3 +279,32 @@ func TestFloatResizeExactUnderPaneBorderStatusLiveTmux(t *testing.T) {
 		}
 	}
 }
+
+// A mirror pane re-tiled while a Move is pending must not be resized as a
+// tiled pane: floatResizeArgv's pane_floating_flag guard leaves it alone.
+func TestFloatResizeArgvLeavesATiledPaneAloneLiveTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	p := newPane(t, tmux, "split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", "w")
+	size := func() string {
+		t.Helper()
+		out, err := tmux("list-panes", "-t", "w", "-F", "#{pane_id}|#{pane_width}x#{pane_height}").Output()
+		if err != nil {
+			t.Fatalf("list-panes: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	before := size()
+	argv := floatResizeArgv(p, controlmode.PaneCell{ID: p, X: 5, Y: 3, W: 20, H: 6}, 80, 24)
+	if out, err := tmux(argv...).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %v\n%s", argv, err, out)
+	}
+	if got := size(); got != before {
+		t.Errorf("tiled panes after floatResizeArgv = %q, want unchanged %q", got, before)
+	}
+}
