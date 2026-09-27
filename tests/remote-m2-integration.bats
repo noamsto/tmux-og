@@ -813,24 +813,16 @@ wait_bridge_disconnected() {
 	return 1
 }
 
-# The main goroutine used to run addWindow's local `new-window` exec inline,
-# blocking %output routing until that exec returned. A slow local tmux (a slow
-# fork, a loaded box) meant the still-open remote pane went unpainted for the
-# whole wait, even though nothing on the remote side stalled. slowbin/tmux
-# stands in for that slow local tmux: it only slows the daemon's own
-# "new-window" call against m2dst, never SRC/DST calls this test issues
-# directly (those never carry "m2dst" in argv).
+# A window add's local execs must not hold live output for the panes already
+# mirrored (#808): the daemon routes %output while addWindow's `new-window`
+# runs. slowbin/tmux stalls only the daemon's own `new-window` against m2dst;
+# this test's direct SRC/DST calls never carry "m2dst" in argv.
 @test "window add keeps live output flowing while the local new-window is slow" {
 	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
 	real="$(command -v tmux)"
-	# #!/bin/sh, not #!/usr/bin/env bash: the Linux nix build sandbox has no
-	# /usr/bin/env, so an env shebang leaves the stub unexecutable there and
-	# bridge_up fails to start the daemon at all. A word-by-word scan, not a
-	# `case " $* " in *" m2dst "*" new-window "*)` glob: m2dst and new-window
-	# sit one space apart in the real argv, and a glob pattern that requires a
-	# space on both sides of each word can never match two words separated by
-	# only one — each literal's boundary space would have to reuse the same
-	# character the other literal's boundary space also needs.
+	# #!/bin/sh: the nix build sandbox has no /usr/bin/env. A word-by-word
+	# scan, not a `case " $* " in *" m2dst "*" new-window "*)` glob, which can
+	# never match two words one space apart.
 	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
 #!/bin/sh
 has_dst=0

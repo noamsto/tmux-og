@@ -478,9 +478,9 @@ type stream struct {
 	fans []fanout
 	// awaitHigh is the highest command ordinal any round-trip batch has asked
 	// to read, raised in newRoundTrip after stampAll. routeWhile parks a reply
-	// at or below it rather than routing it as %output-adjacent noise: it may
-	// belong to a batch whose next() hasn't run yet (PaneSeeds' iterator reads
-	// lazily). Fire-and-forget sends never raise it.
+	// at or below it rather than dropping it: it may belong to a batch whose
+	// next() hasn't run yet (PaneSeeds' iterator reads lazily). Fire-and-forget
+	// sends never raise it.
 	awaitHigh uint64
 	// parked is the one reply routeWhile set aside to keep reading; see park.
 	parked *parkedReply
@@ -647,8 +647,8 @@ func (s *stream) parkedSeq() uint64 {
 	return s.parked.seq
 }
 
-// dropParked discards a parked reply without returning it — runConn's abandon
-// at the top of every pass, since no operation is in flight there to read it.
+// dropParked discards a parked reply without returning it, for a point where
+// no round-trip is in flight that could still read it.
 func (s *stream) dropParked() {
 	s.mu.Lock()
 	s.parked = nil
@@ -1917,9 +1917,9 @@ func nextLine(reader lineReader, st *stream) (l controlmode.Line, seq uint64, ok
 //
 // A parked reply is checked first, before any read: routeWhile may have
 // stopped reading with want's own reply already off the stream and set aside.
-// takeParked always clears the slot, matched or not — an earlier ordinal in
-// it is one the old walk would have dropped in passing, and the reply order
-// in the stream means it can never hold an ordinal above want.
+// takeParked always clears the slot, matched or not: an earlier ordinal in it
+// is one this walk would have dropped in passing, and the reply order in the
+// stream means it can never hold an ordinal above want.
 func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *stream, want uint64) (controlmode.Line, bool) {
 	if p, ok := st.takeParked(); ok && p.seq == want {
 		return p.l, true

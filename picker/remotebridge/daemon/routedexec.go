@@ -21,10 +21,10 @@ import "github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 //
 // A %layout-change is a stream position too: the %output behind it was drawn
 // after the remote reshape, so it must wait for settle's local select-layout.
-// Reading stops once one is queued, and doesn't start while async holds one.
+// Reading stops once one is queued, and doesn't start while async holds one;
 // settle dispatches from the queue in place, so a %layout-change behind the
-// line being dispatched still holds the stream. Round-trips inside the same operation still read past it — the read-first
-// transient this doesn't widen.
+// line being dispatched still holds the stream. Round-trips inside the same
+// operation do read past it.
 func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue, st *stream, fn func()) {
 	done := make(chan struct{})
 	go func() {
@@ -62,7 +62,8 @@ func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue
 // run, so Run's flowCfg can route %output around a window-set operation's
 // execs via routeWhile. A nil hook stays nil. The copy is for main-loop
 // operations on whole mirror windows only — never pane-shaping ones, whose
-// execs must keep output held until the reshape lands; paster() restores the original hooks before it hands any of this to a goroutine.
+// execs must keep output held until the reshape lands. paster() restores the
+// original hooks before it hands any of this to a goroutine.
 func (c Config) routing(run func(func())) Config {
 	r := c
 	r.plain = &c
