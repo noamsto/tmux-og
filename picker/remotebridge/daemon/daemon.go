@@ -1761,12 +1761,6 @@ type asyncQueue struct{ lines []controlmode.Line }
 
 func (q *asyncQueue) push(l controlmode.Line) { q.lines = append(q.lines, l) }
 
-func (q *asyncQueue) take() []controlmode.Line {
-	lines := q.lines
-	q.lines = nil
-	return lines
-}
-
 // drain dispatches the lines queued at entry, in order, stopping on the first
 // dispatch that reports done. Each line leaves the queue only as its own
 // dispatch starts, so a %layout-change behind it is still visible to

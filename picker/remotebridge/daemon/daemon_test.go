@@ -210,12 +210,9 @@ func TestReadReplyRoutingQueuesNotifications(t *testing.T) {
 	if _, ok := readReplyRouting(newTestReader(s), NewRouter(), async, testStream(), 1); !ok {
 		t.Fatal("readReplyRouting: want the reply block")
 	}
-	queued := async.take()
+	queued := async.lines
 	if len(queued) != 2 || queued[0].Kind != controlmode.Pause || queued[1].Kind != controlmode.WindowAdd {
 		t.Fatalf("queued = %+v, want %%pause then %%window-add", queued)
-	}
-	if rest := async.take(); len(rest) != 0 {
-		t.Errorf("take must empty the queue, still holds %+v", rest)
 	}
 }
 

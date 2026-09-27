@@ -161,7 +161,7 @@ func TestRouteWhileQueuesNotifications(t *testing.T) {
 	if !routed {
 		t.Fatalf("%%output behind the notification was never routed")
 	}
-	q := async.take()
+	q := async.lines
 	if len(q) != 1 || q[0].Kind != controlmode.WindowAdd || q[0].Args[0] != "@9" {
 		t.Fatalf("async queue = %+v, want exactly the %%window-add @9", q)
 	}
@@ -431,7 +431,7 @@ func TestRouteWhileStopsAtLayoutChange(t *testing.T) {
 	within(t, 5*time.Second, func() {
 		routeWhile(lines, router, async, st, func() { time.Sleep(50 * time.Millisecond) })
 	})
-	q := async.take()
+	q := async.lines
 	if len(q) != 1 || q[0].Kind != controlmode.LayoutChange || q[0].Args[0] != "@1" {
 		t.Fatalf("async queue = %+v, want exactly the %%layout-change @1", q)
 	}
