@@ -175,12 +175,24 @@ foreground run is deliberate ordering.
   14 ms, local plain pane max 19 ms), so the cost is inside the Go daemon:
   `%output` delivery waits behind reconcile work. Keystroke sends do not;
   they go straight to the stream.
-- **The Nix `tmux` wrapper costs 32.5 ms per invocation**, against 1.3 ms
-  for the raw binary. It is bash doing one PATH dedupe-and-prepend block per
-  entry, 66 of them. Scripts the server runs resolve the raw binary first on
-  PATH, and so does the bridge daemon, so hot paths never pay this. Only
-  external callers do: shells in panes, Claude Code hooks, third-party
-  tools. That is client-side CPU, never the server thread.
+- **Fixed (#809): the Nix `tmux` wrapper's `--prefix PATH` now names one
+  merged bin dir** (`wrapperBinDir` in `config/tmux.conf.nix`, a `symlinkJoin`
+  of the same packages) instead of 66 separate packages. `make-wrapper.sh`'s
+  `addValue` runs one PATH dedupe-and-prepend block per colon-separated
+  segment of the `--prefix` value, so 66 packages cost 66 blocks of runtime
+  bash; one merged dir costs one. Measured 32.5 ms → 2.8 ms per invocation
+  (raw binary: 1.1 ms), on halo via
+  `hyperfine -N 'result/bin/tmux -L x display -p x'`. `symlinkJoin`'s `paths`
+  order preserves precedence (first path wins a name collision via `lndir`),
+  so `tmuxPkg` stays first, same as the old `--prefix` order. Scripts the
+  server runs resolve the raw binary first on PATH, and so does the bridge
+  daemon, so hot paths never paid this either way — only external callers
+  did: shells in panes, Claude Code hooks, third-party tools. That is
+  client-side CPU, never the server thread.
+  `checks.wrapper-bin-merge-assertions` (`nix flake check`) guards that every
+  binary reachable on the old per-package PATH still resolves to the same
+  target through the merged dir, and that `tmux` resolves to `tmuxPkg`'s
+  pristine binary first.
 - **Upstream fan-out.** `refresh-client -C @N` recalculates every window on
   the server. With our forks gone this measured cheap, so it is documented
   here, not filed upstream.

@@ -993,6 +993,24 @@
   tmuxConf = generatedConf;
 
   # --- Wrapped tmux binary ---
+  # One merged bin dir instead of 66 `--prefix PATH` packages: makeWrapper's
+  # dedupe-and-prepend logic (make-wrapper.sh's addValue) runs one ~7-line
+  # block per colon-separated segment of the --prefix value, so 66 packages
+  # cost 66 blocks of runtime bash per tmux invocation (#809). symlinkJoin's
+  # `paths` order is preserved by `lndir` (first path wins a name collision),
+  # so tmuxPkg stays first for identical precedence.
+  wrapperBinPkgs =
+    [tmuxPkg]
+    ++ scripts
+    ++ [picker-generate pkgs.bash pkgs.lazygit pkgs.yazi pkgs.btop pkgs.zoxide pkgs.jq pkgs.curl pkgs.util-linux pkgs.coreutils pkgs.xdg-utils pkgs.chafa pkgs.socat]
+    ++ lib.optional (carousel-toggle != null) carousel-toggle
+    ++ lib.optional (prdash != null) prdash;
+
+  wrapperBinDir = pkgs.symlinkJoin {
+    name = "tmux-wrapper-bin";
+    paths = wrapperBinPkgs;
+  };
+
   tmux-wrapped = pkgs.symlinkJoin {
     name = "tmux-wrapped";
     paths = [tmuxPkg];
@@ -1000,7 +1018,7 @@
     postBuild = ''
       wrapProgram $out/bin/tmux \
         --add-flags "-f ${tmuxConf}" \
-        --prefix PATH : ${lib.makeBinPath ([tmuxPkg] ++ scripts ++ [picker-generate pkgs.bash pkgs.lazygit pkgs.yazi pkgs.btop pkgs.zoxide pkgs.jq pkgs.curl pkgs.util-linux pkgs.coreutils pkgs.xdg-utils pkgs.chafa pkgs.socat] ++ lib.optional (carousel-toggle != null) carousel-toggle ++ lib.optional (prdash != null) prdash)}
+        --prefix PATH : ${wrapperBinDir}/bin
     '';
     meta.mainProgram = "tmux";
   };
@@ -1009,4 +1027,4 @@ in
     og dispatcher partition mismatch (see ogVerbSpec/ogInternal in config/tmux.conf.nix):
       in scriptNames but not in ogVerbSpec or ogInternal: ${lib.concatStringsSep ", " ogPartitionUndecided}
       in ogVerbSpec/ogInternal but not in scriptNames: ${lib.concatStringsSep ", " ogPartitionUnknown}
-  ''; {inherit tmux-wrapped tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf picker-session-res-bin;}
+  ''; {inherit tmux-wrapped wrapperBinDir wrapperBinPkgs tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf picker-session-res-bin;}

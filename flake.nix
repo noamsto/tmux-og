@@ -1555,6 +1555,51 @@
               touch $out
             '';
 
+          # #809: the wrapper's --prefix PATH now names one merged bin dir
+          # instead of 66 packages. Prove nothing was dropped by the merge
+          # (every name reachable on the old per-package PATH still resolves,
+          # to the same target) and that precedence held (tmux resolves to
+          # tmuxPkg's pristine binary, not some other package's file).
+          wrapper-bin-merge-assertions =
+            pkgs.runCommand "wrapper-bin-merge-assertions" {
+              nativeBuildInputs = [pkgs.coreutils pkgs.findutils];
+              OLD_PATH = lib.makeBinPath tmuxConfig.wrapperBinPkgs;
+              NEW_BIN = "${tmuxConfig.wrapperBinDir}/bin";
+              TMUX_PRISTINE = "${builtins.head tmuxConfig.wrapperBinPkgs}/bin/tmux";
+            } ''
+              fail=0
+              names=$(
+                IFS=:
+                for d in $OLD_PATH; do
+                  find "$d" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null || true
+                done | sort -u
+              )
+              for name in $names; do
+                old_target=$(PATH="$OLD_PATH" command -v "$name" || true)
+                new_target=$(PATH="$NEW_BIN" command -v "$name" || true)
+                if [ -z "$old_target" ]; then
+                  continue
+                fi
+                if [ -z "$new_target" ]; then
+                  echo "binary dropped from merged wrapper bin dir: $name" >&2
+                  fail=1
+                  continue
+                fi
+                if [ "$(readlink -f "$old_target")" != "$(readlink -f "$new_target")" ]; then
+                  echo "precedence changed for $name: $old_target -> $new_target" >&2
+                  fail=1
+                fi
+              done
+              tmux_new=$(readlink -f "$NEW_BIN/tmux")
+              tmux_pristine=$(readlink -f "$TMUX_PRISTINE")
+              if [ "$tmux_new" != "$tmux_pristine" ]; then
+                echo "tmux in the merged bin dir is not tmuxPkg's pristine binary: $tmux_new" >&2
+                fail=1
+              fi
+              [ "$fail" -eq 0 ]
+              touch $out
+            '';
+
           # A control byte is invisible in review and only misbehaves for clients
           # without a UTF-8 locale, so the delimiter rule needs a build-time gate
           # rather than vigilance (#373). Shell sources: scripts/, config/, modules/.
