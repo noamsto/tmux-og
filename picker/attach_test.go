@@ -281,9 +281,13 @@ func TestAttachStartFailure(t *testing.T) {
 }
 
 func TestBuildAttachCmd(t *testing.T) {
-	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "mono"}, attachKillGrace)
+	const grace = 123 * time.Millisecond
+	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "mono"}, grace)
 	if want := []string{"/x/og-remote-open", "lab", "mono"}; !slices.Equal(cmd.Args, want) {
 		t.Errorf("args = %v, want %v", cmd.Args, want)
+	}
+	if cmd.WaitDelay != grace {
+		t.Errorf("WaitDelay = %v, want %v", cmd.WaitDelay, grace)
 	}
 	for _, kv := range []string{"OG_REMOTE_OPEN_PROGRESS_FD=3", "SSH_ASKPASS_REQUIRE=never"} {
 		if !slices.Contains(cmd.Env, kv) {

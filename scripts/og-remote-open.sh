@@ -79,8 +79,9 @@ on_signal() {
 	if [[ -n $mirror_created ]]; then
 		# daemon_started is set right before the launch attempt (deliberately —
 		# setting it after the `&` would leave a window where a launched daemon
-		# is never reaped). ${!:-} is what actually guards against a signal
-		# landing before that `&`, when $! is still unset/stale under set -u.
+		# is never reaped). $! is unset until that launch because nothing
+		# earlier in the script backgrounds a job — don't add one before it,
+		# or ${!:-} below would guard the wrong pid under set -u.
 		if [[ -n $daemon_started && -n ${!:-} ]]; then
 			reap_daemon "$!"
 		fi

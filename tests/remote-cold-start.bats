@@ -1049,7 +1049,7 @@ run_launcher_bg() {
 		else
 			pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
 		fi
-		printf '%s %s\n' "$$" "$pgid" >"$DAEMON_PGID_FILE"
+		printf '%s %s\n' "$$" "${pgid:-NOPGID}" >"$DAEMON_PGID_FILE"
 	EOF
 	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
 

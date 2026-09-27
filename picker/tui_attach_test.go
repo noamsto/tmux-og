@@ -153,9 +153,8 @@ func TestAttachUpdateNeverLaunchesSynchronously(t *testing.T) {
 // 9(b): every key but esc/ctrl+c is a no-op while an attach is in flight, so
 // a second concurrent attach can never start. The base model's cursor sits on
 // a real Remote-section row (remote:lab:mono) precisely so an un-gated enter
-// would also return nil here — with no rows, it couldn't tell a real gate from
-// an empty list — and instead exercises activateCurrent, returning a Cmd and a
-// new attach.id.
+// would reach activateCurrent and return a Cmd and a new attach.id — with no
+// rows, it would return nil and look gated whether or not the gate held.
 func TestAttachKeysIgnoredDuringAttach(t *testing.T) {
 	run := newAttachRun(attachSpec{bin: fakeLauncher(t, "sleep 30"), host: "lab", sess: "mono"})
 	base := attachTestModel(fakeLauncher(t, "sleep 30"))
