@@ -45,6 +45,11 @@ type model struct {
 	flashUntil   time.Time // when flash clears; zero means nothing to clear
 }
 
+// cardHorizFrameSize is the horizontal frame taken by RoundedBorder() (2 cells)
+// plus Padding(0,1) (2 cells) in card(). titleWidth() derives from this const so
+// both stay in sync if the border or padding ever changes.
+const cardHorizFrameSize = 4
+
 const (
 	widthFloor  = 34 // below this: drop the worktree path line, truncate harder
 	heightFloor = 12 // below this: drop the branch + Claude blocks, keep identity + footer
@@ -89,7 +94,7 @@ func (m model) glyphFor(r enrichstate.GlyphRole) string {
 }
 
 func (m model) titleWidth() int {
-	w := m.width - 6 // border + padding
+	w := m.width - cardHorizFrameSize // border + padding
 	if w < 10 {
 		return 10
 	}
@@ -100,9 +105,6 @@ func (m model) titleWidth() int {
 }
 
 func truncate(s string, max int) string {
-	if max <= 1 {
-		return s
-	}
 	return ansi.Truncate(s, max, "…")
 }
 
@@ -255,11 +257,10 @@ func (m model) footer() string {
 			flashColor = c.red
 		}
 		budget := max(avail-lipgloss.Width(strings.Join(items, sep))-lipgloss.Width(sep), 0)
-		if budget > 1 {
+		if budget > 0 {
 			items = append(items, m.sty(flashColor).Render(truncate(m.flash, budget)))
 		}
-		// budget <= 1: truncate with max <= 1 returns the full string (#775),
-		// so drop the flash entirely rather than let it overflow.
+		// budget <= 0: truncate("", 0) returns "", so there's nothing to show.
 	}
 
 	return strings.Join(items, sep)
@@ -299,7 +300,7 @@ func (m model) card() string {
 		BorderForeground(lipgloss.Color(m.cfg.overlay0)).
 		Padding(0, 1)
 
-	innerW := m.width - outer.GetHorizontalFrameSize()
+	innerW := m.width - cardHorizFrameSize
 	innerH := m.height - outer.GetVerticalFrameSize()
 	if innerW <= 0 || innerH <= 0 {
 		// No room for content once the border+padding frame is subtracted.
