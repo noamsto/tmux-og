@@ -1814,10 +1814,7 @@ func (m *tuiModel) beginKill(targets []listItem) tea.Cmd {
 	)
 }
 
-// finishKill lands a kill batch's final result, reproducing the bucketing the
-// old synchronous killRemoteSessions did: a host that answers "already gone"
-// still forgets its row; an unreachable host (or a refused ssh state) keeps
-// the row and explains itself in the hint line. A target caught mid-flight by
+// finishKill lands a kill batch's final result. A target caught mid-flight by
 // a cancel is kept and reported as cancelled, since whether the remote kill
 // landed is unknown.
 func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
