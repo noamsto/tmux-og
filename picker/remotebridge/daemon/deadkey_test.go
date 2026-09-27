@@ -35,7 +35,7 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 		t.Fatalf("set remain-on-exit: %v\n%s", err, out)
 	}
 
-	live := newPane(t, tmux, "split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "w", "cat")
+	live := newPane(t, tmux, "split-window", "-d", "-k", "-P", "-F", "#{pane_id}", "-t", "w", "cat")
 	deadKeyTiled := newPane(t, tmux, "split-window", "-d", "-k", "-P", "-F", "#{pane_id}", "-t", "w", "true")
 	deadKeyFloat := newPane(t, tmux, "new-pane", "-d", "-k", "-P", "-F", "#{pane_id}", "-t", "w",
 		"-x", "20", "-y", "5", "-X", "2", "-Y", "2", "true")
@@ -77,6 +77,10 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 	peers := make(map[string]net.Conn, 4)
 	for _, id := range []string{live, deadKeyTiled, deadKeyFloat, deadOn} {
 		conn, peer := net.Pipe()
+		t.Cleanup(func() {
+			conn.Close()
+			peer.Close()
+		})
 		peers[id] = peer
 		go pumpInput(conn, id, send, nil, nil, nil)
 	}
@@ -99,6 +103,27 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 		if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
 			t.Fatalf("write second input to %s: %v", id, err)
 		}
+	}
+
+	// Prove every guard/send-keys queued above has already run: a control
+	// client executes commands in the order it receives them, so once the
+	// server answers this wait-for, sent last on the same connection, every
+	// earlier command is done.
+	send("wait-for -S og748")
+	waitCmd := tmux("wait-for", "og748")
+	if err := waitCmd.Start(); err != nil {
+		t.Fatalf("wait-for og748: start: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- waitCmd.Wait() }()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("wait-for og748: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		waitCmd.Process.Kill()
+		t.Fatal("wait-for og748 timed out — a queued command never reached the server")
 	}
 
 	deadline := time.Now().Add(5 * time.Second)

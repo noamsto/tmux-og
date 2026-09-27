@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
@@ -2540,27 +2541,68 @@ func modalClearCmd(pane string) string {
 	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %s'", pane, pane)
 }
 
-// isDismissKey reports a frame the dead-key rule would see as a key: not a
-// mouse report (SGR or X10/UTF-8), a focus report, or a bracketed paste.
-// tmux excludes all three from server_client_handle_dead_key, and forwarding
-// a mouse click or a focus change as a dismissal would kill a pane the user
-// only meant to select or click on. Callers never pass it an empty slice.
+// isDismissKey reports whether a frame has a real key left once mouse
+// reports and paste markers are stripped out — the only two things
+// server_client_handle_dead_key excludes (KEYC_IS_MOUSE, KEYC_IS_PASTE).
+// Paste content bytes are not excluded there: the dead-key check runs before
+// tmux's bracket-paste diversion, so a paste's first content byte dismisses
+// a dead key pane same as a typed key. Focus reports are stripped for a
+// bridge-only reason — locally a dead pane never gets one (window.c skips a
+// PANE_EXITED pane), so one reaching the daemon is local tmux's own
+// pane-focus notification, not a keystroke. Callers never pass it an empty
+// slice.
 func isDismissKey(b []byte) bool {
-	if bytes.HasPrefix(b, []byte("\x1b[<")) || bytes.HasPrefix(b, []byte("\x1b[M")) {
-		return false
+	for len(b) > 0 {
+		switch {
+		case bytes.HasPrefix(b, []byte("\x1b[I")), bytes.HasPrefix(b, []byte("\x1b[O")):
+			b = b[3:]
+		case bytes.HasPrefix(b, []byte("\x1b[200~")), bytes.HasPrefix(b, []byte("\x1b[201~")):
+			b = b[6:]
+		case bytes.HasPrefix(b, []byte("\x1b[<")):
+			b = skipSGRMouse(b)
+		case bytes.HasPrefix(b, []byte("\x1b[M")):
+			b = skipX10Mouse(b)
+		default:
+			return true
+		}
 	}
-	if string(b) == "\x1b[I" || string(b) == "\x1b[O" {
-		return false
+	return false
+}
+
+// skipSGRMouse consumes a "\x1b[<" mouse report — digits and ';' up to the
+// terminating 'M' or 'm' — or to the end of b if that terminator never
+// arrives.
+func skipSGRMouse(b []byte) []byte {
+	i := 3
+	for i < len(b) {
+		c := b[i]
+		i++
+		if c == 'M' || c == 'm' {
+			break
+		}
 	}
-	if bytes.Contains(b, []byte("\x1b[200~")) {
-		return false
+	return b[i:]
+}
+
+// skipX10Mouse consumes a "\x1b[M" report and its three parameter bytes.
+// tmux (input-keys.c) writes each parameter as 1 or 2 UTF-8 bytes, so each
+// is decoded as one rune; an invalid byte decodes as size 1, which also
+// covers X10's raw single-byte parameters. Fewer than three params left in
+// b consumes to the end.
+func skipX10Mouse(b []byte) []byte {
+	i := 3
+	for p := 0; p < 3 && i < len(b); p++ {
+		_, size := utf8.DecodeRune(b[i:])
+		i += size
 	}
-	return true
+	return b[i:]
 }
 
 // deadKeyCmd mirrors server_client_handle_dead_key: a dead pane whose
-// remain-on-exit is key or failed-key is killed by any key. on/failed dead
-// panes are left for the ctl kill-pane verb (prefix + x), same as locally.
+// remain-on-exit is key or failed-key is killed by any key left after
+// isDismissKey's exclusions — paste content included, same as locally.
+// on/failed dead panes are left for the ctl kill-pane verb (prefix + x),
+// same as locally.
 func deadKeyCmd(pane string) string {
 	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{||:#{==:#{remain-on-exit},key},#{==:#{remain-on-exit},failed-key}}}' 'kill-pane -t %s'", pane, pane)
 }

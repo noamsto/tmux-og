@@ -4149,6 +4149,8 @@ mirror_of_remote() {
 # gesture still closes both.
 @test "a key leaves a live pane and a dead remain-on-exit-on pane alone (#748)" {
 	$SRC new-session -d -s rem -x 100 -y 30
+	base="$($SRC display-message -p -t rem -F '#{pane_id}')"
+	$SRC set -p -t "$base" remain-on-exit key
 	$SRC set -w -t rem remain-on-exit on
 	on="$($SRC split-window -d -P -F '#{pane_id}' -t rem true)"
 	for _ in $(seq 1 60); do

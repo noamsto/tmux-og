@@ -150,8 +150,14 @@ func TestIsDismissKey(t *testing.T) {
 		{"x10 mouse", []byte("\x1b[M !!"), false},
 		{"focus in", []byte("\x1b[I"), false},
 		{"focus out", []byte("\x1b[O"), false},
-		{"bracketed paste", []byte("\x1b[200~hi\x1b[201~"), false},
-		{"trailing bracketed paste marker", []byte("x\x1b[200~y"), false},
+		{"bracketed paste", []byte("\x1b[200~hi\x1b[201~"), true},
+		{"trailing bracketed paste marker", []byte("x\x1b[200~y"), true},
+		{"empty bracketed paste", []byte("\x1b[200~\x1b[201~"), false},
+		{"focus-in then sgr mouse in one flush", []byte("\x1b[I\x1b[<0;5;5M"), false},
+		{"focus-out then focus-in", []byte("\x1b[O\x1b[I"), false},
+		{"sgr mouse then a real key", []byte("\x1b[<0;5;5Mx"), true},
+		{"x10 mouse then a real key", []byte("\x1b[M !!q"), true},
+		{"x10/utf-8 mouse two-byte param", []byte("\x1b[M\xc3\xa9!!"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,9 +211,14 @@ func TestPumpInputSendOrder(t *testing.T) {
 			want:  []string{"send-keys -H -t %7 1b 5b 49", guard},
 		},
 		{
+			name:  "focus then a mouse click in one flush",
+			frame: []byte("\x1b[I\x1b[<0;5;5M"),
+			want:  []string{"send-keys -H -t %7 1b 5b 49 1b 5b 3c 30 3b 35 3b 35 4d", guard},
+		},
+		{
 			name:  "bracketed paste",
 			frame: []byte("\x1b[200~hi\x1b[201~"),
-			want:  []string{"send-keys -H -t %7 1b 5b 32 30 30 7e 68 69 1b 5b 32 30 31 7e", guard},
+			want:  []string{guard, "send-keys -H -t %7 1b 5b 32 30 30 7e 68 69 1b 5b 32 30 31 7e", guard},
 		},
 	}
 

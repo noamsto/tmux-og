@@ -255,3 +255,16 @@ missing.
 | Go tests for dead-tiled, dead-float and live | Steps 1, 3, 5 |
 | Scratch-server repro in the PR body | the manual `TMUX_TMPDIR=/tmp/og-$$ … tmux -L probe` transcript from spec §4a, re-run at the end, plus the bats run |
 | `docs/agents/bridge-daemon.md` updated | Step 8 |
+
+## Review amendments (round 1)
+
+- `isDismissKey` scans the whole frame. A click that focuses a pane flushes
+  `ESC [ I` together with the mouse press, so a prefix-only check read that
+  click as a key.
+- Only the bracketed-paste *markers* are skipped. A paste body now counts as a
+  key, because `KEYC_IS_PASTE` matches just the markers and a local terminal
+  paste dismisses. The Step 1 bracketed-paste rows are therefore true, and the
+  Step 3 bracketed-paste case gets a guard.
+- The live pane in the Step 5 and Step 7 tests uses `remain-on-exit key`, so
+  only `#{pane_dead}` protects it. Step 5 also waits on a control-client
+  `wait-for` barrier before it checks the surviving panes.

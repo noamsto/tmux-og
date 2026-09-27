@@ -29,8 +29,9 @@ two dead-pane rules, both before the key is delivered:
    Escape or `C-c`, dead or live (lines 1655-1661). #746 already mirrors the
    dead half of this.
 
-With `remain-on-exit on` (1) or `failed` (2), **no key dismisses a dead pane
-locally.** The key falls through to `window_pane_key`, which returns at
+With `remain-on-exit on` (1) or `failed` (2), **the dead-key rule does not
+fire.** The one exception is a dead no-`-E` popup, which has `on`
+(`cmd-display-menu.c:523`) and is closed by its cancel key (rule 2). The key falls through to `window_pane_key`, which returns at
 `wp->fd == -1` (`window.c:2048`). The pane stays until an explicit command
 removes it: `kill-pane`, for which tmux-og's `prefix + x` confirms first, or
 `respawn-pane`.
@@ -99,33 +100,42 @@ key would close locally ignores every key in the mirror.
 
 ### 5.1 Which frames count as a key
 
-tmux excludes mouse and paste keys from the dead-key rule. A frame is the raw
-bytes local tmux wrote to the renderer's pty, so the daemon classifies bytes.
-A frame is a dismissal key **unless** it is:
+tmux excludes mouse keys and the paste *markers* from the dead-key rule.
+`KEYC_IS_PASTE` (`tmux.h:228-231`) matches only `KEYC_PASTE_START`/`END`. The
+fast path (line 1653) runs before the bracket-paste diversion (line 1369), so a
+terminal paste, bracketed or not, dismisses on its first content key. A frame is
+the raw bytes local tmux wrote to the renderer's pty, so the daemon classifies
+bytes. It scans the **whole** frame, skips every non-key report below wherever it
+sits, and treats the frame as a dismissal key iff any byte is left:
 
-- **a mouse report** — it starts with `ESC [ <` (SGR, 1006) or `ESC [ M`
-  (X10/normal/UTF-8). A mirror of a pane whose program died with mouse mode on
-  keeps that mode, because the remote leaves the screen modes set. Local tmux
-  then forwards clicks there as these sequences, and a click that selects the
-  pane must not kill it. tmux's URXVT (1015) encoding, `ESC [ Cb;Cx;Cy M`, is
-  not listed: local tmux never emits it to a pane (`input-keys.c:756-772` writes only
-  SGR or X10/UTF-8).
-- **a focus report** — exactly `ESC [ I` or `ESC [ O`. Local tmux writes these
-  when pane focus changes (`window_pane_update_focus`, `window.c:703-709`), not from a key. Locally,
-  selecting a dead pane never destroys it.
-- **a bracketed paste** — it contains `ESC [ 200 ~`. That is the local paste
-  path (`paste-buffer -p`), which tmux does not treat as a dismissal.
+- **mouse reports** — SGR `ESC [ < … M|m` (1006), and `ESC [ M` plus three
+  parameters (X10, or UTF-8 1005, where each parameter is one or two bytes,
+  `input-keys.c:756-772`). tmux's URXVT (1015) encoding is not listed, because
+  local tmux never emits it to a pane. A mirror of a pane whose program died
+  with mouse mode on keeps that mode, since the remote leaves the screen modes
+  set, so local tmux still forwards clicks there. A click that selects the pane
+  must not kill it.
+- **focus reports** — `ESC [ I` / `ESC [ O`. This one is a bridge-only choice.
+  Locally a dead pane never receives a pane focus report: `window.c:685` checks
+  `PANE_EXITED`, and the writes are at `window.c:703-709`. So a focus report
+  that reaches the daemon is local tmux's own pane-focus notification, not a
+  key.
+- **bracketed-paste markers** — `ESC [ 200 ~` / `ESC [ 201 ~`. The pasted body
+  counts, as it does locally.
+
+The scan has to cover the whole frame. A click that focuses a mirror pane
+flushes the focus-in and the mouse press in one write, so one frame reads
+`ESC [ I ESC [ < … M`. A check on the frame's first bytes only would take that
+click for a key. (Found in review.)
 
 Everything else counts, the same as tmux counts it: printable text, control
 characters, escape-prefixed keys (arrows, function keys, `M-x`) and UTF-8.
 
-**Known divergence (accepted).** An *unbracketed* paste into the mirror is
-indistinguishable from typing, so it dismisses a dead `key` pane. Locally,
-`paste-buffer` without `-p` writes to the pane directly and does not dismiss.
-The paste could not have reached the dead pane in either case. The only effect
-is that the pane closes where locally it would have stayed. The same applies to
-a bracketed paste split across frames: the later chunks carry no `ESC [ 200 ~`
-and count as keys.
+**`paste-buffer` diverges (accepted).** Locally, `paste-buffer` (`prefix + ]`)
+writes to the pane directly and never dismisses. In the mirror its bytes reach
+the daemon like any typed frame, so it dismisses a dead `key` pane. At the byte
+level the daemon cannot tell it from a terminal paste, which does dismiss
+locally. The paste could not have reached the dead pane either way.
 
 **Keys local tmux consumes never reach the daemon.** Locally the dead-key rule
 runs in the fast path (line 1653), *before* key-table lookup, so the prefix key
@@ -164,9 +174,11 @@ moment it closes, and after every #746 clear.
 ### 5.3 Interaction with #746's modal clear
 
 The #746 clear stays exactly as it is: after `send-keys`, on a lone Escape or
-`C-c`, guarded by `pane_dead && pane_modal_flag`. tmux's order is dead-key rule
-first, cancel rule second, and the daemon's order is the same: dead-key guard,
-`send-keys`, modal clear. The two predicates only overlap on a dead modal
+`C-c`, guarded by `pane_dead && pane_modal_flag`. tmux's fast path runs the
+dead-key rule, then the cancel kill, then delivery. The daemon sends the
+dead-key guard, then `send-keys`, then the modal clear. The two orders are
+equivalent only because the clear is gated on `pane_dead`, and input to a dead
+pane is dropped. The two predicates only overlap on a dead modal
 `-k` popup. The dead-key guard removes that pane first, and the modal clear's
 `if -F -t %N` then errors harmlessly.
 
@@ -176,8 +188,8 @@ The guard costs one more `if -F` plus its `og-fanout` barrier per key frame
 (`stampAll` barriers every command). That is two small commands per human
 keystroke, fire-and-forget and pipelined, so no round-trip is added to the
 typing path. The docs already weigh one barrier per command as negligible
-against a `%output` stream measured in megabytes. Bracketed pastes, mouse
-reports and focus reports pay nothing.
+against a `%output` stream measured in megabytes. Frames holding only mouse
+reports, focus reports or paste markers pay nothing.
 
 ### 5.5 What does not change
 
