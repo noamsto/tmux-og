@@ -2615,18 +2615,38 @@ func skipSGRMouse(b []byte) []byte {
 	return b[i:]
 }
 
-// skipX10Mouse consumes a "\x1b[M" report and its three parameters. In UTF-8
-// mode (1005) tmux writes each as 1 or 2 bytes, so each is decoded as a rune;
-// a raw X10 byte decodes as size 1 unless two coordinate bytes happen to form
-// valid UTF-8 (column 162+, row 96+), which misreads the report's end. Fewer
-// than three params left in b consumes to the end.
+// skipX10Mouse consumes a "\x1b[M" report and its three parameters, returning
+// the frame after it. tmux writes this report in one of two encodings: the
+// legacy X10 form, three raw bytes (button, x, y, each offset by 32), and the
+// UTF-8 (1005) form, the same three values written as UTF-8 runes. The two
+// readings disagree whenever a legacy parameter byte also begins a valid
+// multi-byte UTF-8 rune: the common two-byte case is an x byte in 0xc2-0xdf
+// followed by a y byte in 0x80-0xbf (column 162+, row 96+), and a 0xe0-0xef
+// byte followed by two continuations is the rarer three-byte one. Resolve them
+// from where the legacy reading cannot be right:
+//
+//   - a UTF-8 lead byte at the button position cannot be a legacy button (a
+//     small value), so the report is 1005; and
+//   - a leftover that starts with a UTF-8 continuation byte means the legacy
+//     reading split a 1005 rune, so the report is 1005.
+//
+// Otherwise the legacy reading wins, matching tmux's own input parser, which
+// reads the three parameters as raw bytes. Fewer than three params left in b
+// consumes to the end.
 func skipX10Mouse(b []byte) []byte {
-	i := 3
-	for p := 0; p < 3 && i < len(b); p++ {
-		_, size := utf8.DecodeRune(b[i:])
-		i += size
+	raw := 3 + 3
+	if raw > len(b) {
+		raw = len(b)
 	}
-	return b[i:]
+	utf8End := 3
+	for p := 0; p < 3 && utf8End < len(b); p++ {
+		_, size := utf8.DecodeRune(b[utf8End:])
+		utf8End += size
+	}
+	if utf8End != raw && (b[3] >= 0xc2 || (raw < len(b) && b[raw]&0xc0 == 0x80)) {
+		return b[utf8End:]
+	}
+	return b[raw:]
 }
 
 // deadKeyCmd mirrors server_client_handle_dead_key: a dead pane whose
