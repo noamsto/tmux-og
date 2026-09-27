@@ -813,6 +813,66 @@ wait_bridge_disconnected() {
 	return 1
 }
 
+# The main goroutine used to run addWindow's local `new-window` exec inline,
+# blocking %output routing until that exec returned. A slow local tmux (a slow
+# fork, a loaded box) meant the still-open remote pane went unpainted for the
+# whole wait, even though nothing on the remote side stalled. slowbin/tmux
+# stands in for that slow local tmux: it only slows the daemon's own
+# "new-window" call against m2dst, never SRC/DST calls this test issues
+# directly (those never carry "m2dst" in argv).
+@test "window add keeps live output flowing while the local new-window is slow" {
+	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	real="$(command -v tmux)"
+	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
+#!/usr/bin/env bash
+real="$real"
+has_dst=0
+has_neww=0
+for arg in "\$@"; do
+	[ "\$arg" = m2dst ] && has_dst=1
+	[ "\$arg" = new-window ] && has_neww=1
+done
+if [ "\$has_dst" -eq 1 ] && [ "\$has_neww" -eq 1 ]; then
+	sleep 4
+fi
+exec "\$real" "\$@"
+EOF
+	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 1 slowadd
+
+	$SRC new-window -d -t rem
+	sleep 0.3
+	$SRC send-keys -t rem:1 'echo LIVEADD_7K2' Enter
+
+	painted=no
+	for _ in $(seq 1 20); do
+		out="$($DST capture-pane -p -t host-sess:1 2>/dev/null)"
+		[[ $out == *LIVEADD_7K2* ]] && {
+			painted=yes
+			break
+		}
+		sleep 0.1
+	done
+
+	n=0
+	deadline=$((SECONDS + 8))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		n="$($DST list-windows -t host-sess -F '#{window_id}' 2>/dev/null | wc -l)"
+		[ "$n" -eq 2 ] && break
+		sleep 0.2
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$painted" = yes ]
+	[ "$n" -eq 2 ]
+}
+
 # Regression for the pre-existing reconcile hole M2.3 had to close: layout
 # traversal order means a split of a NON-LAST pane is a mid-list INSERT
 # (measured: %0 %1 %2 split at %0 -> %0 %3 %1 %2), which the old three-case
