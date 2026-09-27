@@ -355,10 +355,8 @@ func TestMirrorCtlItemsUseTheKeybindEntryPoint(t *testing.T) {
 	}
 }
 
-// respawn-pane/-window clear the remote screen; the mirror cannot see the
-// clear, so each menu item asks the daemon for a remote respawn and the daemon
-// re-seeds. The pane menu keeps the local Reconnect (renderer redial, #547) on
-// a second key, since one menu cannot carry two items on R.
+// The pane menu keeps both gestures: Respawn runs the remote verb, Reconnect
+// (key e) the local renderer redial, since one menu cannot carry two items on R.
 func TestMirrorRespawnItemsRouteToCtl(t *testing.T) {
 	p := keysPaths()
 	branches := mirrorBranches(t)

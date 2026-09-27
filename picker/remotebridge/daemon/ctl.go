@@ -274,19 +274,14 @@ var verbs = map[string]verb{
 	"kill-pane": {layout: true, windows: true, moves: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
 		return []string{fmt.Sprintf("kill-pane -t %s", pane)}, nil
 	}},
-	// respawn-pane -k on the REMOTE clears the remote screen and restarts the
-	// program in place (same pane id, same active pane), so it needs no
-	// layout/moves reconcile — only the re-seed the control stream cannot
-	// carry. A local respawn-pane is the pane menus' Reconnect, a different
-	// gesture that redials the renderer.
+	// respawn-pane -k restarts the remote program in place (same pane id, same
+	// active pane), so only the re-seed is owed — not a layout/moves reconcile.
 	"respawn-pane": {reseed: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
 		return []string{fmt.Sprintf("respawn-pane -k -t %s", pane)}, nil
 	}},
 	// respawn-window -k destroys every remote pane but the window's FIRST
-	// (spawn.c), so the layout reconcile drops the lost local renderers; the
-	// first pane becomes active (moves), so the focus belief is invalidated.
-	// The re-seed is window-scoped because that survivor is not necessarily
-	// the active pane this request named.
+	// (spawn.c), so the layout reconcile drops the lost renderers and the first
+	// pane becomes active (moves) — use the window-scoped re-seed, never a pane id.
 	"respawn-window": {layout: true, moves: true, reseed: true, build: func(_, win, _ string, _ []string) ([]string, error) {
 		return []string{fmt.Sprintf("respawn-window -k -t %s", win)}, nil
 	}},

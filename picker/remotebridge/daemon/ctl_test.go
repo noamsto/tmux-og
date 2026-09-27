@@ -211,11 +211,8 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			reseed: "@1",
 		},
 		{
-			// respawn-window destroys every remote pane but the first, so it
-			// re-seeds the window and the layout reconcile drops the lost
-			// local renderers; the surviving pane is the window's FIRST, not
-			// necessarily the active one, which is why the re-seed is
-			// window-scoped. It re-activates the first pane, so it moves.
+			// respawn-window destroys every remote pane but the FIRST, so it
+			// re-seeds the window, reconciles the layout, and moves the active pane.
 			name:   "respawn-window restarts the remote window with a layout reconcile and a re-seed",
 			argv:   []string{wire.CtlProtocolVersion, "respawn-window", "%3"},
 			want:   []string{"respawn-window -k -t @1"},

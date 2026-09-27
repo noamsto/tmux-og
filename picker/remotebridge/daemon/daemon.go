@@ -1838,17 +1838,11 @@ func handleContinue(router *Router, rt roundTrip, paneID string) {
 }
 
 // reseedWindow repaints every mirrored pane of one remote window from the
-// remote's own screens. It is the respawn re-seed: respawn-pane/-window clear
-// the remote screen, and control mode carries no clear, so without this the
-// mirror keeps the old program's bytes until the new one repaints over them.
+// remote's own screens. It is the respawn re-seed: respawn-* clears the remote
+// screen, control mode carries no clear, and without this the mirror keeps the
+// old program's bytes until the new one repaints over them. Reuses PaneSeeds so
+// the seed-before-output ordering holds and #802's mouse-mode reassert applies.
 //
-// Window-scoped, not pane-scoped: respawn-window keeps the window's FIRST pane,
-// which is not necessarily the active pane the ctl request named, so a pane id
-// is not trustworthy at command time. Re-seeding a pane's siblings costs one
-// screen each and is always correct.
-//
-// One reseed path, deliberately: reusing PaneSeeds is what keeps the
-// seed-before-output ordering true and lets #802's mouse-mode reassert apply.
 // Called from the main loop (settle), the only place a round-trip may run.
 func reseedWindow(reg *registry, router *Router, rt roundTrip, remoteWin, reason string) {
 	mw, ok := reg.byRemoteID(remoteWin)
