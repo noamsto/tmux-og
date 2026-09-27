@@ -183,10 +183,26 @@ The remote publishes its own caches and the daemon ships them across (#743).
   window/monthly `label` failing `^[A-Za-z0-9._-]{1,12}$` (excludes `#`, `|`,
   spaces, braces, so a `#(…)`/`#{…}`/`#[…]` payload cannot survive), more than
   `usageMaxWindows` (8) windows, `pct` outside `[0, 1000]`, `usd`/`limit_usd`
-  outside `[0, 1e7]`, or a negative `reset_at`. `spend.label`/`spend.period`
-  are not declared on the daemon's `usageSpend` at all — only the
-  statusline's struct has them, and it never renders them — so the typed
-  decode drops them like any other unknown field.
+  outside `[0, 1e7]`, or a negative `reset_at`. `spend.label` **is** declared
+  on the daemon's `usageSpend` and carried — it renders as a trailing suffix
+  in the segment now, so it's validated the same alphabet as a window label,
+  but only when non-empty (an absent label stays valid, for an older cache or
+  a provider that never sets one). `spend.period` is still not declared on
+  the daemon's struct — nothing renders it, so the typed decode drops it like
+  any other unknown field. `spend.remaining_usd`/`spend.remaining_label`
+  (`usageSpend.RemainingUSD`/`RemainingLabel`) carry a provider's per-key
+  remaining credit — pi's OpenRouter cap — nested inside `spend` alongside
+  `label`/`usd`/`limit_usd`; `RemainingUSD` is validated to `[-1e7, 1e7]`
+  (`validUsageRemaining`) and `RemainingLabel` against the same label
+  alphabet as `spend.label`, empty allowed. `balance.usd_remaining` is a
+  separate top-level field (sibling of `spend`, mirroring the statusline's
+  `usageCache.Balance`), used only when the provider has no per-key cap to
+  report a `remaining_usd` for — the two are mutually exclusive by
+  construction (pi's script writes one or the other, never both) — and is
+  validated with the same `[-1e7, 1e7]` range as `remaining_usd`, wider than
+  `spend.usd`/`limit_usd`'s `[0, 1e7]` since either figure can legitimately
+  go negative (an overspent OpenRouter account, or a remaining balance drawn
+  down past zero).
 - **A final guard rejects the marshaled output if it contains `|` or `#`** —
   unreachable by construction (the validated alphabet already excludes both),
   checked anyway because the cost of being wrong isn't cosmetic: `|` matters

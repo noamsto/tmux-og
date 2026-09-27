@@ -141,6 +141,7 @@
               go test ./agentdetect/...
               go test ./statusline/...
               go test ./proctree/...
+              go test ./mirrorname/...
               go test -race ./remotebridge/...
               runHook postCheck
             '';
@@ -2116,6 +2117,9 @@
                 [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux]
                 # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
                 ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
+              # The shell and Go halves of the mirror-name mapping (#783) are
+              # pinned to one shared vector file; remote.bats loops it too.
+              MIRROR_NAME_VECTORS = ./picker/mirrorname/testdata/vectors.tsv;
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
@@ -2282,6 +2286,41 @@
               [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
               export CTL_PROTOCOL_VERSION
               bats tests/menu-bind-integration.bats
+              touch $out
+            '';
+
+          # A hostile remote session name reaching tmux's own stock
+          # MouseDown3StatusLeft/M-MouseDown3StatusLeft session-pill menu
+          # (#783): the same real-attached-client reasoning as
+          # rename-bind-integration-tests above, but a right-click, not a
+          # keybind, and the real og-remote-open launcher (fake ssh/daemon/
+          # ctl/renderer, `tmux` execing this same wrapped binary against a
+          # private -L server) rather than a hand-set window option — the
+          # vulnerability is in what og-remote-open NAMES the local mirror
+          # session, not in anything the daemon touches. util-linux for
+          # `setsid`, so the launcher takes its Linux daemon-launch path.
+          mirror-session-name-integration-tests = let
+            mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "mirror-session-name-integration-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.util-linux];
+              TMUX_BIN = "${mirrorNameTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/mirror-session-name-integration.bats
               touch $out
             '';
 

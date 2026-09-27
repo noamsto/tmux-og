@@ -670,6 +670,26 @@ in {
           hidden — it's the "only when close to the cap" window.
         '';
       };
+
+      openrouterManagementKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/agenix/openrouter-management-key";
+        description = ''
+          Path to a file holding an OpenRouter *management* API key (not the
+          ordinary inference key pi's own auth.json holds — OpenRouter refuses
+          `/api/v1/credits` for an inference key). When set, symlinked via
+          `config.lib.file.mkOutOfStoreSymlink` to
+          `$XDG_CONFIG_HOME/tmux-og/openrouter-mgmt-key` (a runtime symlink to
+          the secret's own path — the key itself is never copied into the Nix
+          store), which `tmux-agent-usage-pi.sh` reads at runtime. Used only as
+          a fallback: an uncapped pi key with this configured shows the
+          account's remaining credit balance; a capped key always prefers its
+          own `limit_remaining` and never spends this call. Meant for an
+          agenix/sops secret path. Null disables the fallback — an uncapped key
+          with no management key just shows spend, no "left" clause.
+        '';
+      };
     };
 
     claudeStatus = {
@@ -1552,6 +1572,10 @@ in {
         # Stable config path so theme-toggle and prefix+r can source it.
         # The actual config is in /nix/store; this symlink always points to the latest.
         "tmux/tmux.conf".source = tmuxConfig.tmuxConf;
+
+        "tmux-og/openrouter-mgmt-key" = lib.mkIf (cfg.agentUsage.openrouterManagementKeyFile != null) {
+          source = config.lib.file.mkOutOfStoreSymlink cfg.agentUsage.openrouterManagementKeyFile;
+        };
       };
     }
     # Never restart on switch — Type=forking with no KillMode override means
