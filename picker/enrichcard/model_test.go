@@ -223,6 +223,41 @@ func TestBridgeRefreshDoneMsgFlashesRealOutcome(t *testing.T) {
 	}
 }
 
+// TestFooterDegradesGracefully sweeps card widths from the minimum up and
+// verifies footer() never exceeds the available inner width, and items are
+// dropped or shortened whole rather than cut mid-label by the outer MaxWidth.
+func TestFooterDegradesGracefully(t *testing.T) {
+	base := model{
+		cfg: testCfg(), height: heightFloor,
+		win: winState{
+			issueProvider: "linear", issueID: "ENG-6794",
+			issueURL:   "https://linear.app/x/issue/ENG-6794",
+			prNumber: "103", prState: "open", prCheck: "success",
+			prMergeable: "mergeable", prTitle: "kitty nav",
+			branch: "feat/103-kitty-nav",
+		},
+	}
+
+	for w := widthFloor; w <= 80; w += 2 {
+		m := base
+		m.width = w
+		footer := m.footer()
+		if fw := lipgloss.Width(footer); fw > m.titleWidth() {
+			t.Errorf("width=%d: footer width %d > titleWidth %d; raw=%q",
+				w, fw, m.titleWidth(), stripANSI(footer))
+		}
+
+		// With a long flash that previously overflowed at narrow widths.
+		m.flash = "error: bridge daemon unreachable — will retry on next tick"
+		m.flashIsError = true
+		footer2 := m.footer()
+		if fw2 := lipgloss.Width(footer2); fw2 > m.titleWidth() {
+			t.Errorf("width=%d (flash): footer width %d > titleWidth %d; raw=%q",
+				w, fw2, m.titleWidth(), stripANSI(footer2))
+		}
+	}
+}
+
 // TestFooterFlashColor pins the color-by-outcome contract (#762): an error
 // flash renders in c.red, a confirmation flash in c.green.
 func TestFooterFlashColor(t *testing.T) {
@@ -327,6 +362,87 @@ func TestBranchBlockLongBranchStaysInsideCardWidth(t *testing.T) {
 		if w := lipgloss.Width(line); w > m.width {
 			t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 		}
+	}
+}
+
+// TestIssueBlockLongIDStaysInsideCardWidth: issueBlock() must truncate its
+// head line (glyph + "  " + issueID) — it renders raw provider data with no
+// upper bound and previously skipped truncate() entirely.
+func TestIssueBlockLongIDStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{
+			name: "long-ascii",
+			id:   "ENG-67891011121314151617181920212223242526",
+		},
+		{
+			name: "wide-rune",
+			id:   "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴-id",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+				issueProvider: "linear", issueID: tc.id,
+				issueTitle: "carousel nav", issueURL: "https://linear.app/x/issue/1",
+			}}
+			out := render(m)
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
+	}
+}
+
+// TestPRBlockLongBadgeStaysInsideCardWidth: prBlock() must truncate its
+// badge line (glyph + " #" + prNumber + optional progress fraction) — it
+// renders raw data with no upper bound and previously skipped truncate().
+func TestPRBlockLongBadgeStaysInsideCardWidth(t *testing.T) {
+	cases := []struct {
+		name     string
+		prNumber string
+		prCheck  string
+	}{
+		{
+			name:     "long-ascii",
+			prNumber: "123456789012345678901234567890",
+			prCheck:  "pending",
+		},
+		{
+			name:     "wide-rune",
+			prNumber: "🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴-num",
+			prCheck:  "pending",
+		},
+		{
+			name:     "long-progress",
+			prNumber: "42",
+			prCheck:  "pending",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+				prNumber:   tc.prNumber,
+				prState:    "open",
+				prCheck:    tc.prCheck,
+				prProgress: "999998/999999",
+				prMergeable: "mergeable",
+				prTitle:    "kitty nav",
+				branch:     "b",
+			}}
+			out := render(m)
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if w := lipgloss.Width(line); w > m.width {
+					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+				}
+			}
+		})
 	}
 }
 
