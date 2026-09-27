@@ -168,6 +168,11 @@ setup() {
 			;;
 			display-message*)
 			case "$*" in
+			# Only a session-id target answers: the launcher's own cur_sess read
+			# of #{session_name} targets $TMUX_PANE or nothing, never a $N id, and
+			# must keep coming back empty.
+			*'-t $'*'#{session_name}'*) [ -n "${FAKE_PAIR_NAME:-}" ] && printf '%s\n' "$FAKE_PAIR_NAME" ;;
+			*'-t $'*'#{@bridge_sock}'*) [ -n "${FAKE_PAIR_SOCK:-}" ] && printf '%s\n' "$FAKE_PAIR_SOCK" ;;
 			*"#{client_width} #{client_height} #{status}"*)
 				[ -n "${FAKE_CLIENT_SIZE:-}" ] && printf '%s\n' "$FAKE_CLIENT_SIZE"
 				;;
@@ -179,6 +184,7 @@ setup() {
 			*"@bridge_session"*) [ -n "${FAKE_BRIDGE_SESSION:-}" ] && printf '%s\n' "$FAKE_BRIDGE_SESSION" ;;
 			esac
 			;;
+		list-sessions*) [ -n "${FAKE_LIST_SESSIONS:-}" ] && printf '%s\n' "$FAKE_LIST_SESSIONS" ;;
 		esac
 		exit 0
 	EOF
@@ -830,7 +836,123 @@ run_launcher_bg() {
 	# The whole name rides through shell_quote as one single-quoted literal,
 	# never split on the embedded space.
 	grep -q "sess_lit='my session'" "$SSH_LOG"
-	grep -q 'switch-client -t =tp-g6-my session' "$TMUX_LOG"
+	grep -q 'switch-client -t =tp-g6-my_session' "$TMUX_LOG"
+}
+
+# --- #783: the local mirror name is sanitized; the raw pair is the identity ---
+
+@test "a ##-substitution session name opens under a sanitized local name, raw in @bridge_session" {
+	touch "$REMOTE_SERVER"
+	export REMOTE_SESSION='x##(touch S)'
+
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-x___touch_S_ -n x___touch_S_' "$TMUX_LOG"
+	grep -qxF 'set-option -t tp-g6-x___touch_S_ @bridge_session x##(touch S)' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =tp-g6-x___touch_S_' "$TMUX_LOG"
+
+	local sess_line host_line
+	sess_line="$(grep -n '^set-option .* @bridge_session ' "$TMUX_LOG" | head -1 | cut -d: -f1)"
+	host_line="$(grep -n '^set-option .* @bridge_host ' "$TMUX_LOG" | head -1 | cut -d: -f1)"
+	[ -n "$sess_line" ] && [ -n "$host_line" ]
+	[ "$sess_line" -lt "$host_line" ]
+}
+
+@test "a quote break-out session name from the probe opens under a sanitized local name" {
+	touch "$REMOTE_SERVER"
+	export REMOTE_SESSION="x' '' ; run-shell 'touch S' ; display-menu -T 'y"
+	local want=tp-g6-x_______run-shell__touch_S____display-menu_-T__y
+
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 0 ]
+
+	grep -qxF "new-session -d -s $want -n ${want#tp-g6-}" "$TMUX_LOG"
+	grep -qxF "set-option -t $want @bridge_session $REMOTE_SESSION" "$TMUX_LOG"
+	grep -qxF "switch-client -t =$want" "$TMUX_LOG"
+}
+
+@test "a dotted user@host is sanitized in the local name, raw in @bridge_host" {
+	touch "$REMOTE_SERVER"
+
+	run bash "$LAUNCHER" user@tp.lan
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s user_tp_lan-workstation -n workstation' "$TMUX_LOG"
+	grep -qxF 'set-option -t user_tp_lan-workstation @bridge_host user@tp.lan' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =user_tp_lan-workstation' "$TMUX_LOG"
+}
+
+@test "a legacy mirror is not adopted when sanitizing altered the remote name" {
+	# a.b and a_b sanitize alike, and a legacy mirror (no @bridge_session)
+	# cannot say which of the two it mirrors.
+	export FAKE_LOCAL_SESSION=tp-g6-a_b FAKE_BRIDGE_HOST=tp-g6
+
+	run bash "$LAUNCHER" tp-g6 a.b
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-a_b-remote -n a_b' "$TMUX_LOG"
+	run grep -qxF 'kill-session -t =tp-g6-a_b' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "a legacy mirror is still adopted when its remote name needed no sanitizing" {
+	export FAKE_LOCAL_SESSION=tp-g6-a_b FAKE_BRIDGE_HOST=tp-g6
+
+	run bash "$LAUNCHER" tp-g6 a_b
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-a_b -n a_b' "$TMUX_LOG"
+}
+
+@test "a mirror found by its raw pair keeps its own name, not the first free one" {
+	export FAKE_LIST_SESSIONS='$7|tp-g6|a.b' FAKE_PAIR_NAME=tp-g6-a_b-remote-2
+
+	run bash "$LAUNCHER" tp-g6 a.b
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'new-session -d -s tp-g6-a_b-remote-2 -n a_b' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =tp-g6-a_b-remote-2' "$TMUX_LOG"
+	run grep -qF 'kill-session -t $7' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "a pre-#783 raw-named mirror is retired, its unproven pidfile pid left alone" {
+	export FAKE_LIST_SESSIONS='$9|tp-g6|x##(y)' FAKE_PAIR_NAME='tp-g6-x#(y)'
+	export FAKE_PAIR_SOCK="$BATS_TEST_TMPDIR/old.sock"
+	export FAKE_CTL_ERROR='og-remote-bridge-ctl: bridge daemon unreachable: connect: connection refused'
+	sleep 30 &
+	DAEMON_PID=$!
+	printf '%s\n' "$DAEMON_PID" >"$FAKE_PAIR_SOCK.pid"
+	: >"$FAKE_PAIR_SOCK"
+
+	run bash "$LAUNCHER" tp-g6 'x##(y)'
+	[ "$status" -eq 0 ]
+
+	grep -qxF -- "--sock $FAKE_PAIR_SOCK ping _" "$CTL_LOG"
+	grep -qxF 'kill-session -t $9' "$TMUX_LOG"
+	kill -0 "$DAEMON_PID"
+	[ ! -e "$FAKE_PAIR_SOCK" ]
+	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
+	grep -qxF 'new-session -d -s tp-g6-x___y_ -n x___y_' "$TMUX_LOG"
+}
+
+@test "a pre-#783 raw-named mirror is retired, its daemon reaped once ping proves ownership" {
+	export FAKE_LIST_SESSIONS='$9|tp-g6|x##(y)' FAKE_PAIR_NAME='tp-g6-x#(y)'
+	export FAKE_PAIR_SOCK="$BATS_TEST_TMPDIR/old.sock"
+	sleep 30 &
+	DAEMON_PID=$!
+	printf '%s\n' "$DAEMON_PID" >"$FAKE_PAIR_SOCK.pid"
+
+	run bash "$LAUNCHER" tp-g6 'x##(y)'
+	[ "$status" -eq 0 ]
+
+	grep -qxF -- "--sock $FAKE_PAIR_SOCK ping _" "$CTL_LOG"
+	grep -qxF 'kill-session -t $9' "$TMUX_LOG"
+	run kill -0 "$DAEMON_PID"
+	[ "$status" -ne 0 ]
+	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
+	grep -qxF 'new-session -d -s tp-g6-x___y_ -n x___y_' "$TMUX_LOG"
 }
 
 # --- #770: progress fd phase lines (opt-in, gated by OG_REMOTE_OPEN_PROGRESS_FD) ---

@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/mirrorname"
 	"github.com/noamsto/tmux-og/picker/remotebridge/daemon"
 	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
 )
@@ -200,7 +201,7 @@ func main() {
 	flag.Parse()
 
 	if *localSess == "" {
-		*localSess = fmt.Sprintf("%s-%s", *host, *session)
+		*localSess = mirrorname.Local(*host, *session)
 	}
 	if *sock == "" {
 		*sock = fmt.Sprintf("%s/og-daemon-%d.sock", os.TempDir(), os.Getpid())
