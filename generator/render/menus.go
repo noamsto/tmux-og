@@ -107,6 +107,9 @@ func mirrorPaneMenu(p *paths.Paths, pos string) string {
 
 // mirrorSessionMenu keeps the stock run-shell -C shape, which the Switch-To
 // loop's #{S:} needs; that expansion is the second layer esc2 accounts for.
+// The title and the Switch-To loop also keep stock's bare #{session_name}
+// expansion under -C, a pre-existing tmux re-parse exposure (see
+// docs/agents/bridge-daemon.md's Expansion layers section).
 func mirrorSessionMenu(p *paths.Paths) string {
 	menu := `display-menu -t= -xM -yW -T '#[align=centre]#{session_name}'  #{S/t:#{?#{&&:#{<:#{loop_index},6},#{!:#{session_active}}},'Switch To #[underscore]#{session_name}' '' {switch-client -t=#{session_id}#} ,}}` +
 		` '' 'Renumber' 'N' {move-window -r}` +

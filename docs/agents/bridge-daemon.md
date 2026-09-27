@@ -339,7 +339,11 @@ parses again. Written as `##{…}` in the window/pane/empty-space menus (one
 layer: display-menu build); `####{…}` in the session menu, which is itself
 inside `run-shell -C "display-menu …"` (two layers: the `-C` expansion, then
 the build). After build expansion, each added command is byte-identical to its
-keybind's command, so it inherits the keybind's measured quoting.
+keybind's command, so it inherits the keybind's measured quoting. The session
+menu's title and its Switch-To loop keep stock's bare `#{session_name}` under
+`run-shell -C`, which tmux re-parses as command text — a pre-existing exposure
+(not introduced by #769) for a mirror session whose local name embeds the
+remote session name (`og-remote-open`), tracked as a follow-up: #TBD-session-name.
 
 **Old resident servers (#407).** A config is parsed and every `{ … }` block
 built — commands looked up, flags parsed — before any of it runs

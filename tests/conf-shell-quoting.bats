@@ -298,7 +298,11 @@ walk_tokens() {
 					# -C's argument is a tmux command, not a shell string -- run-shell
 					# -C hands it straight to cmd_parse, never through sh -c -- so
 					# recurse into it as a command line (which can itself hold a
-					# nested run-shell) instead of scanning it for #{...}.
+					# nested run-shell) instead of scanning it for #{...}. This
+					# recursion polices shell sinks nested inside that command; a
+					# bare format in -C's OWN argument gets re-parsed by tmux
+					# itself (e.g. a menu -T title), which is a tmux-side re-parse
+					# hazard this scanner does not police -- out of scope here.
 					local arg="${_toks[i]}"
 					tmux_tokenize "$arg"
 					walk_tokens "$lineno" "${TOKENS[@]}"
@@ -554,7 +558,7 @@ bind x confirm-before -p "kill #{@bridge_pane}? (y/n)" { run-shell "/bin/x #{q:@
 bind | if-shell -F '#{@gate}' { run-shell "/bin/x #{q:@bridge_pane}" } { split-window -h -c "#{pane_current_path}" }
 set -g status-format[0] "#{session_name}"
 bind U run-shell '/bin/x #{?client_name,--client #{q:client_name},}'
-bind M run-shell -C "display-menu -T '#{session_name}' Foo f {new-window}"
+bind M run-shell -C "display-menu -T 'Menu' Foo f {new-window}"
 EOF
 	run check_conf_quoting "$BATS_TEST_TMPDIR/good.conf"
 	[ "$status" -eq 0 ]

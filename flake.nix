@@ -504,12 +504,16 @@
 
               [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
 
-              # MouseDown3Empty / M-MouseDown3Empty carry tmux's own stock Empty
-              # menu verbatim (#769's non-mirror branch): its New Pane item is
-              # tmux's own `new-pane ; join-pane`, joined into the layout at
-              # once by join-pane — never a float — so these two are excluded
-              # here rather than stamped.
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -vE -- '-T root M?-?MouseDown3Empty ' | grep -v '@float_geom'; then
+              # tmux's own stock Empty menu (#769's non-mirror branch) carries a
+              # verbatim New Pane item: tmux's own `new-pane ; join-pane`,
+              # joined into the layout at once by join-pane — never a float.
+              # Strip that exact item text before scanning, so a bind line is
+              # exempted only where that's its sole new-pane occurrence — never
+              # by which key it's bound to — and a future tmux that turns the
+              # Empty menu's New Pane into something float-shaped stays caught.
+              sed 's/\\"New Pane\\" p { new-pane ; join-pane }//g' joined >scrubbed
+
+              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v '@float_geom'; then
                 echo "float bind above has no @float_geom stamp — tmux-float-refit cannot refit it" >&2
                 exit 1
               fi
@@ -517,7 +521,7 @@
               # And the remain-on-exit pin (#587), asserted for the same reason:
               # a bind that forgets it looks right until it is pressed inside a
               # mirror window, whose own remain-on-exit the pane inherits.
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -vE -- '-T root M?-?MouseDown3Empty ' | grep -v 'remain-on-exit off'; then
+              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v 'remain-on-exit off'; then
                 echo "float bind above does not pin remain-on-exit off — its pane will linger dead inside a mirror window" >&2
                 exit 1
               fi

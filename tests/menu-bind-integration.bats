@@ -165,6 +165,20 @@ wait_for_prompt() { # expected prompt text
 	return 1
 }
 
+# A menu opened via press_prefix_key/click is drawn asynchronously; on a slow
+# runner a blind keypress can land before it's on screen and read back as
+# literal pane input. Poll instead of a single-shot screen grep.
+wait_for_screen() { # expected text
+	local deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)); do
+		screen | grep -qF "$1" && return 0
+		sleep 0.1
+	done
+	printf 'timed out waiting for screen text "%s"; screen was:\n' "$1" >&2
+	screen >&2
+	return 1
+}
+
 wait_for_frame() {
 	local deadline=$((SECONDS + 10))
 	while ((SECONDS < deadline)); do
@@ -234,12 +248,14 @@ assert_wire_argv() { # payload_file verb [arg...]
 	attach_client
 
 	press_prefix_key '<'
+	wait_for_screen 'Kill'
 	send X
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" kill-window
 	clear_frames
 
 	press_prefix_key '<'
+	wait_for_screen 'New Window'
 	send w
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" new-window
@@ -249,6 +265,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	attach_client
 
 	press_prefix_key '<'
+	wait_for_screen 'Rename'
 	send n
 	wait_for_prompt "$BRIDGE_WINDOW_NAME"
 	send Enter
@@ -274,36 +291,42 @@ assert_wire_argv() { # payload_file verb [arg...]
 	panes="$(inner list-panes -t s: | wc -l)"
 
 	press_prefix_key '>'
+	wait_for_screen 'Horizontal Split'
 	send h
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" split-h
 	clear_frames
 
 	press_prefix_key '>'
+	wait_for_screen 'Vertical Split'
 	send v
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" split-v
 	clear_frames
 
 	press_prefix_key '>'
+	wait_for_screen 'Kill'
 	send X
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" kill-pane
 	clear_frames
 
 	press_prefix_key '>'
+	wait_for_screen 'Zoom'
 	send z
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" zoom
 	clear_frames
 
 	press_prefix_key '>'
+	wait_for_screen 'Swap Up'
 	send u
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" swap U
 	clear_frames
 
 	press_prefix_key '>'
+	wait_for_screen 'Swap Down'
 	send d
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" swap D
@@ -317,7 +340,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 @test "a right-click in the pane area opens the pane menu; Kill reaches the remote" {
 	attach_client
 	click 20 20
-	screen | grep -qF 'Kill'
+	wait_for_screen 'Kill'
 	send X
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" kill-pane
@@ -328,7 +351,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	# Row 1 is the session pill, row 2 the window list; the current window's
 	# tab starts right after the "╰─ 1: " gutter.
 	click 5 2
-	screen | grep -qF 'Kill'
+	wait_for_screen 'Kill'
 	send X
 	wait_for_frame
 	assert_wire_argv "$(sole_payload)" kill-window
@@ -343,6 +366,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	inner set-option -w -t "$WIN" @window_bridge_name "$hostile"
 
 	press_prefix_key '<'
+	wait_for_screen 'Rename'
 	send n
 	wait_for_prompt "$hostile"
 	send Enter
@@ -363,9 +387,9 @@ assert_wire_argv() { # payload_file verb [arg...]
 	inner new-session -d -s keep
 
 	click 3 1
-	screen | grep -qF 'Detach'
-	screen | grep -qF 'New Window'
-	screen | grep -qF 'Renumber'
+	wait_for_screen 'Detach'
+	wait_for_screen 'New Window'
+	wait_for_screen 'Renumber'
 	screen_lacks 'Rename'
 	send w
 	wait_for_frame
@@ -374,6 +398,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	clear_frames
 
 	click 3 1
+	wait_for_screen 'Detach'
 	send d
 	local deadline=$((SECONDS + 5))
 	while ((SECONDS < deadline)); do
@@ -394,7 +419,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	attach_client
 
 	press_prefix_key '<'
-	screen | grep -qF 'Kill'
+	wait_for_screen 'Kill'
 	screen | grep -qF 'Rename'
 	screen_lacks 'Respawn'
 	screen_lacks 'Mark'
@@ -404,7 +429,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	sleep 0.2
 
 	press_prefix_key '>'
-	screen | grep -qF 'Reconnect'
+	wait_for_screen 'Reconnect'
 	screen_lacks 'Respawn'
 	screen_lacks 'Mark'
 	screen_lacks 'Float'
@@ -426,7 +451,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	sleep 0.3
 
 	press_prefix_key '>'
-	screen | grep -qF 'Respawn'
+	wait_for_screen 'Respawn'
 	screen | grep -qF 'Mark'
 	send Escape
 	sleep 0.2
@@ -435,9 +460,13 @@ assert_wire_argv() { # payload_file verb [arg...]
 	wins="$(inner list-windows -t s: | wc -l)"
 
 	press_prefix_key '<'
-	screen | grep -qF 'Kill'
+	wait_for_screen 'Kill'
 	send X
-	sleep 0.5
+	local deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)); do
+		[ "$(inner list-windows -t s: | wc -l)" -eq $((wins - 1)) ] && break
+		sleep 0.1
+	done
 	[ "$(inner list-windows -t s: | wc -l)" -eq $((wins - 1)) ]
 	run compgen -G "$REC_DIR/frame.*/payload"
 	[ "$status" -ne 0 ]
