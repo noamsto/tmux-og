@@ -2582,7 +2582,9 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		if paste != nil {
 			payload = paste.handle(remotePane, payload)
 		}
-		if isDismissKey(payload) {
+		// isDismissKey is documented for a non-empty slice; paste.handle can
+		// return an empty one when it swallows the payload (paste.go).
+		if len(payload) > 0 && isDismissKey(payload) {
 			send(deadKeyCmd(remotePane))
 		}
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
