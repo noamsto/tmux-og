@@ -154,7 +154,7 @@ func TestReseedRevealedReplaysBeforeSeed(t *testing.T) {
 		reveals.add("@7")
 
 		rt, _ := scriptedRT(strings.Join([]string{
-			"%begin 1 1 1", "0 0 0 0", "%end 1 1 1",
+			"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1",
 			"%begin 1 2 1", "FRESH-CAPTURE", "%end 1 2 1",
 		}, "\n") + "\n")
 

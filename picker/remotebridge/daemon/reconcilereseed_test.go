@@ -32,7 +32,7 @@ func TestStructuralReconcileReseedsTheSurvivor(t *testing.T) {
 	const onePane = "bd67,190x45,0,0,3"
 	rt, _ := scriptedRT(strings.Join([]string{
 		"%begin 1 1 1", onePane + " %3 0", "%end 1 1 1", // readLayout
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1", // PaneSeed: cursor
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed: cursor
 		"%begin 1 3 1", "SURVIVOR-REPAINT", "%end 1 3 1", // PaneSeed: capture
 		"%begin 1 4 1", onePane + " %3 0", "%end 1 4 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n")
@@ -108,7 +108,7 @@ func TestStructuralReconcileReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	const onePane = "bd67,190x45,0,0,3"
 	rt, _ := scriptedRT(strings.Join([]string{
 		"%begin 1 1 1", onePane + " %3 0", "%end 1 1 1",
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1",
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1",
 		"%begin 1 3 1", "SURVIVOR-REPAINT", "%end 1 3 1",
 		"%begin 1 4 1", onePane + " %3 0", "%end 1 4 1",
 	}, "\n") + "\n")

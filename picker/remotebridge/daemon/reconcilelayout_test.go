@@ -69,7 +69,7 @@ func drainedPipe(t *testing.T) net.Conn {
 // floatSeedScript is the reply pair one float's seed round-trip consumes,
 // numbered from seq.
 func floatSeedScript(seq int, screen string) string {
-	return fmt.Sprintf("%%begin 1 %d 1\n0 0 0 0\n%%end 1 %d 1\n%%begin 1 %d 1\n%s\n%%end 1 %d 1\n",
+	return fmt.Sprintf("%%begin 1 %d 1\n0 0 0 0 0 0 0 0 0\n%%end 1 %d 1\n%%begin 1 %d 1\n%s\n%%end 1 %d 1\n",
 		seq, seq, seq+1, screen, seq+1)
 }
 
@@ -417,7 +417,7 @@ func TestReconcileLayoutResetPathSkipsTheTail(t *testing.T) {
 		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
 		"%begin 1 2 1", "", "%end 1 2 1", // setupWindow's ConvergeCmd
 		"%begin 1 3 1", onePaneFloatLayout + " %0 0", "%end 1 3 1", // setupWindow's readLayout
-		"%begin 1 4 1", "0 0 0 0", "%end 1 4 1", // PaneSeed(%0): cursor
+		"%begin 1 4 1", "0 0 0 0 0 0 0 0 0", "%end 1 4 1", // PaneSeed(%0): cursor
 		"%begin 1 5 1", "RESEEDED", "%end 1 5 1", // PaneSeed(%0): capture
 	}, "\n") + "\n")
 

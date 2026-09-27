@@ -347,7 +347,7 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 		"%continue %1",
 		"%output %2 sibling", // routed by readReplyRouting during the round-trip
 		"%begin 1 1 1",
-		"0 0 0 0",
+		"0 0 0 0 0 0 0 0 0",
 		"%end 1 1 1",
 		"%begin 1 2 1",
 		"FRESH-CAPTURE",
@@ -425,7 +425,7 @@ func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 		"%pause %1",
 		"%continue %1",
 		"%begin 1 1 1",
-		"0 0 0 0",
+		"0 0 0 0 0 0 0 0 0",
 		"%end 1 1 1",
 		"%begin 1 2 1",
 		"FRESH-CAPTURE",

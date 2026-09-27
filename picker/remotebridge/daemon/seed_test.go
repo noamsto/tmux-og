@@ -26,7 +26,7 @@ func TestPaneSeed(t *testing.T) {
 	// Scripted server replies: display-message (cursor/mode) then capture-pane.
 	// Each command emits a %begin/…/%end block in issue order.
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // display-message: cx cy alt appck
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // display-message: cx cy alt appck
 		"%begin 2 2 1", "line-one", "line-two", "%end 2 2 1", // capture-pane
 	}, "\n") + "\n"
 
@@ -49,7 +49,7 @@ func TestPaneSeedErrorReply(t *testing.T) {
 	// capture-pane's reply is a %error block (e.g. the pane closed between
 	// list-panes and this capture-pane) — PaneSeed must reject it.
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // display-message: cx cy alt appck
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // display-message: cx cy alt appck
 		"%begin 2 2 1", "%error 2 2 1", // capture-pane: error, no body
 	}, "\n") + "\n"
 
@@ -65,7 +65,7 @@ func TestPaneSeedEmptyCaptureIsValid(t *testing.T) {
 	// genuinely blank pane, which must NOT be treated as an error (fatal
 	// for a sole pane if it were).
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // display-message: cx cy alt appck
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // display-message: cx cy alt appck
 		"%begin 2 2 1", "%end 2 2 1", // capture-pane: success, empty body
 	}, "\n") + "\n"
 
@@ -83,7 +83,7 @@ func TestPaneSeedEmptyCaptureIsValid(t *testing.T) {
 // landing between our two commands must not be mistaken for either reply.
 func TestPaneSeedSurvivesHookBlocks(t *testing.T) {
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // display-message
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // display-message
 		"%begin 1 2 0", "%end 1 2 0", // a hook's command, not ours
 		"%begin 2 3 1", "line-one", "%end 2 3 1", // capture-pane
 	}, "\n") + "\n"
@@ -129,7 +129,7 @@ func (g *gatingReader) Read(p []byte) (int, error) {
 // gatingReader for how the regression it catches actually fails.
 func TestPaneSeedWritesBothCommandsBeforeReadingEitherReply(t *testing.T) {
 	replyStream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // display-message
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // display-message
 		"%begin 2 2 1", "line-one", "%end 2 2 1", // capture-pane
 	}, "\n") + "\n"
 
@@ -151,11 +151,11 @@ func TestPaneSeedWritesBothCommandsBeforeReadingEitherReply(t *testing.T) {
 // their seeds.
 func TestPaneSeedsIndexAlignmentAndPerPaneError(t *testing.T) {
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // pane A: cursor
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // pane A: cursor
 		"%begin 2 2 1", "line-A", "%end 2 2 1", // pane A: capture
-		"%begin 3 3 1", "1 1 0 0", "%end 3 3 1", // pane B: cursor
+		"%begin 3 3 1", "1 1 0 0 0 0 0 0 0", "%end 3 3 1", // pane B: cursor
 		"%begin 4 4 1", "%error 4 4 1", // pane B: capture, errors
-		"%begin 5 5 1", "0 0 0 0", "%end 5 5 1", // pane C: cursor
+		"%begin 5 5 1", "0 0 0 0 0 0 0 0 0", "%end 5 5 1", // pane C: cursor
 		"%begin 6 6 1", "line-C", "%end 6 6 1", // pane C: capture
 	}, "\n") + "\n"
 
@@ -194,7 +194,7 @@ func TestPaneSeedsStreamLossErrorsRemainingPanes(t *testing.T) {
 	// Only pane A's two replies are on the wire; the stream ends there, so
 	// pane B's commands (issued the same as A's) are never answered.
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0", "%end 1 1 1", // pane A: cursor
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0", "%end 1 1 1", // pane A: cursor
 		"%begin 2 2 1", "line-A", "%end 2 2 1", // pane A: capture
 	}, "\n") + "\n"
 
@@ -220,6 +220,87 @@ func TestPaneSeedsStreamLossErrorsRemainingPanes(t *testing.T) {
 	}
 	if got[1].err == nil {
 		t.Errorf("pane 1: want a stream-loss error, got seed %q", got[1].seed)
+	}
+}
+
+// TestPaneSeedCarriesMouseModeThroughSeed: a remote pane whose mouse tracking
+// is already on before the mirror seeds it must have that state painted into
+// the seed's DECSET bytes, or local tmux sends the wheel to copy-mode (#757).
+func TestPaneSeedCarriesMouseModeThroughSeed(t *testing.T) {
+	// cx=5 cy=2 alt=1 appck=0 standard=0 button=0 all=1 sgr=1 utf8=0
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "5 2 1 0 0 0 1 1 0", "%end 1 1 1", // display-message: cx cy alt appck standard button all sgr utf8
+		"%begin 2 2 1", "line-one", "%end 2 2 1", // capture-pane
+	}, "\n") + "\n"
+
+	var sent []string
+	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+	if err != nil {
+		t.Fatalf("PaneSeed: %v", err)
+	}
+	if !bytes.Contains(got, []byte("\x1b[?1003h")) {
+		t.Errorf("seed %q missing mouse-all set (?1003h)", got)
+	}
+	if !bytes.Contains(got, []byte("\x1b[?1006h")) {
+		t.Errorf("seed %q missing SGR mouse encoding set (?1006h)", got)
+	}
+}
+
+// TestPaneSeedNoMouseTrackingClearsMouseModes: a pane with no mouse tracking
+// still clears all five DECSET modes through the full PaneSeeds ->
+// render.Seed path, so a stale local mode never outlives a reseed.
+func TestPaneSeedNoMouseTrackingClearsMouseModes(t *testing.T) {
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // display-message: no mouse tracking
+		"%begin 2 2 1", "line-one", "%end 2 2 1", // capture-pane
+	}, "\n") + "\n"
+
+	var sent []string
+	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+	if err != nil {
+		t.Fatalf("PaneSeed: %v", err)
+	}
+	for _, l := range []string{"\x1b[?1000l", "\x1b[?1002l", "\x1b[?1003l", "\x1b[?1006l", "\x1b[?1005l"} {
+		if !bytes.Contains(got, []byte(l)) {
+			t.Errorf("seed %q missing clear %s", got, l)
+		}
+	}
+	for _, h := range []string{"\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h", "\x1b[?1005h"} {
+		if bytes.Contains(got, []byte(h)) {
+			t.Errorf("seed %q must not set %s with no mouse tracking", got, h)
+		}
+	}
+}
+
+// TestPaneSeedUnreadableMouseModeLeavesModesAlone: a cursor reply that does
+// not carry all nine fields (a remote tmux missing a mouse format) or is an
+// error must not clear a mirror pane's mouse modes — unknown is not off — but
+// a legacy four-field reply still places the cursor.
+func TestPaneSeedUnreadableMouseModeLeavesModesAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cursor []string
+		want   string
+	}{
+		{"legacy four fields", []string{"%begin 1 1 1", "5 2 0 0", "%end 1 1 1"}, "\x1b[3;6H"},
+		{"error reply", []string{"%begin 1 1 1", "%error 1 1 1"}, "\x1b[1;1H"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := strings.Join(append(tc.cursor, "%begin 2 2 1", "line-one", "%end 2 2 1"), "\n") + "\n"
+			var sent []string
+			got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+			if err != nil {
+				t.Fatalf("PaneSeed: %v", err)
+			}
+			if !bytes.HasSuffix(got, []byte(tc.want)) {
+				t.Errorf("seed %q does not end with cursor %q", got, tc.want)
+			}
+			for _, mode := range []string{"1000", "1002", "1003", "1005", "1006"} {
+				if bytes.Contains(got, []byte("\x1b[?"+mode)) {
+					t.Errorf("seed %q touches mouse mode ?%s with the state unknown", got, mode)
+				}
+			}
+		})
 	}
 }
 

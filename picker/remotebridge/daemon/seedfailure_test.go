@@ -56,7 +56,7 @@ func twoPaneAppendHarness(t *testing.T, send func(string)) (cfg Config, w *mirro
 	}
 
 	rt, _ = scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1",
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1",
 		"%begin 1 2 1", "%error 1 2 1",
 	}, "\n") + "\n")
 
@@ -151,7 +151,7 @@ func TestSeedFailurePaneInTrailingReseedSet(t *testing.T) {
 	}
 
 	reseedRT, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1",
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1",
 		"%begin 1 2 1", "RESEED-OK", "%end 1 2 1",
 	}, "\n") + "\n")
 
@@ -249,7 +249,7 @@ func TestResetWindowClosesKeptPaneConnAfterSuccessfulReshape(t *testing.T) {
 	script := strings.Join([]string{
 		"%begin 1 1 1", "%end 1 1 1", // ConvergeCmd
 		"%begin 1 2 1", "b2c3,80x24,0,0,0 %0 0", "%end 1 2 1", // readLayout
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
 		"%begin 1 4 1", "FRESH-SEED", "%end 1 4 1", // PaneSeeds(%0): capture
 	}, "\n") + "\n"
 
@@ -304,7 +304,7 @@ func TestSetupWindowSolePaneSeedFailureCleansUp(t *testing.T) {
 	script := strings.Join([]string{
 		"%begin 1 1 1", "%end 1 1 1", // ConvergeCmd
 		"%begin 1 2 1", "b2c3,80x24,0,0,0 %0 0", "%end 1 2 1", // readLayout
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
 		"%begin 1 4 1", "%error 1 4 1", // PaneSeeds(%0): capture
 	}, "\n") + "\n"
 

@@ -57,7 +57,7 @@ func TestReconcileGivesZoomedPaneTheWindowDims(t *testing.T) {
 	}
 	script := strings.Join([]string{
 		"%begin 1 1 1", layout + " %0 1", "%end 1 1 1", // readLayout: remote zoomed, pane 0 active
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
 		"%begin 1 3 1", "SEED-0", "%end 1 3 1", // PaneSeed(%0): capture
 		// No PaneSeed(%1): the zoom hides it (#557).
 		"%begin 1 4 1", layout + " %0 1", "%end 1 4 1", // trailing re-read: unchanged, stop
@@ -147,9 +147,9 @@ func TestReconcileUnzoomReseedsEveryPane(t *testing.T) {
 
 	script := strings.Join([]string{
 		"%begin 1 1 1", layout + " %0 0", "%end 1 1 1", // readLayout: remote NOT zoomed, pane 0 active
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
 		"%begin 1 3 1", "SEED-0", "%end 1 3 1", // PaneSeed(%0): capture
-		"%begin 1 4 1", "0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
+		"%begin 1 4 1", "0 0 0 0 0 0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
 		"%begin 1 5 1", "SEED-1", "%end 1 5 1", // PaneSeed(%1): capture
 		"%begin 1 6 1", layout + " %0 0", "%end 1 6 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n"
@@ -206,9 +206,9 @@ func TestReconcileKeepsPaneCellDimsOnZoomAssertFailure(t *testing.T) {
 
 	script := strings.Join([]string{
 		"%begin 1 1 1", layout + " %0 1", "%end 1 1 1", // readLayout: remote zoomed, pane 0 active
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
 		"%begin 1 3 1", "SEED-0", "%end 1 3 1", // PaneSeed(%0): capture
-		"%begin 1 4 1", "0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
+		"%begin 1 4 1", "0 0 0 0 0 0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
 		"%begin 1 5 1", "SEED-1", "%end 1 5 1", // PaneSeed(%1): capture
 		"%begin 1 6 1", layout + " %0 1", "%end 1 6 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n"
@@ -286,9 +286,9 @@ func TestReconcileZoomAssertNeverTargetsAFloat(t *testing.T) {
 
 	script := strings.Join([]string{
 		"%begin 1 1 1", tiledFloatLayout + " %9 1", "%end 1 1 1", // readLayout: zoomed, float active
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
 		"%begin 1 3 1", "SEED-0", "%end 1 3 1", // PaneSeed(%0): capture
-		"%begin 1 4 1", "0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
+		"%begin 1 4 1", "0 0 0 0 0 0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
 		"%begin 1 5 1", "SEED-1", "%end 1 5 1", // PaneSeed(%1): capture
 		"%begin 1 6 1", tiledFloatLayout + " %9 1", "%end 1 6 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n"
@@ -351,7 +351,7 @@ func TestReconcileZoomAssertTargetsTiledPaneBesideFloat(t *testing.T) {
 
 	script := strings.Join([]string{
 		"%begin 1 1 1", tiledFloatLayout + " %0 1", "%end 1 1 1", // readLayout: zoomed, tiled %0 active
-		"%begin 1 2 1", "0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
+		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
 		"%begin 1 3 1", "SEED-0", "%end 1 3 1", // PaneSeed(%0): capture
 		"%begin 1 4 1", tiledFloatLayout + " %0 1", "%end 1 4 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n"
