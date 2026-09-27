@@ -42,6 +42,7 @@ setup() {
 }
 
 teardown() {
+	[[ -n ${LOCKDIR:-} ]] && rmdir "$LOCKDIR" 2>/dev/null || true
 	tmux kill-server 2>/dev/null || true
 	rm -rf "$TMUX_TMPDIR"
 }
@@ -759,4 +760,247 @@ layout_bug_reproduces() {
 	storm
 	settle
 	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
+}
+
+@test "a burst of events on an unverified grid forks one refit (#810)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	# More windows means more events per storm.
+	tmux new-window -d -t S:
+	tmux new-window -d -t S:
+	tmux new-window -d -t S:
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	settle
+
+	# Knock the stamp out of date: the grid is laid out, but the gate no
+	# longer knows it, so every event of the storm would fork without the
+	# pending marker to coalesce them into one run.
+	tmux set-option -w -t "$WIN" @grid_refit_layout stale
+	settle
+
+	local g0 delta
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	delta=$(($(refit_jobs tmux-grid-refit) - g0))
+	# One forked job logs two job_run lines, so "exactly one job" is delta >
+	# 0 and <= 2.
+	[ "$delta" -gt 0 ]
+	[ "$delta" -le 2 ]
+	[ "$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)" != "stale" ]
+}
+
+@test "a burst of events on a stale stamped float forks one refit (#810)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	tmux new-window -d -t S:
+	tmux new-window -d -t S:
+	tmux new-window -d -t S:
+
+	tmux resize-window -t "$WIN" -x 100 -y 30
+	if ! tmux new-pane -t "$WIN" -x 90% -y 90% -X 5% -Y 5% -B heavy 2>/dev/null; then
+		skip "this tmux cannot create a floating pane"
+	fi
+	local float
+	float="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}')"
+	tmux set-option -p -t "$float" @float_geom '90% 90% 5% 5%'
+
+	arm_refit_hooks
+	tmux resize-window -t "$WIN" -x 200 -y 50
+
+	local fw tries
+	fw=0
+	tries=0
+	while ((tries < 30)); do
+		fw="$(tmux display-message -p -t "$float" '#{pane_width}' 2>/dev/null || true)"
+		[ "${fw:-0}" -ge 170 ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ "${fw:-0}" -ge 170 ]
+	settle
+
+	# Knock the stamp out of date, same as the grid case above: the pending
+	# marker is what should coalesce the storm, not the (now wrong) stamp.
+	tmux set-option -p -t "$float" @float_refit_size stale
+	settle
+
+	local f0 delta
+	f0="$(refit_jobs tmux-float-refit)"
+	storm
+	settle
+	delta=$(($(refit_jobs tmux-float-refit) - f0))
+	[ "$delta" -gt 0 ]
+	[ "$delta" -le 2 ]
+	[ "$(tmux show-options -pqv -t "$float" @float_refit_size 2>/dev/null || true)" = "200x50" ]
+}
+
+@test "a lock loser leaves no pending marker behind (#810)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	settle
+
+	# Hold a live lock throughout the storm, as a peer run would (same
+	# formula as scripts/tmux-grid-refit.sh: a hook-run job's $TMUX carries
+	# the server pid).
+	local srv
+	srv="$(tmux display-message -p '#{pid}')"
+	LOCKDIR="${TMPDIR:-/tmp}/og-grid-refit.lock.${srv}.${WIN//[^A-Za-z0-9]/_}"
+	mkdir "$LOCKDIR"
+
+	# The decision now needs an apply.
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
+	local g0 delta lw
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	delta=$(($(refit_jobs tmux-grid-refit) - g0))
+	# A run forked for the changed signature...
+	[ "$delta" -gt 0 ]
+	# ...lost the lock and applied nothing, and its first tmux call cleared
+	# the marker the hook set before forking it.
+	[ -z "$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)" ]
+	lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}')"
+	[ "$lw" -gt 85 ]
+
+	rmdir "$LOCKDIR"
+	LOCKDIR=""
+
+	# Same signature as the loser's storm: a pending marker the loser left
+	# behind would make the gate skip this one too, and the share would
+	# never apply.
+	storm
+	local tries2 ok
+	tries2=0
+	ok=0
+	while ((tries2 < 30)); do
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ -n $lw && $lw -le 85 ]]; then
+			ok=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$ok" -eq 1 ]
+}
+
+@test "a pending marker left behind does not block a different signature (#810)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$stamp" ]
+
+	# A marker at the current signature, as a run killed before its first
+	# tmux call would leave behind.
+	tmux set-option -w -t "$WIN" @grid_refit_pending "$stamp"
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
+	storm
+
+	local lw tries2 shrunk
+	shrunk=0
+	tries2=0
+	while ((tries2 < 30)); do
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ -n $lw && $lw -le 85 ]]; then
+			shrunk=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$shrunk" -eq 1 ]
+}
+
+@test "a run that finds the grid zoomed clears the marker, and unzoom refits (#810)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$stamp" ]
+
+	# A set-option fires no refit hook, so nothing applies this change yet.
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
+	local fmt post
+	fmt="$(sed -n "s/^grid_sig_fmt='\(.*\)'\$/\1/p" "$GRID")"
+	[ -n "$fmt" ]
+	# The signature unzoom restores.
+	post="$(tmux display-message -p -t "$WIN" "$fmt")"
+
+	tmux resize-pane -Z -t "$LEAD"
+	settle
+
+	# A run forked for that state, which finds the window zoomed by the time
+	# it reads it, must still clear the marker: unzoom restores exactly this
+	# signature, and a marker left at it would make the gate skip the unzoom.
+	tmux set-option -w -t "$WIN" @grid_refit_pending "$post"
+	bash "$GRID" "$WIN"
+	[ -z "$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)" ]
+
+	tmux resize-pane -Z -t "$LEAD"
+
+	local gw lw first ok tries2
+	ok=0
+	tries2=0
+	while ((tries2 < 30)); do
+		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
+		first="$(first_pane)"
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ $gw == "40%" && $first == "$LEAD" && ${lw:-0} -le 85 ]]; then
+			ok=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$ok" -eq 1 ]
 }

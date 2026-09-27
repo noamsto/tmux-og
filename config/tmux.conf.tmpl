@@ -483,7 +483,13 @@ set-hook -g client-resized[20]      'run-shell -b "{{index .Paths.Scripts "tmux-
 # when the script could change something. The stamps the gates compare
 # against (`@float_refit_size`, `@grid_refit_layout`) are written by the
 # scripts. See docs/agents/performance.md (#793).
-set-hook -g window-resized          { if -F '#{P:#{?#{&&:#{&&:#{pane_floating_flag},#{@float_geom}},#{!=:#{window_width}x#{window_height},#{@float_refit_size}}},1,}}' { run-shell -b "{{index .Paths.Scripts "tmux-float-refit"}} #{q:window_id}" } }
+#
+# Each gate also marks the window's state pending (`@float_refit_pending`,
+# `@grid_refit_pending`) right before it forks, and skips while the state
+# still matches that marker, so a resize burst forks one run until that
+# run's first tmux call clears the marker. The marker is keyed on the
+# state, so one left behind never blocks a different state (#810).
+set-hook -g window-resized          { if -F '#{&&:#{!=:#{window_width}x#{window_height},#{@float_refit_pending}},#{P:#{?#{&&:#{&&:#{pane_floating_flag},#{@float_geom}},#{!=:#{window_width}x#{window_height},#{@float_refit_size}}},1,}}}' { set -wF @float_refit_pending '#{window_width}x#{window_height}' ; run-shell -b "{{index .Paths.Scripts "tmux-float-refit"}} #{q:window_id}" } }
 
 # Responsive dispatcher grid layout (#749). Indexed [10] beside the
 # tmux-float-refit setter at index 0, so a single resize fires both; the bare
@@ -495,8 +501,10 @@ set-hook -g window-resized          { if -F '#{P:#{?#{&&:#{&&:#{pane_floating_fl
 # tmux-grid-refit.sh (grid-refit.bats fails on drift). Not `#{window_layout}`:
 # tmux-next renders that per client (JSON vs legacy for a control client), so
 # a stamp would never match a bridge-driven event. A zoomed grid is skipped
-# like the script skips it; unzoom re-fires window-layout-changed.
-set-hook -g window-resized[10]      { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}}}' { run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}" } }
+# like the script skips it; unzoom re-fires window-layout-changed. The
+# signature appears in both grid gates and both marker writes; a drifted
+# copy fails safe (it only stops skipping) and turns grid-refit.bats red.
+set-hook -g window-resized[10]      { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{&&:#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_pending}}}}' { set -wF @grid_refit_pending '#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}" } }
 
 # A pane split/kill/move changes the layout without resizing the window, so
 # window-resized never fires and the lead keeps whatever cells tmux
@@ -506,7 +514,7 @@ set-hook -g window-resized[10]      { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!
 # and the script excludes floating panes (which also fire this hook).
 #
 # Same gate and signature as window-resized[10] above (see that comment).
-set-hook -g window-layout-changed   { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}}}' { run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}" } }
+set-hook -g window-layout-changed   { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{&&:#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_pending}}}}' { set -wF @grid_refit_pending '#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}" } }
 
 # Tag every newly-created window as a worktree window from its cwd — at
 # creation, regardless of creator or CLAUDECODE (issue #95). new-session
