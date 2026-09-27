@@ -3464,9 +3464,12 @@ wake_parked_mirror() {
 	[ -n "$pane" ]
 
 	# A marker in each remote pane, so the collapse has two stale screens to
-	# drop rather than one.
+	# drop rather than one. seen1/seen2 assert the markers actually landed:
+	# without them the later "no stale marker" comparison is vacuously true.
 	m1="WINONE_$$"
 	m2="WINTWO_$$"
+	seen1=no
+	seen2=no
 	i=0
 	while IFS= read -r rp; do
 		i=$((i + 1))
@@ -3476,7 +3479,13 @@ wake_parked_mirror() {
 		esac
 		for _ in $(seq 1 60); do
 			$SRC send-keys -t "$rp" "printf '$m\\n'" Enter
-			if mirror_contains 2 "$m"; then break; fi
+			if mirror_contains 2 "$m"; then
+				case "$i" in
+				1) seen1=yes ;;
+				2) seen2=yes ;;
+				esac
+				break
+			fi
 			sleep 0.1
 		done
 	done < <($SRC list-panes -t rem -F '#{pane_id}')
@@ -3513,7 +3522,60 @@ wake_parked_mirror() {
 
 	[ "$src_n" -eq 1 ]
 	[ "$dst_n" -eq 1 ]
+	[ "$seen1" = yes ]
+	[ "$seen2" = yes ]
 	[ "$seen_new" = yes ]
+	[ "$stale" = no ]
+}
+
+# #784: on a ONE-pane window respawn-window changes no layout, so the reconcile
+# early-returns and the re-seed intent is the only thing that can drop the old
+# screen. This is the branch the multi-pane test above does NOT cover (its
+# collapse re-seeds via the shaped-reconcile path).
+@test "ctl respawn-window on a single pane drops the stale screen" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 respawnwinsingle
+
+	pane="$(remote_pane_of 0)"
+	[ -n "$pane" ]
+
+	old="SINGLEOLD_$$"
+	seen_old=no
+	for _ in $(seq 1 60); do
+		$SRC send-keys -t rem "printf '$old\\n'" Enter
+		for _ in $(seq 1 5); do
+			if mirror_contains 1 "$old"; then
+				seen_old=yes
+				break 2
+			fi
+			sleep 0.1
+		done
+	done
+
+	run "$CTL" --sock "$sock" respawn-window "$pane"
+	[ "$status" -eq 0 ]
+
+	new="SINGLENEW_$$"
+	seen_new=no
+	for _ in $(seq 1 80); do
+		$SRC send-keys -t rem "printf '$new\\n'" Enter
+		for _ in $(seq 1 5); do
+			if mirror_contains 1 "$new"; then
+				seen_new=yes
+				break 2
+			fi
+			sleep 0.1
+		done
+	done
+	stale="$(mirror_contains 1 "$old" && echo yes || echo no)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$seen_old" = yes ]
+	[ "$seen_new" = yes ]
+	# With no layout change, only the re-seed clears the old program's screen.
 	[ "$stale" = no ]
 }
 
