@@ -482,8 +482,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		// Read the selection before the rebuild invalidates its index.
 		keep := m.currentTarget()
-		m.sessionItems = msg.items
-		m.mirrors = msg.mirrors
+		// A 1s refresh's collectBridgeMirrors runs off-thread, so a kill's
+		// teardown landing during that capture can revive the (mirrored) row
+		// here; filter the stale snapshot too (#754).
+		m.sessionItems = m.filterForgottenRemoteRows(msg.items)
+		m.mirrors = m.filterForgottenMirrors(msg.mirrors)
 		m = m.recombine().withFilter()
 		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
@@ -514,21 +517,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteMsg:
 		keep := m.currentTarget()
-		m.remoteItems = msg.items
-		if len(m.forgotten) > 0 {
-			// The probe listed (and wrote the cache) before the kill landed;
-			// drop the dead rows and undo the cache write so they cannot
-			// revive (#736).
-			kept := make([]listItem, 0, len(msg.items))
-			for _, it := range msg.items {
-				if it.remoteSess != "" && m.forgotten[it.remoteHost+"\x00"+it.remoteSess] {
-					forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
-					continue
-				}
-				kept = append(kept, it)
-			}
-			m.remoteItems = kept
-		}
+		// The probe listed (and wrote the cache) before the kill landed; drop
+		// the dead rows and undo the cache write so they cannot revive (#736).
+		m.remoteItems = m.filterForgottenRemoteRows(msg.items)
 		m = m.recombine().withFilter()
 		m = m.restoreCursor(keep)
 		if m.mode == modeWall {
@@ -1748,6 +1739,44 @@ func remoteKillFailure(host, sess string, err error) string {
 	}
 }
 
+// forgottenRemoteKey keys a (host, sess) pair for the forgotten set.
+func forgottenRemoteKey(host, sess string) string {
+	return host + "\x00" + sess
+}
+
+// filterForgottenRemoteRows drops Remote-section rows for sessions killed in
+// this popup and undoes the cache write a late probe may have left behind (#736).
+func (m tuiModel) filterForgottenRemoteRows(items []listItem) []listItem {
+	if len(m.forgotten) == 0 {
+		return items
+	}
+	kept := make([]listItem, 0, len(items))
+	for _, it := range items {
+		if it.remoteSess != "" && m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
+			forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+			continue
+		}
+		kept = append(kept, it)
+	}
+	return kept
+}
+
+// filterForgottenMirrors drops local mirror rows whose remote session was
+// killed before the surrounding snapshot was captured (#754).
+func (m tuiModel) filterForgottenMirrors(mirrors []bridgeMirror) []bridgeMirror {
+	if len(m.forgotten) == 0 {
+		return mirrors
+	}
+	kept := make([]bridgeMirror, 0, len(mirrors))
+	for _, bm := range mirrors {
+		if m.forgotten[forgottenRemoteKey(bm.host, bm.sess)] {
+			continue
+		}
+		kept = append(kept, bm)
+	}
+	return kept
+}
+
 // forgetRemoteRows drops killed (or already-gone) remote sessions from the
 // picker at once: the host's cache, the in-memory Remote rows, any local mirror
 // (torn down through stopBridgeDaemon, the same owner the manual mirror close
@@ -1762,8 +1791,8 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 		m.forgotten = make(map[string]bool, len(targets))
 	}
 	for _, it := range targets {
-		killed[it.remoteHost+"\x00"+it.remoteSess] = true
-		m.forgotten[it.remoteHost+"\x00"+it.remoteSess] = true
+		killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
+		m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
 		forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
 		for _, bm := range m.mirrors {
 			if bm.host == it.remoteHost && bm.sess == it.remoteSess {
@@ -1774,7 +1803,7 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	}
 	keptRows := make([]listItem, 0, len(m.remoteItems))
 	for _, it := range m.remoteItems {
-		if it.remoteSess != "" && killed[it.remoteHost+"\x00"+it.remoteSess] {
+		if it.remoteSess != "" && killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
 			continue
 		}
 		keptRows = append(keptRows, it)
@@ -1782,7 +1811,7 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	m.remoteItems = keptRows
 	keptMirrors := make([]bridgeMirror, 0, len(m.mirrors))
 	for _, bm := range m.mirrors {
-		if killed[bm.host+"\x00"+bm.sess] {
+		if killed[forgottenRemoteKey(bm.host, bm.sess)] {
 			continue
 		}
 		keptMirrors = append(keptMirrors, bm)
