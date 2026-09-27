@@ -1474,12 +1474,12 @@ func Run(cfg Config) error {
 	loopTick = time.NewTicker(mainLoopTickInterval)
 
 	// park holds an unreachable mirror open until the user comes back to it,
-	// reporting true to buy one more reattach cycle and false to tear down. It
-	// blocks this goroutine — nothing else may round-trip while parked anyway,
-	// and every other goroutine (renderers, ctl, the resize watcher) keeps
-	// running off the empty connHolder slot.
+	// answering parkWoken to buy one more reattach cycle and parkStop to tear
+	// down. It blocks this goroutine — nothing else may round-trip while parked
+	// anyway, and every other goroutine (renderers, ctl, the resize watcher)
+	// keeps running off the empty connHolder slot.
 	dimmed := false
-	park := func() bool {
+	park := func() parkVerdict {
 		// Armed before the badge goes up: a key pressed the instant it says
 		// "press a key" must not land in a disarmed waker and vanish.
 		waker.arm()
@@ -1501,20 +1501,20 @@ func Run(cfg Config) error {
 			select {
 			case <-waker.C():
 				fmt.Fprintf(os.Stderr, "daemon: %s: waking on input\n", cfg.RemoteHost)
-				return true
+				return parkWoken
 			case <-cfg.Shutdown:
-				return false
+				return parkStop
 			case <-ft.C:
 				if focus.poll() {
 					fmt.Fprintf(os.Stderr, "daemon: %s: waking on focus\n", cfg.RemoteHost)
-					return true
+					return parkWoken
 				}
 			case <-loopTick.C:
 				// runConn's tick is not running while parked, and a park is
 				// unbounded, so the #680 probe has to run here too.
 				if sessionGone.observe(localSessionGone(cfg)) {
 					localSessionVanished = true
-					return false
+					return parkStop
 				}
 			}
 		}
@@ -1547,7 +1547,7 @@ attach:
 			if !reconnect {
 				break attach
 			}
-			if c = reattach(cfg, router, hold, pin.identity, repair, park); c == nil {
+			if c, _ = reattach(cfg, router, hold, pin.identity, repair, park); c == nil {
 				break attach
 			}
 			// The dial that just succeeded read View.Desired, so a raise that

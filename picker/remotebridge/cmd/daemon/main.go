@@ -212,6 +212,8 @@ func main() {
 	dstSocket := flag.String("dst-socket", "", "test-local: tmux -L socket name standing in for the local server")
 	retryMaxElapsed := flag.Duration("retry-max-elapsed", envDurationDefault("OG_DAEMON_RETRY_MAX_ELAPSED", 0), "test only: bound the reattach retry schedule's MaxElapsed (0 = production schedule)")
 	wakeMaxElapsed := flag.Duration("wake-max-elapsed", envDurationDefault("OG_DAEMON_WAKE_MAX_ELAPSED", 0), "test only: bound the parked-wake retry schedule's MaxElapsed (0 = production schedule)")
+	restoreMaxElapsed := flag.Duration("restore-max-elapsed", envDurationDefault("OG_DAEMON_RESTORE_MAX_ELAPSED", 0), "test only: bound the restore window a refused attach dials in (0 = production schedule)")
+	parkProbe := flag.Duration("park-probe-interval", envDurationDefault("OG_DAEMON_PARK_PROBE_INTERVAL", 0), "test only: how often a parked mirror re-probes on its own (0 = production interval)")
 	testOutage := flag.String("test-outage-file", os.Getenv("OG_DAEMON_TEST_OUTAGE_FILE"), "test-local: while this file exists, a dial yields no control output (an unreachable remote)")
 	flag.Parse()
 
@@ -416,6 +418,7 @@ func main() {
 		PasteUpload:    pasteUpload,
 		View:           view,
 		NewGraphics:    newGraphics(ctlSock, tr.currentPath, *host, *cacheDir, *gfxMax, view.Relay, *gfxRelayMaxBytes),
+		ParkProbe:      *parkProbe,
 	}
 	if *retryMaxElapsed > 0 {
 		b := daemon.DefaultBackoff(time.Now)
@@ -426,6 +429,11 @@ func main() {
 		b := daemon.WakeBackoff(time.Now)
 		b.MaxElapsed = *wakeMaxElapsed
 		cfg.WakeRetry = &b
+	}
+	if *restoreMaxElapsed > 0 {
+		b := daemon.RestoreBackoff(time.Now)
+		b.MaxElapsed = *restoreMaxElapsed
+		cfg.RestoreRetry = &b
 	}
 
 	err := daemon.Run(cfg)
