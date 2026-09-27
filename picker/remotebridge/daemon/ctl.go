@@ -162,6 +162,7 @@ type verb struct {
 var (
 	resizeDirs = map[string]string{"U": "-U", "D": "-D", "L": "-L", "R": "-R"}
 	swapDirs   = map[string]string{"U": "-U", "D": "-D"}
+	rotateDirs = map[string]string{"U": "-U", "D": "-D"}
 	// The closed set of tools a bind may launch on the remote: a name reaches a
 	// remote shell only by being a key here, so the socket peer cannot smuggle
 	// one in.
@@ -179,6 +180,30 @@ var (
 		"lazygit": remoteFloatFull,
 	}
 )
+
+// layoutCommand is one allow-listed entry of the layout verb: the remote
+// command's own verb, plus a trailing preset name or flag (empty for the plain
+// cycle commands). The pane target is spliced in at build time, so nothing the
+// socket peer sends reaches the remote command line as free-form layout text.
+type layoutCommand struct {
+	verb string
+	arg  string
+}
+
+// layoutCommands is the closed set of layout gestures a bind may ask for: the
+// seven select-layout presets, the two cycle commands, and the -E spread.
+var layoutCommands = map[string]layoutCommand{
+	"even-horizontal":          {verb: "select-layout", arg: "even-horizontal"},
+	"even-vertical":            {verb: "select-layout", arg: "even-vertical"},
+	"main-horizontal":          {verb: "select-layout", arg: "main-horizontal"},
+	"main-vertical":            {verb: "select-layout", arg: "main-vertical"},
+	"tiled":                    {verb: "select-layout", arg: "tiled"},
+	"main-horizontal-mirrored": {verb: "select-layout", arg: "main-horizontal-mirrored"},
+	"main-vertical-mirrored":   {verb: "select-layout", arg: "main-vertical-mirrored"},
+	"next":                     {verb: "next-layout"},
+	"previous":                 {verb: "previous-layout"},
+	"spread":                   {verb: "select-layout", arg: "-E"},
+}
 
 // remoteFloatShort and remoteFloatFull are config/tmux.conf.nix's
 // floatShort/floatFull mkFloat shapes, always carrying -A: the local bind's
@@ -262,6 +287,42 @@ var verbs = map[string]verb{
 			return nil, fmt.Errorf("swap: bad direction %q", a[0])
 		}
 		return []string{fmt.Sprintf("swap-pane -t %s %s", pane, dir)}, nil
+	}},
+	// Layout goes to the remote for the same reason zoom does: a local
+	// select-layout reshapes only the renderer panes, so the remote panes keep
+	// their sizes, the programs in them render at the old ones, and the next
+	// remote %layout-change reverts the local shape. The layout name is
+	// allow-listed rather than forwarded: the socket peer may only pick a verb
+	// and a target, never a free-form layout string.
+	//
+	// None of these presets, nor next/previous/spread, changes which pane id is
+	// active (measured on next-3.9), so no `moves` — the daemon's active-pane
+	// belief stays valid and the reconcile it schedules refreshes the geometry.
+	"layout": {args: 1, layout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+		c, ok := layoutCommands[a[0]]
+		if !ok {
+			return nil, fmt.Errorf("layout: bad layout %q", a[0])
+		}
+		cmd := c.verb + " -t " + pane
+		if c.arg != "" {
+			cmd += " " + c.arg
+		}
+		return []string{cmd}, nil
+	}},
+	// rotate-window DOES change which pane id is active (measured: %2 -> %0 on
+	// a three-pane window), so it carries `moves` and the daemon invalidates its
+	// active-pane belief for the reconcile to re-learn. Without that the focus
+	// echo guard would suppress a later focus command against a stale belief.
+	"rotate": {optArgs: 1, layout: true, moves: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+		dir := ""
+		if len(a) == 1 {
+			d, ok := rotateDirs[a[0]]
+			if !ok {
+				return nil, fmt.Errorf("rotate: bad direction %q", a[0])
+			}
+			dir = d + " "
+		}
+		return []string{fmt.Sprintf("rotate-window %s-t %s", dir, pane)}, nil
 	}},
 	// -t '<sess>:' is a session target with the index unspecified: tmux picks the
 	// lowest free index and makes the new window active (verified), matching the

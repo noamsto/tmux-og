@@ -562,6 +562,56 @@
               touch $out
             '';
 
+          # Layout gestures on a mirror (#787). Every stock layout key
+          # (prefix M-1..M-7, Space, E, C-o, M-o) must be re-bound behind
+          # bridgeGate, with its else-branch the stock command verbatim: a
+          # normal window is then unchanged, and a mirror window sends the
+          # gesture to the remote instead of reshaping only its renderer panes.
+          # A bind that kept acting locally builds clean and looks right until
+          # the next remote %layout-change reverts it.
+          layout-conf-assertions =
+            pkgs.runCommand "layout-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              gate="#{&&:#{@bridge_win},#{@bridge_pane}}"
+
+              check_layout() {
+                key=$1
+                ctl=$2
+                stock=$3
+                n=$(grep -E "^bind-key -N '[^']*' $key if-shell -F " "$CONF" | wc -l)
+                if [ "$n" -ne 1 ]; then
+                  echo "layout-conf: expected exactly one gated bind for $key, got $n" >&2
+                  exit 1
+                fi
+                line=$(grep -E "^bind-key -N '[^']*' $key if-shell -F " "$CONF")
+                printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
+                  { echo "layout-conf: $key is not gated on bridgeGate" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- "og-remote-bridge-ctl" ||
+                  { echo "layout-conf: $key has no bridge ctl invocation" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- 'run-shell "' ||
+                  { echo "layout-conf: $key mirror branch is not a run-shell" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- "$ctl\"" ||
+                  { echo "layout-conf: $key does not send '$ctl'" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- "{ $stock }" ||
+                  { echo "layout-conf: $key else-branch is not the stock '$stock'" >&2; exit 1; }
+              }
+
+              check_layout M-1 "layout #{q:@bridge_pane} even-horizontal" "select-layout even-horizontal"
+              check_layout M-2 "layout #{q:@bridge_pane} even-vertical" "select-layout even-vertical"
+              check_layout M-3 "layout #{q:@bridge_pane} main-horizontal" "select-layout main-horizontal"
+              check_layout M-4 "layout #{q:@bridge_pane} main-vertical" "select-layout main-vertical"
+              check_layout M-5 "layout #{q:@bridge_pane} tiled" "select-layout tiled"
+              check_layout M-6 "layout #{q:@bridge_pane} main-horizontal-mirrored" "select-layout main-horizontal-mirrored"
+              check_layout M-7 "layout #{q:@bridge_pane} main-vertical-mirrored" "select-layout main-vertical-mirrored"
+              check_layout Space "layout #{q:@bridge_pane} next" "next-layout"
+              check_layout E "layout #{q:@bridge_pane} spread" "select-layout -E"
+              check_layout C-o "rotate #{q:@bridge_pane}" "rotate-window"
+              check_layout M-o "rotate #{q:@bridge_pane} D" "rotate-window -D"
+              touch $out
+            '';
+
           # Crew badge display gate (#671). status-format[1]'s single-line
           # window list wraps the existing bridge-aware crew-name ternary
           # (bridgeOpts() in generator/render/status.go: for name "crew_name",

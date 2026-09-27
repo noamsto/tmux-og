@@ -1462,6 +1462,43 @@ remote_pane_of() {
 	[ "$src_map" = "$dst_map" ]
 }
 
+@test "ctl layout reshapes the REMOTE window and the mirror follows" {
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC split-window -h -t rem
+	$SRC split-window -v -t rem
+	# Pin a known layout so `before` cannot coincidentally equal even-vertical:
+	# the three-pane tiled tree differs from even-vertical for every geometry.
+	$SRC select-layout -t rem tiled
+	$DST new-session -d -s host-sess -x 150 -y 40
+	bridge_up 3 c6
+
+	pane="$(remote_pane_of 0)"
+	[ -n "$pane" ]
+	before="$($SRC display-message -p -t rem -F '#{window_layout}')"
+
+	# prefix M-2's verb, driven through the same ctl binary a real keybind runs.
+	run "$CTL" --sock "$sock" layout "$pane" even-vertical
+	[ "$status" -eq 0 ]
+
+	for _ in $(seq 1 60); do
+		src_l="$($SRC display-message -p -t rem -F '#{window_layout}')"
+		[ "$src_l" != "$before" ] && [ "$(sorted_dims "$DST" host-sess:1)" = "$(sorted_dims "$SRC" rem)" ] && break
+		sleep 0.15
+	done
+
+	src_l="$($SRC display-message -p -t rem -F '#{window_layout}')"
+	src_dims="$(sorted_dims "$SRC" rem)"
+	dst_dims="$(sorted_dims "$DST" host-sess:1)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	# The REMOTE layout really moved...
+	[ "$src_l" != "$before" ]
+	# ...and the mirror's renderer panes match it.
+	[ "$src_dims" = "$dst_dims" ]
+}
+
 @test "ctl kill-pane kills the REMOTE pane and the mirror loses it" {
 	$SRC new-session -d -s rem -x 150 -y 40
 	$SRC split-window -h -t rem

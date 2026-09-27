@@ -118,6 +118,91 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			want: []string{fmt.Sprintf("run-shell -b -t %%3 %s",
 				tmuxQuote("exec /bin/sh -c "+tmuxQuote(enrichRefreshScript("@1"))))},
 		},
+		{
+			// The seven preset names, allow-listed on the daemon side so the
+			// socket peer can never name an arbitrary layout.
+			name:   "layout even-horizontal is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "even-horizontal"},
+			want:   []string{"select-layout -t %3 even-horizontal"},
+			layout: "@1",
+		},
+		{
+			name:   "layout even-vertical is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "even-vertical"},
+			want:   []string{"select-layout -t %3 even-vertical"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-horizontal is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-horizontal"},
+			want:   []string{"select-layout -t %3 main-horizontal"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-vertical is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-vertical"},
+			want:   []string{"select-layout -t %3 main-vertical"},
+			layout: "@1",
+		},
+		{
+			name:   "layout tiled is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "tiled"},
+			want:   []string{"select-layout -t %3 tiled"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-horizontal-mirrored is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-horizontal-mirrored"},
+			want:   []string{"select-layout -t %3 main-horizontal-mirrored"},
+			layout: "@1",
+		},
+		{
+			name:   "layout main-vertical-mirrored is a preset select-layout",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "main-vertical-mirrored"},
+			want:   []string{"select-layout -t %3 main-vertical-mirrored"},
+			layout: "@1",
+		},
+		{
+			// Space's stock next-layout has no layout name and preserves the
+			// active pane, so it is a distinct command behind the same verb.
+			name:   "layout next is the next-layout command",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "next"},
+			want:   []string{"next-layout -t %3"},
+			layout: "@1",
+		},
+		{
+			name:   "layout previous is the previous-layout command",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "previous"},
+			want:   []string{"previous-layout -t %3"},
+			layout: "@1",
+		},
+		{
+			// E's stock spread. select-layout -E takes no layout name.
+			name:   "layout spread is select-layout -E",
+			argv:   []string{wire.CtlProtocolVersion, "layout", "%3", "spread"},
+			want:   []string{"select-layout -t %3 -E"},
+			layout: "@1",
+		},
+		{
+			// rotate-window with no direction flag: the stock C-o command.
+			name:   "rotate defaults to the stock rotate-window",
+			argv:   []string{wire.CtlProtocolVersion, "rotate", "%3"},
+			want:   []string{"rotate-window -t %3"},
+			layout: "@1",
+		},
+		{
+			name:   "rotate U maps to -U",
+			argv:   []string{wire.CtlProtocolVersion, "rotate", "%3", "U"},
+			want:   []string{"rotate-window -U -t %3"},
+			layout: "@1",
+		},
+		{
+			// M-o's stock rotate-window -D.
+			name:   "rotate D maps to -D",
+			argv:   []string{wire.CtlProtocolVersion, "rotate", "%3", "D"},
+			want:   []string{"rotate-window -D -t %3"},
+			layout: "@1",
+		},
 	}
 
 	for _, tc := range tests {
@@ -152,6 +237,9 @@ func TestParseCtlRejects(t *testing.T) {
 		{"bad resize amount", []string{wire.CtlProtocolVersion, "resize", "%3", "U", "abc"}, "bad amount"},
 		{"resize amount out of range", []string{wire.CtlProtocolVersion, "resize", "%3", "U", "0"}, "bad amount"},
 		{"bad swap direction", []string{wire.CtlProtocolVersion, "swap", "%3", "L"}, "bad direction"},
+		{"layout rejects an unknown name", []string{wire.CtlProtocolVersion, "layout", "%3", "bogus"}, "bad layout"},
+		{"layout rejects a free-form layout string", []string{wire.CtlProtocolVersion, "layout", "%3", "even-horizontal; kill-server"}, "bad layout"},
+		{"rotate rejects an unknown direction", []string{wire.CtlProtocolVersion, "rotate", "%3", "X"}, "bad direction"},
 		{"wrong arity", []string{wire.CtlProtocolVersion, "resize", "%3", "U"}, "wants 2 argument"},
 		{"empty rename", []string{wire.CtlProtocolVersion, "rename", "%3", "|||"}, "empty name"},
 		{"truncated frame", []string{wire.CtlProtocolVersion, "split-h"}, "at least version"},
@@ -171,6 +259,41 @@ func TestParseCtlRejects(t *testing.T) {
 				t.Errorf("error %q, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// rotate-window rotates which pane id is active (measured on next-3.9: %2 ->
+// %0), so its verb must invalidate the daemon's active-pane belief; the layout
+// presets and next/previous/spread preserve it and must not. A missed
+// invalidation would leave the focus echo guard suppressing a needed focus.
+func TestParseCtlRotateInvalidatesActiveBelief(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+
+	for _, arg := range [][]string{{}, {"U"}, {"D"}} {
+		argv := append([]string{wire.CtlProtocolVersion, "rotate", "%3"}, arg...)
+		req, err := c.parseCtl(argv, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl(%q): %v", argv, err)
+		}
+		if req.invalidate != "@1" {
+			t.Errorf("rotate invalidate = %q, want @1", req.invalidate)
+		}
+		if req.wantLayout != "@1" {
+			t.Errorf("rotate wantLayout = %q, want @1", req.wantLayout)
+		}
+	}
+
+	for _, name := range []string{"even-horizontal", "main-vertical", "next", "previous", "spread"} {
+		req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "layout", "%3", name}, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl layout %s: %v", name, err)
+		}
+		if req.invalidate != "" {
+			t.Errorf("layout %s invalidate = %q, want none", name, req.invalidate)
+		}
+		if req.wantLayout != "@1" {
+			t.Errorf("layout %s wantLayout = %q, want @1", name, req.wantLayout)
+		}
 	}
 }
 
