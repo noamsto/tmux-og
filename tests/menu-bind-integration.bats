@@ -13,6 +13,8 @@ setup() {
 	TMUX_RAW="${TMUX_RAW:?set TMUX_RAW to the raw pinned binary}"
 	CONF="${CONF:?set CONF to the emitted tmux.conf}"
 	STOCK_MENUS="${STOCK_MENUS:?set STOCK_MENUS to generator/render/stockmenus.txt}"
+	STOCK_DRAGS="${STOCK_DRAGS:?set STOCK_DRAGS to generator/render/stockdrags.txt}"
+	CTL_MAIN_GO="${CTL_MAIN_GO:?set CTL_MAIN_GO to picker/remotebridge/cmd/ctl/main.go}"
 	CTL_GO="${CTL_GO:?set CTL_GO to picker/remotebridge/daemon/ctl.go}"
 	# The remote pane id the gate carries. One constant: setup() stamps it and
 	# write_argv() builds the expected wire payload from it, so they cannot drift.
@@ -479,18 +481,20 @@ assert_wire_argv() { # payload_file verb [arg...]
 
 # --- 7: stock tripwire --------------------------------------------------
 
-@test "stock tripwire: the pinned binary's own menu binds and version match what the conf assumes" {
+@test "stock tripwire: the pinned binary's own menu and drag binds and version match what the conf assumes" {
 	local raw_out="$BATS_TEST_TMPDIR/raw-stock.txt"
 	local rawT="$BATS_TEST_TMPDIR/raw-tmux"
 	mkdir -p "$rawT"
-	local line table key
-	while IFS= read -r line; do
-		table="$(printf '%s' "$line" | awk '{print $3}')"
-		key="$(printf '%s' "$line" | awk '{print $4}')"
-		TMUX_TMPDIR="$rawT" "$TMUX_RAW" -f /dev/null -L rawsm list-keys -T "$table" "$key"
-	done <"$STOCK_MENUS" >"$raw_out"
+	local line table key stock
+	for stock in "$STOCK_MENUS" "$STOCK_DRAGS"; do
+		while IFS= read -r line; do
+			table="$(printf '%s' "$line" | awk '{print $3}')"
+			key="$(printf '%s' "$line" | awk '{print $4}')"
+			TMUX_TMPDIR="$rawT" "$TMUX_RAW" -f /dev/null -L rawsm list-keys -T "$table" "$key"
+		done <"$stock" >"$raw_out"
+		diff "$stock" "$raw_out"
+	done
 	TMUX_TMPDIR="$rawT" "$TMUX_RAW" -L rawsm kill-server 2>/dev/null || true
-	diff "$STOCK_MENUS" "$raw_out"
 
 	local conf_version raw_version
 	conf_version="$(grep -m1 -oE '%if "#\{==:#\{version\},[^}]+\}"' "$CONF" | sed -E 's/.*version\},([^}]+)\}.*/\1/')"
@@ -536,7 +540,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 		key="$(printf '%s' "$line" | awk '{print $4}')"
 		line_got="$(TMUX_TMPDIR="$gT2" "$TMUX_RAW" -L gatesm2 list-keys -T "$table" "$key")"
 		[ "$line_got" = "$line" ]
-	done <"$STOCK_MENUS"
+	done < <(cat "$STOCK_MENUS" "$STOCK_DRAGS")
 	TMUX_TMPDIR="$gT2" "$TMUX_RAW" -L gatesm2 kill-server 2>/dev/null || true
 }
 
@@ -544,7 +548,9 @@ assert_wire_argv() { # payload_file verb [arg...]
 
 @test "every verb the menu block sends is a ctl verb ctl.go knows" {
 	local block="$BATS_TEST_TMPDIR/menublock-verbs.conf"
-	sed -n '/^%if "#{==:#{version},/,/^%endif$/p' "$CONF" >"$block"
+	# The FIRST gated block only: the drag block after it sends a ctl-side
+	# gesture, checked by the next test.
+	sed -n '/^%if "#{==:#{version},/,/^%endif$/{p;/^%endif$/q}' "$CONF" >"$block"
 	local verbs
 	verbs="$(grep -oP -- '--sock=#+\{q:@bridge_sock\}\s+\K[a-z-]+' "$block" | sort -u)"
 	[ -n "$verbs" ]
@@ -552,4 +558,17 @@ assert_wire_argv() { # payload_file verb [arg...]
 	while IFS= read -r v; do
 		grep -qF "\"$v\": {" "$CTL_GO"
 	done <<<"$verbs"
+}
+
+@test "the drag block sends only float-drag, which ctl resolves into the daemon's float-geom" {
+	local block="$BATS_TEST_TMPDIR/dragblock-verbs.conf"
+	# The SECOND gated block: count %if openings and print only the second.
+	awk '/^%if "#\{==:#\{version\},/ { n++ } n == 2 { print } n == 2 && /^%endif$/ { exit }' "$CONF" >"$block"
+	[ -s "$block" ]
+	grep -q 'MouseDrag1Border' "$block"
+	local verbs
+	verbs="$(grep -oP -- '--sock=#+\{q:@bridge_sock\}\s+\K[a-z-]+' "$block" | sort -u)"
+	[ "$verbs" = float-drag ]
+	grep -qF '"float-drag"' "$CTL_MAIN_GO"
+	grep -qF '"float-geom": {' "$CTL_GO"
 }

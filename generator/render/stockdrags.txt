@@ -1,0 +1,2 @@
+bind-key  -T root MouseDrag1Border resize-pane -M
+bind-key  -T root M-MouseDrag1Border move-pane -M

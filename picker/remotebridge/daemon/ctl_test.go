@@ -23,6 +23,17 @@ func newCtlStateWith(win string, panes ...string) *ctlState {
 	return c
 }
 
+// wantFloatGeom builds the exact command floatGeomCommand builds, from the
+// plain x/y/w/h a float-geom argv carries rather than by calling the
+// production helper, so the test pins the wire shape independently of it.
+func wantFloatGeom(pane string, x, y, w, h int) string {
+	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; resize-pane -t %s -x %d -y %d", pane, x, y, pane, w, h)
+	bordered := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; resize-pane -t %s -x %d -y %d", pane, x-1, y-1, pane, w+2, h+2)
+	inner := fmt.Sprintf("if-shell -t %s -F %s %s %s",
+		pane, tmuxQuote("#{==:#{pane-border-lines},none}"), tmuxQuote(none), tmuxQuote(bordered))
+	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
+}
+
 func TestParseCtlVerbTranslation(t *testing.T) {
 	const sess = "my proj"
 	tests := []struct {
@@ -219,6 +230,23 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			layout: "@1",
 			reseed: "@1",
 		},
+		{
+			// An in-window box: clampInner round-trips it, so the branches carry
+			// the request's own x/y/w/h (none) and their +/-1 border variants
+			// (bordered).
+			name:   "float-geom builds the nested if-shell from the clamped inner box",
+			argv:   []string{wire.CtlProtocolVersion, "float-geom", "%3", "11", "6", "38", "10", "100", "30"},
+			want:   []string{wantFloatGeom("%3", 11, 6, 38, 10)},
+			layout: "@1",
+		},
+		{
+			// Dragged off the left edge: clampInner slides the box back to X=1,
+			// and both branches reach the clamped box, not the raw negative one.
+			name:   "float-geom clamps a negative offset before building the command",
+			argv:   []string{wire.CtlProtocolVersion, "float-geom", "%3", "-5", "6", "45", "10", "100", "30"},
+			want:   []string{wantFloatGeom("%3", 1, 6, 45, 10)},
+			layout: "@1",
+		},
 	}
 
 	for _, tc := range tests {
@@ -263,6 +291,12 @@ func TestParseCtlRejects(t *testing.T) {
 		{"empty rename", []string{wire.CtlProtocolVersion, "rename", "%3", "|||"}, "empty name"},
 		{"truncated frame", []string{wire.CtlProtocolVersion, "split-h"}, "at least version"},
 		{"enrich-refresh takes no arguments", []string{wire.CtlProtocolVersion, "enrich-refresh", "%3", "@2"}, "wants 0 argument"},
+		{"float-geom wrong arity", []string{wire.CtlProtocolVersion, "float-geom", "%3", "11", "6", "38", "10"}, "wants 6 argument"},
+		{"float-geom rejects a non-integer", []string{wire.CtlProtocolVersion, "float-geom", "%3", "1x", "6", "38", "10", "100", "30"}, "bad x"},
+		{"float-geom rejects a zero width", []string{wire.CtlProtocolVersion, "float-geom", "%3", "11", "6", "0", "10", "100", "30"}, "bad w"},
+		{"float-geom rejects a window narrower than a bordered box", []string{wire.CtlProtocolVersion, "float-geom", "%3", "11", "6", "38", "10", "2", "30"}, "bad winW"},
+		{"float-geom rejects an out-of-range offset", []string{wire.CtlProtocolVersion, "float-geom", "%3", "10000", "6", "38", "10", "100", "30"}, "bad x"},
+		{"float-geom rejects an injection attempt", []string{wire.CtlProtocolVersion, "float-geom", "%3", "11;kill-server", "6", "38", "10", "100", "30"}, "bad x"},
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
@@ -342,6 +376,26 @@ func TestParseCtlRespawnInvalidatesActiveBelief(t *testing.T) {
 	}
 	if req.wantWindows {
 		t.Error("respawn-window wants a window reconcile, want none (the window survives)")
+	}
+}
+
+// float-geom only reshapes an existing float: it must not invalidate the
+// active-pane belief (not `moves`), gate on the viewing client (not
+// `needsView`), or wait on a probe stamp (not `probe`).
+func TestParseCtlFloatGeomFlags(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "float-geom", "%3", "11", "6", "38", "10", "100", "30"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl float-geom: %v", err)
+	}
+	if req.invalidate != "" {
+		t.Errorf("float-geom invalidate = %q, want none", req.invalidate)
+	}
+	if req.needsView {
+		t.Error("float-geom needsView = true, want false")
+	}
+	if req.probePane != "" {
+		t.Errorf("float-geom probePane = %q, want none", req.probePane)
 	}
 }
 

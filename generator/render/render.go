@@ -69,6 +69,10 @@ type Data struct {
 
 	// MenuBinds is the %if-gated menu block, no trailing newline.
 	MenuBinds string
+
+	// DragBinds is the %if-gated mirror float border drag block, no trailing
+	// newline; see dragBinds' doc comment for why it exists.
+	DragBinds string
 }
 
 // Build derives the template data.
@@ -106,6 +110,7 @@ func Build(cfg *config.Config, p *paths.Paths) Data {
 		CarouselHooks:      carouselHooks(p),
 		PersistBlock:       persistBlock(p),
 		MenuBinds:          menuBinds(p),
+		DragBinds:          dragBinds(p),
 	}
 }
 

@@ -324,6 +324,78 @@
     ++ ["%endif"]
   );
 
+  # === Remote bridge: mirror float border drag reaches the remote (#797) ===
+  # Mirrors generator/render/drags.go byte for byte; the stock branch is read
+  # from the same-shaped stockdrags.txt. See docs/agents/floats.md.
+  dragStockLines = lib.filter (l: l != "") (lib.splitString "\n" (builtins.readFile ../generator/render/stockdrags.txt));
+  dragStock = map (line: let
+    m = builtins.match "bind-key +-T +([^ ]+) +([^ ]+) +(.*)" line;
+  in
+    if m == null
+    then throw "stockdrags.txt: malformed line: ${line}"
+    else {
+      table = builtins.elemAt m 0;
+      key = builtins.elemAt m 1;
+      cmd = builtins.elemAt m 2;
+    })
+  dragStockLines;
+
+  dragBindTable = "og-bridge-drag";
+  dragStartNote = "Resize or move a pane by its border";
+  dragEndNote = "Route a mirror float border drag to the remote";
+  dragGate = "#{&&:${bridgeGate},#{pane_floating_flag}}";
+
+  dragStartBindLine = s:
+    "bind-key -N '${dragStartNote}' -T ${s.table} ${s.key} if-shell -F -t = '${dragGate}' { "
+    + "set -F @og_bridge_drag '#{pane_id}' ; ${s.cmd} ; switch-client -T ${dragBindTable}"
+    + " } "
+    + menuQuote s.cmd;
+
+  # Every mouse location tmux defines (KEYC_MOUSE_STRING, tmux.h), and every
+  # combination of the three modifier bits server_client_check_mouse ORs into
+  # a mouse key, in the canonical order tmux itself prints them (key-string.c):
+  # C before M before S. 20 locations x 8 combinations = 160 keys.
+  dragLocations = [
+    "Pane"
+    "Status"
+    "StatusLeft"
+    "StatusRight"
+    "StatusDefault"
+    "ScrollbarUp"
+    "ScrollbarSlider"
+    "ScrollbarDown"
+    "Empty"
+    "Border"
+    "Control0"
+    "Control1"
+    "Control2"
+    "Control3"
+    "Control4"
+    "Control5"
+    "Control6"
+    "Control7"
+    "Control8"
+    "Control9"
+  ];
+  dragModifiers = ["" "M-" "C-" "S-" "C-M-" "M-S-" "C-S-" "C-M-S-"];
+
+  dragEndBody = "run-shell \"${bridgeCtl} float-drag #{q:@og_bridge_drag}\"";
+  dragEndBindLine = mod: loc: "bind-key -N '${dragEndNote}' -T ${dragBindTable} ${mod}MouseDragEnd1${loc} ${dragEndBody}";
+
+  # tmux's own float drag installs a C mouse_drag_update callback that fires no
+  # hook until the button is released, so the drag end
+  # (MouseDragEnd1<release-location>) is the only event a key table can catch.
+  # The start bind stashes the local float's pane id in a session option and
+  # switches into dragBindTable, a one-shot table holding every possible drag
+  # end; the next key -- always the drag end -- runs ctl float-drag on the
+  # stashed pane (#797). %if-gated like menuBinds, for the same #407 reason.
+  dragBinds = lib.concatStringsSep "\n" (
+    ["%if \"#{==:#{version},next-3.9}\""]
+    ++ map dragStartBindLine dragStock
+    ++ lib.concatMap (loc: map (mod: dragEndBindLine mod loc) dragModifiers) dragLocations
+    ++ ["%endif"]
+  );
+
   # A mirror window's own @crew_*/@pr_* describe the launcher's repo; the daemon
   # ships the remote window's under @bridge_*. These are read live at render
   # time, so the choice has to be a format conditional. Built per option name,
@@ -781,6 +853,12 @@
     # lacks one of its commands fails that menu, never the config load; the %if
     # keeps any other server version on its own stock menus (#407).
     ${menuBinds}
+
+    # Mirror float border drag reaches the remote (#797): the drag start stashes
+    # the float's pane id and switches into a one-shot table that catches the
+    # drag end and routes it to ctl float-drag, since tmux's own float drag never
+    # fires a hook until release.
+    ${dragBinds}
 
     # Vim-tmux navigation (respects zoom)
     # tmux substitutes $is_vim into each bind at parse time, so this string IS an

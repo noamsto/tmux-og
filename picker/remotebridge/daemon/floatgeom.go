@@ -58,6 +58,16 @@ func clampOffset(off, size, bound int) int {
 	return off
 }
 
+// clampInner returns the inner box (pane_* — a float's layout cell) of the
+// outer box outerFromCell derives for c inside a winW x winH window. The
+// float-geom ctl verb uses this to clamp a dragged-to cell with the same
+// rule the reconcile applies when it places the local float, so a request
+// built from it can never be snapped elsewhere by the reconcile's own clamp.
+func clampInner(c controlmode.PaneCell, winW, winH int) controlmode.PaneCell {
+	ow, oh, ox, oy := outerFromCell(c, winW, winH)
+	return controlmode.PaneCell{ID: c.ID, X: ox + floatInset, Y: oy + floatInset, W: ow - 2*floatInset, H: oh - 2*floatInset}
+}
+
 // floatCreateArgv returns the argv that creates a local float mirroring cell
 // c: -d so a reconcile-driven add never yanks focus, -A so the float survives
 // a zoom (both probed against tmux next-3.8), -P -F '#{pane_id}' so the

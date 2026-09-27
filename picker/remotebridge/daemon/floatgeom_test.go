@@ -55,6 +55,48 @@ func TestFloatOuterFromCellKeepsTheBoxInsideTheWindow(t *testing.T) {
 	}
 }
 
+func TestClampInner(t *testing.T) {
+	tests := []struct {
+		name       string
+		c          controlmode.PaneCell
+		winW, winH int
+		want       controlmode.PaneCell
+	}{
+		{
+			name: "in-window cell round-trips unchanged",
+			c:    controlmode.PaneCell{ID: "%3", X: 11, Y: 6, W: 38, H: 10},
+			winW: 100, winH: 30,
+			want: controlmode.PaneCell{ID: "%3", X: 11, Y: 6, W: 38, H: 10},
+		},
+		{
+			name: "dragged off the left edge clamps the offset",
+			c:    controlmode.PaneCell{ID: "%3", X: -5, Y: 6, W: 45, H: 10},
+			winW: 100, winH: 30,
+			want: controlmode.PaneCell{ID: "%3", X: 1, Y: 6, W: 45, H: 10},
+		},
+		{
+			name: "past the bottom-right edge clamps both offsets",
+			c:    controlmode.PaneCell{ID: "%3", X: 70, Y: 25, W: 38, H: 10},
+			winW: 100, winH: 30,
+			want: controlmode.PaneCell{ID: "%3", X: 61, Y: 19, W: 38, H: 10},
+		},
+		{
+			name: "wider than the window clamps the size and the offset",
+			c:    controlmode.PaneCell{ID: "%3", X: 0, Y: 6, W: 120, H: 10},
+			winW: 100, winH: 30,
+			want: controlmode.PaneCell{ID: "%3", X: 1, Y: 6, W: 98, H: 10},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clampInner(tc.c, tc.winW, tc.winH)
+			if got != tc.want {
+				t.Errorf("clampInner = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFloatCreateArgv(t *testing.T) {
 	c := controlmode.PaneCell{ID: "%2", W: 58, H: 18, X: 11, Y: 6}
 	got := floatCreateArgv("@7", c, 190, 45)
