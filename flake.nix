@@ -2248,7 +2248,7 @@
           # private -L server) rather than a hand-set window option — the
           # vulnerability is in what og-remote-open NAMES the local mirror
           # session, not in anything the daemon touches. util-linux for
-          # `timeout --foreground`.
+          # `setsid`, so the launcher takes its Linux daemon-launch path.
           mirror-session-name-integration-tests = let
             mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;

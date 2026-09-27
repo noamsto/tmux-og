@@ -345,7 +345,9 @@ menu's title and its Switch-To loop keep stock's bare `#{session_name}` under
 `og-remote-open` maps both halves of a mirror's local name to `[A-Za-z0-9_-]`
 and keeps the raw remote name in `@bridge_session` (#783); a local name
 carrying a remote-derived quote or `#(` would run local commands on a
-right-click of the session pill.
+right-click of the session pill. A raw-named mirror a pre-#783 launcher created
+stays exposed until the next `og-remote-open` of that host/session pair
+retires it.
 
 **Old resident servers (#407).** A config is parsed and every `{ … }` block
 built — commands looked up, flags parsed — before any of it runs
