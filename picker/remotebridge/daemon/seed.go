@@ -119,8 +119,8 @@ func replaceLF(b []byte) []byte {
 // (0,0,false,false,nil,nil) rather than rejecting the seed — only the
 // capture-pane reply can do that (see parseCapture). mouse is nil (unknown)
 // unless the reply carries the five mouse fields, and modes is nil (unknown)
-// unless it carries the private-mode list: a remote tmux missing a format
-// expands it empty, which drops the field instead of overflowing the parse.
+// unless it carries the private-mode list: a remote tmux missing that format
+// expands it empty and drops the field.
 func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes) {
 	if !ok || l.Kind == controlmode.Error {
 		return 0, 0, false, false, nil, nil

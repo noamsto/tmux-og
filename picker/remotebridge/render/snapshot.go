@@ -15,15 +15,15 @@ type MouseMode struct {
 }
 
 // TerminalModes is the pane's bracketed-paste and focus-reporting DECSET
-// state, the input modes that, like the mouse, a mirror pane learns only from
-// bytes it is handed and so must have reseeded across a gap.
+// state, seeded clear-then-set like the mouse because a mirror pane learns
+// modes only from bytes it is handed and so must have them restored across a
+// gap.
 //
 // tmux exposes both in one comma-separated list, #{pane_private_modes}
 // (bracketed paste ?2004, focus reporting ?1004), so the pair is read and
-// seeded atomically: there is no per-mode format for focus reporting, and a
-// scalar #{bracket_paste_flag} would leave bracketed paste readable on a
-// remote whose private-mode list is not (tmux 3.7, before #{pane_private_modes}
-// existed in 3.8) while focus stayed unknown.
+// seeded atomically: there is no per-mode format for focus reporting, and
+// #{bracket_paste_flag} (the scalar, from tmux 3.7) would leave focus unknown
+// whenever it was the only readable half of the pair.
 type TerminalModes struct {
 	BracketedPaste bool
 	FocusReporting bool
