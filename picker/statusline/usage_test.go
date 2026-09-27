@@ -403,6 +403,50 @@ func TestUsageSegmentPiAccountBalanceIgnoredWhenKeyCapPresent(t *testing.T) {
 	}
 }
 
+// TestUsageSegmentBalanceWithNilSpendRendersNothing pins the current
+// invariant: Balance is only ever rendered alongside Spend (the provider
+// script always writes spend alongside balance), so a cache with Balance set
+// but Spend nil renders no spend/balance clause at all — the agent still
+// shows its windows/monthly if any, or drops out entirely if there's nothing
+// else. This is not a bug to fix, just documented, tested behavior.
+func TestUsageSegmentBalanceWithNilSpendRendersNothing(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	caches := map[string]usageCache{
+		"pi": {Balance: &usageBalance{USDRemaining: 18.40}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	if got != "" {
+		t.Fatalf("got %q, want empty (no Spend means nothing renders, even with Balance set)", got)
+	}
+}
+
+// TestUsageSegmentPiSpendWithRemainingNoLabel pins the RemainingLabel=="" case
+// (valid since it's omitempty): the "left" clause renders with no "/<label>"
+// suffix, same as the "cap" case, but /$<limit> is NOT dropped since the
+// drop rule specifically checks RemainingLabel=="cap".
+func TestUsageSegmentPiSpendWithRemainingNoLabel(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", LimitUSD: limit(20), RemainingUSD: limit(18.40)}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20/$20 mo · $18 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
