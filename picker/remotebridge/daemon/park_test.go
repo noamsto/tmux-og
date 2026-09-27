@@ -206,3 +206,22 @@ func TestWakeBackoffMatchesTheDesignedSchedule(t *testing.T) {
 		t.Errorf("WakeBackoff = %+v, want Base 500ms, Ceiling 5s, MaxAttempts 10, MaxElapsed 30s", b)
 	}
 }
+
+func TestRestoreBackoffMatchesTheDesignedSchedule(t *testing.T) {
+	b := RestoreBackoff(time.Now)
+	if b.Base != 1*time.Second || b.Ceiling != 5*time.Second ||
+		b.MaxAttempts != 30 || b.MaxElapsed != 60*time.Second {
+		t.Errorf("RestoreBackoff = %+v, want Base 1s, Ceiling 5s, MaxAttempts 30, MaxElapsed 60s", b)
+	}
+}
+
+func TestProbeBackoffIsOneImmediateAttempt(t *testing.T) {
+	b := probeBackoff(time.Now)
+	start := time.Now()
+	if d, ok := b.Next(1, start); d != 0 || !ok {
+		t.Errorf("Next(1, start) = (%v, %v), want (0, true)", d, ok)
+	}
+	if _, ok := b.Next(2, start); ok {
+		t.Error("Next(2, start) = ok true, want false: probeBackoff is one attempt")
+	}
+}

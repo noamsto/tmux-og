@@ -237,6 +237,28 @@ func TestLocalCtlCmdEnvCarriesDesiredTermAndInheritsEnvironment(t *testing.T) {
 	}
 }
 
+// TestTestLocalDialArgvHonoursOutageFile covers the offline bats harness's
+// outage seam: the marker file's presence, checked fresh per call, decides
+// between the real dial argv and the no-output stand-in (#817).
+func TestTestLocalDialArgvHonoursOutageFile(t *testing.T) {
+	outage := filepath.Join(t.TempDir(), "outage")
+	if err := os.WriteFile(outage, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := testLocalDialArgv(outage, "src", "sess"); !slices.Equal(got, []string{"false"}) {
+		t.Fatalf("outage file present: got argv %v, want [false]", got)
+	}
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	want := []string{"tmux", "-L", "src", "-C", "attach-session", "-t", "sess"}
+	if got := testLocalDialArgv(missing, "src", "sess"); !slices.Equal(got, want) {
+		t.Fatalf("outage file absent: got argv %v, want %v", got, want)
+	}
+	if got := testLocalDialArgv("", "src", "sess"); !slices.Equal(got, want) {
+		t.Fatalf("outage file unset: got argv %v, want %v", got, want)
+	}
+}
+
 // TestNewGraphicsGatesOnRelayOnBothTransportBranches is C7's only guard
 // against the trap the plan calls out by name: NewGraphics must build the
 // proxy with graphics.NewRelay — never fall back to the relay-off

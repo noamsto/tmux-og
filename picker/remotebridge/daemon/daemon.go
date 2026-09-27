@@ -103,6 +103,16 @@ type Config struct {
 	// routing() stashes the original here so anything handing cfg to another
 	// goroutine can restore them — routeWhile is main-goroutine only.
 	plain *Config
+	// RestoreRetry bounds the window a refused attach keeps dialling in case
+	// the remote session is restored; nil takes RestoreBackoff. Same
+	// pointer-for-"unset" reasoning as Retry.
+	RestoreRetry *Backoff
+	// ParkProbe is how often a parked mirror re-probes on its own; 0 takes
+	// parkProbeInterval.
+	ParkProbe time.Duration
+	// reopened is set by Run on a run that rebuilds the mirror onto a
+	// replaced remote server, so that run shows the fresh-server notice.
+	reopened bool
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -144,6 +154,30 @@ func (c Config) wakeSchedule() Backoff {
 		return *c.WakeRetry
 	}
 	return WakeBackoff(time.Now)
+}
+
+// restoreSchedule is the schedule a refused attach's restore window runs on
+// this Config.
+func (c Config) restoreSchedule() Backoff {
+	if c.RestoreRetry != nil {
+		return *c.RestoreRetry
+	}
+	return RestoreBackoff(time.Now)
+}
+
+// probeSchedule is the one-attempt schedule a parked mirror's periodic probe
+// runs on.
+func (c Config) probeSchedule() Backoff {
+	return probeBackoff(time.Now)
+}
+
+// parkProbeEvery is how often a parked mirror re-probes on its own, for this
+// Config.
+func (c Config) parkProbeEvery() time.Duration {
+	if c.ParkProbe > 0 {
+		return c.ParkProbe
+	}
+	return parkProbeInterval
 }
 
 func (c Config) graphicsFor(paneID string) *graphics.Proxy {

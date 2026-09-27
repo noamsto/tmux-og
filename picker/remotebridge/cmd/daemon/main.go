@@ -116,6 +116,20 @@ func localCtlCmdEnv(view *daemon.Viewing) []string {
 	return append(os.Environ(), "TERM="+view.Desired())
 }
 
+// testLocalDialArgv is the --test-local branch's dial argv, decided fresh on
+// every call (the outage file's presence can change between dials). "false"
+// is a stand-in for a dial that exits immediately with no control output at
+// all — the production shape of a lost network, as opposed to a refused
+// tmux attach, which still answers with a %begin/%error/%exit sequence (#817).
+func testLocalDialArgv(outage, src, session string) []string {
+	if outage != "" {
+		if _, err := os.Stat(outage); err == nil {
+			return []string{"false"}
+		}
+	}
+	return []string{"tmux", "-L", src, "-C", "attach-session", "-t", session}
+}
+
 // remoteStoreScript is the paste upload's remote half (#361): it lands the
 // image bytes (stdin) in a fresh 0700 mktemp -d directory and prints the path
 // of a plain-named file inside it. The find sweep is the cleanup answer — the
@@ -198,6 +212,7 @@ func main() {
 	dstSocket := flag.String("dst-socket", "", "test-local: tmux -L socket name standing in for the local server")
 	retryMaxElapsed := flag.Duration("retry-max-elapsed", envDurationDefault("OG_DAEMON_RETRY_MAX_ELAPSED", 0), "test only: bound the reattach retry schedule's MaxElapsed (0 = production schedule)")
 	wakeMaxElapsed := flag.Duration("wake-max-elapsed", envDurationDefault("OG_DAEMON_WAKE_MAX_ELAPSED", 0), "test only: bound the parked-wake retry schedule's MaxElapsed (0 = production schedule)")
+	testOutage := flag.String("test-outage-file", os.Getenv("OG_DAEMON_TEST_OUTAGE_FILE"), "test-local: while this file exists, a dial yields no control output (an unreachable remote)")
 	flag.Parse()
 
 	if *localSess == "" {
@@ -225,7 +240,8 @@ func main() {
 	var localTmuxArgv []string
 	if *testLocal {
 		newCtlCmd = func() (*exec.Cmd, string) {
-			cmd := exec.Command("tmux", "-L", *srcSocket, "-C", "attach-session", "-t", *session)
+			argv := testLocalDialArgv(*testOutage, *srcSocket, *session)
+			cmd := exec.Command(argv[0], argv[1:]...)
 			cmd.Env = localCtlCmdEnv(view)
 			return cmd, ""
 		}

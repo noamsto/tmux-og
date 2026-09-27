@@ -61,6 +61,12 @@ setup() {
 	# the still-live SRC server (see outage_start below). teardown() needs this
 	# set even when a test aborts before reaching outage_end.
 	src_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2src"
+	# A moved-aside src_sock isn't an outage to tmux — it starts a fresh server
+	# on the vacated path and answers attach-session with a refused-attach
+	# sequence, not silence. This marker file is the real outage lever: while
+	# it exists, --test-local's dial is told to produce no control output at
+	# all, matching production's network-loss shape.
+	export OG_DAEMON_TEST_OUTAGE_FILE="$BATS_TEST_TMPDIR/outage"
 
 	if [[ -z ${DAEMON:-} ]]; then
 		DAEMON="$BATS_TEST_TMPDIR/daemon"
@@ -3219,18 +3225,22 @@ transport_child() {
 
 # #729: park helpers. outage_start makes the remote unreachable in a way the
 # reattach loop cannot warm-reconnect from within one retry cycle — SIGKILL
-# the transport (the #482 drop) AND rename SRC's socket aside, so every dial
-# in the cycle gets ENOENT instead of finding the still-live SRC server.
-# Writes to SRC while the socket is aside must go through
-# `tmux -S "$src_sock.away" ...`; $SRC resolves the moved-away path and would
-# hit ENOENT itself.
+# the transport (the #482 drop) AND drop the outage marker (#817), so every
+# dial in the cycle yields no control output at all, same as a dead network.
+# SRC's socket is still renamed aside, but only so writes to SRC during the
+# outage go through `tmux -S "$src_sock.away" ...` instead of the live
+# server; the move on its own is NOT the outage — a moved-aside socket just
+# makes tmux start a fresh server on the vacated path and answer with a
+# refused attach, not silence.
 outage_start() {
+	: >"$OG_DAEMON_TEST_OUTAGE_FILE"
 	kill -9 "$(transport_child)"
 	mv "$src_sock" "$src_sock.away"
 }
 
 outage_end() {
 	mv "$src_sock.away" "$src_sock"
+	rm -f "$OG_DAEMON_TEST_OUTAGE_FILE"
 }
 
 # PARK_DIM_STYLE mirrors daemon/park.go's parkDimStyle byte-for-byte.
