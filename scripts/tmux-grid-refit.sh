@@ -8,9 +8,10 @@
 #                            pass #{q:window_id})
 # No-op unless the window carries @crew_grid=1, so a window that is not a crew
 # grid — and any non-tmux-og server — is untouched. Silent and convergent: an
-# unchanged grid issues no state-changing tmux command and emits no reflow
-# notification (@grid_refit_sig caches the last applied decision, and the
-# read-only probes before it are cheap).
+# unchanged grid issues no layout-changing tmux command and emits no reflow
+# notification — it writes only its own @grid_refit_* bookkeeping options
+# (@grid_refit_sig caches the last applied decision, and the read-only probes
+# before it are cheap).
 #
 # Two triggers, because a grid can change shape without a resize (#760): the
 # window-resized[10] hook covers a client resize, and window-layout-changed

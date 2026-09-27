@@ -181,6 +181,10 @@ back-to-back on the server thread, so no gate is evaluated in between.
 - Early exits (zoomed, not a grid, no lead, lock loser) all come after the
   clear. A zoomed run leaves nothing behind, so the unzoom's own
   `window-layout-changed` forks normally.
+- A lock loser still drops its work, as before #810. Coalescing removes the
+  redundant burst forks that sometimes retried once the holder released, so
+  a loser that read a new state is likelier to stay unrefit until the next
+  event.
 
 **Keyed on the state**, not a flag: a marker left behind — only possible
 when the run is killed before its first tmux call, or `run-shell -b` fails
@@ -213,7 +217,8 @@ with each other, not with #807's table. Times are ms.
 
 Re-attach forks about 10× fewer refit jobs, and its p99 drops by about a
 third. Max stays noisy in both builds: one "after" round hit 510 ms. The
-busy scenario has little burst to coalesce, and its spread is noise.
+busy forks vary widely before (one round hit a burst: 234 jobs) and stay
+flat after; its latency spread is noise.
 
 ## What did not matter (measured)
 
@@ -261,6 +266,7 @@ foreground run is deliberate ordering.
   cases must still refit.
 - The #810 tests in the same file pin the pending marker: a burst on an
   unverified grid or a stale float forks exactly one job; a lock loser, a
-  zoomed run and a left-behind marker never block a later refit.
+  zoomed run never block a later refit, and a left-behind marker never blocks
+  a different state (it still blocks its own exact state, above).
 - A new `window-*` hook that forks per event multiplies under this fan-out
   the same way. Gate it in-process, or measure it with the harness.

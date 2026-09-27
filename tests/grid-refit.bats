@@ -28,6 +28,11 @@ setup() {
 	# — isolate it anyway rather than assume this script never grows a read.
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
 	mkdir -p "$CLAUDE_STATUS_DIR"
+	# The script's lock dir lives under TMPDIR and a direct call (no $TMUX)
+	# names it after server "0", so parallel bats runs on one machine would
+	# share it and a setup apply could lose the lock. The server inherits this
+	# too, so hook-run jobs agree with the lock-loser test's formula.
+	export TMPDIR="$TMUX_TMPDIR"
 
 	# -f /dev/null: a real config would arm the window-resized hooks that run
 	# these very scripts, invalidating the before/after comparisons below.
@@ -782,6 +787,7 @@ layout_bug_reproduces() {
 		sleep 0.1
 		((tries++)) || true
 	done
+	[ -n "$stamp" ]
 	settle
 
 	# Knock the stamp out of date: the grid is laid out, but the gate no
@@ -863,6 +869,7 @@ layout_bug_reproduces() {
 		sleep 0.1
 		((tries++)) || true
 	done
+	[ -n "$stamp" ]
 	settle
 
 	# Hold a live lock throughout the storm, as a peer run would (same
