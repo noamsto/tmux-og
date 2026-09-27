@@ -842,6 +842,16 @@ func Run(cfg Config) error {
 	// started from a copy of cfg taken after this point.
 	waker := newParkWaker()
 	cfg.InputSeen = waker.poke
+	// Window-set operations (reconcile, add, close, rename) run their local
+	// execs under routeWhile so %output keeps flowing to the renderers;
+	// pane-shaping paths keep cfg. See routeWhile and Config.routing.
+	flowCfg := cfg.routing(func(fn func()) {
+		if c := hold.get(); c != nil {
+			c.routeWhile(fn)
+			return
+		}
+		fn()
+	})
 	// The listener outlives a drop, so a keybind pressed mid-outage reaches
 	// here and gets nacked by the closed stream rather than hanging. The nack
 	// must carry a non-empty error or the keybind claims a gesture landed that
@@ -1037,7 +1047,7 @@ func Run(cfg Config) error {
 	// tmux-og host, on every automatic-rename tick) would otherwise keep the
 	// name it happened to have at attach for the life of the mirror. Reconcile
 	// re-asserts each name from ground truth, and ends in a reflow.
-	reconcileWindows(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
+	reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 	if reg.empty() {
 		teardown()
 		return nil
@@ -1117,8 +1127,8 @@ func Run(cfg Config) error {
 		case controlmode.WindowRenamed:
 			if len(l.Args) > 0 {
 				if mw, ok := reg.byRemoteID(l.Args[0]); ok {
-					applyMirrorName(cfg, mw.localWin, string(l.Data))
-					cfg.reflow()
+					applyMirrorName(flowCfg, mw.localWin, string(l.Data))
+					flowCfg.reflow()
 				}
 			}
 		case controlmode.SessionChanged:
@@ -1129,11 +1139,11 @@ func Run(cfg Config) error {
 			}
 		case controlmode.WindowAdd:
 			if len(l.Args) > 0 {
-				addWindow(cfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
+				addWindow(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
 			}
 		case controlmode.WindowClose:
 			if len(l.Args) > 0 {
-				closeWindow(cfg, router, cst, reg, cv, l.Args[0])
+				closeWindow(flowCfg, router, cst, reg, cv, l.Args[0])
 				return reg.empty()
 			}
 		case controlmode.WindowPaneChanged:
@@ -1194,7 +1204,7 @@ func Run(cfg Config) error {
 				}
 			}
 			if wantWindows {
-				reconcileWindows(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
+				reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 				if reg.empty() {
 					return true
 				}
@@ -1229,6 +1239,10 @@ func Run(cfg Config) error {
 			// without a timer: nextLine wakes on any line, and by the time it
 			// returns the intent is already registered, so the next pass through here
 			// drains it. It also picks up whatever window setup queued.
+			//
+			// No operation is in flight at the top of a pass, so a parked
+			// reply's reader has gone.
+			c.st.dropParked()
 			if settle(c) {
 				return connEnd
 			}
@@ -1370,7 +1384,7 @@ func Run(cfg Config) error {
 				}
 			}
 		}
-		reconcileWindows(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
+		reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 		if reg.empty() {
 			return false
 		}
@@ -1791,9 +1805,10 @@ type lineReader interface {
 
 // ctlPumpBuf is the depth of the pump's line channel. It is slack for every
 // stretch where the consuming goroutine is busy rather than reading — LocalTmux
-// execs, window shaping, per-pane seeding, the hello wait — which is what keeps
-// the remote's output moving out of the socket and so keeps a pane below tmux's
-// pause-after age. Deliberately looser than the one-line-at-a-time backpressure
+// execs outside the window-set operations (those route via routeWhile), window
+// shaping, per-pane seeding, the hello wait — which is what keeps the remote's
+// output moving out of the socket and so keeps a pane below tmux's pause-after
+// age. Deliberately looser than the one-line-at-a-time backpressure
 // a synchronous reader gave: the slack IS the fix. Once it is full the pump
 // blocks on the send and the remote feels the stall as it always did.
 //
