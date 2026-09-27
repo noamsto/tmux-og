@@ -193,6 +193,24 @@ func TestUsageAgentTablesAgree(t *testing.T) {
 			t.Errorf("usageAgentKeys has %q with no usageAgentCmds entry mapping to it", k)
 		}
 	}
+
+	// Reverse: every agent in the alternation of agentUsageFormat's
+	// open-pane regex has a usageAgentCmds entry.
+	altPrefix := "[.]?("
+	altStart := strings.Index(rest[:j], altPrefix)
+	if altStart < 0 {
+		t.Fatalf("no alternation group after %q in pattern %q", altPrefix, rest[:j])
+	}
+	altStart += len(altPrefix)
+	altEnd := strings.Index(rest[:j][altStart:], ")")
+	if altEnd < 0 {
+		t.Fatalf("no closing paren for alternation group in pattern %q", rest[:j])
+	}
+	for _, alt := range strings.Split(rest[:j][altStart:altStart+altEnd], "|") {
+		if _, ok := usageAgentCmds[alt]; !ok {
+			t.Errorf("agentUsageFormat alternation has %q with no usageAgentCmds entry", alt)
+		}
+	}
 }
 
 // TestUsageShipperFlush walks one shipper through a sequence: its rules are
