@@ -2062,7 +2062,10 @@
               # provides `script`, which remote-auth.bats uses to give the
               # accept-path cases a real pty (same pattern as
               # remote-bridge-integration-tests below).
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux];
+              nativeBuildInputs =
+                [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux]
+                # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
+                ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests

@@ -66,9 +66,51 @@ reap_daemon() {
 	kill -KILL -- "$pid" 2>/dev/null || true
 }
 
+# Rollback state for on_signal (#770). The picker's group TERM only reaches
+# ssh — the daemon is launched setsid, outside the group — so this script owns
+# undoing its own mirror on a signal. mirror_created means there is local state
+# (a socket dir, maybe a mirror session) worth tearing down; attached means the
+# commit point (one of the two switch-clients) has already run, so a racing
+# signal is reported as success — a complete mirror exists either way.
+mirror_created="" attached="" daemon_started=""
+on_signal() {
+	[[ -n $attached ]] && exit 0
+	if [[ -n $mirror_created ]]; then
+		# daemon_started is set before the launch attempt: set after the `&`, a
+		# signal in between would leave a launched daemon unreaped. $! is unset
+		# until that launch because nothing earlier in the script backgrounds a
+		# job — don't add one before it, or ${!:-} would reap the wrong pid.
+		if [[ -n $daemon_started && -n ${!:-} ]]; then
+			reap_daemon "$!"
+		fi
+		tmux kill-session -t "=$local_sess" 2>/dev/null || true
+		rm -f "$sock" "${sock}.pid" "$phase_file"
+	fi
+	exit 143
+}
+trap on_signal TERM INT HUP
+
 host="$1"
 sess="${2:-}"
 win="${3:-}"
+
+# Opt-in progress channel for the picker: one phase name per line on this fd,
+# never on stdout (which a remote command can forge).
+# Never exported onward — the daemon's hand-off re-runs this script from its
+# own environment, where fd 3 may be something else entirely.
+progress_fd=""
+if [[ ${OG_REMOTE_OPEN_PROGRESS_FD:-} =~ ^[0-9]+$ ]]; then
+	progress_fd=$OG_REMOTE_OPEN_PROGRESS_FD
+fi
+unset OG_REMOTE_OPEN_PROGRESS_FD
+
+# 2>/dev/null runs before the fd redirect so a closed or never-opened fd
+# fails silently instead of printing "Bad file descriptor" on our own stderr.
+phase() {
+	[[ -n $progress_fd ]] || return 0
+	# shellcheck disable=SC2261 # intentional: order matters, see the comment above
+	printf '%s\n' "$1" 2>/dev/null >&"$progress_fd" || true
+}
 
 if [[ -n $win && ! $win =~ ^[0-9]+$ ]]; then
 	echo "og-remote-open: window index must be numeric, got: $win" >&2
@@ -178,6 +220,7 @@ printf '"'"'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\n'"'"' "$os" "$ui
 # behind a fish parse error on stderr. Feed the script to an explicit bash on
 # stdin instead, the same way og-remote-picker already does. A fish login
 # greeting can still land on stdout, which the key=value parse below ignores.
+phase connect
 probe_out="$(ssh -T "$host" bash -s <<<"$probe_script")"
 
 remote_os="" remote_uid="" remote_tmux="" remote_tmpdir="" probe_sess="" probe_win=""
@@ -218,6 +261,7 @@ fi
 # (#345). Exits the whole script on failure: a cold start is a fatal
 # precondition for every caller.
 start_remote_server() {
+	phase start-server
 	if [[ $remote_os == Darwin ]]; then
 		# The launchd agent mirrors tmux-startup.service on macOS; kickstart
 		# runs a RunAtLoad agent on demand.
@@ -256,10 +300,12 @@ fi
 # caller explicitly asked for a restore — a plain live-session attach (the
 # common case) takes none of these extra round trips.
 if [[ -n ${OG_REMOTE_RESTORE:-} && -n $sess ]]; then
+	phase restore
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
 	if ! ssh "$host" "env TMUX_TMPDIR=$remote_tmpdir $remote_tmux has-session -t $(shell_quote "=$sess")" 2>/dev/null; then
 		if [[ -z "$(first_remote_session)" ]]; then
 			start_remote_server
+			phase restore
 		fi
 		remote_remux="$(ssh "$host" 'command -v tmux-remux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux-remux')"
 		# Bypasses the remote's own restoreMode=off gate (config/tmux.conf.nix's
@@ -304,6 +350,7 @@ fi
 # session is made moments before the daemon attaches instead of having to survive
 # the whole interactive pick.
 if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
+	phase create
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
 	if ! ssh "$host" "env TMUX_TMPDIR=$remote_tmpdir $remote_tmux has-session -t $(shell_quote "=$sess")" 2>/dev/null; then
 		# Both cold-start gates above are `[[ -z $sess ]]`, and we hold a name —
@@ -311,6 +358,7 @@ if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
 		# spawned, outside the startup unit that owns it everywhere else (#345).
 		if [[ -z "$(first_remote_session)" ]]; then
 			start_remote_server
+			phase create
 		fi
 		remote_size=""
 		if [[ -n $initial_width ]]; then
@@ -330,6 +378,7 @@ if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
 fi
 
 if [[ -z $win ]]; then
+	phase connect
 	# base-index is non-zero under tmux-og (windows start at 1), so target the
 	# session's active window rather than assuming index 0.
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
@@ -344,6 +393,7 @@ if [[ -z $win ]]; then
 	fi
 fi
 
+phase mirror
 base_local_sess="${host}-${sess}"
 local_sess="$base_local_sess"
 
@@ -403,6 +453,7 @@ phase_file="${sock}.phase"
 if remote_daemon_alive "${sock}.pid"; then
 	if probe_error="$("$ctl" --sock "$sock" ping _ 2>&1)"; then
 		if tmux has-session -t "=$local_sess" 2>/dev/null; then
+			attached=1
 			tmux switch-client -t "=$local_sess"
 			exit 0
 		fi
@@ -423,6 +474,7 @@ if remote_daemon_alive "${sock}.pid"; then
 		[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
 	fi
 fi
+mirror_created=1
 # Stale cleanup: a prior daemon was killed (SIGTERM/SIGKILL) without running
 # teardown, leaving socket + pidfile behind. Remove both so the new daemon can
 # bind cleanly; the session below is also replaced.
@@ -523,15 +575,29 @@ read_session_env "$cur_sess" TERM_PROGRAM && term_program="$REPLY" || true
 export OG_BRIDGE_COLORTERM="$colorterm"
 export OG_BRIDGE_TERM_PROGRAM="$term_program"
 
+# The fd must not outlive the launcher: the detached daemon would otherwise
+# hold the pipe's write end open for its whole life.
+if [[ -n $progress_fd ]]; then
+	exec {progress_fd}>&-
+	progress_fd=""
+fi
+
 # Launch the daemon DETACHED, outside the panes it manages (I4): it is not the
 # window's command — it respawns the local panes into renderers. setsid is
 # Linux-only (not on macOS base), so fall back to plain backgrounding + disown
 # where it's unavailable; either way the daemon is fully detached from this shell.
+daemon_started=1
 if command -v setsid >/dev/null 2>&1; then     # portable-ok: guard, verified fallback below
 	setsid "$daemon" >/dev/null 2>"${sock}.log" & # portable-ok: guarded above; else branch is the verified macOS fallback
 else
+	# The daemon must land outside this script's process group on every
+	# platform: bash job control (set -m) puts a backgrounded job in its own
+	# group, so a group TERM racing the commit point below never reaches it.
+	set -m
 	nohup "$daemon" >/dev/null 2>"${sock}.log" &
+	set +m
 	disown 2>/dev/null || true
 fi
 
+attached=1
 tmux switch-client -t "=$local_sess"

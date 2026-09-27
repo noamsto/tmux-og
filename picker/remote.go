@@ -912,47 +912,16 @@ func bridgeCtlKillWindow(tmuxOpts map[string]string, sock, pane string) error {
 	return nil
 }
 
-// openRemoteBridge launches og-remote-open for host[/sess] and returns any
-// start error (the script switches the client itself on success). restore
-// signals a row built from a tmux-remux snapshot rather than a live probe
-// (#268): the session doesn't exist on the remote yet, so the launcher must
-// restore it before there's anything to bridge into.
-func openRemoteBridge(tmuxOpts map[string]string, host, sess string, restore bool) error {
-	args := []string{host}
-	if sess != "" {
-		args = append(args, sess)
-	}
-	// An option, not a PATH lookup — see @remote_open_bin in the config.
-	bin := envOrMap("REMOTE_OPEN_BIN", tmuxOpts, "@remote_open_bin", "og-remote-open")
-	cmd := exec.Command(bin, args...)
-	if restore {
-		cmd.Env = append(os.Environ(), "OG_REMOTE_RESTORE=1")
-	}
-	cmd.Stdout = os.Stderr
-	// Captured, not inherited: the picker owns the screen, so a failure has to
-	// come back as a string for the hint line rather than paint over the popup.
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if msg := lastNonEmptyLine(stderr.String()); msg != "" {
-			return errors.New(msg)
-		}
-		return err
-	}
-	return nil
-}
-
-// launchRemoteBridgeDetached fires the same launcher openRemoteBridge runs,
-// without waiting for it. Setsid so tmux tearing down this popup's pane
-// doesn't take the launcher (and the daemon it backgrounds) with it — the
-// same reason og-remote-open.sh setsids the daemon it starts.
+// launchRemoteBridgeDetached fires og-remote-open without waiting for it.
+// Setsid so tmux tearing down this popup's pane doesn't take the launcher (and
+// the daemon it backgrounds) with it — the same reason og-remote-open.sh
+// setsids the daemon it starts.
 func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, restore bool) {
 	args := []string{host}
 	if sess != "" {
 		args = append(args, sess)
 	}
-	bin := envOrMap("REMOTE_OPEN_BIN", tmuxOpts, "@remote_open_bin", "og-remote-open")
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(remoteOpenBin(tmuxOpts), args...)
 	if restore {
 		cmd.Env = append(os.Environ(), "OG_REMOTE_RESTORE=1")
 	}
@@ -963,6 +932,12 @@ func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, r
 	if err := cmd.Start(); err != nil {
 		logEvent("picker", "event", "open_marked_launch_failed", "host", host, "sess", sess, "error", err.Error())
 	}
+}
+
+// remoteOpenBin resolves og-remote-open from an option, not a PATH lookup —
+// see @remote_open_bin in the config.
+func remoteOpenBin(tmuxOpts map[string]string) string {
+	return envOrMap("REMOTE_OPEN_BIN", tmuxOpts, "@remote_open_bin", "og-remote-open")
 }
 
 // lastNonEmptyLine picks the launcher's most specific complaint: ssh and
