@@ -314,17 +314,15 @@ func TestUsageSegmentPiSpendWithCapShowsLabel(t *testing.T) {
 	}
 }
 
-func TestUsageSegmentPiSpendWithBalance(t *testing.T) {
+func TestUsageSegmentPiSpendWithRemainingLifetimeCap(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,
 		iconUsagePi:           "PI",
 		thmSubtext0:           "#9a8",
 	}
+	limit := func(v float64) *float64 { return &v }
 	caches := map[string]usageCache{
-		"pi": {
-			Spend:   &usageSpend{Label: "mo", USD: 1.20, Period: "month"},
-			Balance: &usageBalance{USDRemaining: 18.40},
-		},
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", LimitUSD: limit(20), RemainingUSD: limit(18.40), RemainingLabel: "cap"}},
 	}
 	open := map[string]bool{"pi": true}
 	got := usageSegment(a, caches, open, 0)
@@ -334,7 +332,7 @@ func TestUsageSegmentPiSpendWithBalance(t *testing.T) {
 	}
 }
 
-func TestUsageSegmentPiSpendWithCapAndBalance(t *testing.T) {
+func TestUsageSegmentPiSpendWithRemainingResettingCap(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,
 		iconUsagePi:           "PI",
@@ -342,30 +340,25 @@ func TestUsageSegmentPiSpendWithCapAndBalance(t *testing.T) {
 	}
 	limit := func(v float64) *float64 { return &v }
 	caches := map[string]usageCache{
-		"pi": {
-			Spend:   &usageSpend{Label: "mo", USD: 5, Period: "month", LimitUSD: limit(20)},
-			Balance: &usageBalance{USDRemaining: 18.40},
-		},
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", LimitUSD: limit(20), RemainingUSD: limit(18.40), RemainingLabel: "day"}},
 	}
 	open := map[string]bool{"pi": true}
 	got := usageSegment(a, caches, open, 0)
-	want := "#[fg=#9a8]PI #[fg=#9a8]$5.00/$20 mo · $18 left  "
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20/$20 mo · $18 left/day  "
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}
 }
 
-func TestUsageSegmentPiSpendNegativeBalance(t *testing.T) {
+func TestUsageSegmentPiSpendRemainingNegative(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,
 		iconUsagePi:           "PI",
 		thmSubtext0:           "#9a8",
 	}
+	limit := func(v float64) *float64 { return &v }
 	caches := map[string]usageCache{
-		"pi": {
-			Spend:   &usageSpend{Label: "mo", USD: 1.20, Period: "month"},
-			Balance: &usageBalance{USDRemaining: -3.50},
-		},
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", RemainingUSD: limit(-3.50), RemainingLabel: "cap"}},
 	}
 	open := map[string]bool{"pi": true}
 	got := usageSegment(a, caches, open, 0)
@@ -375,24 +368,42 @@ func TestUsageSegmentPiSpendNegativeBalance(t *testing.T) {
 	}
 }
 
-func TestUsageSegmentBalanceOnlyNoSpend(t *testing.T) {
+func TestUsageSegmentPiSpendWithAccountBalance(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,
 		iconUsagePi:           "PI",
 		thmSubtext0:           "#9a8",
 	}
 	caches := map[string]usageCache{
-		"pi": {Balance: &usageBalance{USDRemaining: 18.40}},
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month"}, Balance: &usageBalance{USDRemaining: 18.40}},
 	}
 	open := map[string]bool{"pi": true}
 	got := usageSegment(a, caches, open, 0)
-	want := "#[fg=#9a8]PI #[fg=#9a8]$18 left  "
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo · $18 acct left  "
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}
 }
 
-func TestLoadUsageCachesBalanceOldSchemaNil(t *testing.T) {
+func TestUsageSegmentPiAccountBalanceIgnoredWhenKeyCapPresent(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsagePi:           "PI",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"pi": {Spend: &usageSpend{Label: "mo", USD: 1.20, Period: "month", RemainingUSD: limit(18.40), RemainingLabel: "cap"}, Balance: &usageBalance{USDRemaining: 99}},
+	}
+	open := map[string]bool{"pi": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]PI #[fg=#9a8]$1.20 mo · $18 left  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
 
@@ -401,8 +412,8 @@ func TestLoadUsageCachesBalanceOldSchemaNil(t *testing.T) {
 	if !ok {
 		t.Fatalf("pi cache missing")
 	}
-	if c.Balance != nil {
-		t.Fatalf("Balance = %+v, want nil for old-schema cache", c.Balance)
+	if c.Spend.RemainingUSD != nil {
+		t.Fatalf("RemainingUSD = %+v, want nil for old-schema cache", c.Spend.RemainingUSD)
 	}
 	if c.Spend == nil || c.Spend.USD != 5 {
 		t.Fatalf("spend not parsed: %+v", c)

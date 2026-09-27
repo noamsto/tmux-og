@@ -87,7 +87,8 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   host whose only clients are bridges, #603) drives provider scripts that
   normalize vendor API responses into `/tmp/og-agent-usage/<agent>.json`
   (`{windows:[{label,pct,reset_at?}], monthly:{label,pct,reset_at?},
-  spend:{label,usd,period,limit_usd?}, balance:{usd_remaining}?}`);
+  spend:{label,usd,period,limit_usd?,remaining_usd?,remaining_label?},
+  balance:{usd_remaining}?}`);
   `tmux-statusline` (Go) only reads them — it
   never curls. `spend` is optional: absent in an older cache or a provider
   that has none, it decodes as `nil` (`usageCache.Spend *usageSpend`,
@@ -101,9 +102,11 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   agent except cursor — see the pi bullet below for why cursor is pinned
   unchanged. `balance` is a separate top-level optional sibling
   (`usageCache.Balance *usageBalance`) carrying a provider's remaining
-  prepaid credit, independent of `spend`/`limit_usd` (a per-key spending
-  cap and an account's remaining balance answer different questions); when
-  present it renders as its own `$<amt> left` clause, joined onto the spend
+  prepaid account balance, independent of `spend`/`limit_usd` (a per-key
+  spending cap and an account's overall remaining balance answer different
+  questions); when present it renders as its own `$<amt> acct left` clause
+  — distinct from `spend.remaining_usd`'s `$<amt> left` clause (see the pi
+  bullet below), so the two are never confused — joined onto the spend
   clause with ` · ` (or standing alone if a provider ever reports a balance
   with no spend). No schema-version field was added for this — every cache
   field added since the format shipped has been an optional sibling
@@ -176,22 +179,38 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `limit_remaining` is null still shows its budget. `limit`/`limit_remaining`
   need no cents→USD conversion: they're the same "credits" unit as
   `usage_monthly`, and OpenRouter's docs (openrouter.ai/docs/faq) state
-  credits are USD-denominated 1:1. `tmux-agent-usage-pi.sh` also fetches
-  `GET /api/v1/credits` (same bearer token) for the account's remaining
-  prepaid balance (`total_credits - total_usage`), written as
-  `balance.usd_remaining` — a separate, top-level sibling of `spend`, not
-  nested inside it, since a per-key spending cap (`spend.limit_usd`) and
-  the account's overall remaining credit answer different questions and
-  neither subsumes the other; the segment shows both when both exist
-  (`$5.00/$20 mo · $18 left`). `/api/v1/credits` requires a **management**
-  key, not the ordinary inference key pi's `auth.json` normally holds —
-  OpenRouter's API returns 403 ("Only management keys can perform this
-  operation") for an inference key, so on a typical setup this call is
-  refused and `balance` is simply omitted; a malformed or non-object
-  response degrades the same way. Either way `spend`/`monthly`/`windows`
-  (from `/api/v1/key`) are unaffected — a refused/broken `/credits` call
-  never aborts the cache write, same "failed fetch leaves the previous
-  figure alone" invariant as every other failure mode here.
+  credits are USD-denominated 1:1. When the key carries a cap and
+  `limit_remaining` is non-null, the same `/api/v1/key` call also writes
+  `spend.remaining_usd` (`limit_remaining` verbatim, same credits unit, no
+  conversion) and `spend.remaining_label` (reusing the `limit_reset`→
+  day/wk/mo/cap mapping `monthly.label` already uses); the renderer shows
+  this as its own `$<amt> left` clause (dropping `/<label>` when the label
+  is `cap`, since a lifetime cap needs no reset-period annotation), joined
+  onto the spend clause with ` · ` (e.g. `$5.00/$20 mo · $18 left`).
+
+  The "remaining credit" figure follows a 3-tier precedence, mutually
+  exclusive by construction (pi's script writes at most one of
+  `spend.remaining_usd` / `balance`, never both): (1) the key has a cap and
+  `limit_remaining` is known → `spend.remaining_usd`/`remaining_label` as
+  above; (2) no cap, but a **management** key is configured → the account's
+  remaining prepaid balance via `GET /api/v1/credits`
+  (`total_credits - total_usage`), written as a top-level `balance.usd_remaining`
+  sibling of `spend` and rendered as its own distinct `$<amt> acct left`
+  clause, so it's never confused with the per-key figure; (3) neither →
+  `spend` renders alone, no "left" clause at all. `/api/v1/credits` requires
+  a **management** key — OpenRouter's API returns 403 ("Only management keys
+  can perform this operation") for pi's ordinary inference key, so pi's own
+  `auth.json` token is never used for this call. The management key is
+  resolved from `$OG_OPENROUTER_MGMT_KEY_FILE` (default
+  `$XDG_CONFIG_HOME/tmux-og/openrouter-mgmt-key` — the same path
+  `programs.tmux-og.agentUsage.openrouterManagementKeyFile` symlinks to via
+  `mkOutOfStoreSymlink`, never copying the secret into the Nix store) or,
+  failing that, the `$OPENROUTER_MANAGEMENT_KEY` env var; it is never logged
+  or printed. A missing/unreadable file, unset env, a refused `/credits`
+  call, or a malformed/non-object response all degrade silently to tier 3 —
+  `balance` is simply omitted, and `spend`/`monthly`/`windows` (from
+  `/api/v1/key`) are unaffected either way, same "failed fetch leaves the
+  previous figure alone" invariant as every other failure mode here.
   The segment also appends `spend.label` (e.g. `mo`) as a trailing suffix
   — `$1.20 mo` rather than a bare `$1.20` — for every agent **except
   cursor**, whose pre-existing render (`$12/$7.50`) is pinned

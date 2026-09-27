@@ -109,6 +109,18 @@ func TestSanitizeUsage(t *testing.T) {
 		},
 		{name: "an invalid spend label drops the agent", v: `pi |{"pi":{"windows":[],"spend":{"label":"#(evil)","usd":3}}}`, absent: []string{"#", "evil"}},
 		{
+			name: "remaining credit is carried",
+			v:    `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":18.4,"remaining_label":"day"}}}`,
+			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 0, RemainingUSD: usd(18.4), RemainingLabel: "day"}}},
+		},
+		{
+			name: "a negative remaining_usd is carried",
+			v:    `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":-3.5}}}`,
+			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 0, RemainingUSD: usd(-3.5)}}},
+		},
+		{name: "an out-of-range remaining_usd drops the agent", v: `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":2e7}}}`},
+		{name: "an invalid remaining_label drops the agent", v: `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":1,"remaining_label":"#(evil)"}}}`, absent: []string{"#", "evil"}},
+		{
 			name: "balance is carried",
 			v:    `pi |{"pi":{"windows":[],"balance":{"usd_remaining":18.4}}}`,
 			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Balance: &usageBalance{USDRemaining: 18.4}}},
