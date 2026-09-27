@@ -56,28 +56,39 @@ path, which every caller already handles.
   reconnect.** `reattach` is involuntary: it runs off a connection drop,
   closes the dead one *before* it dials, sets `@bridge_state disconnected`
   for the outage, and — since #729 — parks rather than tearing the mirror
-  down when it cannot re-dial (below); only a stop, a mismatched or malformed
-  identity, or a `repair()` that empties the registry still runs
-  `kill-session`. `replaceConn` (#574) is voluntary: it runs off the
-  `prefix + I` carousel gesture wanting a fresher termname, dials, verifies
-  and primes the new client *before* touching the old one, never sets the
-  disconnected badge (the mirror is never actually down), and — unlike
-  `reattach` — abandons the attempt with the old connection still live and
-  published rather than risk the mirror over a nicety.
+  down when it cannot re-dial (below). Its endings (#817): a stop, a
+  malformed identity, an emptied registry, or a declined park still run plain
+  teardown (`kill-session`); an identity **mismatch** now **re-opens** a
+  fresh mirror onto the new server instead of ending the old one (below); a
+  **refused** attach that is still refused at the end of its restore window
+  ends in a **tombstone** (below). `replaceConn` (#574) is voluntary: it runs
+  off the `prefix + I` carousel gesture wanting a fresher termname, dials,
+  verifies and primes the new client *before* touching the old one, never
+  sets the disconnected badge (the mirror is never actually down), and —
+  unlike `reattach` — abandons the attempt with the old connection still live
+  and published rather than risk the mirror over a nicety; its mismatch
+  handling is unchanged, still abandoning rather than re-opening.
 - **Only a bare EOF is a drop.** `%exit` is the remote deliberately ending the
   client and is terminal, as is an emptied registry and a raised stop.
   Measured: `detach-client` and `kill-server` both make the control client see
   `%exit`; only killing the transport process gives the bare EOF. That is why
   the offline reconnect tests SIGKILL the transport child rather than
   detaching it — a test built on `detach-client` asserts teardown and fails a
-  correct daemon. The park tests (#729, `outage_start`) additionally make the
-  outage itself by moving the SRC session's socket aside rather than killing
-  its server (a dial then fails with ENOENT); moving it back restores the *same* server pid, so the identity
-  check a re-dial runs still matches, and anything the test needs to write to
-  SRC during the outage goes through `tmux -S <moved-path>` rather than the
-  now-absent live path. An exhausted retry budget is no longer terminal on its
-  own (#729): it parks instead (below), and only reaches teardown if the park
-  wait itself answers false — `Shutdown` or the local mirror session gone.
+  correct daemon. The park tests (#729, `outage_start`) additionally move the
+  SRC session's socket aside — **not** because that makes a dial fail: an
+  `attach-session` carries `CMD_STARTSERVER`, so tmux starts a fresh server on
+  the vacated path and answers `no sessions`, which is a *refused* attach, not
+  a drop (#817). The socket move is kept only so a write the test needs to
+  make to SRC during the outage goes through `tmux -S <moved-path>` rather
+  than the now-absent live path, and so moving it back restores the *same*
+  server pid the identity check compares against. To model an actual outage
+  — no control output at all, the production network-loss shape — the park
+  cases also set `OG_DAEMON_TEST_OUTAGE_FILE` (`--test-outage-file`,
+  test-local only): while that file exists the test-local dial runs `false`
+  instead of `tmux -C attach-session`. An exhausted retry budget is no longer
+  terminal on its own (#729): it parks instead (below), and only reaches
+  teardown if the park wait itself answers false — `Shutdown` or the local
+  mirror session gone.
 - **The local mirror session is another ending** (#680). A session that is gone
   is none of the above — the registry's window ids are remote and all still
   there, and the control connection is healthy — so the orphan kept its control
@@ -103,12 +114,49 @@ path, which every caller already handles.
   `newSessionPin`, so there is one authority for "which session are we on").
   `pid` + `session_id` are required and compared always; `start_time` is
   optional both ways, because tmux renders an unknown format as an empty field
-  and the remote may predate it. A reply that arrives and mismatches or is
-  malformed tears the mirror down — reconnecting into a rebooted server would
-  mirror another machine's output into panes the user believes are their
-  shells. A read that *EOFs* is a different thing: another drop, so it retries.
-  The first attach records and never tears down; if it cannot, reconnect is
-  disabled and the daemon stays single-shot.
+  and the remote may predate it. A read that *EOFs* is a different thing:
+  another drop, so it retries. The first attach records and never tears down;
+  if it cannot, reconnect is disabled and the daemon stays single-shot.
+  A **refused** attach is a verdict too (#817): the first reply block on a
+  fresh control connection is the reply to the transport's own
+  `attach-session` (flags 0, since this control client never sent it), and an
+  unflagged `%error` there (`can't find session: X`, `no sessions`) means the
+  remote answered and the pinned session is not on the server that did.
+  `attachWatch` records it on the unverified round-trip (`readReplyRouting`
+  would otherwise drop it as a block nobody waits for), and `attachRefusal`
+  drains the rest of the connection through the same recorder under a fresh
+  deadline, because the tmux client has often already exited before
+  `readIdentity` writes to it (EPIPE, nothing ever read). Before #817 this
+  read as just another EOF, so a remote whose tmux server restarted without
+  the pinned session parked forever. A refusal opens one bounded **restore
+  window** (`RestoreBackoff`, 60s): with tmux-remux `restoreMode = auto` a
+  restarted server restores its sessions moments after it starts, so the
+  window catches that; with `restoreMode = off` (the default) nothing brings
+  the session back and the window only delays the ending by a minute.
+  A reply that arrives malformed tears the mirror down; one that arrives and
+  **mismatches** tears the *old* mirror down and `Run` **re-opens** a
+  fresh one onto the new server — `runMirror` again, the same first-open code
+  path, in the same local session (reset to one `sleep` placeholder window;
+  every old window is killed by id before the new connection exists; the
+  pidfile is kept so `og-remote-detach` still SIGTERMs this daemon) — so the
+  new server's output never reaches the old panes, registry or renderers. The
+  second dial is deliberate: reusing the connection that answered the
+  mismatch would hand a verified-foreign stream to a half-built mirror. The
+  reopened mirror's "fresh server" notice waits for the first viewer (the
+  park's own focus edge, plus a 15s recheck backstop) rather than firing into
+  an empty session. A refusal still standing at the end of the restore window
+  ends in a **tombstone**: `host-sess` is reset to one `sh` window explaining
+  the session is gone, `remain-on-exit off` (so Enter closes it),
+  `@bridge_sock`/`@bridge_state` unset (nothing answers, nothing is dialling)
+  while `@bridge_host`/`@bridge_session` are kept, so `og-remote-open`'s pair
+  lookup still recognises the session and replaces it on the next open; the
+  daemon exits. Both the placeholder and the tombstone window carry no
+  `@bridge_win`, so local scripts treat them as ordinary windows, and a
+  tmux-remux save can resurrect a tombstone after a local restart —
+  `og-remote-open` already discards that as a ghost on the next open. One
+  narrow race: a direct `og-remote-open` for the same host/session pair
+  during the rebuild's one dial can find a live pidfile but no socket yet,
+  and recreates the session out from under the rebuild.
 - **Repair order is load-bearing and every error in it is silent**: reset the
   converger wholesale (it caches what *this* client told the remote, and
   `watchResize` records before it sends, so a resize during the outage left it
@@ -142,16 +190,20 @@ path, which every caller already handles.
   only stop the handle it can see. The shippers' own rows survive a reattach
   untouched; what does not is the subscription, which is why repair re-sends it.
 - **`@bridge_state`** is a session option the daemon alone writes:
-  `disconnected` while a retry cycle is running — the initial drop or a wake —
-  `parked` once that cycle's schedule is exhausted and the daemon is waiting on
-  the user instead of dialing (#729), unset otherwise. Stamped before the
-  first dial so the badge appears within a status tick, cleared only after the
-  reseed — a stale screen the user knows is stale is a paused mirror; one they
-  don't is a lie. `tmux-statusline` still renders `disconnected` in red beside
-  `@bridge_host`; `parked` renders in the theme's overlay colour as "offline —
-  press a key" so it reads as a waiting state rather than an error in
-  progress, and a wake re-stamps `disconnected` for its own cycle before the
-  next park (or a live connection) overwrites it.
+  `disconnected` while a retry cycle is running — the initial drop, a wake, or
+  the restore window a refusal opens (#817) — `parked` once that cycle's
+  schedule is exhausted and the daemon is waiting on the user instead of
+  dialing (#729), unset otherwise. Stamped before the first dial so the badge
+  appears within a status tick, cleared only after the reseed — a stale
+  screen the user knows is stale is a paused mirror; one they don't is a lie.
+  `tmux-statusline` still renders `disconnected` in red beside `@bridge_host`;
+  `parked` renders in the theme's overlay colour as "offline — press a key" so
+  it reads as a waiting state rather than an error in progress, and a wake
+  re-stamps `disconnected` for its own cycle before the next park (or a live
+  connection) overwrites it. A parked mirror's own probe (#817) is the one
+  exception: it leaves `parked` up rather than round-tripping through
+  `disconnected`, so a background probe that finds nothing does not flicker
+  the badge.
 - **Budget exhaustion parks the mirror instead of tearing it down** (#729).
   `reattach` is a loop of `attemptCycle`s on a shared dial/verify/repair body;
   on `cycleExhausted` it calls `park`, which stamps `@bridge_state parked`,
@@ -178,22 +230,37 @@ path, which every caller already handles.
   the resize-nudge file's mtime the existing session hooks already touch, and
   only the false→true transition on "is any local client's `client_session`
   this mirror" wakes it — a user already looking at it when it parks is not
-  re-woken by reflow's own touches of that file), `cfg.Shutdown`, and the
+  re-woken by reflow's own touches of that file), a probe ticker (#817,
+  `parkProbeInterval`, 2 minutes — see below), `cfg.Shutdown`, and the
   session-lifetime `loopTick`'s `sessionGoneTracker` observation (#680) —
   parked is unbounded and `runConn`'s own tick is not running, so the
-  local-session-gone probe has to run here too. A wake restamps
-  `disconnected` and retries on a short `WakeBackoff` (500ms/5s ceiling/30s
-  budget/10 attempts) rather than the full retry schedule; exhausting that
-  re-parks, uncapped, since each cycle is user-triggered. Only `Shutdown` or
-  the session going away make `park` answer false and fall through to the
-  same teardown exhaustion ran unconditionally before #729 — every other
-  ending (mismatched/malformed identity, a `repair()` that empties the
-  registry) is still reached from inside the next dial, never from parking
-  itself. `cmd/daemon` exposes `--retry-max-elapsed`/`--wake-max-elapsed`
-  (env `OG_DAEMON_RETRY_MAX_ELAPSED`/`OG_DAEMON_WAKE_MAX_ELAPSED`) purely so
-  the bats suite can exhaust either budget in seconds instead of the
-  production 10 minutes / 30s; those tests drive the outage itself by
-  SIGKILLing the transport and moving SRC's socket aside (above).
+  local-session-gone probe has to run here too. `park` returns one of three
+  `parkVerdict`s rather than a bool (#817): `parkWoken` for a keypress or
+  focus edge, which restamps `disconnected` and retries on a short
+  `WakeBackoff` (500ms/5s ceiling/30s budget/10 attempts) rather than the full
+  retry schedule — exhausting that re-parks, uncapped, since each cycle is
+  user-triggered; `parkProbe` for the probe ticker firing, which runs one
+  silent single-attempt cycle on `probeBackoff` (`MaxAttempts 1`, no delay) —
+  an offline host fails that ssh at once, a black-holed one costs at most one
+  ssh process for the identity deadline; keys pressed while that probe's dial
+  is in flight are dropped, since the waker is disarmed for the duration; and
+  `parkStop` for `Shutdown` or the session going away, which is the only
+  verdict that still falls through to the same teardown exhaustion ran
+  unconditionally before #729 — every other ending (a mismatch that re-opens,
+  malformed identity, a `repair()` that empties the registry, a refusal that
+  outlasts the restore window) is still reached from inside the next dial,
+  never from parking itself. A re-park straight after a failed probe skips
+  both the re-dim and the log line — the windows are still dimmed and the
+  badge still `parked` from before the probe — tracked by `afterProbe`, a
+  flag consumed at park entry and cleared by the attach loop once a probe
+  actually reconnects. `cmd/daemon` exposes `--retry-max-elapsed`/
+  `--wake-max-elapsed`/`--restore-max-elapsed`/`--park-probe-interval` (env
+  `OG_DAEMON_RETRY_MAX_ELAPSED`/`OG_DAEMON_WAKE_MAX_ELAPSED`/
+  `OG_DAEMON_RESTORE_MAX_ELAPSED`/`OG_DAEMON_PARK_PROBE_INTERVAL`) purely so
+  the bats suite can exhaust any of those budgets, or the probe cadence, in
+  seconds instead of the production 10 minutes / 30s / 60s / 2 minutes; those
+  tests drive the outage itself by SIGKILLing the transport and moving SRC's
+  socket aside, now alongside `OG_DAEMON_TEST_OUTAGE_FILE` (above).
 - **The `ControlMaster` path is per-dial, not pid-derived-and-fixed** (#574),
   owned by the `child` that dialled it rather than captured in a closure: the
   graphics fetcher and the paste upload both read it through
