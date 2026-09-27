@@ -2115,3 +2115,32 @@ func TestKillForgetSurvivesLateRemoteMsg(t *testing.T) {
 		t.Errorf("late probe's cache write survived: %v", c.Sessions)
 	}
 }
+
+// A 1s refresh's collectBridgeMirrors snapshot is taken off-thread; if a
+// kill's daemon teardown lands during that capture, the stale refreshMsg can
+// re-add the killed session's (mirrored) row. It must not (#754).
+func TestRefreshForgetsKilledMirror(t *testing.T) {
+	killed := bridgeMirror{host: "lab", sess: "mono", target: "lab-mono"}
+	alive := bridgeMirror{host: "lab", sess: "other", target: "lab-other"}
+	deadRow := killRemoteRow("lab", "mono")
+	localRow := listItem{target: "local", session: "local"}
+	m := tuiModel{
+		width:       120,
+		remoteItems: []listItem{deadRow},
+		mirrors:     []bridgeMirror{killed},
+		forgotten:   map[string]bool{forgottenRemoteKey("lab", "mono"): true},
+	}
+	m = m.recombine().withFilter()
+
+	next, _ := m.Update(refreshMsg{
+		items:   []listItem{localRow, deadRow},
+		mirrors: []bridgeMirror{killed, alive},
+	})
+	mm := next.(tuiModel)
+	if len(mm.mirrors) != 1 || mm.mirrors[0].sess != "other" {
+		t.Errorf("refreshMsg revived a killed mirror: %+v", mm.mirrors)
+	}
+	if len(mm.sessionItems) != 1 || mm.sessionItems[0].target != "local" {
+		t.Errorf("refreshMsg revived a killed remote row: %+v", mm.sessionItems)
+	}
+}
