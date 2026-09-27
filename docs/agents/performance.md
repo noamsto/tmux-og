@@ -119,16 +119,16 @@ one. `scripts.md` has the stamp rules. The signature is not
 
 Measured with the harness: two rounds per build, 400 samples each.
 "Before" is `main` 2fb6833, which carries #760's `window-layout-changed`
-grid hook, so three forks per window per event. Halo's live config predates
+grid hook, so three forks per window per event. "After" is this change as shipped. Halo's live config predates
 #760 and runs two. Ranges cover both rounds; times are ms.
 
 | Scenario | Before p50 | Before p95 | Before p99 | Before max | After p50 | After p95 | After p99 | After max |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| quiet | 0.7 | 1.5–1.6 | 3.7–4.9 | 4.2–7.1 | 0.5–0.6 | 1.4–1.5 | 3.7–4.5 | 4.9–5.0 |
-| busy | 0.4–0.5 | 5.8–6.0 | 12.4–12.7 | **871–978** | 0.5 | 5.5–5.9 | 7.3–10.1 | 105–146 |
-| churn (window add/remove) | — | — | — | aborted | 0.6 | 12.5–15.2 | 47.5–50.1 | 154–156 |
-| attach (fresh mirror) | 0.4 | 10.1–14.3 | 56–72 | 285–316 | 0.4–0.5 | 5.2–6.5 | 41–43 | 92–95 |
-| reattach (terminal onto existing mirror) | 0.5 | 16.7–19.7 | **1243–1345** | **1448–1534** | 0.4–0.5 | 11.3–11.6 | 140–168 | 224–228 |
+| quiet | 0.7 | 1.5–1.6 | 3.7–4.9 | 4.2–7.1 | 0.5–0.9 | 1.2–1.4 | 3.2–3.4 | 4.2–5.0 |
+| busy | 0.4–0.5 | 5.8–6.0 | 12.4–12.7 | **871–978** | 0.4–0.5 | 5.5–5.9 | 10.5–12.5 | 167–207 |
+| churn (window add/remove) | — | — | — | aborted | 0.7–1.0 | 12.9–14.3 | 40.5–41.5 | 68–170 |
+| attach (fresh mirror) | 0.4 | 10.1–14.3 | 56–72 | 285–316 | 0.4 | 6.4–6.6 | 32.9–40.0 | 94–105 |
+| reattach (terminal onto existing mirror) | 0.5 | 16.7–19.7 | **1243–1345** | **1448–1534** | 0.4 | 11.9–14.2 | 116–164 | 214–237 |
 
 **Churn before the fix.** In both rounds the probe aborted after three
 consecutive 5 s timeouts, having recorded stalls of 1.0–1.2 s. The daemon
@@ -137,7 +137,7 @@ frame(s) (pane is gone)`, so echoes stopped arriving at all. After the fix
 neither round aborted.
 
 **Attach.** The whole 12-window mirror fills in 1.6 s before the fix and
-1.1 s after.
+1.0–1.1 s after.
 
 **Forked refit jobs** (`VLOG=1`, one run, whole chain lifetime including
 setup):
@@ -145,7 +145,7 @@ setup):
 | Scenario | Before | After |
 | --- | --- | --- |
 | busy | 2 071 | 188 |
-| reattach | 6 427 | 652 |
+| reattach | 6 427 | 429 |
 
 **What the "after" residual is.** A *real* resize, such as a client of
 another size attaching, still refits every grid and stamped float, as it
