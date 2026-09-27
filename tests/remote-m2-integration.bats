@@ -4053,6 +4053,172 @@ attach_pty_client() {
 	[ -n "$dst_float" ]
 }
 
+# mirror_of_remote prints the DST pane id whose @bridge_pane carries remote
+# pane $1, or nothing while the renderer hasn't stamped it yet — callers poll.
+mirror_of_remote() {
+	$DST list-panes -s -t host-sess -F '#{pane_id} #{@bridge_pane}' | awk -v r="$1" '$2 == r { print $1; exit }'
+}
+
+# #748: server_client_handle_dead_key dismisses a dead remain-on-exit=key
+# (or failed-key) pane on any key that isn't a mouse report, a focus report,
+# or bracketed paste. pumpInput's guard sends the same kill-pane to the
+# REMOTE before it forwards the key, so the mirror's key dismisses the
+# remote pane, not just the local corpse.
+@test "a dead remote key-pane is dismissed by a key in its mirror (#748)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	dead="$($SRC split-window -d -k -P -F '#{pane_id}' -t rem true)"
+	for _ in $(seq 1 60); do
+		[ "$($SRC display-message -p -t "$dead" -F '#{pane_dead}')" = 1 ] && break
+		sleep 0.15
+	done
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 2 deadkey1
+
+	mirror=""
+	for _ in $(seq 1 60); do
+		mirror="$(mirror_of_remote "$dead")"
+		[ -n "$mirror" ] && break
+		sleep 0.15
+	done
+	[ -n "$mirror" ]
+
+	# Re-pressed each round: a key sent before the mirror pane's renderer is
+	# wired is lost, so keep pressing until the guard's kill-pane lands.
+	src_n="" dst_n=""
+	for _ in $(seq 1 60); do
+		$DST send-keys -t "$mirror" q 2>/dev/null || true
+		src_n="$($SRC list-panes -t rem -F '#{pane_id}' | wc -l)"
+		dst_n="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+		[ "$src_n" -eq 1 ] && [ "$dst_n" -eq 1 ] && break
+		sleep 0.15
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$src_n" -eq 1 ]
+	[ "$dst_n" -eq 1 ]
+}
+
+# #748: the same dismissal for a float — server_client_handle_dead_key makes
+# no floating/tiled distinction, and bridge_up's own @bridge_pane count spans
+# floats too, so the float is created only after bridge_up settles (like the
+# #738 float tests above), or bridge_up would wait for a pane it never gets.
+@test "a dead remote key-float is dismissed by a key in its mirror (#748)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 deadkey2
+
+	dead="$($SRC new-pane -d -k -P -F '#{pane_id}' -t rem -x 30 -y 8 -X 5 -Y 5 true)"
+
+	mirror="" src_dead=""
+	for _ in $(seq 1 60); do
+		mirror="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		src_dead="$($SRC display-message -p -t "$dead" -F '#{pane_dead}')"
+		[ -n "$mirror" ] && [ "$src_dead" = 1 ] && break
+		sleep 0.15
+	done
+	[ -n "$mirror" ]
+	[ "$src_dead" = 1 ]
+
+	# Re-pressed each round, same reason as the tiled case above.
+	src_float="" dst_float=""
+	for _ in $(seq 1 60); do
+		$DST send-keys -t "$mirror" q 2>/dev/null || true
+		src_float="$($SRC list-panes -t rem -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		dst_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		[ -z "$src_float" ] && [ -z "$dst_float" ] && break
+		sleep 0.15
+	done
+	src_n="$($SRC list-panes -t rem -F '#{pane_id}' | wc -l)"
+	dst_n="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -z "$src_float" ]
+	[ -z "$dst_float" ]
+	[ "$src_n" -eq 1 ]
+	[ "$dst_n" -eq 1 ]
+}
+
+# #748: remain-on-exit=on is the case server_client_handle_dead_key never
+# dismisses on a plain key — only `prefix + x` / ctl kill-pane does. This
+# pins that a live pane still gets ordinary input, that a dead `on` pane
+# (tiled and floating) ignores the same key, and that the explicit kill-pane
+# gesture still closes both.
+@test "a key leaves a live pane and a dead remain-on-exit-on pane alone (#748)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC set -w -t rem remain-on-exit on
+	on="$($SRC split-window -d -P -F '#{pane_id}' -t rem true)"
+	for _ in $(seq 1 60); do
+		[ "$($SRC display-message -p -t "$on" -F '#{pane_dead}')" = 1 ] && break
+		sleep 0.15
+	done
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 2 deadkey3
+
+	on_mirror=""
+	for _ in $(seq 1 60); do
+		on_mirror="$(mirror_of_remote "$on")"
+		[ -n "$on_mirror" ] && break
+		sleep 0.15
+	done
+	[ -n "$on_mirror" ]
+
+	for _ in $(seq 1 20); do
+		$DST send-keys -t host-sess:1.0 -l zq748
+		$DST send-keys -t "$on_mirror" x 2>/dev/null || true
+		sleep 0.15
+	done
+
+	base_out="$($DST capture-pane -p -t host-sess:1.0)"
+	src_n="$($SRC list-panes -t rem -F '#{pane_id}' | wc -l)"
+
+	[[ $base_out == *zq748* ]]
+	[ "$src_n" -eq 2 ]
+
+	# A dead `on` float, inherited from the window, behaves the same way.
+	onf="$($SRC new-pane -d -P -F '#{pane_id}' -t rem -x 30 -y 8 -X 5 -Y 5 true)"
+	onf_mirror="" onf_dead=""
+	for _ in $(seq 1 60); do
+		onf_mirror="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+		onf_dead="$($SRC display-message -p -t "$onf" -F '#{pane_dead}')"
+		[ -n "$onf_mirror" ] && [ "$onf_dead" = 1 ] && break
+		sleep 0.15
+	done
+	[ -n "$onf_mirror" ]
+	[ "$onf_dead" = 1 ]
+
+	for _ in $(seq 1 20); do
+		$DST send-keys -t "$onf_mirror" x 2>/dev/null || true
+		sleep 0.15
+	done
+	onf_float="$($DST list-panes -t host-sess:1 -f '#{pane_floating_flag}' -F '#{pane_id}')"
+	[ -n "$onf_float" ]
+
+	# What `prefix + x` runs: the explicit kill-pane gesture, for a tiled
+	# `on` pane and a floating one.
+	run "$CTL" --sock "$sock" kill-pane "$on"
+	[ "$status" -eq 0 ]
+	run "$CTL" --sock "$sock" kill-pane "$onf"
+	[ "$status" -eq 0 ]
+
+	src_n="" dst_n=""
+	for _ in $(seq 1 60); do
+		src_n="$($SRC list-panes -t rem -F '#{pane_id}' | wc -l)"
+		dst_n="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+		[ "$src_n" -eq 1 ] && [ "$dst_n" -eq 1 ] && break
+		sleep 0.15
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$src_n" -eq 1 ]
+	[ "$dst_n" -eq 1 ]
+}
+
 # #738: the argv fzf >= 0.74 sends for `--tmux` — new-pane from inside the
 # remote pane, into a window with a tiled split the pane diff must leave alone.
 @test "a float a remote shell opens from inside its own pane mirrors (#738)" {
