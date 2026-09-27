@@ -269,18 +269,10 @@ func floatLookup(tool string) string {
 	return fmt.Sprintf("#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}", tool)
 }
 
-// floatGeomCommand builds the remote command a border drag on a mirror float
-// sends. c is the LOCAL float's inner box (pane_* equals the layout cell,
-// already clamped by clampInner), but -X/-Y/-x/-y speak the remote float's
-// OUTER box, whose inset depends on that float's OWN border —
-// window_pane_get_pane_lines reads pane-border-lines from the pane's own
-// options, exactly what #{pane-border-lines} evaluates to on the target — so
-// the branch is chosen remote-side rather than assumed from the local float's
-// style. The resize is floatResizeCmd, which compensates resize-pane -y's
-// pane-border-status bump against the position the float has when the resize
-// runs, so the box is exact whichever row the move lands on. The
-// pane_floating_flag guard means a remote pane re-tiled while the drag was in
-// flight is left alone rather than resized as though it were still floating.
+// floatGeomCommand puts remote float pane on inner box c. -X/-Y/-x/-y speak
+// the outer box, whose inset is the remote float's own border (tmux reads a
+// float's pane-border-lines from its pane options), so the inset is chosen
+// remote-side. A pane re-tiled since the drag began is left alone.
 func floatGeomCommand(pane string, c controlmode.PaneCell) string {
 	none := fmt.Sprintf("move-pane -t %s -X %d -Y %d ; %s",
 		pane, c.X, c.Y, floatResizeCmd(pane, c.W, c.H))
@@ -539,26 +531,15 @@ var verbs = map[string]verb{
 			pane, tmuxQuote(loop), tmuxQuote(focus), tmuxQuote(create))
 		return []string{cmd}, nil
 	}},
-	// A mirror float's border drag ends locally, so the daemon has only the
-	// LOCAL float's inner box (pane_* == its layout cell) and the local
-	// window's size — the remote window is the same size, since the daemon
-	// keeps the remote client converged to it. The verb clamps that box with
-	// clampInner, the reconcile's own placement rule. The reconcile only moves
-	// the local float when the REMOTE float changes, so when the clamp moved
-	// the box, buildLocal puts the local float on the clamped box itself: a
-	// float flush against an edge and dragged past it changes nothing
-	// remotely and would otherwise stay where the drag left it. See
-	// floatGeomCommand for why the remote command branches on the target
-	// float's own border and how its resize stays exact.
-	//
-	// Bounds: w/h are at least 1 and at most 4 digits; winW/winH are at least
-	// 3, the smallest window a bordered box fits in; x/y range negative,
-	// because a float dragged partly off screen reports a negative
-	// pane_left/pane_top (measured -5).
-	//
-	// No windows/moves/reseed/needsView/probe: this only reshapes an existing
-	// float and does not touch which pane is active (floatGeomCommand's doc),
-	// open new panes, or need the drag's own reply read back.
+	// A mirror float's border drag, routed from the local float's inner box
+	// and window size (the remote window is converged to the same size). The
+	// box is clamped with the reconcile's own rule. The reconcile moves the
+	// local float only when the REMOTE float changes, so when the clamp moved
+	// the box, buildLocal puts the local float there itself: a flush float
+	// dragged past its edge is a remote no-op and would stay off screen.
+	// x/y may be negative: a float dragged partly off screen reports a
+	// negative pane_left (measured -5). Not `moves`: remote move-pane and
+	// resize-pane keep the active pane.
 	"float-geom": {args: 7, layout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
 		g, err := parseFloatGeom(a)
 		if err != nil {

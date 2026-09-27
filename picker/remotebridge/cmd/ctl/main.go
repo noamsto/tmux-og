@@ -44,26 +44,14 @@ var runTmuxOut = func(args ...string) (string, error) {
 	return string(out), err
 }
 
-// panePattern matches a tmux pane id, never a shell metacharacter — the arg
-// reaches a local `tmux display-message -t <arg>`, so it is validated before
-// that command is ever built.
 var panePattern = regexp.MustCompile(`^%[0-9]+$`)
 
-// floatDragFormat asks the local pane, by id, for the remote float it
-// mirrors and its current geometry, `|`-delimited per this repo's tmux -F
-// convention.
 const floatDragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}"
 
-// resolveFloatDrag turns the local pane id a drag-end bind stashed into the
-// "float-geom" ctl request the daemon understands.
-//
-// Why ctl resolves the float itself, rather than the binding targeting it
-// directly: a tmux target is not format-expanded (cmd_find_target never
-// calls format_*), so a binding can't `run-shell -t '#{@og_bridge_drag}'` to
-// retarget onto the float. And the binding's own format context is the mouse
-// release target — wherever the button came up, which may be another pane or
-// the status line — not the float being dragged. So the drag-end binding
-// only hands over the stashed local pane id, and ctl looks the float up here.
+// resolveFloatDrag turns the local float id a drag-end bind stashed into a
+// float-geom request. The bind cannot expand the float's geometry itself:
+// its format context is wherever the button was released, and a
+// `-t '#{…}'` target is never format-expanded.
 func resolveFloatDrag(localPane string) ([]string, error) {
 	if !panePattern.MatchString(localPane) {
 		return nil, fmt.Errorf("float-drag: bad local pane %q", localPane)

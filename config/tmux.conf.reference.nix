@@ -351,10 +351,7 @@
     + " } "
     + menuQuote s.cmd;
 
-  # Every mouse location tmux defines (KEYC_MOUSE_STRING, tmux.h), and every
-  # combination of the three modifier bits server_client_check_mouse ORs into
-  # a mouse key, in the canonical order tmux itself prints them (key-string.c):
-  # C before M before S. 20 locations x 8 combinations = 160 keys.
+  # Same order as drags.go's dragLocations/dragModifiers.
   dragLocations = [
     "Pane"
     "Status"
@@ -382,13 +379,6 @@
   dragEndBody = "run-shell \"${bridgeCtl} float-drag #{q:@og_bridge_drag}\"";
   dragEndBindLine = mod: loc: "bind-key -N '${dragEndNote}' -T ${dragBindTable} ${mod}MouseDragEnd1${loc} ${dragEndBody}";
 
-  # tmux's own float drag installs a C mouse_drag_update callback that fires no
-  # hook until the button is released, so the drag end
-  # (MouseDragEnd1<release-location>) is the only event a key table can catch.
-  # The start bind stashes the local float's pane id in a session option and
-  # switches into dragBindTable, a one-shot table holding every possible drag
-  # end; the next key -- always the drag end -- runs ctl float-drag on the
-  # stashed pane (#797). %if-gated like menuBinds, for the same #407 reason.
   dragBinds = lib.concatStringsSep "\n" (
     ["%if \"#{==:#{version},next-3.9}\""]
     ++ map dragStartBindLine dragStock
@@ -856,8 +846,8 @@
 
     # Mirror float border drag reaches the remote (#797): the drag start stashes
     # the float's pane id and switches into a one-shot table that catches the
-    # drag end and routes it to ctl float-drag, since tmux's own float drag never
-    # fires a hook until release.
+    # drag end and routes it to ctl float-drag, since tmux's own float drag fires
+    # no hook while it runs.
     ${dragBinds}
 
     # Vim-tmux navigation (respects zoom)

@@ -59,11 +59,8 @@ func clampOffset(off, size, bound int) int {
 	return off
 }
 
-// clampInner returns the inner box (pane_* — a float's layout cell) of the
-// outer box outerFromCell derives for c inside a winW x winH window. The
-// float-geom ctl verb uses this to clamp a dragged-to cell with the same
-// rule the reconcile applies when it places the local float, so a request
-// built from it can never be snapped elsewhere by the reconcile's own clamp.
+// clampInner is c clamped into a winW x winH window by outerFromCell's rule,
+// back in the inner box: the reconcile places a local float the same way.
 func clampInner(c controlmode.PaneCell, winW, winH int) controlmode.PaneCell {
 	ow, oh, ox, oy := outerFromCell(c, winW, winH)
 	return controlmode.PaneCell{ID: c.ID, X: ox + floatInset, Y: oy + floatInset, W: ow - 2*floatInset, H: oh - 2*floatInset}

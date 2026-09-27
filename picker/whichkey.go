@@ -148,11 +148,9 @@ func listKeysRows() ([]whichKeyRow, error) {
 	return parseListKeysRows(string(out)), nil
 }
 
-// bridgeDragTable is the generator's drag-end table (#797, generator/render/drags.go):
-// 160 mouse-only `MouseDragEnd1<loc>` rows that route a mirror float's border
-// drag to the remote. No one picks a mouse-drag-end from a menu, so
-// parseListKeysRows drops them; the raw ctrl+r view (listKeysRaw) still shows
-// them, since its contract is the verbatim list-keys dump.
+// bridgeDragTable is generator/render/drags.go's drag-end table: 160
+// mouse-only rows nobody picks from a menu. The raw view (listKeysRaw) still
+// shows them, its contract being the verbatim list-keys dump.
 const bridgeDragTable = "og-bridge-drag"
 
 // parseListKeysRows turns whichKeyListFormat output into rows. Split from the
