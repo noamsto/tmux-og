@@ -404,11 +404,10 @@ func TestUsageSegmentPiAccountBalanceIgnoredWhenKeyCapPresent(t *testing.T) {
 }
 
 // TestUsageSegmentBalanceWithNilSpendRendersNothing pins the current
-// invariant: Balance is only ever rendered alongside Spend (the provider
-// script always writes spend alongside balance), so a cache with Balance set
-// but Spend nil renders no spend/balance clause at all — the agent still
-// shows its windows/monthly if any, or drops out entirely if there's nothing
-// else. This is not a bug to fix, just documented, tested behavior.
+// invariant: Balance only renders alongside Spend (the provider script
+// always writes spend alongside balance), so a cache with Balance set but
+// Spend nil renders no spend/balance clause — the agent still shows its
+// windows/monthly if any, or drops out entirely otherwise.
 func TestUsageSegmentBalanceWithNilSpendRendersNothing(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,
