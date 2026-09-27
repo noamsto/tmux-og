@@ -54,10 +54,9 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 // this control client never sent it — and an %error there is tmux refusing the
 // attach: the pinned session is not on the server that answered (#817).
 // readReplyRouting drops it as a block nobody is waiting for, leaving
-// readIdentity only the EOF behind it, which is a drop in shape, so without this
-// a remote whose tmux server restarted without the session re-dials and parks
-// forever. Only the first block counts: a later unflagged %error is a hook
-// failing on an attach that succeeded.
+// readIdentity only the EOF behind it — a drop in shape — so this record is
+// what tells a refusal from a drop. Only the first block counts: a later
+// unflagged %error is a hook failing on an attach that succeeded.
 //
 // Plain fields, no lock: it is only ever read and written on the goroutine
 // driving the unverified round-trip and then attachRefusal's drain. bind hands

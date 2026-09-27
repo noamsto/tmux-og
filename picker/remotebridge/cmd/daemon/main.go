@@ -91,11 +91,9 @@ func sshControlArgs(ctlSock, host, tmpdir, term, colorterm, termProgram, session
 	// login shell, so shell-quote the session name (may contain spaces) to keep
 	// it a single target token.
 	//
-	// "=" pins the target to an exact name: tmux otherwise resolves an
-	// unambiguous name by unique PREFIX, so an attach meant for "rem" would
-	// silently land on a sibling like "rem-sibling" instead of refusing. A
-	// reattach/re-open must never land on a prefix-sibling session — a missing
-	// exact name has to answer as a refused attach, not a wrong one (#817).
+	// "=" makes the target exact: tmux otherwise resolves a name by unique
+	// prefix, and a reattach or re-open meant for "rem" would land on
+	// "rem-sibling". A missing exact name answers as a refused attach instead.
 	return append(args, "-C", "attach-session", "-t", shellQuote("="+session))
 }
 

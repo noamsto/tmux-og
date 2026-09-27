@@ -52,7 +52,7 @@ const (
 //
 // display-message is the probe because it answers with the server pid, but it
 // has a trap: with a `$N` target that no longer exists, a client-less caller
-// gets exit 0 and EMPTY fields, not "can't find session". Only an exact
+// gets exit 0 and `<pid>|` with an empty id, not "can't find session". Only an exact
 // pid|id echo is owned. Exit 1 — "no server running", or an older tmux that
 // does error on the missing target — is tmux's definite negative; any other
 // failure is a question that could not be asked.

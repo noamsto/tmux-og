@@ -61,11 +61,7 @@ setup() {
 	# the still-live SRC server (see outage_start below). teardown() needs this
 	# set even when a test aborts before reaching outage_end.
 	src_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2src"
-	# A moved-aside src_sock isn't an outage to tmux — it starts a fresh server
-	# on the vacated path and answers attach-session with a refused-attach
-	# sequence, not silence. This marker file is the real outage lever: while
-	# it exists, --test-local's dial is told to produce no control output at
-	# all, matching production's network-loss shape.
+	# The park helpers' outage lever; see outage_start.
 	export OG_DAEMON_TEST_OUTAGE_FILE="$BATS_TEST_TMPDIR/outage"
 
 	if [[ -z ${DAEMON:-} ]]; then
