@@ -482,10 +482,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		// Read the selection before the rebuild invalidates its index.
 		keep := m.currentTarget()
-		// A 1s refresh's collectBridgeMirrors runs off-thread; if a kill's
-		// teardown lands during that capture the stale snapshot can re-add the
-		// killed session's (mirrored) row for a tick, so drop forgotten rows
-		// here too (#754).
+		// A 1s refresh's collectBridgeMirrors runs off-thread, so a kill's
+		// teardown landing during that capture can revive the (mirrored) row
+		// here; filter the stale snapshot too (#754).
 		m.sessionItems = m.filterForgottenRemoteRows(msg.items)
 		m.mirrors = m.filterForgottenMirrors(msg.mirrors)
 		m = m.recombine().withFilter()
@@ -1740,15 +1739,13 @@ func remoteKillFailure(host, sess string, err error) string {
 	}
 }
 
-// forgottenRemoteKey keys a (host, sess) pair for the forgotten set: shared by
-// the remoteMsg/refreshMsg filters and forgetRemoteRows so they cannot drift.
+// forgottenRemoteKey keys a (host, sess) pair for the forgotten set.
 func forgottenRemoteKey(host, sess string) string {
 	return host + "\x00" + sess
 }
 
 // filterForgottenRemoteRows drops Remote-section rows for sessions killed in
-// this popup and undoes the cache write a late probe may have left behind. A
-// nil/empty forgotten set is the common case, so it short-circuits (#736).
+// this popup and undoes the cache write a late probe may have left behind (#736).
 func (m tuiModel) filterForgottenRemoteRows(items []listItem) []listItem {
 	if len(m.forgotten) == 0 {
 		return items

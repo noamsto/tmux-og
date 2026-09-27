@@ -2116,9 +2116,8 @@ func TestKillForgetSurvivesLateRemoteMsg(t *testing.T) {
 	}
 }
 
-// A 1s refresh's collectBridgeMirrors snapshot is taken off-thread; if a
-// kill's daemon teardown lands during that capture, the stale refreshMsg can
-// re-add the killed session's (mirrored) row. It must not (#754).
+// A stale 1s-refresh snapshot (captured off-thread, before a kill's daemon
+// teardown) must not revive the killed session's (mirrored) row (#754).
 func TestRefreshForgetsKilledMirror(t *testing.T) {
 	killed := bridgeMirror{host: "lab", sess: "mono", target: "lab-mono"}
 	alive := bridgeMirror{host: "lab", sess: "other", target: "lab-other"}
