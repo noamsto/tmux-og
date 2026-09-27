@@ -466,3 +466,92 @@ func TestRouteWhileSkipsReadingBehindQueuedLayoutChange(t *testing.T) {
 		t.Errorf("len(lines) = %d, want 1", n)
 	}
 }
+
+// TestDrainHoldsStreamBehindUndispatchedLayoutChange pins settle's side of
+// the gate: a notice dispatched ahead of a %layout-change in the same batch
+// runs routeWhile while that layout-change still waits on the queue, so the
+// %output behind it stays unread until its reshape is dispatched.
+func TestDrainHoldsStreamBehindUndispatchedLayoutChange(t *testing.T) {
+	st := testStream()
+	router := NewRouter()
+	async := &asyncQueue{}
+	async.push(controlmode.Line{Kind: controlmode.WindowRenamed, Args: []string{"@1"}, Data: []byte("new")})
+	async.push(layoutChangeLine())
+	var sink capBuf
+	router.Register("%0", &sink)
+	lines := make(chan controlmode.Line, 4)
+	lines <- outputLine("%0", "POST")
+
+	var order []controlmode.Kind
+	within(t, 5*time.Second, func() {
+		async.drain(func(l controlmode.Line) bool {
+			order = append(order, l.Kind)
+			if l.Kind == controlmode.WindowRenamed {
+				routeWhile(lines, router, async, st, func() { time.Sleep(50 * time.Millisecond) })
+				if sink.String() != "" {
+					t.Errorf("sink = %q after the rename's dispatch, want empty: output behind an undispatched layout-change waits for its reshape", sink.String())
+				}
+				if n := len(lines); n != 1 {
+					t.Errorf("len(lines) = %d after the rename's dispatch, want 1", n)
+				}
+			}
+			return false
+		})
+	})
+	if len(order) != 2 || order[0] != controlmode.WindowRenamed || order[1] != controlmode.LayoutChange {
+		t.Errorf("dispatch order = %v, want [rename, layout-change]", order)
+	}
+	if n := len(async.lines); n != 0 {
+		t.Errorf("async queue holds %d lines after drain, want 0", n)
+	}
+}
+
+// TestDrainDefersLinesQueuedDuringDispatch pins drain's bound: a notice a
+// dispatch's own round-trips queue waits for the next drain, keeping today's
+// ordering against the reconcile intents settle runs in between.
+func TestDrainDefersLinesQueuedDuringDispatch(t *testing.T) {
+	async := &asyncQueue{}
+	async.push(controlmode.Line{Kind: controlmode.WindowAdd, Args: []string{"@1"}})
+	late := controlmode.Line{Kind: controlmode.WindowAdd, Args: []string{"@2"}}
+
+	var dispatched []string
+	async.drain(func(l controlmode.Line) bool {
+		dispatched = append(dispatched, l.Args[0])
+		if l.Args[0] == "@1" {
+			async.push(late)
+		}
+		return false
+	})
+	if len(dispatched) != 1 || dispatched[0] != "@1" {
+		t.Errorf("dispatched = %v, want [@1]", dispatched)
+	}
+	if len(async.lines) != 1 || async.lines[0].Args[0] != "@2" {
+		t.Errorf("async queue = %+v, want exactly the %%window-add @2", async.lines)
+	}
+}
+
+// TestDrainCoalescesLayoutChanges pins that drain keeps settle's coalescing:
+// of two layout-changes for one window, only the last is dispatched, in its
+// own position behind the rename.
+func TestDrainCoalescesLayoutChanges(t *testing.T) {
+	async := &asyncQueue{}
+	first := layoutChangeLine()
+	last := layoutChangeLine()
+	last.Args = []string{"@1", "c35e,100x30,0,0,0", "c35e,100x30,0,0,0", "*"}
+	async.push(first)
+	async.push(controlmode.Line{Kind: controlmode.WindowRenamed, Args: []string{"@1"}, Data: []byte("new")})
+	async.push(last)
+
+	var got []controlmode.Line
+	async.drain(func(l controlmode.Line) bool {
+		got = append(got, l)
+		return false
+	})
+	if len(got) != 2 || got[0].Kind != controlmode.WindowRenamed ||
+		got[1].Kind != controlmode.LayoutChange || got[1].Args[1] != last.Args[1] {
+		t.Errorf("dispatched = %+v, want [rename, the last layout-change]", got)
+	}
+	if n := len(async.lines); n != 0 {
+		t.Errorf("async queue holds %d lines after drain, want 0", n)
+	}
+}

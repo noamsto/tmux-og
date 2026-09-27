@@ -111,6 +111,11 @@ awaited reply:
 - it queues the notice and stops reading for the rest of the exec;
 - it reads nothing at entry while the async queue still holds one.
 
+That gate only works if every undispatched notice is still on the queue.
+`settle` therefore drains it in place (`asyncQueue.drain`): each notice
+leaves the queue only as its own dispatch starts, so a `%window-renamed`
+dispatched ahead of a `%layout-change` in the same batch cannot read past it.
+
 Round-trips inside the same operation still read past it: that is the
 existing read-first transient, not widened.
 

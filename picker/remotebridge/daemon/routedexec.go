@@ -22,7 +22,8 @@ import "github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 // A %layout-change is a stream position too: the %output behind it was drawn
 // after the remote reshape, so it must wait for settle's local select-layout.
 // Reading stops once one is queued, and doesn't start while async holds one.
-// Round-trips inside the same operation still read past it — the read-first
+// settle dispatches from the queue in place, so a %layout-change behind the
+// line being dispatched still holds the stream. Round-trips inside the same operation still read past it — the read-first
 // transient this doesn't widen.
 func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue, st *stream, fn func()) {
 	done := make(chan struct{})

@@ -1193,15 +1193,12 @@ func Run(cfg Config) error {
 	// it drains is the one this connection's reply readers fill.
 	settle := func(c *ctlConn) (done bool) {
 		for {
-			queued := c.async.take()
 			wantWindows, layouts, reseeds := cst.takeIntents()
-			if len(queued) == 0 && !wantWindows && len(layouts) == 0 && len(reseeds) == 0 {
+			if len(c.async.lines) == 0 && !wantWindows && len(layouts) == 0 && len(reseeds) == 0 {
 				return false
 			}
-			for _, q := range coalesceLayoutChanges(queued) {
-				if dispatch(q) {
-					return true
-				}
+			if c.async.drain(dispatch) {
+				return true
 			}
 			if wantWindows {
 				reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
@@ -1768,6 +1765,23 @@ func (q *asyncQueue) take() []controlmode.Line {
 	lines := q.lines
 	q.lines = nil
 	return lines
+}
+
+// drain dispatches the lines queued at entry, in order, stopping on the first
+// dispatch that reports done. Each line leaves the queue only as its own
+// dispatch starts, so a %layout-change behind it is still visible to
+// holdsLayoutChange while that dispatch runs routeWhile. Lines a dispatch
+// queues wait for the next drain.
+func (q *asyncQueue) drain(dispatch func(controlmode.Line) bool) (done bool) {
+	q.lines = coalesceLayoutChanges(q.lines)
+	for n := len(q.lines); n > 0; n-- {
+		l := q.lines[0]
+		q.lines = q.lines[1:]
+		if dispatch(l) {
+			return true
+		}
+	}
+	return false
 }
 
 // holdsLayoutChange reports whether a %layout-change is waiting for settle,
