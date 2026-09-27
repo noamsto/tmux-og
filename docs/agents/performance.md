@@ -244,6 +244,56 @@ closure: the grid path's only remaining gap is the final stamp
 residual (now narrower) window remains alongside genuine resize-driven
 refits.
 
+## Daemon window reconcile (#808)
+
+After #793, churn's remaining tail was the Go daemon. A mirrored window add
+or remove stalled keystroke echo ~40–65 ms end to end while both tmux
+servers stayed clean.
+
+**Where it went.** Temporary tracing (not shipped) stamped each `%output`
+line as the pump read it and again as `Router.Route` delivered it, and timed
+every main-loop phase and local exec. On the baseline, waits for `%0` reached
+95 ms: 21 samples over 10 ms and 14 over 15 ms in one churn run. Every long
+one sits inside `addWindow`'s two local exec runs:
+- `new-window` (23–51 ms), then five `set-option` and a `rename-window`;
+- the shaping execs `resize-window`/`select-layout`, `list-panes`, the zoom
+  `if`, `respawn-pane` and two `set-option`.
+
+Round-trips and the hello wait never stalled: they route as they read. An
+exec blocks the stream's only reader.
+
+**Fix.** Window-set operations now run their execs through `routeWhile`,
+which keeps reading the stream while the exec runs. Mechanism and scope are
+in `bridge-daemon.md`.
+
+**Before / after.** `churn`, 400 samples, run interleaved A/B under
+`systemd-run --scope -p CPUQuota=400%` on a shared 32-core host. The
+comparison is only valid within this table: the uncapped #793
+figures above are a different setup. A is `main` a9e2ceb, B is this change.
+Both use the same tmux. Times are ms; load is the 1-minute average at start.
+
+| Pair | Load A / B | A p50 | A p95 | A p99 | A max | B p50 | B p95 | B p99 | B max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 5.2 / 7.6 | 1.3 | 16.3 | 53.5 | 67.9 | 0.9 | 6.9 | **17.1** | **19.5** |
+| 2 | 7.8 / 5.9 | 1.1 | 19.3 | 58.7 | 116.1 | 0.8 | 7.7 | **14.6** | **20.5** |
+| 4 | 8.2 / 7.1 | 1.0 | 15.8 | 74.5 | 109.0 | aborted | | | |
+| 5 | 6.9 / 8.4 | 0.9 | 16.8 | 58.9 | 157.5 | 1.0 | 10.7 | **15.2** | **23.2** |
+| 6 | 7.5 / 9.5 | 0.9 | 15.6 | 67.4 | 175.9 | 0.8 | 9.8 | **15.6** | 211.3 |
+| 7 | 7.6 / 7.6 | 0.8 | 13.7 | 49.9 | 69.8 | 0.9 | 13.1 | 57.0 | 226.4 |
+
+Pair 3 aborted on both builds, and pair 4's B aborted. Every abort is the
+`%0` rebuild listed under Residuals, which `main` shares.
+
+B's p99 fell in 5 of 6 comparable pairs. Pair 7 and B's two 200 ms maxes
+are not the daemon. Two traced B runs had these probe results:
+- p99 18.2 and 18.7 ms, max 29.5 and 40.3 ms;
+- no `%0` wait over 15 ms at all (baseline: 14);
+- a worst wait of 11.7 ms, every one of them over 10 ms inside a
+  labels/agents/res flush's `set-option`.
+
+The rest of the probe's tail is spent outside the daemon's routing, in the
+tmux servers or the host.
+
 ## What did not matter (measured)
 
 | Suspect | Measured |
@@ -260,11 +310,16 @@ foreground run is deliberate ordering.
 
 ## Residuals (follow-ups)
 
-- **Daemon window reconcile**: ~40–65 ms end-to-end, once per mirrored
-  window add or remove. Both tmux servers stay clean during it (remote max
-  14 ms, local plain pane max 19 ms), so the cost is inside the Go daemon:
-  `%output` delivery waits behind reconcile work. Keystroke sends do not;
-  they go straight to the stream.
+- **Labels/agents/res flushes.** Their `set-option` execs still hold
+  `%output`, up to ~12 ms per pass (traced below). They stay on the plain
+  `Config` on purpose: they run after the pass's `settle`, and a
+  notification a routed exec queued there would wait for the next stream
+  line (`docs/agents/bridge-daemon.md`).
+- **Churn aborts on a `%0` rebuild.** The first churned window add sometimes
+  makes the daemon drop and rebuild the mirror of `%0` (`%0: dropped 1
+  output frame(s) (pane is gone)` after a failed `%24` reseed). The mirror
+  pane then has a new local id, so the probe times out and aborts. `main`
+  does it too.
 - **Fixed (#809): the Nix `tmux` wrapper's `--prefix PATH` now names one
   merged bin dir** (`wrapperBinDir` in `config/tmux.conf.nix`, a `symlinkJoin`
   of the same packages) instead of 66 separate packages. `make-wrapper.sh`'s
@@ -318,3 +373,10 @@ foreground run is deliberate ordering.
   as `select-layout`, so no delay is ever injected.
 - A new `window-*` hook that forks per event multiplies under this fan-out
   the same way. Gate it in-process, or measure it with the harness.
+- **#808's `%output` routing during window-set execs**:
+  - `tests/remote-m2-integration.bats`, "window add keeps live output flowing
+    while the local new-window is slow": a `tmux` wrapper stalls the
+    daemon's local `new-window` by 4s, and the mirror must still paint live
+    output within 2s;
+  - `routedexec_test.go` pins `routeWhile`'s ordering (park-and-stop, ordinal
+    accounting, EOF).
