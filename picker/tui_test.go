@@ -1663,9 +1663,9 @@ func TestMarkSurvivesFilterAndCachedLiveReplacement(t *testing.T) {
 	}
 }
 
-// openMarkedRemoteWith launches every marked session but the first (list
-// order) through launch — fired, not waited on — and only the first through
-// open, the one path that also decides which session the client switches to.
+// openMarkedRemote starts the first marked session (list order) as the
+// supervised attach and, once it succeeds, launches every other marked
+// session through launchDetached — fired, not waited on.
 //
 // Marked in reverse of list order ("other" before "mono") deliberately: if
 // markedRemoteItems returned marks in toggle order instead of m.allItems
@@ -1689,27 +1689,28 @@ func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
 	}
 
 	type call struct{ host, sess string }
-	var opened call
 	var launched []call
-	openCalls := 0
-	fakeOpen := func(_ map[string]string, host, sess string, _ bool) error {
-		openCalls++
-		opened = call{host, sess}
-		return nil
-	}
-	fakeLaunch := func(_ map[string]string, host, sess string, _ bool) {
+	origLaunch := launchDetached
+	launchDetached = func(_ map[string]string, host, sess string, _ bool) {
 		launched = append(launched, call{host, sess})
 	}
+	t.Cleanup(func() { launchDetached = origLaunch })
 
-	next, cmd := m.openMarkedRemoteWith(marked, fakeOpen, fakeLaunch)
+	next, cmd := m.openMarkedRemote(marked)
+	if cmd == nil {
+		t.Fatal("expected a Cmd starting the attach")
+	}
 	nm := next.(tuiModel)
+	if nm.attach == nil || nm.attach.host != marked[0].remoteHost || nm.attach.sess != marked[0].remoteSess {
+		t.Fatalf("attach = %+v, want the first marked item %+v", nm.attach, marked[0])
+	}
 
-	if openCalls != 1 {
-		t.Fatalf("open called %d times, want exactly 1", openCalls)
+	next2, cmd2 := nm.finishAttach(attachResult{outcome: attachOK})
+	if cmd2 == nil {
+		t.Error("expected tea.Quit, got nil cmd")
 	}
-	if opened != (call{marked[0].remoteHost, marked[0].remoteSess}) {
-		t.Errorf("open() got %+v, want the first marked item %+v", opened, marked[0])
-	}
+	nm2 := next2.(tuiModel)
+
 	if len(launched) != len(marked)-1 {
 		t.Fatalf("launch called %d times, want %d", len(launched), len(marked)-1)
 	}
@@ -1718,34 +1719,18 @@ func TestOpenMarkedRemoteWithLaunchesAllButFirst(t *testing.T) {
 			t.Errorf("launch()[%d] = %+v, want %+v", i, launched[i], it)
 		}
 	}
-	if len(nm.marked) != 0 {
-		t.Errorf("marks not cleared after opening: %v", nm.marked)
-	}
-	if cmd == nil {
-		t.Error("expected tea.Quit, got nil cmd")
+	if len(nm2.marked) != 0 {
+		t.Errorf("marks not cleared after opening: %v", nm2.marked)
 	}
 }
 
-// The real wiring — activateCurrent through the production openMarkedRemote,
-// not the injected fakes above — must open every marked session and ignore
-// the cursor's own row entirely once any mark exists. @remote_open_bin points
-// both openRemoteBridge and launchRemoteBridgeDetached at a fake launcher
-// that logs its argv, so this never execs the real og-remote-open or touches
-// a real tmux session (the launcher never reaches PATH, matching
-// TestOpenRemoteBridgeUsesConfiguredBin's precedent in remote_test.go).
+// The real wiring — activateCurrent through the production openMarkedRemote
+// — starts the first marked session as the supervised attach and defers the
+// rest to it, ignoring the cursor's own row entirely once any mark exists.
+// Update never forks (D4), so asserting on m.attach is enough here; the
+// returned Cmd is never run.
 func TestActivateCurrentOpensAllMarkedIgnoringCursorRow(t *testing.T) {
-	dir := t.TempDir()
-	logFile := filepath.Join(dir, "calls")
-	bin := filepath.Join(dir, "fake-open")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logFile + "\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	m := tuiModel{
-		allItems: remoteFixture(), sessionItems: remoteFixture()[:1], remoteItems: remoteFixture()[1:],
-		tmuxOpts: map[string]string{"@remote_open_bin": bin},
-	}
+	m := tuiModel{allItems: remoteFixture(), sessionItems: remoteFixture()[:1], remoteItems: remoteFixture()[1:]}
 	m = m.withFilter()
 	for _, target := range []string{"remote:lab:mono", "remote:lab:other"} {
 		m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == target })
@@ -1758,34 +1743,22 @@ func TestActivateCurrentOpensAllMarkedIgnoringCursorRow(t *testing.T) {
 
 	next, cmd := m.activateCurrent()
 	if cmd == nil {
-		t.Fatal("expected tea.Quit")
+		t.Fatal("expected a Cmd starting the attach")
 	}
 	nm, ok := next.(tuiModel)
 	if !ok {
 		t.Fatalf("activateCurrent did not return a tuiModel")
 	}
-	if len(nm.marked) != 0 {
-		t.Errorf("marks not cleared: %v", nm.marked)
+	if nm.attach == nil || nm.attach.host != "lab" || nm.attach.sess != "mono" {
+		t.Fatalf("attach = %+v, want lab/mono", nm.attach)
 	}
-
-	// The detached launch races the test goroutine; give it a moment to run
-	// the (trivial, local) fake script and flush its line.
-	deadline := time.Now().Add(2 * time.Second)
-	seen := map[string]bool{}
-	for time.Now().Before(deadline) && len(seen) < 2 {
-		b, _ := os.ReadFile(logFile)
-		seen = map[string]bool{}
-		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-			if line != "" {
-				seen[line] = true
-			}
-		}
-		if len(seen) < 2 {
-			time.Sleep(10 * time.Millisecond)
-		}
+	if len(nm.attach.rest) != 1 || nm.attach.rest[0].remoteHost != "lab" || nm.attach.rest[0].remoteSess != "other" {
+		t.Fatalf("attach.rest = %+v, want [lab/other]", nm.attach.rest)
 	}
-	if !seen["lab mono"] || !seen["lab other"] {
-		t.Fatalf("launcher invocations = %v, want both %q and %q", seen, "lab mono", "lab other")
+	// Marks stay until the attach resolves — a cancel or failure must retry
+	// all of them (D6).
+	if len(nm.marked) != 2 {
+		t.Errorf("marks cleared before the attach resolved: %v", nm.marked)
 	}
 }
 

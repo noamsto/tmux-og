@@ -6,9 +6,11 @@ import (
 	imgcolor "image/color"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"charm.land/bubbles/v2/viewport"
@@ -169,6 +171,17 @@ type tuiModel struct {
 	// set before the probe answers survives the swap. nil until the first
 	// mark.
 	marked map[string]bool
+
+	// attach is the in-flight og-remote-open supervised by beginAttach (nil
+	// = idle). While set, every key but esc/ctrl+c and every mouse event is
+	// ignored (D5) so a second concurrent attach can never start.
+	attach *attachState
+	// attachSeq mints attach ids so a stray message from a superseded attempt
+	// is recognizable and dropped.
+	attachSeq int
+	// attachSup lets runTUI cancel an in-flight attach on every exit path;
+	// set once by runTUI, read-only from the model's side.
+	attachSup *attachSupervisor
 }
 
 // --- Catppuccin palette (dark/light) ---
@@ -234,6 +247,63 @@ type wallMsg struct {
 	content map[string]string
 	bad     string
 }
+
+// attachPhaseMsg reports one progress line from an in-flight attach. A
+// message whose id doesn't match the current attach is from a superseded
+// attempt and is dropped.
+type attachPhaseMsg struct {
+	id    int
+	phase attachPhase
+}
+
+// attachDoneMsg reports an attach's final result.
+type attachDoneMsg struct {
+	id     int
+	result attachResult
+}
+
+// attachTickMsg drives the attach status line's spinner. Only re-armed while
+// an attach is in flight — Update stops requeuing it once attach goes nil.
+type attachTickMsg struct{ id int }
+
+// attachState is the model's view of one in-flight attach (D5). rest is the
+// multi-open remainder (D6): launched via launchDetached only once this
+// attach succeeds.
+type attachState struct {
+	id         int
+	run        *attachRun
+	host, sess string
+	label      string // sanitized "host/sess", host alone when sess is empty
+	phase      attachPhase
+	started    time.Time
+	phaseAt    time.Time // when phase last changed, for the elapsed-in-phase clock
+	frame      int       // spinner frame, advanced by attachTickMsg
+	cancelling bool
+	rest       []listItem
+}
+
+// waitAttachCmd blocks on r's progress/done for one event; Update re-issues it
+// after every non-final event so the run's fork and its supervision never
+// touch the Update goroutine.
+func waitAttachCmd(id int, r *attachRun) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case p := <-r.progress:
+			return attachPhaseMsg{id: id, phase: p}
+		case <-r.done:
+			return attachDoneMsg{id: id, result: r.result()}
+		}
+	}
+}
+
+const attachTickInterval = 100 * time.Millisecond
+
+func attachTickCmd(id int) tea.Cmd {
+	return tea.Tick(attachTickInterval, func(time.Time) tea.Msg { return attachTickMsg{id: id} })
+}
+
+// launchDetached is a test seam over launchRemoteBridgeDetached.
+var launchDetached = launchRemoteBridgeDetached
 
 // --- Entry point ---
 
@@ -319,9 +389,27 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 	if emitPath != "" {
 		m.emitHost = os.Getenv("OG_PICKER_HOST")
 	}
+	sup := &attachSupervisor{}
+	m.attachSup = sup
 
 	p := tea.NewProgram(m)
+	// The popup pane dying under the picker (window closed, client detached)
+	// delivers SIGHUP; bubbletea only restores the terminal on a clean Run
+	// return, so it has to become a Kill rather than the default disposition.
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	go func() {
+		if _, ok := <-sighup; ok {
+			p.Kill()
+		}
+	}()
 	final, err := p.Run()
+	signal.Stop(sighup)
+	// Every exit path — quit, SIGTERM/SIGINT, or a panic bubbletea recovered
+	// (which returns a nil model) — cancels an in-flight attach and waits for
+	// its rollback: Setsid removed the incidental protection of sharing the
+	// popup pty's session (docs/agents/picker.md, "Attach").
+	sup.stop(attachKillGrace + time.Second)
 	if err != nil {
 		return err
 	}
@@ -463,6 +551,31 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.remoteCmd()
 
+	case attachPhaseMsg:
+		if m.attach == nil || msg.id != m.attach.id {
+			return m, nil
+		}
+		next := *m.attach
+		next.phase = msg.phase
+		next.phaseAt = time.Now()
+		m.attach = &next
+		return m, waitAttachCmd(msg.id, m.attach.run)
+
+	case attachDoneMsg:
+		if m.attach == nil || msg.id != m.attach.id {
+			return m, nil
+		}
+		return m.finishAttach(msg.result)
+
+	case attachTickMsg:
+		if m.attach == nil || msg.id != m.attach.id {
+			return m, nil
+		}
+		next := *m.attach
+		next.frame++
+		m.attach = &next
+		return m, attachTickCmd(msg.id)
+
 	case previewMsg:
 		if msg.target == m.currentTarget() {
 			sameTarget := msg.target == m.previewFor
@@ -488,7 +601,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// doesn't have — a stray click there would resolve to an arbitrary row and,
 	// when it matched the cursor, switch to it and quit.
 	case tea.MouseWheelMsg:
-		if m.mode != modeList {
+		if m.mode != modeList || m.attach != nil {
 			return m, nil
 		}
 		mouse := msg.Mouse()
@@ -506,7 +619,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadPreviewCmd()
 
 	case tea.MouseClickMsg:
-		if m.mode != modeList {
+		if m.mode != modeList || m.attach != nil {
 			return m, nil
 		}
 		mouse := msg.Mouse()
@@ -559,6 +672,9 @@ func nextScope(cur hostScope, hosts []string) hostScope {
 func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.statusMsg = "" // any keypress clears a stale create-error
 	key := msg.String()
+	if m.attach != nil {
+		return m.handleAttachKey(key)
+	}
 	if len(m.killConfirm) > 0 {
 		return m.handleKillConfirm(key)
 	}
@@ -1449,11 +1565,8 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 			cmd := exec.Command(authBin, item.remoteHost)
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return remoteAuthDoneMsg{err: err} })
 		}
-		if err := openRemoteBridge(m.tmuxOpts, item.remoteHost, item.remoteSess, item.remoteRestore); err != nil {
-			m.statusMsg = err.Error()
-			return m, nil
-		}
-		return m, tea.Quit
+		cmd := m.beginAttach(item, nil)
+		return m, cmd
 	}
 	if item.createPath != "" {
 		if err := createAndSwitch(item.createName, item.createPath); err != nil {
@@ -1467,34 +1580,106 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-// openMarkedRemote opens every marked session, via the real launchers.
+// openMarkedRemote opens every marked session: the first (list order) as the
+// supervised attach — the one the client switches to — and the rest as the
+// multi-open remainder, launched detached only once that attach succeeds
+// (D6). The client switches to the first marked session in list order: not
+// the cursor row, which need not itself be marked when Enter fires.
 func (m tuiModel) openMarkedRemote(marked []listItem) (tea.Model, tea.Cmd) {
-	return m.openMarkedRemoteWith(marked, openRemoteBridge, launchRemoteBridgeDetached)
+	logEvent("picker", "event", "open_marked", "count", strconv.Itoa(len(marked)))
+	cmd := m.beginAttach(marked[0], marked[1:])
+	return m, cmd
 }
 
-// openMarkedRemoteWith does the work, with the two launchers passed in so
-// tests can record calls instead of exec'ing og-remote-open. All but the
-// first item launch via launch — fired and not waited on — so N marks cost
-// one foreground ssh probe (open's, exactly what a single Enter pays today)
-// rather than N serialized ones; the popup can quit while the rest still
-// dial. The client switches to the first marked session in list order: not
-// the cursor row, which need not itself be marked when Enter fires.
-func (m tuiModel) openMarkedRemoteWith(
-	marked []listItem,
-	open func(tmuxOpts map[string]string, host, sess string, restore bool) error,
-	launch func(tmuxOpts map[string]string, host, sess string, restore bool),
-) (tea.Model, tea.Cmd) {
-	logEvent("picker", "event", "open_marked", "count", strconv.Itoa(len(marked)))
-	for _, it := range marked[1:] {
-		launch(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
+// beginAttach only allocates an attachRun and returns the Cmds that drive it
+// (D4): the fork happens in the first Cmd's goroutine, never here, so Update
+// never blocks on og-remote-open. rest is the multi-open remainder (D6).
+func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
+	m.attachSeq++
+	id := m.attachSeq
+	label := first.remoteHost
+	if first.remoteSess != "" {
+		label += "/" + first.remoteSess
 	}
-	first := marked[0]
-	if err := open(m.tmuxOpts, first.remoteHost, first.remoteSess, first.remoteRestore); err != nil {
-		m.statusMsg = err.Error()
+	label = sanitizeStatusText(label)
+
+	run := newAttachRun(attachSpec{
+		bin:     remoteOpenBin(m.tmuxOpts),
+		host:    first.remoteHost,
+		sess:    first.remoteSess,
+		restore: first.remoteRestore,
+	})
+	m.attachSup.track(run)
+	now := time.Now()
+	m.attach = &attachState{
+		id:      id,
+		run:     run,
+		host:    first.remoteHost,
+		sess:    first.remoteSess,
+		label:   label,
+		phase:   phaseLaunch,
+		started: now,
+		phaseAt: now,
+		rest:    rest,
+	}
+	return tea.Batch(
+		func() tea.Msg { run.run(); return nil },
+		waitAttachCmd(id, run),
+		attachTickCmd(id),
+	)
+}
+
+// finishAttach lands an attach's final result (D5): success launches the
+// multi-open remainder and quits; every other outcome clears attach and
+// leaves cursor/marks alone so Enter retries.
+func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
+	rest := m.attach.rest
+	label := m.attach.label
+	m.attach = nil
+	switch res.outcome {
+	case attachOK:
+		for _, it := range rest {
+			launchDetached(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
+		}
+		m.marked = nil
+		return m, tea.Quit
+	case attachCancelled:
+		m.statusMsg = "cancelled opening " + label
+	case attachTimedOut:
+		budgetSecs := strconv.Itoa(int(res.budget / time.Second))
+		m.statusMsg = label + ": timed out " + attachPhaseLabel(res.phase) + " after " + budgetSecs + "s — enter to retry"
+	default: // attachFailed
+		m.statusMsg = label + ": " + res.msg + " — enter to retry"
+	}
+	return m, nil
+}
+
+// handleAttachKey is the whole keymap while an attach is in flight (D5):
+// every key but esc/ctrl+c is ignored, so a second concurrent attach can
+// never start. A second ctrl+c while already cancelling quits outright — the
+// launcher runs in its own session and finishes its own rollback unsupervised.
+func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		if m.attach.cancelling {
+			return m, nil
+		}
+		next := *m.attach
+		next.cancelling = true
+		m.attach = &next
+		m.attach.run.cancel()
+		return m, nil
+	case "ctrl+c":
+		if m.attach.cancelling {
+			return m, tea.Quit
+		}
+		next := *m.attach
+		next.cancelling = true
+		m.attach = &next
+		m.attach.run.cancel()
 		return m, nil
 	}
-	m.marked = nil
-	return m, tea.Quit
+	return m, nil
 }
 
 // isKillableRemoteSession reports whether item is a live session on a remote
@@ -1538,9 +1723,9 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 // killRemoteSessions runs the staged remote kills. Each row is killed on its
 // host over ssh. A host that answers "already gone" still forgets its row; an
 // unreachable host (or a refused ssh state) keeps the row and explains itself
-// in the hint line. Synchronous, like openRemoteBridge: the picker owns the
-// screen and no background result channel exists for a kill; each round trip
-// carries the same remoteProbeTimeout bound as the probe path.
+// in the hint line. Synchronous, unlike an attach: no background result
+// channel exists for a kill, so each round trip blocks Update, bounded by the
+// same remoteProbeTimeout the probe path carries.
 func (m tuiModel) killRemoteSessions(targets []listItem) (tea.Model, tea.Cmd) {
 	var forget []listItem
 	var msgs []string

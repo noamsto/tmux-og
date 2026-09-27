@@ -6,6 +6,7 @@ package main
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 )
@@ -195,6 +196,10 @@ func (m tuiModel) renderHints() string {
 	dim := lipgloss.NewStyle().Foreground(m.thmColor("@thm_surface_2", "#585b70", "#9ca0b0"))
 	key := lipgloss.NewStyle().Foreground(m.thmColor("@thm_lavender", "#b4befe", "#7287fd"))
 
+	if m.attach != nil {
+		return m.renderAttachStatus(dim, key)
+	}
+
 	if len(m.killConfirm) > 0 {
 		warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
 		prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
@@ -307,4 +312,31 @@ func (m tuiModel) renderHints() string {
 	// second line at a narrow width, and bodyHeight has reserved exactly one
 	// (renderWallHints clips for the same reason).
 	return fitVisibleWidth("  "+strings.Join(parts, "  "), m.width)
+}
+
+// attachSpinnerFrames are single-cell braille dots — a multi-cell glyph here
+// would shift the reserved suffix by a column mid-spin.
+var attachSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// renderAttachStatus replaces the hint line while an attach is in flight
+// (D7): same row, so bodyHeight is unchanged. The esc:cancel (or ^c:quit
+// while cancelling) suffix gets its cells reserved first, same as the kill
+// prompt above — the label is what truncates.
+func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
+	frame := attachSpinnerFrames[m.attach.frame%len(attachSpinnerFrames)]
+
+	hintKey, hintDesc := "esc", "cancel"
+	head := frame + " opening " + m.attach.label + " · " + attachPhaseLabel(m.attach.phase) +
+		" · " + strconv.Itoa(int(time.Since(m.attach.phaseAt)/time.Second)) + "s"
+	if m.attach.cancelling {
+		hintKey, hintDesc = "^c", "quit"
+		head = frame + " cancelling " + m.attach.label + "…"
+	}
+
+	suffix := "  " + key.Render(hintKey) + dim.Render(":"+hintDesc)
+	suffixWidth := visibleWidth(suffix)
+	if suffixWidth >= m.width {
+		return fitVisibleWidth("  "+head+suffix, m.width)
+	}
+	return fitVisibleWidth("  "+head, m.width-suffixWidth) + suffix
 }

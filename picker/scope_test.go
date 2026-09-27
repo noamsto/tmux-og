@@ -139,17 +139,13 @@ func TestMarkedRemoteItemsResolvesAcrossScopeSwitch(t *testing.T) {
 		t.Fatalf("markedRemoteItems() = %+v, want the alpha mark to survive the scope switch", marked)
 	}
 
-	var opened struct{ host, sess string }
-	fakeOpen := func(_ map[string]string, host, sess string, _ bool) error {
-		opened.host, opened.sess = host, sess
-		return nil
-	}
-	_, cmd := m.openMarkedRemoteWith(marked, fakeOpen, func(map[string]string, string, string, bool) {})
+	next, cmd := m.openMarkedRemote(marked)
 	if cmd == nil {
-		t.Fatal("expected tea.Quit")
+		t.Fatal("expected a Cmd starting the attach")
 	}
-	if opened.host != "alpha" || opened.sess != "live" {
-		t.Fatalf("launcher fired for %+v, want alpha/live", opened)
+	nm := next.(tuiModel)
+	if nm.attach == nil || nm.attach.host != "alpha" || nm.attach.sess != "live" {
+		t.Fatalf("attach = %+v, want alpha/live", nm.attach)
 	}
 }
 

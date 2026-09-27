@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -788,30 +787,6 @@ func TestRemoteSessionsForHostNewStates(t *testing.T) {
 				t.Errorf("state = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-// The launcher never reaches PATH, so only @remote_open_bin resolves it.
-func TestOpenRemoteBridgeUsesConfiguredBin(t *testing.T) {
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "args")
-	bin := filepath.Join(dir, "fake-open")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := map[string]string{"@remote_open_bin": bin}
-	if err := openRemoteBridge(opts, "lab", "work", false); err != nil {
-		t.Fatalf("openRemoteBridge: %v", err)
-	}
-
-	got, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("launcher did not run: %v", err)
-	}
-	if want := "lab\nwork\n"; string(got) != want {
-		t.Errorf("args = %q, want %q", got, want)
 	}
 }
 
