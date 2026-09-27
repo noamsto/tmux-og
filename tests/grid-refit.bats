@@ -620,6 +620,11 @@ layout_bug_reproduces() {
 	# would fork on every event even though the script always exits on zoom.
 	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
 
+	# Change the lead share while still zoomed: tmux itself would restore the
+	# pre-zoom (60%) layout on unzoom with no refit at all, so asserting the
+	# new 40% share below only passes if a refit actually ran after unzoom.
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
 	tmux resize-pane -Z -t "$LEAD"
 
 	local gw lw first ok tries2
@@ -629,14 +634,15 @@ layout_bug_reproduces() {
 		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
 		first="$(first_pane)"
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
-		if [[ $gw == "60%" && $first == "$LEAD" && ${lw:-0} -ge 115 ]]; then
+		if [[ $gw == "40%" && $first == "$LEAD" && ${lw:-0} -le 85 ]]; then
 			ok=1
 			break
 		fi
 		sleep 0.1
 		((tries2++)) || true
 	done
-	# Unzooming restores the grid the script laid out before the zoom.
+	# Unzooming triggered a fresh refit onto the changed share, not tmux
+	# restoring the pre-zoom layout on its own.
 	[ "$ok" -eq 1 ]
 }
 
@@ -680,4 +686,77 @@ layout_bug_reproduces() {
 		((tries2++)) || true
 	done
 	[ "$shrunk" -eq 1 ]
+}
+
+@test "a demoted lead is restored even when it has the lowest pane id (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the initial fast-path apply to land before demoting the lead.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	# Demote the lead by swapping it with the second tiled pane. $LEAD keeps
+	# the lowest pane id throughout: #{P:} lists ids regardless of layout, so
+	# on the buggy build the snapshot's first=${ids[0]} is still $LEAD even
+	# though it is no longer first in layout order, and the fast path
+	# wrongly re-stamps the broken layout instead of restoring it.
+	local second
+	second="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | sed -n '2p')"
+	tmux swap-pane -d -s "$LEAD" -t "$second"
+
+	local first lw ok tries2
+	ok=0
+	tries2=0
+	while ((tries2 < 30)); do
+		first="$(first_pane)"
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ $first == "$LEAD" && ${lw:-0} -ge 115 ]]; then
+			ok=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$ok" -eq 1 ]
+}
+
+@test "a lead that is not the lowest pane id is stamped and forks nothing on a storm (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 2
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# On the buggy build, #{P:}'s id order never puts this lead first (its id
+	# is not the lowest), so the fast path never matches and every later
+	# event forks a full apply instead. The stamp landing at all is the
+	# fast-path signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$stamp" ]
+
+	settle
+	local g0
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
 }

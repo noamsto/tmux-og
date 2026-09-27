@@ -75,10 +75,18 @@ read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '
 
 # One round-trip for the size, the tiled pane ids, the gate's geometry
 # signature and the cached decision sig — replacing separate read_panes and
-# size reads before the sig check below.
-IFS='|' read -r w h pane_ids geom stored_sig <<<"$(tmux display-message -p -t "$target" "#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_id} }}|$grid_sig_fmt|#{@grid_refit_sig}" 2>/dev/null)"
+# size reads before the sig check below. The signature is read last: it
+# carries free-text option values (e.g. @crew_role) that could themselves
+# contain '|', and as the final `read` variable it absorbs any of those
+# rather than shifting the fields after it. @grid_refit_sig is written only
+# by this script from sanitized values, so it holds no '|' and is safe to
+# read before the signature.
+IFS='|' read -r w h pane_ids stored_sig geom <<<"$(tmux display-message -p -t "$target" "#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|$grid_sig_fmt" 2>/dev/null)"
 [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
-read -ra ids <<<"$pane_ids"
+# #{P:} does not walk panes in layout order on the pinned tmux-next (after a
+# swap-pane, list-panes gives layout order but #{P:} does not) — sort on the
+# pane_index tmux tags each entry with to recover layout order in bash.
+mapfile -t ids < <(tr ' ' '\n' <<<"$pane_ids" | grep . | sort -t: -k1,1n | cut -d: -f2)
 np=${#ids[@]}
 ((np > 1)) || exit 0
 
