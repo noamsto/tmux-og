@@ -1246,6 +1246,10 @@ relay_env() {
 	[ "$new_transport" = "$old_transport" ]
 }
 
+# Every wait in these mouse cases polls against BRIDGE_UP_BUDGET_SECS as a stall
+# detector: each observable is one seed, reseed or rebuild (healDeadRenderers
+# sweeps once a second), the same order of work bridge_up's budget was sized for.
+#
 # mouse_up attaches a real client to the mirror session from a pty host (m2obs)
 # and binds the wheel the way tmux-og's better-mouse-mode does — forward it when
 # the pane tracks the mouse, otherwise enter copy-mode — so a wheel event takes
@@ -1256,7 +1260,8 @@ mouse_up() {
 	$DST set -g mouse on
 	$DST bind -n WheelUpPane if -F '#{mouse_any_flag}' 'send-keys -M' 'copy-mode -e'
 	$OBS new-session -d -s obsM -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host-sess"
-	for _ in $(seq 1 40); do
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		[ "$($DST list-clients -t host-sess 2>/dev/null | grep -c '^')" -ge 1 ] && break
 		sleep 0.1
 	done
@@ -1272,7 +1277,8 @@ wheel_up() {
 # wait_mirror_mouse polls the mirror pane's mouse flags until they read $1.
 wait_mirror_mouse() {
 	local got=""
-	for _ in $(seq 1 60); do
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		got="$($DST display-message -p -t host-sess:1.0 '#{mouse_any_flag} #{mouse_sgr_flag}' 2>/dev/null)"
 		[ "$got" = "$1" ] && return 0
 		sleep 0.1
@@ -1315,7 +1321,8 @@ mirror_of() {
 # $2 (the pid it had before a rebuild, or empty), and track the mouse.
 wait_mirror_tracking() {
 	local lp="" pid=""
-	for _ in $(seq 1 80); do
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		lp="$(mirror_of "$1")"
 		if [ -n "$lp" ]; then
 			pid="$($DST display-message -p -t "$lp" '#{pane_pid}')"
@@ -1361,7 +1368,8 @@ probe_got() {
 		seqs=($'\e[M $#' $'\e[M#$#' $'\e[M`$#')
 	fi
 	local w missing
-	for _ in $(seq 1 40); do
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		missing=0
 		for w in "${seqs[@]}"; do
 			grep -qF -- "$w" "$log" || missing=1
@@ -1389,6 +1397,14 @@ mouse_matrix() {
 	if [ "$path" = pre ]; then
 		trp="$(mouse_probe tiled "$tenc" "$tlog")"
 		frp="$(mouse_probe float "$fenc" "$flog")"
+		# The modes must be on before the daemon attaches, or they reach the
+		# mirror as live output and the seed goes untested.
+		deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+		while [ "$SECONDS" -lt "$deadline" ]; do
+			[ "$($SRC display-message -p -t "$trp" '#{mouse_any_flag}')$($SRC display-message -p -t "$frp" '#{mouse_any_flag}')" = 11 ] && break
+			sleep 0.1
+		done
+		[ "$($SRC display-message -p -t "$trp" '#{mouse_any_flag}')$($SRC display-message -p -t "$frp" '#{mouse_any_flag}')" = 11 ]
 		"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
 			--session rem --window 1 --local-sess host-sess \
 			--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/mm.sock" \
@@ -1477,9 +1493,11 @@ EOF
 	# between STOP and CONT may fail: a stopped daemon would outlive the test.
 	kill -STOP "$daemon_pid"
 	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)" || true
-	$SRC refresh-client -t "$cc" -A "$($SRC display-message -p -t rem '#{pane_id}'):pause" || true
+	paused=no
+	[ -n "$cc" ] && $SRC refresh-client -t "$cc" -A "$($SRC display-message -p -t rem '#{pane_id}'):pause" && paused=yes
 	touch "$go.2"
-	for _ in $(seq 1 40); do
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		[ "$($SRC display-message -p -t rem '#{mouse_any_flag}')" = 0 ] && break
 		sleep 0.1
 	done
@@ -1490,7 +1508,8 @@ EOF
 	wait_mirror_mouse "0 0" || cleared=no
 	wheel_up
 	in_mode=0
-	for _ in $(seq 1 40); do
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		in_mode="$($DST display-message -p -t host-sess:1.0 '#{pane_in_mode}')"
 		[ "$in_mode" = 1 ] && break
 		sleep 0.1
@@ -1500,6 +1519,9 @@ EOF
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
 
+	# Without the pause, the mouse-off arrives live and clears the mirror
+	# whether or not the reseed does.
+	[ "$paused" = yes ]
 	[ "$cleared" = yes ]
 	[ "$in_mode" = 1 ]
 	[ "$leaked" = 0 ]
