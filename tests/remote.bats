@@ -60,6 +60,29 @@ setup() {
 	[ "$status" -eq 0 ]
 }
 
+# The vectors are shared with the Go mirrorname.Part test, so the two copies of
+# the mapping cannot drift apart without one suite failing.
+check_mirror_name_vectors() {
+	local vectors="${MIRROR_NAME_VECTORS:-$BATS_TEST_DIRNAME/../picker/mirrorname/testdata/vectors.tsv}"
+	local line in want rows=0
+	while IFS= read -r line; do
+		in="${line%%$'\t'*}"
+		want="${line#*$'\t'}"
+		mirror_name_part "$in"
+		if [ "$REPLY" != "$want" ]; then
+			printf 'LC_ALL=%s: %q -> %q, want %q\n' "$LC_ALL" "$in" "$REPLY" "$want"
+			return 1
+		fi
+		rows=$((rows + 1))
+	done <"$vectors"
+	[ "$rows" -gt 0 ]
+}
+
+@test "mirror_name_part: maps every byte outside [A-Za-z0-9_-] to _, whatever the locale" {
+	LC_ALL=C.UTF-8 check_mirror_name_vectors
+	LC_ALL=C check_mirror_name_vectors
+}
+
 @test "the mirror dedup reads session options with a bare target, never '=' (#474)" {
 	# show-options answers "no such session" for a "=" target, and -q hides it.
 	run grep -n 'show-options -t "=' "${BATS_TEST_DIRNAME}/../scripts/og-remote-open.sh"
