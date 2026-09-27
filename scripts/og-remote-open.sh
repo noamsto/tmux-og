@@ -66,16 +66,37 @@ reap_daemon() {
 	kill -KILL -- "$pid" 2>/dev/null || true
 }
 
+# probe_daemon <sock> sets REPLY to `live` when the daemon behind sock's
+# pidfile answers ping, `outdated` when it answers in an older ctl protocol,
+# and empty when its pid is dead or its socket unreachable. A live pid alone
+# is not enough: a config reload can leave a daemon that speaks an older ctl
+# protocol behind. ctl bounds the probe at two seconds.
+#
+# A stale pidfile can be recycled by an unrelated process. Only the daemon's
+# deterministic replies establish that the PID owns this socket, so only a
+# non-empty REPLY may lead to signalling it. Matched on the suffix both
+# old-protocol replies share: pinning the version digits stops reaping the
+# daemon a later bump obsoletes.
+probe_daemon() {
+	local probe_error
+	REPLY=""
+	remote_daemon_alive "${1}.pid" || return 0
+	if probe_error="$("$ctl" --sock "$1" ping _ 2>&1)"; then
+		REPLY=live
+	elif [[ $probe_error == *'— reopen the bridge'* ]]; then
+		REPLY=outdated
+	fi
+}
+
 # retire_mirror <session_id> removes a mirror whose name predates #783's
 # sanitizing, with its daemon's files. Targeted by id: the raw name may not
-# parse as a target. The pidfile's pid is signalled only on the ownership proof
-# the dedup below demands, since a stale pidfile may name a recycled process.
+# parse as a target.
 retire_mirror() {
-	local id="$1" old pid probe_error
+	local id="$1" old pid
 	old="$(tmux display-message -p -t "$id" '#{@bridge_sock}' 2>/dev/null || true)"
-	if [[ -n $old ]] && remote_daemon_alive "${old}.pid"; then
-		if probe_error="$("$ctl" --sock "$old" ping _ 2>&1)" ||
-			[[ $probe_error == *'— reopen the bridge'* ]]; then
+	if [[ -n $old ]]; then
+		probe_daemon "$old"
+		if [[ -n $REPLY ]]; then
 			pid="$(<"${old}.pid")"
 			[[ $pid =~ ^[0-9]+$ ]] && reap_daemon "$pid"
 		fi
@@ -151,13 +172,29 @@ if [[ -n ${OG_REMOTE_NEW_DIR:-} ]] && ! shell_quotable "$OG_REMOTE_NEW_DIR"; the
 	exit 1
 fi
 
-# The session-name quoting discipline (shell_quote is unsafe for a value
-# containing a backslash) applies here too: check before a caller-given $sess
-# rides into the probe below, not only after a remote-derived one comes back.
-if [[ -n $sess ]] && ! shell_quotable "$sess"; then
-	echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $sess — pass an explicit session name instead" >&2
-	exit 1
-fi
+# require_session_name <sess> exits unless sess is safe to carry: shell_quote
+# is unsafe for a backslash, and a control byte never appears in a real tmux
+# session name (tmux vis-escapes them), so one can only come from a hostile
+# remote — whose newline in the raw @bridge_session would forge a line in the
+# pair lookup below. Byte-wise under LC_ALL=C, like mirror_name_part; %q keeps
+# the rejected bytes off the user's terminal.
+require_session_name() {
+	local LC_ALL=C quoted
+	if [[ $1 == *[[:cntrl:]]* ]]; then
+		printf -v quoted '%q' "$1"
+		echo "og-remote-open: session name contains a control character, which no tmux session name can: $quoted — pass an explicit session name instead" >&2
+		exit 1
+	fi
+	if ! shell_quotable "$1"; then
+		echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $1 — pass an explicit session name instead" >&2
+		exit 1
+	fi
+}
+
+# The session-name discipline applies here too: check before a caller-given
+# $sess rides into the probe below, not only after a remote-derived one comes
+# back.
+require_session_name "$sess"
 
 # Validated here, before it ever rides into probe_script below — not after the
 # probe has already shipped it to the remote. valid_remote_path's charset also
@@ -258,12 +295,8 @@ done <<<"$probe_out"
 [[ -z $win ]] && win="$probe_win"
 
 # A session already live on the remote (the common case) is named here, by
-# the probe above, not by the caller — so it hasn't run the backslash check
-# above yet.
-if [[ -n $sess ]] && ! shell_quotable "$sess"; then
-	echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $sess — pass an explicit session name instead" >&2
-	exit 1
-fi
+# the probe above, not by the caller — so it hasn't run the check above yet.
+require_session_name "$sess"
 
 if ! valid_remote_path "$remote_tmpdir"; then
 	echo "og-remote-open: unusable remote tmpdir: $remote_tmpdir" >&2
@@ -307,12 +340,10 @@ if [[ -z $sess ]]; then
 		echo "og-remote-open: started $start_desc on $host but no session appeared" >&2
 		exit 1
 	fi
-	# A remote-derived name gets the same backslash check the caller-given path
-	# already ran above — this is the only route it could have skipped it.
-	if ! shell_quotable "$sess"; then
-		echo "og-remote-open: session name contains a backslash, which no remote shell dialect can quote safely: $sess — pass an explicit session name instead" >&2
-		exit 1
-	fi
+	# A remote-derived name gets the same check the caller-given path already
+	# ran above — this is the only route it could have skipped it. `$(…)` keeps
+	# the inner newlines of a multi-line reply.
+	require_session_name "$sess"
 fi
 
 # The picker's row came from a tmux-remux snapshot, not a live probe (#268):
@@ -452,6 +483,12 @@ while IFS= read -r pair_line; do
 	pair_host="${pair_rest%%|*}"
 	pair_sess="${pair_rest#*|}"
 	[[ $pair_host == "$host" && $pair_sess == "$sess" ]] || continue
+	# A @bridge_session stored before control bytes were rejected can hold a
+	# newline, forging a line above whose id names an unrelated session: act
+	# only once that session's own options claim this pair.
+	pair_own_host="$(tmux display-message -p -t "$pair_id" '#{@bridge_host}' 2>/dev/null || true)"
+	pair_own_sess="$(tmux display-message -p -t "$pair_id" '#{@bridge_session}' 2>/dev/null || true)"
+	[[ $pair_own_host == "$host" && $pair_own_sess == "$sess" ]] || continue
 	pair_name="$(tmux display-message -p -t "$pair_id" '#{session_name}' 2>/dev/null || true)"
 	mirror_name_part "$pair_name"
 	if [[ $REPLY != "$pair_name" ]]; then
@@ -499,32 +536,23 @@ sock="${sock_dir}/og-daemon-${local_sess}.sock"
 # the daemon exists, by the daemon after that, removed by its teardown.
 phase_file="${sock}.phase"
 
-# Dedup: a live pid alone is not enough. A config reload can leave a daemon
-# that speaks an older ctl protocol behind, so prove its compatibility before
-# reusing the mirror. ctl bounds the probe at two seconds.
-if remote_daemon_alive "${sock}.pid"; then
-	if probe_error="$("$ctl" --sock "$sock" ping _ 2>&1)"; then
-		if tmux has-session -t "=$local_sess" 2>/dev/null; then
-			attached=1
-			tmux switch-client -t "=$local_sess"
-			exit 0
-		fi
-		# The daemon is alive and speaks the protocol, but the mirror session it
-		# was serving is gone — killed from the picker, by hand, or a crash.
-		# switch-client above would otherwise fail against a session
-		# that no longer exists, so reap the orphan daemon and fall through to
-		# recreate.
-		daemon_pid="$(<"${sock}.pid")"
-		[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
-	# A stale pidfile can be recycled by an unrelated process. Only the daemon's
-	# deterministic old-protocol replies establish that the PID owns this socket;
-	# an unreachable socket goes straight to cleanup/recreate without signalling.
-	# Matched on the suffix both replies share: pinning the version digits stops
-	# reaping the daemon a later bump obsoletes.
-	elif [[ $probe_error == *'— reopen the bridge'* ]]; then
-		daemon_pid="$(<"${sock}.pid")"
-		[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
-	fi
+# Dedup: reuse the mirror only behind a daemon proven compatible. Any other
+# proven daemon is reaped; an unreachable one goes straight to cleanup/recreate
+# without signalling.
+probe_daemon "$sock"
+if [[ $REPLY == live ]] && tmux has-session -t "=$local_sess" 2>/dev/null; then
+	attached=1
+	tmux switch-client -t "=$local_sess"
+	exit 0
+fi
+# A live daemon that got here speaks the protocol, but the mirror session it
+# was serving is gone — killed from the picker, by hand, or a crash.
+# switch-client above would otherwise fail against a session that no longer
+# exists, so reap the orphan daemon (or the outdated one) and fall through to
+# recreate.
+if [[ -n $REPLY ]]; then
+	daemon_pid="$(<"${sock}.pid")"
+	[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
 fi
 mirror_created=1
 # Stale cleanup: a prior daemon was killed (SIGTERM/SIGKILL) without running

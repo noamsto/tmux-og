@@ -127,7 +127,7 @@ setup() {
 			fi
 			touch "$REMOTE_SERVER"
 			;;
-		*list-sessions*) [ -f "$REMOTE_SERVER" ] && echo "$REMOTE_SESSION" ;;
+		*list-sessions*) [ -f "$REMOTE_SERVER" ] && printf '%s\n' "${FAKE_LIST_SESSIONS_REPLY:-$REMOTE_SESSION}" ;;
 		# A failed remote list-windows still exits 0 with empty stdout: the remote
 		# command is a pipeline ending in awk, and carries none of our pipefail.
 		*list-windows*) [ -n "${FAKE_NO_WINDOW:-}" ] || echo 1 ;;
@@ -173,6 +173,23 @@ setup() {
 			# must keep coming back empty.
 			*'-t $'*'#{session_name}'*) [ -n "${FAKE_PAIR_NAME:-}" ] && printf '%s\n' "$FAKE_PAIR_NAME" ;;
 			*'-t $'*'#{@bridge_sock}'*) [ -n "${FAKE_PAIR_SOCK:-}" ] && printf '%s\n' "$FAKE_PAIR_SOCK" ;;
+			# A session's own pair defaults to what its FAKE_LIST_SESSIONS line
+			# claims; set FAKE_PAIR_HOST/FAKE_PAIR_SESSION (even empty) to make
+			# that line a forgery.
+			*'-t $'*'#{@bridge_host}'*)
+				if [ -n "${FAKE_PAIR_HOST+set}" ]; then
+					printf '%s\n' "$FAKE_PAIR_HOST"
+				else
+					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -F'|' -v id="$4" '$1 == id { print $2; exit }'
+				fi
+				;;
+			*'-t $'*'#{@bridge_session}'*)
+				if [ -n "${FAKE_PAIR_SESSION+set}" ]; then
+					printf '%s\n' "$FAKE_PAIR_SESSION"
+				else
+					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -v id="$4" 'index($0, id "|") == 1 { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }'
+				fi
+				;;
 			*"#{client_width} #{client_height} #{status}"*)
 				[ -n "${FAKE_CLIENT_SIZE:-}" ] && printf '%s\n' "$FAKE_CLIENT_SIZE"
 				;;
@@ -953,6 +970,71 @@ run_launcher_bg() {
 	[ "$status" -ne 0 ]
 	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
 	grep -qxF 'new-session -d -s tp-g6-x___y_ -n x___y_' "$TMUX_LOG"
+}
+
+@test "a pre-#783 raw-named mirror is retired, its daemon reaped on an old-protocol reply" {
+	export FAKE_LIST_SESSIONS='$9|tp-g6|x##(y)' FAKE_PAIR_NAME='tp-g6-x#(y)'
+	export FAKE_PAIR_SOCK="$BATS_TEST_TMPDIR/old.sock"
+	export FAKE_CTL_ERROR='og-remote-bridge-ctl: ctl protocol version "2", this daemon speaks "1" — reopen the bridge'
+	sleep 30 &
+	DAEMON_PID=$!
+	printf '%s\n' "$DAEMON_PID" >"$FAKE_PAIR_SOCK.pid"
+
+	run bash "$LAUNCHER" tp-g6 'x##(y)'
+	[ "$status" -eq 0 ]
+
+	grep -qxF -- "--sock $FAKE_PAIR_SOCK ping _" "$CTL_LOG"
+	grep -qxF 'kill-session -t $9' "$TMUX_LOG"
+	run kill -0 "$DAEMON_PID"
+	[ "$status" -ne 0 ]
+	[ ! -e "$FAKE_PAIR_SOCK.pid" ]
+}
+
+@test "a cold-started remote's multi-line session name is rejected before any local session exists" {
+	export FAKE_LIST_SESSIONS_REPLY='evil
+$0|tp-g6|main'
+
+	run bash "$LAUNCHER" tp-g6
+	[ "$status" -eq 1 ]
+	[[ $output == *"session name contains a control character"* ]]
+
+	run grep -cE 'new-session|kill-session|set-option' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "a caller-given session name containing a newline is rejected before any round trip" {
+	run bash "$LAUNCHER" tp-g6 'wo
+rk'
+	[ "$status" -eq 1 ]
+	[[ $output == *"session name contains a control character"* ]]
+
+	[ ! -s "$SSH_LOG" ]
+}
+
+# A @bridge_session stored before control bytes were rejected can carry a
+# newline, forging a list-sessions line that names another session's id.
+@test "a forged pair line never reuses the unrelated session it names" {
+	export FAKE_LIST_SESSIONS='$5|tp-g6|evil
+$0|tp-g6|main' FAKE_PAIR_NAME=work FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
+
+	run bash "$LAUNCHER" tp-g6 main
+	[ "$status" -eq 0 ]
+
+	run grep -E 'kill-session -t (=work|\$0)$' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	grep -qxF 'new-session -d -s tp-g6-main -n main' "$TMUX_LOG"
+}
+
+@test "a forged pair line never retires the unrelated session it names" {
+	export FAKE_LIST_SESSIONS='$5|tp-g6|evil
+$0|tp-g6|main' FAKE_PAIR_NAME='my.proj' FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
+
+	run bash "$LAUNCHER" tp-g6 main
+	[ "$status" -eq 0 ]
+
+	run grep -E 'kill-session -t (=my\.proj|\$0)$' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	grep -qxF 'new-session -d -s tp-g6-main -n main' "$TMUX_LOG"
 }
 
 # --- #770: progress fd phase lines (opt-in, gated by OG_REMOTE_OPEN_PROGRESS_FD) ---
