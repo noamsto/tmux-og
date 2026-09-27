@@ -255,11 +255,31 @@ func (m model) card() string {
 	}
 	rows = append(rows, "", m.footer())
 	inner := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return lipgloss.NewStyle().
+
+	outer := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(m.cfg.overlay0)).
-		Padding(0, 1).
-		Render(inner)
+		Padding(0, 1)
+
+	innerW := m.width - outer.GetHorizontalFrameSize()
+	innerH := m.height - outer.GetVerticalFrameSize()
+	if innerW <= 0 || innerH <= 0 {
+		// No room for content once the border+padding frame is subtracted.
+		// lipgloss treats MaxWidth(0)/MaxHeight(0) below as "unset" rather
+		// than "clamp to zero", so a plain max(0, ...) floor here would
+		// silently disable the backstop instead of triggering it.
+		return ""
+	}
+
+	// Backstop: claudeBlock()'s task/claudeAgo/paneIcon fields aren't run
+	// through truncate(), so nothing else keeps such a line from silently
+	// widening the whole popup past m.width. Clamp BEFORE the border is
+	// applied — lipgloss's MaxWidth truncates the already-rendered
+	// (post-border) line, so applying it to the bordered style itself
+	// would clip the border character instead of the overwide content.
+	inner = lipgloss.NewStyle().MaxWidth(innerW).MaxHeight(innerH).Render(inner)
+
+	return outer.Render(inner)
 }
 
 type tickMsg struct{}
