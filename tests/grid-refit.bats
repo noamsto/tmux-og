@@ -11,6 +11,14 @@
 # check): it creates a real floating pane, which nixpkgs' stock tmux advertises
 # via `list-commands new-pane` and then rejects at parse time. The #760
 # layout-change regression likewise only reproduces on the pinned next-3.9.
+#
+# Retry budget for the "poll until <condition>" loops below (0.1s sleeps, so
+# POLL_TRIES * 0.1 is the wall-clock bound in seconds): a backgrounded refit
+# job has to fork, take its turn on tmux's single server thread, run its round
+# trips, and (the lock holder) finish, all inside the budget. 3s covered a
+# quiet dev box but not CI's CPU contention (#827) — a different case timed
+# out each run there, never on the same condition twice.
+POLL_TRIES=300
 
 setup() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
@@ -124,10 +132,30 @@ start_logged_server() {
 	ROLE_PANES=()
 }
 
-# refit_jobs <basename> — count job_run lines for a script by basename (the
-# -v log writes two job_run lines per forked job, so callers compare counts
-# across a storm, never treat this as an absolute job count). Prints 0 and
-# never fails the test when the log has no matching job yet.
+# start_wrapped_server — like start_logged_server, but for a caller that has
+# already put a `tmux` wrapper ahead of the real one on $PATH: a run-shell -b
+# job inherits the server's own PATH from when it was launched, not the
+# caller's PATH at fork time, so the wrapper only reaches a hook-forked peer
+# if the server is (re)started after PATH is set. Re-creates the same 4-pane
+# shape setup left.
+start_wrapped_server() {
+	tmux kill-server 2>/dev/null || true
+	sleep 0.2
+	tmux -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50
+	WIN="$(tmux display-message -p -t S '#{window_id}')"
+	tmux split-window -t "$WIN"
+	tmux split-window -t "$WIN"
+	tmux split-window -t "$WIN"
+	LEAD=""
+	ROLE_PANES=()
+}
+
+# refit_jobs <basename> — count job_run lines for a script by basename (job.c
+# logs "job_run: cmd=..." twice per forked job — once from the parent, once
+# from the child — both at fork time, so callers compare counts across a
+# storm, never treat this as an absolute job count, and never as a
+# completion signal: see settle() below for that). Prints 0 and never fails
+# the test when the log has no matching job yet.
 refit_jobs() {
 	cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c "job_run: cmd=.*/$1 " || true
 }
@@ -153,8 +181,35 @@ storm() {
 }
 
 # settle — lets any backgrounded refit job start and log before the next
-# count read.
-settle() { sleep 1; }
+# count read. Keeps the original flat 1s quiet window unconditionally — some
+# callers rely on it to prove a *second* quiet interval forks nothing after a
+# stamp write, and there is no observable that distinguishes "nothing forked"
+# from "nothing forked yet" the way there is for a job that did start, so
+# that part of the wait cannot be shortened into a poll.
+#
+# Under a -v logged server (start_logged_server), also extends the wait
+# (bounded) until every forked job has actually finished: job.c logs "run job
+# %p: <cmd>, pid N" exactly once per job, from the parent, right after it
+# forks (not "job_run: cmd=...", which fires twice per job — once from the
+# parent and once from the child — both at fork time, so it cannot tell
+# "started" from "finished"), and "job died %p: <cmd>, pid N" exactly once,
+# only when the child actually exits and is reaped. Waiting for the two
+# counts to match is a real "every job that started has also finished"
+# barrier, and — unlike scripts/tmux-grid-refit.sh's own lock — it also
+# covers the in-process fast path, which never takes that lock.
+settle() {
+	sleep 1
+	[ -d "$BATS_TEST_TMPDIR/vlog" ] || return 0
+	local started died tries
+	tries=0
+	while ((tries < POLL_TRIES)); do
+		started=$(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* run job ' || true)
+		died=$(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* job died ' || true)
+		[ "$started" = "$died" ] && return 0
+		sleep 0.2
+		((tries++)) || true
+	done
+}
 
 # #760 reproduces only on the pinned next-3.9: upstream <=3.7c already collapses
 # the freed cells back to the pre-split sibling, so on such a tmux the behavior
@@ -260,6 +315,69 @@ layout_bug_reproduces() {
 	[ "$(tmux show-options -w -v -t "$WIN" @grid_refit_sig)" = "$sig" ]
 }
 
+@test "a peer's stale @grid_refit_sig read cannot outrun this run's own write (#827)" {
+	# make_grid 1 puts the lead already first, so swap-pane is skipped and
+	# select-layout is the only layout-mutating command — exactly the shape
+	# that exposed the race: select-layout's own window-layout-changed hook
+	# forks a peer *while this invocation is still running*, and nothing
+	# serializes that peer's read of @grid_refit_sig against this
+	# invocation's own later write of it (two separate client connections).
+	# Before the fix, a peer that read the pre-write (stale) value landed on
+	# the same full-apply branch instead of the fast path, and only the fast
+	# path stamps @grid_refit_layout — so a peer that lost this race left it
+	# unset, with nothing left to trigger a later confirming run.
+	#
+	# Forcing that race by luck needs CPU contention (see the PR's CPU
+	# contention runs), so make it deterministic instead: a `tmux` wrapper
+	# ahead of the real one on PATH sleeps only when it sees the exact
+	# standalone `set-option ... @grid_refit_sig` call the old (three
+	# separate tmux calls) apply path issued — origin/main hits that call and
+	# stalls behind it, guaranteeing a peer's read lands first every time.
+	# The fix bundles that write into the same command list as select-layout
+	# (`select-layout ... \; set-option ... @grid_refit_sig ...`), so the
+	# wrapper's pattern never matches on the branch and no delay is ever
+	# injected — closing the race by construction, not by timing luck.
+	arm_grid_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	# That call already armed setup()'s server, but the server below is a
+	# fresh one (started under the delaying wrapper) that needs its own.
+
+	# Put the delaying wrapper on PATH *before* starting the server it will
+	# run under: a run-shell -b job inherits the server process's own PATH,
+	# not this test's PATH at fork time, so the wrapper only reaches the
+	# hook-forked peer if the server was launched with it already in place.
+	local real_tmux wrapdir
+	real_tmux="$(command -v tmux)"
+	wrapdir="$BATS_TEST_TMPDIR/tmux-delay-wrap"
+	mkdir -p "$wrapdir"
+	cat >"$wrapdir/tmux" <<WRAP
+#!/usr/bin/env bash
+if [[ \$1 == set-option ]]; then
+	for a in "\$@"; do
+		[[ \$a == "@grid_refit_sig" ]] && sleep 2 && break
+	done
+fi
+exec "$real_tmux" "\$@"
+WRAP
+	chmod +x "$wrapdir/tmux"
+	PATH="$wrapdir:$PATH"
+	start_wrapped_server
+
+	make_grid 1
+	arm_grid_hooks
+	bash "$GRID" "$WIN"
+
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < POLL_TRIES)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$stamp" ]
+}
+
 @test "concurrent refits cannot demote the lead" {
 	make_grid 4
 
@@ -325,7 +443,7 @@ layout_bug_reproduces() {
 	gw=""
 	fw=0
 	tries=0
-	while ((tries < 60)); do
+	while ((tries < POLL_TRIES)); do
 		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
 		fw="$(tmux display-message -p -t "$FLOAT" '#{pane_width}' 2>/dev/null || true)"
 		[[ $gw == "60%" && ${fw:-0} -ge 170 ]] && break
@@ -356,7 +474,7 @@ layout_bug_reproduces() {
 
 	tries=0
 	lead_now=0
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		lead_now="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || echo 0)"
 		[ "$lead_now" -ge 115 ] && break
 		sleep 0.1
@@ -370,7 +488,7 @@ layout_bug_reproduces() {
 
 	tries=0
 	lead_now=0
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		lead_now="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || echo 0)"
 		[ "$lead_now" = "$before" ] && break
 		sleep 0.1
@@ -443,7 +561,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -494,7 +612,7 @@ layout_bug_reproduces() {
 	gw=""
 	fw=0
 	tries=0
-	while ((tries < 60)); do
+	while ((tries < POLL_TRIES)); do
 		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
 		fw="$(tmux display-message -p -t "$FLOAT" '#{pane_width}' 2>/dev/null || true)"
 		[[ $gw == "60%" && ${fw:-0} -ge 170 ]] && break
@@ -526,7 +644,7 @@ layout_bug_reproduces() {
 	local fw tries
 	fw=0
 	tries=0
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		fw="$(tmux display-message -p -t "$float" '#{pane_width}' 2>/dev/null || true)"
 		[ "${fw:-0}" -ge 170 ] && break
 		sleep 0.1
@@ -549,7 +667,7 @@ layout_bug_reproduces() {
 
 	fw=0
 	tries=0
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		fw="$(tmux display-message -p -t "$float2" '#{pane_width}' 2>/dev/null || true)"
 		[ "${fw:-0}" -ge 170 ] && break
 		sleep 0.1
@@ -578,7 +696,7 @@ layout_bug_reproduces() {
 	local fw tries
 	fw=0
 	tries=0
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		fw="$(tmux display-message -p -t "$float" '#{pane_width}' 2>/dev/null || true)"
 		[ "${fw:-0}" -ge 170 ] && break
 		sleep 0.1
@@ -609,7 +727,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -637,7 +755,7 @@ layout_bug_reproduces() {
 	local gw lw first ok tries2
 	ok=0
 	tries2=0
-	while ((tries2 < 30)); do
+	while ((tries2 < POLL_TRIES)); do
 		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
 		first="$(first_pane)"
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
@@ -666,7 +784,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -683,7 +801,7 @@ layout_bug_reproduces() {
 	local lw tries2 shrunk
 	shrunk=0
 	tries2=0
-	while ((tries2 < 30)); do
+	while ((tries2 < POLL_TRIES)); do
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
 		if [[ -n $lw && $lw -le 85 ]]; then
 			shrunk=1
@@ -706,7 +824,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -725,7 +843,7 @@ layout_bug_reproduces() {
 	local first lw ok tries2
 	ok=0
 	tries2=0
-	while ((tries2 < 30)); do
+	while ((tries2 < POLL_TRIES)); do
 		first="$(first_pane)"
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
 		if [[ $first == "$LEAD" && ${lw:-0} -ge 115 ]]; then
@@ -752,7 +870,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -782,7 +900,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -806,7 +924,17 @@ layout_bug_reproduces() {
 	# 0 and <= 2.
 	[ "$delta" -gt 0 ]
 	[ "$delta" -le 2 ]
-	[ "$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)" != "stale" ]
+
+	local layout
+	tries=0
+	layout="stale"
+	while ((tries < POLL_TRIES)); do
+		layout="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ "$layout" != "stale" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ "$layout" != "stale" ]
 }
 
 @test "a burst of events on a stale stamped float forks one refit (#810)" {
@@ -830,7 +958,7 @@ layout_bug_reproduces() {
 	local fw tries
 	fw=0
 	tries=0
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		fw="$(tmux display-message -p -t "$float" '#{pane_width}' 2>/dev/null || true)"
 		[ "${fw:-0}" -ge 170 ] && break
 		sleep 0.1
@@ -851,7 +979,17 @@ layout_bug_reproduces() {
 	delta=$(($(refit_jobs tmux-float-refit) - f0))
 	[ "$delta" -gt 0 ]
 	[ "$delta" -le 2 ]
-	[ "$(tmux show-options -pqv -t "$float" @float_refit_size 2>/dev/null || true)" = "200x50" ]
+
+	local fsize
+	tries=0
+	fsize=""
+	while ((tries < POLL_TRIES)); do
+		fsize="$(tmux show-options -pqv -t "$float" @float_refit_size 2>/dev/null || true)"
+		[ "$fsize" = "200x50" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ "$fsize" = "200x50" ]
 }
 
 @test "a lock loser leaves no pending marker behind (#810)" {
@@ -864,7 +1002,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -893,7 +1031,16 @@ layout_bug_reproduces() {
 	[ "$delta" -gt 0 ]
 	# ...lost the lock and applied nothing, and its first tmux call cleared
 	# the marker the hook set before forking it.
-	[ -z "$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)" ]
+	local pending
+	tries=0
+	pending="unset"
+	while ((tries < POLL_TRIES)); do
+		pending="$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)"
+		[ -z "$pending" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -z "$pending" ]
 	lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}')"
 	[ "$lw" -gt 85 ]
 
@@ -907,7 +1054,7 @@ layout_bug_reproduces() {
 	local tries2 ok
 	tries2=0
 	ok=0
-	while ((tries2 < 30)); do
+	while ((tries2 < POLL_TRIES)); do
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
 		if [[ -n $lw && $lw -le 85 ]]; then
 			ok=1
@@ -928,7 +1075,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -946,7 +1093,7 @@ layout_bug_reproduces() {
 	local lw tries2 shrunk
 	shrunk=0
 	tries2=0
-	while ((tries2 < 30)); do
+	while ((tries2 < POLL_TRIES)); do
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
 		if [[ -n $lw && $lw -le 85 ]]; then
 			shrunk=1
@@ -967,7 +1114,7 @@ layout_bug_reproduces() {
 	local tries stamp
 	tries=0
 	stamp=""
-	while ((tries < 30)); do
+	while ((tries < POLL_TRIES)); do
 		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
 		[ -n "$stamp" ] && break
 		sleep 0.1
@@ -999,7 +1146,7 @@ layout_bug_reproduces() {
 	local gw lw first ok tries2
 	ok=0
 	tries2=0
-	while ((tries2 < 30)); do
+	while ((tries2 < POLL_TRIES)); do
 		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
 		first="$(first_pane)"
 		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
