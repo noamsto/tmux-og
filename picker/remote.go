@@ -697,12 +697,24 @@ func remoteAuthStartFailure(err error) (string, bool) {
 	return "", false
 }
 
+// killWaitDelay bounds how long cmd.Wait waits for a grandchild still holding
+// stdout/stderr after ssh itself exits, so a cancel or timeout can't stall
+// past it. A var, not a const, so a test can shrink it.
+var killWaitDelay = 500 * time.Millisecond
+
 // sshKillRemoteSession kills sess on host over ssh. It returns nil on success
 // and a classified error otherwise: errRemoteSessionGone when the remote tmux
 // ran and reported the session already absent, errRemoteUnreachable (or the
 // auth/host-key/tailscale states) when ssh itself could not complete.
 func sshKillRemoteSession(host, sess string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	return sshKillRemoteSessionCtx(context.Background(), host, sess)
+}
+
+// sshKillRemoteSessionCtx is sshKillRemoteSession parameterized on a parent
+// ctx, so a kill run can bound and cancel an in-flight ssh (killRun in
+// kill.go). It derives its own remoteProbeTimeout deadline from ctx.
+func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
+	ctx, cancel := context.WithTimeout(ctx, remoteProbeTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ssh",
@@ -716,11 +728,15 @@ func sshKillRemoteSession(host, sess string) error {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// A grandchild holding stdout/stderr must not stall Wait past a clean exit.
+	cmd.WaitDelay = killWaitDelay
 	err := cmd.Run()
-	if err == nil {
+	// Exit 0 wins over a cancel or timeout: past its commit point the remote
+	// kill already landed.
+	if err == nil || (errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState.Success()) {
 		return nil
 	}
-	return classifyKillErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
+	return classifyKillErr(err, stdout.String(), stderr.String(), errors.Is(ctx.Err(), context.DeadlineExceeded))
 }
 
 // sshListRemoteSessions runs the same path/tmpdir resolution as

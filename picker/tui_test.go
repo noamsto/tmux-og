@@ -1817,6 +1817,29 @@ func fakeKillSSH(t *testing.T, code int) string {
 	return sentinel
 }
 
+// driveKill runs cmd (and every Cmd Update returns) until a killDoneMsg for
+// this run lands, re-arming waitKillCmd after each killProgressMsg/killTickMsg
+// the way bubbletea's own runtime would — mirrors the by-hand loop
+// TestAttachUpdateNeverLaunchesSynchronously already does for attach.
+func driveKill(t *testing.T, m tea.Model, cmd tea.Cmd) tuiModel {
+	t.Helper()
+	for {
+		ch := runBatchAsync(cmd)
+		msg := awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+			switch msg.(type) {
+			case killProgressMsg, killDoneMsg:
+				return true
+			default:
+				return false
+			}
+		})
+		m, cmd = m.Update(msg)
+		if _, ok := msg.(killDoneMsg); ok {
+			return m.(tuiModel)
+		}
+	}
+}
+
 // ^x on a Remote session row stages a y/N confirmation and kills nothing yet.
 func TestCtrlXOnRemoteRowStagesConfirmation(t *testing.T) {
 	useRemoteCache(t)
@@ -1880,8 +1903,8 @@ func TestRemoteKillConfirmYesKillsAndForgets(t *testing.T) {
 	}
 	m = m.recombine().withFilter()
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
-	mm := next.(tuiModel)
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := driveKill(t, next, cmd)
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("y did not run the kill: %v", err)
 	}
@@ -1906,8 +1929,8 @@ func TestRemoteKillGoneForgetsRow(t *testing.T) {
 	m := tuiModel{width: 120, remoteItems: []listItem{mono}, killConfirm: []listItem{mono}}
 	m = m.recombine().withFilter()
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
-	mm := next.(tuiModel)
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := driveKill(t, next, cmd)
 	if len(mm.remoteItems) != 0 {
 		t.Errorf("a gone session kept its row: %+v", mm.remoteItems)
 	}
@@ -1928,8 +1951,8 @@ func TestRemoteKillUnreachableKeepsRow(t *testing.T) {
 	m := tuiModel{width: 120, remoteItems: []listItem{mono}, killConfirm: []listItem{mono}}
 	m = m.recombine().withFilter()
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
-	mm := next.(tuiModel)
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := driveKill(t, next, cmd)
 	if len(mm.remoteItems) != 1 {
 		t.Errorf("an unreachable host dropped its row: %+v", mm.remoteItems)
 	}
@@ -1968,8 +1991,8 @@ func TestCtrlXWithMarksConfirmsOnce(t *testing.T) {
 	if got := mm.renderHints(); !strings.Contains(got, "kill 2 remote sessions?") {
 		t.Errorf("prompt = %q, want the count", got)
 	}
-	next, _ = mm.handleKey(tea.KeyPressMsg{Code: 'y'})
-	final := next.(tuiModel)
+	next2, cmd := mm.handleKey(tea.KeyPressMsg{Code: 'y'})
+	final := driveKill(t, next2, cmd)
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("multi-kill did not run: %v", err)
 	}
@@ -2044,8 +2067,8 @@ func TestRemoteKillUnrunnableKeepsRow(t *testing.T) {
 	m := tuiModel{width: 120, remoteItems: []listItem{mono}, killConfirm: []listItem{mono}}
 	m = m.recombine().withFilter()
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
-	mm := next.(tuiModel)
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := driveKill(t, next, cmd)
 	if len(mm.remoteItems) != 1 {
 		t.Errorf("an unrunnable kill dropped the row: %+v", mm.remoteItems)
 	}
@@ -2076,8 +2099,8 @@ func TestRemoteKillTearsDownMirror(t *testing.T) {
 	stopBridgeDaemonFn = func(sess string) { got = append(got, sess) }
 	t.Cleanup(func() { stopBridgeDaemonFn = orig })
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
-	mm := next.(tuiModel)
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := driveKill(t, next, cmd)
 	if len(got) != 1 || got[0] != "lab-mono" {
 		t.Fatalf("stopBridgeDaemonFn calls = %v, want [lab-mono]", got)
 	}
@@ -2097,8 +2120,8 @@ func TestKillForgetSurvivesLateRemoteMsg(t *testing.T) {
 	m := tuiModel{width: 120, remoteItems: []listItem{mono, other}, killConfirm: []listItem{mono}}
 	m = m.recombine().withFilter()
 
-	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'y'})
-	mm := next.(tuiModel)
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	mm := driveKill(t, next, cmd)
 	if len(mm.remoteItems) != 1 {
 		t.Fatalf("kill left %d rows, want 1", len(mm.remoteItems))
 	}
