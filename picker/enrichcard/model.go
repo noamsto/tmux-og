@@ -217,6 +217,9 @@ func (m model) hasBridgeHandle() bool {
 // footer renders the four [r] states from the design's contract (D5): a
 // missing branch or a missing bridge handle both stay inert, and only a
 // mirror with a handle takes the ctl route rather than the local poller.
+// At narrow widths it degrades gracefully — tightens separator, abbreviates
+// labels, drops items from least essential first, and skips the flash —
+// before the outer MaxWidth backstop clips mid-item.
 func (m model) footer() string {
 	c := m.cfg
 	plain := m.sty(c.subtext0)
@@ -230,19 +233,53 @@ func (m model) footer() string {
 		items = append(items, plain.Render("[r] refresh"))
 	}
 	items = append(items, plain.Render("[q] close"))
-	const sep = "   "
+
+	avail := m.titleWidth()
+	sep := "   "
+
+	// Degradation order ensures items are dropped whole rather than cut
+	// mid-word before the outer MaxWidth backstop clips the line.
+	if lipgloss.Width(strings.Join(items, sep)) > avail {
+		sep = " "
+	}
+	if lipgloss.Width(strings.Join(items, sep)) > avail {
+		items = m.footerShortLabels()
+	}
+	for len(items) > 2 && lipgloss.Width(strings.Join(items, sep)) > avail {
+		items = items[:len(items)-1]
+	}
+
 	if m.flash != "" {
 		flashColor := c.green
 		if m.flashIsError {
 			flashColor = c.red
 		}
-		// Truncate to what's actually left on the row, not the full panel
-		// width — the fixed [o]/[p]/[r]/[q] items already eat most of it, and
-		// m.flash can carry an arbitrary CLI error message.
-		budget := max(m.titleWidth()-lipgloss.Width(strings.Join(items, sep))-lipgloss.Width(sep), 4)
-		items = append(items, m.sty(flashColor).Render(truncate(m.flash, budget)))
+		budget := max(avail-lipgloss.Width(strings.Join(items, sep))-lipgloss.Width(sep), 0)
+		if budget > 1 {
+			items = append(items, m.sty(flashColor).Render(truncate(m.flash, budget)))
+		}
+		// budget <= 1: truncate with max <= 1 returns the full string (#775),
+		// so drop the flash entirely rather than let it overflow.
 	}
+
 	return strings.Join(items, sep)
+}
+
+// footerShortLabels returns abbreviated action labels for tight card widths.
+func (m model) footerShortLabels() []string {
+	c := m.cfg
+	plain := m.sty(c.subtext0)
+	short := []string{plain.Render("[o]"), plain.Render("[p]")}
+	switch {
+	case m.win.branch == "":
+		short = append(short, m.sty(c.overlay0).Render("[r]"))
+	case m.mirror && !m.hasBridgeHandle():
+		short = append(short, m.sty(c.overlay0).Render("[r]"))
+	default:
+		short = append(short, plain.Render("[r]"))
+	}
+	short = append(short, plain.Render("[q]"))
+	return short
 }
 
 // card renders the full bordered popup. Pure over model state (no tmux calls).
