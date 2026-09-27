@@ -264,21 +264,19 @@ func (m model) card() string {
 	innerW := m.width - outer.GetHorizontalFrameSize()
 	innerH := m.height - outer.GetVerticalFrameSize()
 	if innerW <= 0 || innerH <= 0 {
-		// No room for content once the border+padding frame is subtracted
-		// (startup, before the first WindowSizeMsg, or an absurdly small
-		// popup). lipgloss treats MaxWidth(0)/MaxHeight(0) below as "unset"
-		// rather than "clamp to zero", so without this guard the backstop
-		// would silently disengage at exactly the sizes it matters most.
+		// No room for content once the border+padding frame is subtracted.
+		// lipgloss treats MaxWidth(0)/MaxHeight(0) below as "unset" rather
+		// than "clamp to zero", so a plain max(0, ...) floor here would
+		// silently disable the backstop instead of triggering it.
 		return ""
 	}
 
 	// Backstop: claudeBlock()'s task/claudeAgo/paneIcon fields aren't run
-	// through truncate() today (and branchBlock()'s head line wasn't until
-	// #772) — this is the only thing keeping such a line from silently
+	// through truncate(), so nothing else keeps such a line from silently
 	// widening the whole popup past m.width. Clamp BEFORE the border is
 	// applied — lipgloss's MaxWidth truncates the already-rendered
-	// (post-border) line, so putting it on the bordered style itself would
-	// clip the right border character instead of the overwide content.
+	// (post-border) line, so applying it to the bordered style itself
+	// would clip the border character instead of the overwide content.
 	inner = lipgloss.NewStyle().MaxWidth(innerW).MaxHeight(innerH).Render(inner)
 
 	return outer.Render(inner)

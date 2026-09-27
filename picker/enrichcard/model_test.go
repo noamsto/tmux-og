@@ -446,10 +446,9 @@ func TestCardPendingWithoutProgressKeepsGlyph(t *testing.T) {
 
 // TestCardMaxWidthBackstop: card()'s outer style must clamp content to
 // m.width even when a block skips truncate() entirely — claudeBlock()
-// renders w.task with no upper bound today, exactly the scenario #773's
-// backstop guards against. Every rendered line must stay within m.width, and
-// the border must stay intact on both edges rather than get clipped by a
-// naive MaxWidth on the bordered style itself.
+// renders w.task with no upper bound today. Every rendered line must stay
+// within m.width, and the border must stay intact on both edges rather
+// than get clipped by a naive MaxWidth on the bordered style itself.
 func TestCardMaxWidthBackstop(t *testing.T) {
 	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
 		branch: "b",
