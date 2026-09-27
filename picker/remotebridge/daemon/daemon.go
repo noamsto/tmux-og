@@ -965,7 +965,7 @@ func Run(cfg Config) error {
 
 	// Re-converge the remote whenever the local client resizes. A local resize
 	// emits no control-stream event, so poll (cheaply — see watchLocalClient);
-	// teardown closes stopWatch and removes the hook registered above.
+	// teardown closes stopWatch and unsets the option registered above.
 	nudged := func() (time.Time, bool) {
 		fi, err := os.Stat(nudgePath)
 		if err != nil {

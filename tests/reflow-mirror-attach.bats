@@ -51,8 +51,12 @@ setup() {
 		# The wrapper's baked conf names the build's tmux-reflow-windows store
 		# path in its hooks; scrape it the way tests/test-display.sh scrapes
 		# the conf.
-		conf="$(grep -o -- '-f /nix/store/[a-z0-9]*-tmux[.]conf' "$TMUX_BIN" | head -1 | cut -d' ' -f2)"
-		REFLOW="$(grep -o '/nix/store/[^ "]*tmux-reflow-windows/bin/tmux-reflow-windows' "$conf" | head -1)"
+		conf="$(grep -o -- '-f /nix/store/[a-z0-9]*-tmux[.]conf' "$TMUX_BIN" 2>/dev/null | head -1 | cut -d' ' -f2)"
+		REFLOW="$(grep -o '/nix/store/[^ "]*tmux-reflow-windows/bin/tmux-reflow-windows' "$conf" 2>/dev/null | head -1)"
+		if [[ -z $REFLOW ]]; then
+			echo "REFLOW unset and not scrapable from $TMUX_BIN (a stale ./result symlink?); pass REFLOW" >&2
+			return 1
+		fi
 	fi
 
 	SRC="$TMUX_BIN -L og820src"
