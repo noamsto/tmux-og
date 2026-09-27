@@ -421,7 +421,9 @@ assert_wire_argv() { # payload_file verb [arg...]
 	press_prefix_key '<'
 	wait_for_screen 'Kill'
 	screen | grep -qF 'Rename'
-	screen_lacks 'Respawn'
+	# #784: the window menu's Respawn now asks the remote to respawn the window
+	# (it is no longer hidden).
+	screen | grep -qF 'Respawn'
 	screen_lacks 'Mark'
 	screen_lacks 'Swap Marked'
 	screen_lacks 'New After'
@@ -430,7 +432,10 @@ assert_wire_argv() { # payload_file verb [arg...]
 
 	press_prefix_key '>'
 	wait_for_screen 'Reconnect'
-	screen_lacks 'Respawn'
+	# Both gestures are present: Respawn restarts the REMOTE program, Reconnect
+	# redials the local renderer (#547).
+	screen | grep -qF 'Respawn'
+	screen | grep -qF 'Reconnect'
 	screen_lacks 'Mark'
 	screen_lacks 'Float'
 }

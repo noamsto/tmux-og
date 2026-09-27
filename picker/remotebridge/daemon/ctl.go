@@ -50,6 +50,13 @@ type ctlState struct {
 	// Intents coalesce, so a burst of gestures in one window is one reconcile.
 	wantWindows bool
 	wantLayout  map[string]bool
+	// wantReseed names remote WINDOWS whose mirror needs a fresh screen —
+	// respawn-pane/-window clear the remote screen, and control mode never
+	// carries the clear, so the mirror keeps stale bytes until the pane is
+	// re-seeded from the remote. Keyed by window, not pane: respawn-window
+	// keeps the window's FIRST pane, which is not necessarily the active pane
+	// the ctl request carried, so no pane id is trustworthy at command time.
+	wantReseed map[string]bool
 }
 
 func newCtlState() *ctlState {
@@ -57,6 +64,7 @@ func newCtlState() *ctlState {
 		paneToWin:  map[string]string{},
 		focus:      map[string]*focusState{},
 		wantLayout: map[string]bool{},
+		wantReseed: map[string]bool{},
 	}
 }
 
@@ -91,10 +99,11 @@ func (c *ctlState) forgetWindow(remoteWin string) {
 	}
 	delete(c.focus, remoteWin)
 	delete(c.wantLayout, remoteWin)
+	delete(c.wantReseed, remoteWin)
 }
 
 // takeIntents removes and returns the pending reconcile work.
-func (c *ctlState) takeIntents() (windows bool, layouts []string) {
+func (c *ctlState) takeIntents() (windows bool, layouts []string, reseeds []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	windows = c.wantWindows
@@ -103,7 +112,11 @@ func (c *ctlState) takeIntents() (windows bool, layouts []string) {
 		layouts = append(layouts, w)
 		delete(c.wantLayout, w)
 	}
-	return windows, layouts
+	for w := range c.wantReseed {
+		reseeds = append(reseeds, w)
+		delete(c.wantReseed, w)
+	}
+	return windows, layouts, reseeds
 }
 
 // ctlRequest is a decoded, validated FrameCtl: the remote commands to run and
@@ -112,6 +125,10 @@ type ctlRequest struct {
 	cmds        []string // control-mode command lines, in order
 	wantWindows bool
 	wantLayout  string // remote window id, or "" for none
+	// wantReseed names the remote window whose mirror needs a fresh screen
+	// after this verb, or "" for none. See ctlState.wantReseed for why it is
+	// window-scoped rather than a pane id.
+	wantReseed string
 	// invalidate names the window whose remote-active-pane belief this verb
 	// makes unknowable (the new pane does not exist at command time).
 	invalidate string
@@ -138,6 +155,9 @@ type verb struct {
 	optArgs int
 	windows bool
 	layout  bool
+	// reseed marks a verb that clears the remote screen (respawn-*), so the
+	// mirror must be re-seeded from the remote or it keeps stale bytes.
+	reseed bool
 	// moves is true when the verb implicitly changes the remote's current pane.
 	moves bool
 	// needsView marks a verb whose effect on the remote depends on WHICH
@@ -253,6 +273,17 @@ var verbs = map[string]verb{
 	// Killing a pane can empty its window, so it needs the window reconcile too.
 	"kill-pane": {layout: true, windows: true, moves: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
 		return []string{fmt.Sprintf("kill-pane -t %s", pane)}, nil
+	}},
+	// respawn-pane -k restarts the remote program in place (same pane id, same
+	// active pane), so only the re-seed is owed — not a layout/moves reconcile.
+	"respawn-pane": {reseed: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
+		return []string{fmt.Sprintf("respawn-pane -k -t %s", pane)}, nil
+	}},
+	// respawn-window -k destroys every remote pane but the window's FIRST
+	// (spawn.c), so the layout reconcile drops the lost renderers and the first
+	// pane becomes active (moves) — use the window-scoped re-seed, never a pane id.
+	"respawn-window": {layout: true, moves: true, reseed: true, build: func(_, win, _ string, _ []string) ([]string, error) {
+		return []string{fmt.Sprintf("respawn-window -k -t %s", win)}, nil
 	}},
 	"resize": {args: 2, layout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
 		dir, ok := resizeDirs[a[0]]
@@ -718,6 +749,9 @@ func (c *ctlState) parseCtl(argv []string, sess string) (ctlRequest, error) {
 	if v.layout {
 		req.wantLayout = win
 	}
+	if v.reseed {
+		req.wantReseed = win
+	}
 	if v.moves {
 		req.invalidate = win
 	}
@@ -749,6 +783,9 @@ func (c *ctlState) submit(req ctlRequest, send func(...string) bool) bool {
 	}
 	if req.wantLayout != "" {
 		c.wantLayout[req.wantLayout] = true
+	}
+	if req.wantReseed != "" {
+		c.wantReseed[req.wantReseed] = true
 	}
 	// A verb that implicitly moves the remote's current pane leaves the belief
 	// unknowable at command time (the new pane does not exist yet), so invalidate

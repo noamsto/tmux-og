@@ -74,6 +74,7 @@ func mirrorWindowMenu(p *paths.Paths, pos string) string {
 		` "#{?#{>:#{session_windows},1},,-}Swap Left" l { swap-window -t :-1 }` +
 		` "#{?#{>:#{session_windows},1},,-}Swap Right" r { swap-window -t :+1 }` +
 		` '' Kill X { ` + esc1(ctlRun(p, "kill-window", "")) + ` }` +
+		` Respawn R { ` + esc1(ctlRun(p, "respawn-window", "")) + ` }` +
 		` Rename n { ` + esc1(renamePrompt(p)) + ` }` +
 		` '' "New Window" w { ` + esc1(ctlRun(p, "new-window", "")) + ` }`
 }
@@ -92,8 +93,10 @@ const paneMenuLocalItems = `"#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}
 	` "#{?mouse_hyperlink,Type #[underscore]#{=/9/...:mouse_hyperlink},}" C-h { copy-mode -q ; send-keys -l "#{q:mouse_hyperlink}" }` +
 	` "#{?mouse_hyperlink,Copy #[underscore]#{=/9/...:mouse_hyperlink},}" h { copy-mode -q ; set-buffer "#{q:mouse_hyperlink}" } ''`
 
-// mirrorPaneMenu keeps Respawn as the one local structural item, relabelled:
-// on a mirror it redials the renderer (#547) rather than restarting a program.
+// mirrorPaneMenu keeps two distinct gestures: Respawn asks the REMOTE to
+// restart the program in the pane (stock label and key), and Reconnect redials
+// the local renderer (#547) — the un-wedge gesture, moved off R because one
+// menu cannot carry two items on one key.
 func mirrorPaneMenu(p *paths.Paths, pos string) string {
 	return `display-menu -T "#[align=centre]#{pane_index} (#{pane_id})" ` + pos + " " + paneMenuLocalItems +
 		` "#{?#{!:#{pane_floating_flag}},Horizontal Split,}" h { ` + esc1(ctlRun(p, "split-h", "")) + ` }` +
@@ -101,7 +104,8 @@ func mirrorPaneMenu(p *paths.Paths, pos string) string {
 		` '' "#{?#{&&:#{!:#{pane_floating_flag}},#{>:#{window_panes},1}},Swap Up,}" u { ` + esc1(ctlRun(p, "swap", " U")) + ` }` +
 		` "#{?#{&&:#{!:#{pane_floating_flag}},#{>:#{window_panes},1}},Swap Down,}" d { ` + esc1(ctlRun(p, "swap", " D")) + ` }` +
 		` '' Kill X { ` + esc1(ctlRun(p, "kill-pane", "")) + ` }` +
-		` Reconnect R { respawn-pane -k }` +
+		` Respawn R { ` + esc1(ctlRun(p, "respawn-pane", "")) + ` }` +
+		` Reconnect e { respawn-pane -k }` +
 		` "#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}" z { ` + esc1(ctlRun(p, "zoom", "")) + ` }`
 }
 
