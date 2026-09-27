@@ -315,6 +315,21 @@ func TestOpenDoneMsgFlashesFailure(t *testing.T) {
 	}
 }
 
+// TestBranchBlockLongBranchStaysInsideCardWidth: branchBlock() must truncate
+// the "branch → base" head line — it renders raw window/git data with no
+// upper bound, and previously skipped truncate() entirely.
+func TestBranchBlockLongBranchStaysInsideCardWidth(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, baseBranch: "main", win: winState{
+		branch: "feat/768-enrichcard-truncate-by-display-width-not-and-then-some-more",
+	}}
+	out := render(m)
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
+		}
+	}
+}
+
 // TestFooterLongFlashStaysInsideCardWidth: footer() must truncate m.flash to
 // the room actually left on its row, not the full panel width, or a long
 // flash (an exec error, a CLI stderr line) overflows the card's border.
