@@ -52,6 +52,7 @@ setup() {
 	# name (the names under test carry the literal text "$S_A"/"$S_B").
 	export S_A="$BATS_TEST_TMPDIR/sa"
 	export S_B="$BATS_TEST_TMPDIR/sb"
+	export S_C="$BATS_TEST_TMPDIR/sc"
 
 	FAKEBIN="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$FAKEBIN"
@@ -135,7 +136,10 @@ setup() {
 	# text lands there instead of at the title.
 	QUOTE="x' '' '' ; run-shell 'touch \$S_A' #"
 	SUBST='x##(touch $S_B)'
-	export QUOTE SUBST
+	# The issue's literal quote payload, verbatim. It fires on a mirror
+	# window, whose session menu (#769) has no Rename item for it to break.
+	LITERAL="x' '' ; run-shell 'touch \$S_C' ; display-menu -T 'y"
+	export QUOTE SUBST LITERAL
 
 	inner new-session -d -s s -x 200 -y 50
 	# The splash popup would eat the click and repaint the status line.
@@ -206,6 +210,13 @@ switch_client_to() { # target (session id or exact name)
 	sleep 0.3
 }
 
+# Flips the #769 mirror gate the session menu branches on, the way the daemon
+# stamps a mirror: @bridge_win on the window, @bridge_pane on the pane.
+gate_mirror() { # session target
+	inner set-option -w -t "$1:" @bridge_win 1
+	inner set-option -p -t "$(inner list-panes -t "$1:" -F '#{pane_id}' | head -1)" @bridge_pane '%42'
+}
+
 # Closes whatever menu the previous click opened, so its screen real estate
 # and mouse-target state can't bleed into the next click.
 dismiss_menu() {
@@ -274,16 +285,31 @@ open_remote() { # remote-sess-name [no_switch]
 	click 3 1
 	wait_for_sentinel "$S_B" # loop x subst
 	wait_for_sentinel "$S_A" # loop x quote (again)
+	dismiss_menu
+
+	# Click 4: the issue's literal payload as the title of the mirror-branch
+	# session menu.
+	local lid
+	lid="$(inner new-session -d -P -F '#{session_id}' -s "h-$LITERAL")"
+	inner set-option -t "$lid" @bridge_host h
+	inner set-option -t "$lid" @bridge_session "$LITERAL"
+	gate_mirror "$lid"
+	switch_client_to "$lid"
+	rm -f "$S_C"
+	click 3 1
+	wait_for_sentinel "$S_C" # title x literal quote, mirror branch
 }
 
 # --- fixed: the launcher's sanitized names are inert under the same click ---
 
-@test "fixed: both hostile names open as inert mirrors" {
+@test "fixed: the hostile names open as inert mirrors" {
 	attach_client
 
 	run open_remote "$QUOTE"
 	[ "$status" -eq 0 ]
 	run open_remote "$SUBST"
+	[ "$status" -eq 0 ]
+	run open_remote "$LITERAL"
 	[ "$status" -eq 0 ]
 
 	mirror_name_part h
@@ -292,6 +318,8 @@ open_remote() { # remote-sess-name [no_switch]
 	local qsess="${hpart}-${REPLY}"
 	mirror_name_part "$SUBST"
 	local ssess="${hpart}-${REPLY}"
+	mirror_name_part "$LITERAL"
+	local lsess="${hpart}-${REPLY}"
 
 	local sessions
 	sessions="$(inner list-sessions -F '#{session_name}')"
@@ -299,8 +327,9 @@ open_remote() { # remote-sess-name [no_switch]
 	grep -qxF "$ssess" <<<"$sessions"
 	[ "$(inner show-options -t "$qsess" -qv @bridge_session)" = "$QUOTE" ]
 	[ "$(inner show-options -t "$ssess" -qv @bridge_session)" = "$SUBST" ]
+	[ "$(inner show-options -t "$lsess" -qv @bridge_session)" = "$LITERAL" ]
 
-	rm -f "$S_A" "$S_B"
+	rm -f "$S_A" "$S_B" "$S_C"
 	switch_client_to "=$qsess"
 	click 3 1
 	wait_for_screen "$qsess"
@@ -313,6 +342,16 @@ open_remote() { # remote-sess-name [no_switch]
 	click 3 1
 	wait_for_screen "$ssess"
 	wait_for_screen "Switch To $qsess"
+	run ! wait_for_sentinel "$S_A"
+	run ! wait_for_sentinel "$S_B"
+
+	dismiss_menu
+	gate_mirror "=$lsess"
+	switch_client_to "=$lsess"
+	click 3 1
+	wait_for_screen "$lsess"
+	wait_for_screen "Switch To $qsess"
+	run ! wait_for_sentinel "$S_C"
 	run ! wait_for_sentinel "$S_A"
 	run ! wait_for_sentinel "$S_B"
 }

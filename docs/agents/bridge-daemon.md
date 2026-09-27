@@ -341,9 +341,11 @@ inside `run-shell -C "display-menu …"` (two layers: the `-C` expansion, then
 the build). After build expansion, each added command is byte-identical to its
 keybind's command, so it inherits the keybind's measured quoting. The session
 menu's title and its Switch-To loop keep stock's bare `#{session_name}` under
-`run-shell -C`, which tmux re-parses as command text — a pre-existing exposure
-(not introduced by #769) for a mirror session whose local name embeds the
-remote session name (`og-remote-open`), tracked in #783.
+`run-shell -C`, which tmux re-parses as command text. That is safe only because
+`og-remote-open` maps both halves of a mirror's local name to `[A-Za-z0-9_-]`
+and keeps the raw remote name in `@bridge_session` (#783); a local name
+carrying a remote-derived quote or `#(` would run local commands on a
+right-click of the session pill.
 
 **Old resident servers (#407).** A config is parsed and every `{ … }` block
 built — commands looked up, flags parsed — before any of it runs
