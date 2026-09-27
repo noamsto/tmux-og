@@ -100,7 +100,7 @@ func main() {
 	// "\r\r\n" by an OPOST that's still on.
 	captured := bytes.ReplaceAll(s.captured, []byte("\n"), []byte("\r\n"))
 	restore, _ := render.MakeRaw(0)
-	os.Stdout.Write(render.Seed(captured, s.cx, s.cy, s.alt, s.appck, nil))
+	os.Stdout.Write(render.Seed(captured, s.cx, s.cy, s.alt, s.appck, nil, nil))
 
 	teardown := func() {
 		if restore != nil {

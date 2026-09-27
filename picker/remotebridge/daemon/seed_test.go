@@ -246,6 +246,84 @@ func TestPaneSeedCarriesMouseModeThroughSeed(t *testing.T) {
 	}
 }
 
+// TestPaneSeedCarriesTerminalModesThroughSeed: a remote pane that enabled
+// bracketed paste and focus reporting before the mirror seeded it must have
+// both painted into the seed's DECSET bytes — local tmux wraps a paste in
+// \e[200~ only when the pane's own screen has 2004 set, and sends focus
+// reports only when it has 1004 (#804).
+func TestPaneSeedCarriesTerminalModesThroughSeed(t *testing.T) {
+	// cx=5 cy=2 alt=0 appck=0 no mouse, private modes 1004 and 2004 on.
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0 7,25,1004,2004", "%end 1 1 1", // display-message
+		"%begin 2 2 1", "line-one", "%end 2 2 1", // capture-pane
+	}, "\n") + "\n"
+
+	var sent []string
+	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+	if err != nil {
+		t.Fatalf("PaneSeed: %v", err)
+	}
+	for _, set := range []string{"\x1b[?2004h", "\x1b[?1004h"} {
+		if !bytes.Contains(got, []byte(set)) {
+			t.Errorf("seed %q missing %s", got, set)
+		}
+	}
+	for _, clear := range []string{"\x1b[?2004l", "\x1b[?1004l"} {
+		if !bytes.Contains(got, []byte(clear)) {
+			t.Errorf("seed %q missing clear %s", got, clear)
+		}
+	}
+}
+
+// TestPaneSeedClearsTerminalModesTheRemoteLeft: a remote that turned the
+// modes off during a gap reports a private-mode list without them, and the
+// seed must clear both — a stale local 2004/1004 would otherwise outlive the
+// reseed (#804).
+func TestPaneSeedClearsTerminalModesTheRemoteLeft(t *testing.T) {
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0 7,25", "%end 1 1 1", // display-message: no 1004/2004
+		"%begin 2 2 1", "line-one", "%end 2 2 1", // capture-pane
+	}, "\n") + "\n"
+
+	var sent []string
+	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+	if err != nil {
+		t.Fatalf("PaneSeed: %v", err)
+	}
+	for _, clear := range []string{"\x1b[?2004l", "\x1b[?1004l"} {
+		if !bytes.Contains(got, []byte(clear)) {
+			t.Errorf("seed %q missing clear %s", got, clear)
+		}
+	}
+	for _, set := range []string{"\x1b[?2004h", "\x1b[?1004h"} {
+		if bytes.Contains(got, []byte(set)) {
+			t.Errorf("seed %q must not set %s the remote does not have", got, set)
+		}
+	}
+}
+
+// TestPaneSeedNoTerminalModeListLeavesModesAlone: a cursor reply without the
+// #{pane_private_modes} field (a remote tmux older than 3.8, or one missing
+// the format) must leave the mirror's bracketed-paste and focus modes alone —
+// unknown is not off, exactly as for the mouse.
+func TestPaneSeedNoTerminalModeListLeavesModesAlone(t *testing.T) {
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // display-message: nine fields, no list
+		"%begin 2 2 1", "line-one", "%end 2 2 1", // capture-pane
+	}, "\n") + "\n"
+
+	var sent []string
+	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+	if err != nil {
+		t.Fatalf("PaneSeed: %v", err)
+	}
+	for _, mode := range []string{"2004", "1004"} {
+		if bytes.Contains(got, []byte("\x1b[?"+mode)) {
+			t.Errorf("seed %q touches mode ?%s with the state unknown", got, mode)
+		}
+	}
+}
+
 // TestPaneSeedNoMouseTrackingClearsMouseModes: a pane with no mouse tracking
 // still clears all five DECSET modes through the full PaneSeeds ->
 // render.Seed path, so a stale local mode never outlives a reseed.

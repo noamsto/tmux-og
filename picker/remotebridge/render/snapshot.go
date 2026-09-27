@@ -14,10 +14,26 @@ type MouseMode struct {
 	SGR, UTF8             bool
 }
 
-// Seed paints captured as a full-screen repaint. A nil mouse means the
-// remote's mouse state is unknown, and leaves the local pane's modes as they
-// are: a transient read failure must not turn a working mirror mouse-deaf.
-func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, mouse *MouseMode) []byte {
+// TerminalModes is the pane's bracketed-paste and focus-reporting DECSET
+// state, seeded clear-then-set like the mouse because a mirror pane learns
+// modes only from bytes it is handed and so must have them restored across a
+// gap.
+//
+// tmux exposes both in one comma-separated list, #{pane_private_modes}
+// (bracketed paste ?2004, focus reporting ?1004), so the pair is read and
+// seeded atomically: there is no per-mode format for focus reporting, and
+// #{bracket_paste_flag} (the scalar, from tmux 3.7) would leave focus unknown
+// whenever it was the only readable half of the pair.
+type TerminalModes struct {
+	BracketedPaste bool
+	FocusReporting bool
+}
+
+// Seed paints captured as a full-screen repaint. A nil mouse or nil modes
+// means the remote's state is unknown, and leaves the local pane's modes as
+// they are: a transient read failure must not turn a working mirror
+// mouse-deaf, nor clear a paste/focus mode it can no longer read.
+func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, mouse *MouseMode, modes *TerminalModes) []byte {
 	var b bytes.Buffer
 	// Both the alt-screen switch and ED erase with the CURRENT background, and
 	// the live stream this seed interrupts leaves one set, so without this reset
@@ -34,6 +50,9 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	if appCursorKeys {
 		b.WriteString("\x1b[?1h")
 	}
+	if modes != nil {
+		writeTerminalModes(&b, *modes)
+	}
 	if mouse != nil {
 		writeMouseMode(&b, *mouse)
 	}
@@ -41,6 +60,20 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	b.Write(captured)
 	fmt.Fprintf(&b, "\x1b[%d;%dH", cursorY+1, cursorX+1)
 	return b.Bytes()
+}
+
+// writeTerminalModes clears then sets bracketed paste and focus reporting,
+// the same as writeMouseMode: without the clear a mode the remote turned off
+// during a gap would survive the reseed; without the set a mode it enabled
+// before the mirror attached would never reach the local pane.
+func writeTerminalModes(b *bytes.Buffer, modes TerminalModes) {
+	b.WriteString("\x1b[?2004l\x1b[?1004l")
+	if modes.BracketedPaste {
+		b.WriteString("\x1b[?2004h")
+	}
+	if modes.FocusReporting {
+		b.WriteString("\x1b[?1004h")
+	}
 }
 
 // writeMouseMode clears every mouse mode, then sets the true ones: a mode the

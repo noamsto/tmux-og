@@ -43,7 +43,7 @@ type roundTrip = func(cmds ...string) replies
 func one(rt roundTrip, cmd string) (controlmode.Line, bool) { return rt(cmd)() }
 
 func cursorCmd(paneID string) string {
-	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag}'", paneID)
+	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{pane_private_modes}'", paneID)
 }
 
 func captureCmd(paneID string) string {
@@ -91,7 +91,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 	for i, id := range paneIDs {
 		curLine, curOK := next()
 		capLine, capOK := next()
-		cx, cy, alt, appck, mouse := parseCursor(curLine, curOK)
+		cx, cy, alt, appck, mouse, modes := parseCursor(curLine, curOK)
 		captured, isErr := parseCapture(capLine, capOK)
 		// isErr, not len(captured)==0: a genuinely blank pane is a valid
 		// successful capture with empty Data, so an emptiness check alone
@@ -104,7 +104,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 			onSeed(i, nil, fmt.Errorf("capture-pane failed for %s", id))
 			continue
 		}
-		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse), nil)
+		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, modes), nil)
 	}
 }
 
@@ -114,23 +114,24 @@ func replaceLF(b []byte) []byte {
 
 // parseCursor parses an already-read display-message reply into
 // "cursor_x cursor_y alternate_on keypad_cursor_flag mouse_standard_flag
-// mouse_button_flag mouse_all_flag mouse_sgr_flag mouse_utf8_flag". An error
-// reply or a dead stream degrades to (0,0,false,false,nil) rather than
-// rejecting the seed — only the capture-pane reply can do that (see
-// parseCapture). mouse is nil (unknown) unless all nine fields are present: a
-// remote tmux lacking one of the mouse formats expands it empty, which drops
-// the count but leaves the four cursor fields in place.
-func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode) {
+// mouse_button_flag mouse_all_flag mouse_sgr_flag mouse_utf8_flag
+// pane_private_modes". An error reply or a dead stream degrades to
+// (0,0,false,false,nil,nil) rather than rejecting the seed — only the
+// capture-pane reply can do that (see parseCapture). mouse is nil (unknown)
+// unless the reply carries the five mouse fields, and modes is nil (unknown)
+// unless it carries the private-mode list: a remote tmux missing that format
+// expands it empty and drops the field.
+func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes) {
 	if !ok || l.Kind == controlmode.Error {
-		return 0, 0, false, false, nil
+		return 0, 0, false, false, nil, nil
 	}
 	fields := strings.Fields(string(l.Data))
 	if len(fields) < 4 {
-		return 0, 0, false, false, nil
+		return 0, 0, false, false, nil, nil
 	}
 	cx, _ = strconv.Atoi(fields[0])
 	cy, _ = strconv.Atoi(fields[1])
-	if len(fields) == 9 {
+	if len(fields) >= 9 {
 		mouse = &render.MouseMode{
 			Standard: fields[4] == "1",
 			Button:   fields[5] == "1",
@@ -139,7 +140,27 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 			UTF8:     fields[8] == "1",
 		}
 	}
-	return cx, cy, fields[2] == "1", fields[3] == "1", mouse
+	// #{pane_private_modes} is a comma-separated list of the pane's active
+	// DECSET modes. strings.Fields drops it when the list is empty, so a reply
+	// with fewer than ten fields (an older remote tmux) leaves both modes
+	// unknown rather than reading an absent list as "off".
+	if len(fields) >= 10 {
+		modes = &render.TerminalModes{
+			BracketedPaste: privateModeSet(fields[9], 2004),
+			FocusReporting: privateModeSet(fields[9], 1004),
+		}
+	}
+	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes
+}
+
+// privateModeSet reports whether a #{pane_private_modes} list contains mode.
+func privateModeSet(list string, mode int) bool {
+	for _, m := range strings.Split(list, ",") {
+		if n, err := strconv.Atoi(m); err == nil && n == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // parseCapture parses an already-read capture-pane reply and reports whether
