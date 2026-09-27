@@ -253,11 +253,22 @@ sess=\"\$sess_lit\""
 	# so a name resolved here by tmux's own unique-prefix match must become
 	# the real session name, or the first attach is refused. A session that
 	# doesn't exist yet (OG_REMOTE_RESTORE / OG_REMOTE_NEW_DIR) leaves $sess
-	# as the caller's literal.
-	# shellcheck disable=SC2016
-	probe_script+='
-sess_canon=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "$sess" -F '"'"'#{session_name}'"'"' 2>/dev/null | head -1)
-[ -n "$sess_canon" ] && sess="$sess_canon"'
+	# as the caller's literal — the create/restore below is what makes it
+	# exist — so those opens skip this step entirely.
+	if [[ -z ${OG_REMOTE_NEW_DIR:-} && -z ${OG_REMOTE_RESTORE:-} ]]; then
+		# Exact first, prefix only as a fallback: `has-session -t "=$sess"`
+		# answers whether the literal name is a live session, and a match there
+		# must win over any prefix resolution — a plain open of a session that
+		# exists verbatim never needs its name rewritten.
+		# shellcheck disable=SC2016
+		probe_script+='
+if env TMUX_TMPDIR="$tmpdir" "$tmux_bin" has-session -t "=$sess" 2>/dev/null; then
+	:
+else
+	sess_canon=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "$sess" -F '"'"'#{session_name}'"'"' 2>/dev/null | head -1)
+	[ -n "$sess_canon" ] && sess="$sess_canon"
+fi'
+	fi
 else
 	# shellcheck disable=SC2016
 	probe_script+='

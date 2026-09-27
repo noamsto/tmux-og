@@ -806,15 +806,6 @@ func runMirror(cfg Config) error {
 		return fmt.Errorf("daemon: remote session %s has no windows", cfg.RemoteSession)
 	}
 
-	// A rebuild's dial ran with no listener up, so og-remote-open may have read
-	// this daemon as dead and recreated the session under a daemon of its own:
-	// this run must neither remove that daemon's socket nor stamp and respawn
-	// into a session that is no longer the one it was launched into.
-	if cfg.reopened && !ownsLocalSession(cfg) {
-		hold.close()
-		return errNotOurs
-	}
-
 	// One-shot, here rather than in repair: Run() runs exactly once per bridge,
 	// so this is what makes the report "once per bridge connect" (#545) with no
 	// state of its own to track.
@@ -823,8 +814,26 @@ func runMirror(cfg Config) error {
 	}
 	// Once per bridge, like the probe above: tmux sets session_path at creation
 	// and nothing a mirror follows changes it afterwards.
-	if p := readSessionPath(rt, cfg.RemoteSession); p != "" {
-		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", p)
+	sessionPath := readSessionPath(rt, cfg.RemoteSession)
+
+	// A rebuild's dial ran with no listener up, so og-remote-open may have read
+	// this daemon as dead and recreated the session under a daemon of its own:
+	// this run must neither remove that daemon's socket nor stamp and respawn
+	// into a session that is no longer the one it was launched into. The check
+	// sits as late as it can — the two remote round trips above are each a
+	// window in which og-remote-open can win the race, so asking before them
+	// would only narrow it. Everything below this point touches the local
+	// session or its files.
+	if cfg.reopened && !ownsLocalSession(cfg) {
+		hold.close()
+		return errNotOurs
+	}
+	// Stamped only after the ownership check: a session og-remote-open recreated
+	// under this name during those round trips must not receive this mirror's
+	// session path. The bare name is safe here only because the check just
+	// proved it still stands; teardown and the other paths target the pin.
+	if sessionPath != "" {
+		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", sessionPath)
 	}
 
 	// Published here for the first attach; repair() (below) re-sends the same
