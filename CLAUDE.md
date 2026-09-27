@@ -20,6 +20,7 @@ This file holds only what every task needs. The measured evidence, invariants an
 | Light/dark, `@catppuccin_flavor`, `theme-state.json`, client theme hooks | `docs/agents/theme.md` |
 | tmux-remux persistence, `@remux_relaunch`, pi resume | `docs/agents/persist.md` |
 | `tmux-splash` | `docs/agents/splash.md` |
+| Typing lag, forks per hook event, the `if -F` refit-hook gates, the keystroke-latency probe and harness | `docs/agents/performance.md` |
 | Why a tmux rule below exists (format delimiters, session targeting, scratch servers, `-B` monitor hooks) | `docs/agents/tmux-gotchas.md` |
 
 When a change alters behaviour one of these docs describes, update that doc in the same PR. New subsystem detail goes there, never here.

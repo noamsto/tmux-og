@@ -82,6 +82,73 @@ arm_grid_hooks() {
 	tmux source-file "$HOOKS_FILE"
 }
 
+# arm_refit_hooks — like arm_grid_hooks but sources both the float-refit and
+# grid-refit production hook lines (window-resized, window-resized[10],
+# window-layout-changed), so a resize storm exercises the shipped wiring
+# rather than a hand-rolled copy (#793).
+arm_refit_hooks() {
+	[ -n "${TMUX_OG_CONF:-}" ] || return 1
+	[ -f "$TMUX_OG_CONF" ] || return 1
+	HOOKS_FILE="$BATS_TEST_TMPDIR/refit-hooks.conf"
+	grep -E '^[[:space:]]*set-hook .*tmux-(grid|float)-refit' "$TMUX_OG_CONF" >"$HOOKS_FILE"
+	tmux source-file "$HOOKS_FILE"
+}
+
+# start_logged_server — replace setup's server with one started under
+# `tmux -v` (verbose mode can only be set at server start), writing
+# tmux-server-<pid>.log into the cwd where it was launched. Re-creates the
+# same 4-pane shape setup left, so make_grid and the rest of this file's
+# helpers keep working against it.
+start_logged_server() {
+	tmux kill-server 2>/dev/null || true
+	# kill-server returns before the old server has actually unbound the
+	# socket; a new-session racing that teardown intermittently fails with
+	# "server exited unexpectedly" (observed empirically). A fixed pause
+	# clears it reliably; polling for the socket's disappearance does not,
+	# since the stale socket can linger well past the old process's death.
+	sleep 0.2
+	mkdir -p "$BATS_TEST_TMPDIR/vlog"
+	(cd "$BATS_TEST_TMPDIR/vlog" && tmux -v -f /dev/null new-session -d -s S -c "$TMUX_TMPDIR" -x 200 -y 50)
+	WIN="$(tmux display-message -p -t S '#{window_id}')"
+	tmux split-window -t "$WIN"
+	tmux split-window -t "$WIN"
+	tmux split-window -t "$WIN"
+	LEAD=""
+	ROLE_PANES=()
+}
+
+# refit_jobs <basename> — count job_run lines for a script by basename (the
+# -v log writes two job_run lines per forked job, so callers compare counts
+# across a storm, never treat this as an absolute job count). Prints 0 and
+# never fails the test when the log has no matching job yet.
+refit_jobs() {
+	cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c "job_run: cmd=.*/$1 " || true
+}
+
+# storm — a same-size resize storm shaped like the bridge daemon's: a
+# refresh-client to the observer's own current size, then one
+# refresh-client -C @N:<WxH> per window at ITS OWN current size (nothing
+# actually changes size). tmux-next's refresh-client -C recalculates every
+# window on the server and re-fires window-resized/window-layout-changed
+# regardless (docs/agents/performance.md), which is the fork storm under test.
+storm() {
+	local win w h cmds
+	cmds=""
+	while IFS= read -r win; do
+		read -r w h <<<"$(tmux display-message -p -t "$win" '#{window_width} #{window_height}')"
+		cmds+="refresh-client -C ${win}:${w}x${h}"$'\n'
+	done < <(tmux list-windows -a -F '#{window_id}')
+	{
+		printf 'refresh-client -C 200x50\n'
+		printf '%s' "$cmds"
+		sleep 0.5
+	} | tmux -C attach -t S >/dev/null 2>&1
+}
+
+# settle — lets any backgrounded refit job start and log before the next
+# count read.
+settle() { sleep 1; }
+
 # #760 reproduces only on the pinned next-3.9: upstream <=3.7c already collapses
 # the freed cells back to the pre-split sibling, so on such a tmux the behavior
 # assertions below hold with no fix at all. Skip rather than report a green that
@@ -334,4 +401,362 @@ layout_bug_reproduces() {
 	sleep 0.5
 	[ "$(tmux show-options -w -v -t "$WIN" @grid_refit_sig)" = "$sig" ]
 	[ "$(tmux display-message -p -t "$LEAD" '#{pane_width}')" = "$lead_before" ]
+}
+
+@test "a same-size resize storm forks no refit job on plain windows (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	tmux new-window -d -t S:
+	tmux new-window -d -t S:
+	tmux new-window -d -t S:
+	arm_refit_hooks
+	settle
+
+	local g0 f0
+	g0="$(refit_jobs tmux-grid-refit)"
+	f0="$(refit_jobs tmux-float-refit)"
+	storm
+	settle
+	# Plain windows: neither script could have done anything, so the
+	# in-process gates must not fork either one.
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
+	[ "$(refit_jobs tmux-float-refit)" = "$f0" ]
+}
+
+@test "an already laid-out grid forks no refit on a same-size storm, and settles (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the post-apply window-layout-changed run to stamp
+	# @grid_refit_layout. On a pre-#793 conf nothing stamps it; only the
+	# count assertions below are the signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	settle
+	local g0
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	# A same-size storm against a grid the script already verified must fork
+	# nothing further...
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
+	# ...and a second quiet interval (the settle case) must not either: a
+	# stamp write is itself a set-option, which runs recalculate_sizes, and
+	# the gate must cut that off after one pass.
+	settle
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
+}
+
+@test "production hooks: a real resize still refits the grid and a stamped float (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+
+	# Grow the window: upstream's float clamp only ever shrinks, so a float
+	# that grows is proof tmux-float-refit's hook actually ran.
+	tmux resize-window -t "$WIN" -x 100 -y 30
+	make_grid 3
+
+	if ! tmux new-pane -t "$WIN" -x 90% -y 90% -X 5% -Y 5% -B heavy 2>/dev/null; then
+		skip "this tmux cannot create a floating pane"
+	fi
+	local floating
+	floating="$(tmux list-panes -t "$WIN" -F '#{pane_floating_flag}' | tr -d '\n')"
+	case "$floating" in
+	*1*) ;;
+	*) skip "this tmux does not report pane_floating_flag" ;;
+	esac
+	FLOAT="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}')"
+	tmux set-option -p -t "$FLOAT" @float_geom '90% 90% 5% 5%'
+
+	# The shipped production lines, not a hand-rolled set-hook copy.
+	arm_refit_hooks
+
+	tmux resize-window -t "$WIN" -x 200 -y 50
+
+	local gw fw tries
+	gw=""
+	fw=0
+	tries=0
+	while ((tries < 60)); do
+		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
+		fw="$(tmux display-message -p -t "$FLOAT" '#{pane_width}' 2>/dev/null || true)"
+		[[ $gw == "60%" && ${fw:-0} -ge 170 ]] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	# grid-refit fired (layout applied) and float-refit fired (float grew to
+	# its 90% creation width against the larger window).
+	[ "$gw" = "60%" ]
+	[ "${fw:-0}" -ge 170 ]
+}
+
+@test "a float opened after a shrink is refit when the window grows back (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+
+	tmux resize-window -t "$WIN" -x 200 -y 50
+	arm_refit_hooks
+
+	if ! tmux new-pane -t "$WIN" -x 90% -y 90% -X 5% -Y 5% -B heavy 2>/dev/null; then
+		skip "this tmux cannot create a floating pane"
+	fi
+	local float
+	float="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}')"
+	tmux set-option -p -t "$float" @float_geom '90% 90% 5% 5%'
+
+	tmux resize-window -t "$WIN" -x 100 -y 30
+	tmux resize-window -t "$WIN" -x 200 -y 50
+
+	local fw tries
+	fw=0
+	tries=0
+	while ((tries < 30)); do
+		fw="$(tmux display-message -p -t "$float" '#{pane_width}' 2>/dev/null || true)"
+		[ "${fw:-0}" -ge 170 ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	# First refit ran: the float regrew across the shrink/grow.
+	[ "${fw:-0}" -ge 170 ]
+
+	tmux kill-pane -t "$float"
+	tmux resize-window -t "$WIN" -x 100 -y 30
+
+	if ! tmux new-pane -t "$WIN" -x 90% -y 90% -X 5% -Y 5% -B heavy 2>/dev/null; then
+		skip "this tmux cannot create a floating pane"
+	fi
+	local float2
+	float2="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}')"
+	tmux set-option -p -t "$float2" @float_geom '90% 90% 5% 5%'
+
+	tmux resize-window -t "$WIN" -x 200 -y 50
+
+	fw=0
+	tries=0
+	while ((tries < 30)); do
+		fw="$(tmux display-message -p -t "$float2" '#{pane_width}' 2>/dev/null || true)"
+		[ "${fw:-0}" -ge 170 ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	# The new float (opened after the shrink, with no stamp of its own) is
+	# refit when the window grows back, same as the first one.
+	[ "${fw:-0}" -ge 170 ]
+}
+
+@test "a stamped float forks no refit on a same-size storm (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+
+	tmux resize-window -t "$WIN" -x 100 -y 30
+	if ! tmux new-pane -t "$WIN" -x 90% -y 90% -X 5% -Y 5% -B heavy 2>/dev/null; then
+		skip "this tmux cannot create a floating pane"
+	fi
+	local float
+	float="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}')"
+	tmux set-option -p -t "$float" @float_geom '90% 90% 5% 5%'
+
+	arm_refit_hooks
+	tmux resize-window -t "$WIN" -x 200 -y 50
+
+	local fw tries
+	fw=0
+	tries=0
+	while ((tries < 30)); do
+		fw="$(tmux display-message -p -t "$float" '#{pane_width}' 2>/dev/null || true)"
+		[ "${fw:-0}" -ge 170 ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ "${fw:-0}" -ge 170 ]
+
+	settle
+	local f0
+	f0="$(refit_jobs tmux-float-refit)"
+	storm
+	settle
+	# A same-size storm against a float the script already stamped must fork
+	# no further float-refit job.
+	[ "$(refit_jobs tmux-float-refit)" = "$f0" ]
+}
+
+@test "a zoomed grid forks no refit on a same-size storm (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the post-apply window-layout-changed run to stamp
+	# @grid_refit_layout. On a pre-#793 conf nothing stamps it; only the
+	# count assertions below are the signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	tmux resize-pane -Z -t "$LEAD"
+	settle
+	local g0
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	# Without the zoom conjunct in the gate, the zoomed pane's geometry (it
+	# fills the window) differs from the pre-zoom stamp, so a same-size storm
+	# would fork on every event even though the script always exits on zoom.
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
+
+	# Change the lead share while still zoomed: tmux itself would restore the
+	# pre-zoom (60%) layout on unzoom with no refit at all, so asserting the
+	# new 40% share below only passes if a refit actually ran after unzoom.
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
+	tmux resize-pane -Z -t "$LEAD"
+
+	local gw lw first ok tries2
+	ok=0
+	tries2=0
+	while ((tries2 < 30)); do
+		gw="$(tmux show-options -w -v -t "$WIN" main-pane-width 2>/dev/null || true)"
+		first="$(first_pane)"
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ $gw == "40%" && $first == "$LEAD" && ${lw:-0} -le 85 ]]; then
+			ok=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	# Unzooming triggered a fresh refit onto the changed share, not tmux
+	# restoring the pre-zoom layout on its own.
+	[ "$ok" -eq 1 ]
+}
+
+@test "a changed lead share is applied on the next event (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the post-apply window-layout-changed run to stamp
+	# @grid_refit_layout. On a pre-#793 conf nothing stamps it; only the
+	# lead-width assertion below is the signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	# A geometry-only gate signature never notices this option change, so the
+	# storm below skips the event and the lead share never shrinks — the
+	# regression the extended signature (fix A) covers.
+	tmux set-option -w -t "$WIN" @crew_grid_main_pct 40
+
+	storm
+
+	local lw tries2 shrunk
+	shrunk=0
+	tries2=0
+	while ((tries2 < 30)); do
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ -n $lw && $lw -le 85 ]]; then
+			shrunk=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$shrunk" -eq 1 ]
+}
+
+@test "a demoted lead is restored even when it has the lowest pane id (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 1
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# Poll for the initial fast-path apply to land before demoting the lead.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+
+	# Demote the lead by swapping it with the second tiled pane. $LEAD keeps
+	# the lowest pane id throughout: #{P:} lists ids regardless of layout, so
+	# on the buggy build the snapshot's first=${ids[0]} is still $LEAD even
+	# though it is no longer first in layout order, and the fast path
+	# wrongly re-stamps the broken layout instead of restoring it.
+	local second
+	second="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | sed -n '2p')"
+	tmux swap-pane -d -s "$LEAD" -t "$second"
+
+	local first lw ok tries2
+	ok=0
+	tries2=0
+	while ((tries2 < 30)); do
+		first="$(first_pane)"
+		lw="$(tmux display-message -p -t "$LEAD" '#{pane_width}' 2>/dev/null || true)"
+		if [[ $first == "$LEAD" && ${lw:-0} -ge 115 ]]; then
+			ok=1
+			break
+		fi
+		sleep 0.1
+		((tries2++)) || true
+	done
+	[ "$ok" -eq 1 ]
+}
+
+@test "a lead that is not the lowest pane id is stamped and forks nothing on a storm (#793)" {
+	arm_refit_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
+	start_logged_server
+	make_grid 2
+	arm_refit_hooks
+	bash "$GRID" "$WIN"
+
+	# On the buggy build, #{P:}'s id order never puts this lead first (its id
+	# is not the lowest), so the fast path never matches and every later
+	# event forks a full apply instead. The stamp landing at all is the
+	# fast-path signal.
+	local tries stamp
+	tries=0
+	stamp=""
+	while ((tries < 30)); do
+		stamp="$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		[ -n "$stamp" ] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$stamp" ]
+
+	settle
+	local g0
+	g0="$(refit_jobs tmux-grid-refit)"
+	storm
+	settle
+	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
 }

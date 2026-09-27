@@ -25,6 +25,11 @@ set -uo pipefail
 target=${1:-}
 [[ -z $target ]] && exit 0
 
+# Byte-identical to the grid gate in config/tmux.conf.tmpl (grid-refit.bats
+# fails on drift). It carries every input of the decision below, not just
+# geometry, so the gate never skips an event that could change the decision.
+grid_sig_fmt='#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}'
+
 # read_opt <option> <default> -> stdout: the window option's value, or <default>
 # when it is unset (show-options prints "invalid option" to stderr and exits 1).
 read_opt() {
@@ -64,12 +69,17 @@ lead=$(tmux list-panes -t "$target" -f '#{&&:#{==:#{@crew_role},lead},#{!:#{pane
 [[ -n $lead ]] || exit 0
 
 read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
-pane_ids=$(read_panes)
-np=$(printf '%s\n' "$pane_ids" | grep -c .) || true
-((np > 1)) || exit 0
 
-read -r w h <<<"$(tmux display-message -p -t "$target" '#{window_width} #{window_height}' 2>/dev/null)"
+# One snapshot, so the stamp below describes exactly the state the verdict
+# used. The signature is the last field: it carries free-text option values,
+# and as the final `read` variable it absorbs any '|' in them.
+IFS='|' read -r w h pane_ids stored_sig geom <<<"$(tmux display-message -p -t "$target" "#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|$grid_sig_fmt" 2>/dev/null)"
 [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
+# #{P:} is not layout order on tmux-next (a swap-pane leaves it unchanged);
+# pane_index is.
+mapfile -t ids < <(tr ' ' '\n' <<<"$pane_ids" | grep . | sort -t: -k1,1n | cut -d: -f2)
+np=${#ids[@]}
+((np > 1)) || exit 0
 
 # Lead's share of the window; out-of-range/non-integer falls back to 60.
 pct=$(read_opt @crew_grid_main_pct 60)
@@ -94,8 +104,12 @@ fi
 # the lead-is-first test below makes a demoted lead (a race that slipped
 # through before this lock existed) re-apply instead of caching the breakage.
 sig="$layout:$pct:$np:${w}x${h}:$min_cols:$aspect:$lead"
-first=$(printf '%s\n' "$pane_ids" | head -1)
-if [[ "$(read_opt @grid_refit_sig '')" == "$sig" && $lead == "$first" ]]; then
+first=${ids[0]}
+if [[ $stored_sig == "$sig" && $lead == "$first" ]]; then
+	# Stamp the verified snapshot so the hook gate skips events on it. The
+	# under-lock re-check below never stamps: a match there means a peer
+	# applied after this snapshot.
+	tmux set-option -w -t "$target" @grid_refit_layout "$geom" 2>/dev/null || true
 	exit 0
 fi
 
