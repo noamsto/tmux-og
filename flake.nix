@@ -1958,6 +1958,39 @@
               touch $out
             '';
 
+          # #820: entering a bridge mirror (switch-client, or a fresh attach)
+          # must leave the window list reflowed, without waiting for an
+          # unrelated event. Unlike reflow-fanout-tests this one loads the REAL
+          # conf (the wrapped tmux), because the regression is a hook that a
+          # session-scoped daemon hook shadowed — a config-less server would
+          # not carry the hooks under test at all. The daemon's --test-local
+          # seam supplies the mirror, so no ssh and no network; DAEMON/RENDERER
+          # are the prebuilt pickerChecked binaries.
+          #
+          # The CONF greps are the static half: the generated conf must carry
+          # the gated bridge-nudge hooks (and clear client-detached), or the
+          # test's mirror session would have no carrier for window-resized /
+          # client-detached. `-F`, because `[20]` is a basic-regex bracket expression.
+          reflow-mirror-attach-tests =
+            pkgs.runCommand "reflow-mirror-attach-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
+              DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
+              RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              REFLOW = "${tmuxConfig.wrapperBinDir}/bin/tmux-reflow-windows";
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              grep -qF 'set-hook -g window-resized[20]' "$CONF"
+              grep -qF 'set-hook -g client-detached' "$CONF"
+              grep -qF 'set-hook -gu client-detached' "$CONF"
+              [ "$(grep -cF 'touch -- #{q:@bridge_nudge}' "$CONF")" -eq 2 ]
+
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR
+              bats tests/reflow-mirror-attach.bats
+              touch $out
+            '';
+
           float-refit-tests =
             pkgs.runCommand "float-refit-tests" {
               # mkTmux, not pkgs.tmux: this test creates real floating panes

@@ -17,6 +17,27 @@ bats_require_minimum_version 1.5.0 # run !
 # then the window, then the last-session server — would tear itself down
 # before the assertions below get to read pane dims.
 
+# write_dst_conf <remain-on-exit> — the local mirror target's config. The four
+# nudge hooks are this test's stand-in for production's carriers: the real conf
+# touches @bridge_nudge from tmux-reflow-windows (client-resized /
+# client-session-changed) and from its own gated window-resized/client-detached
+# hooks, but this vanilla server has no reflow script, so every event needs a
+# direct gated touch here.
+write_dst_conf() {
+	cat >"$DST_CONF" <<-EOF
+		set -g base-index 1
+		set -g pane-base-index 1
+		set -g status on
+		set -g pane-border-status top
+		set -g remain-on-exit $1
+		set -g renumber-windows on
+		set-hook -g client-resized { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
+		set-hook -g window-resized { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
+		set-hook -g client-session-changed { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
+		set-hook -g client-detached { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
+	EOF
+}
+
 setup() {
 	OG_TMUX_DIR="/tmp/og-m2-bats-$$"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
@@ -30,7 +51,7 @@ setup() {
 	# alone still eats a row per pane regardless of pane-base-index, so DST
 	# needs it to match SRC's dims.
 	DST_CONF="$BATS_TEST_TMPDIR/dst.conf"
-	printf 'set -g base-index 1\nset -g pane-base-index 1\nset -g status on\nset -g pane-border-status top\nset -g remain-on-exit on\nset -g renumber-windows on\n' >"$DST_CONF"
+	write_dst_conf on
 	SRC_CONF="$BATS_TEST_TMPDIR/src.conf"
 	printf 'set -g base-index 1\nset -g pane-base-index 1\nset -g status on\nset -g pane-border-status top\nset -g window-size latest\nset -g aggressive-resize on\n' >"$SRC_CONF"
 	SRC="tmux -L m2src -f $SRC_CONF" # stands in for the "remote", full render config
@@ -2968,18 +2989,16 @@ m2_pane_gate_failed() {
 	[ "$got_panes" -eq "$want_panes" ] || m2_pane_gate_failed "$BATS_TEST_TMPDIR/d478r.log" "$got_panes" "$want_panes"
 	[ "$got_panes" -eq "$want_panes" ]
 
-	# registerResizeHook (daemon.go) only wires client-resized/window-resized on
-	# host-sess AFTER reconcileWindows, which runs after the per-window setup
-	# loop above — so "every renderer pane is up" does not imply "a resize is
-	# observable yet". A resize fired in that gap is not lost (watchResize's
-	# resizeFallbackInterval still catches it) but that fallback is 30s, well
-	# past this test's poll budget below — so gate on the hook itself.
-	# Not a resize-converge wait: BRIDGE_UP is enough to see the hook land.
+	# registerResizeNudge (daemon.go) publishes @bridge_nudge on host-sess
+	# BEFORE the per-window setup loop above, so the option is already there;
+	# gate on it rather than on the old session-scoped hook, which is exactly
+	# the shadowing this suite's config now mirrors around (#820).
+	# Not a resize-converge wait: BRIDGE_UP is enough to see the option land.
 	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
-		$DST show-hooks -t host-sess 2>/dev/null | grep -q '^client-resized' && break
+		[ -n "$($DST show-options -t host-sess -qv @bridge_nudge 2>/dev/null)" ] && break
 		sleep 0.1
 	done
-	$DST show-hooks -t host-sess 2>/dev/null | grep -q '^client-resized'
+	[ -n "$($DST show-options -t host-sess -qv @bridge_nudge 2>/dev/null)" ]
 
 	# The gesture: resize the attached client.
 	$OBS resize-window -t obs -x 90 -y 28
@@ -3778,7 +3797,7 @@ wake_parked_mirror() {
 	# The real host's value, not this suite's: DST_CONF turns remain-on-exit ON
 	# globally so panes outlive daemon exit for the other cases' assertions,
 	# which is exactly what would mask the window stamp under test here.
-	printf 'set -g base-index 1\nset -g pane-base-index 1\nset -g status on\nset -g pane-border-status top\nset -g remain-on-exit off\nset -g renumber-windows on\n' >"$DST_CONF"
+	write_dst_conf off
 
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
@@ -4014,7 +4033,7 @@ wake_parked_mirror() {
 # Crash net: SIGKILL the renderer process (not respawn). remain-on-exit holds
 # a corpse; healDeadRenderers then rebuilds a live mirror.
 @test "killing a renderer process leaves the session standing and heal restores the mirror" {
-	printf 'set -g base-index 1\nset -g pane-base-index 1\nset -g status on\nset -g pane-border-status top\nset -g remain-on-exit off\nset -g renumber-windows on\n' >"$DST_CONF"
+	write_dst_conf off
 
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30

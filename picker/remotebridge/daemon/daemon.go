@@ -276,9 +276,9 @@ type helloWaiter func(want []string) (map[string]net.Conn, error)
 // second, not one stat.
 const resizePollInterval = time.Second
 
-// resizeNudgeSuffix names the per-bridge file a session-scoped client-resized
-// hook touches (see registerResizeHook). Its mtime is the event watchLocalClient
-// polls for instead of forking a query every tick.
+// resizeNudgeSuffix names the per-bridge file the mirror session's
+// @bridge_nudge option points at (see registerResizeNudge). Its mtime is the
+// event watchLocalClient polls for instead of forking a query every tick.
 const resizeNudgeSuffix = ".resize"
 
 // resizeFallbackInterval bounds staleness on top of the mtime nudge: a
@@ -372,20 +372,6 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 	}
 }
 
-// resizeHookEvents are the events that can grow the mirror session's window,
-// or move the viewing identity a control client should advertise:
-// client-resized fires for an attached client's terminal resize,
-// window-resized for any window resize including a programmatic one against a
-// detached session (window-size is "latest", so the mirror stays detached
-// between launcher switches — #433's own reproduction resizes it that way),
-// client-session-changed for a client switching onto or off this session
-// (measured redundant with client-attached on a fresh attach too, so that one
-// is left out), and client-detached for the last client leaving. Every one of
-// these now also runs watchLocalClient's area() fork and a re-resolve of the
-// viewing identity (R10) — cv.need and the Relay comparison dedupe the actual
-// sends, so a session switch or detach is cheap but no longer free.
-var resizeHookEvents = [...]string{"client-resized", "window-resized", "client-session-changed", "client-detached"}
-
 // localActiveWindow reports the mirror session's current window — the one the
 // local client is looking at — or "" when it can't be learned (detached
 // session, query failure). One local tmux fork, never an ssh round-trip.
@@ -425,31 +411,45 @@ func activeFirst(reg *registry, activeLocalWin string, ids []string) []string {
 	return ids
 }
 
-// registerResizeHook wires session-scoped hooks that touch nudgePath — no
-// fork on the daemon's side, just a stat once a tick sees the touch.
-// Session-scoped (not the global config's hooks) so the lifecycle stays owned
-// by the bridge: registered here, removed in unregisterResizeHook.
-func registerResizeHook(cfg Config, nudgePath string) {
-	if cfg.LocalSess == "" {
-		return
-	}
-	touch := "touch -- " + tmuxQuote(nudgePath)
-	hook := fmt.Sprintf("run-shell -b %s", tmuxQuote(touch))
-	for _, event := range resizeHookEvents {
-		cfg.LocalTmux("set-hook", "-t", cfg.LocalSess, event, hook)
-	}
-}
+// legacyResizeHooks are the session-scoped hook events a pre-#820 daemon
+// registered on the mirror session, kept only so registerResizeNudge can clear
+// them: a session that outlived the binary swap would otherwise keep shadowing
+// the config's global hooks for the new daemon's whole life.
+var legacyResizeHooks = [...]string{"client-resized", "window-resized", "client-session-changed", "client-detached"}
 
-// unregisterResizeHook removes the hooks registerResizeHook set, so a dead
-// bridge's session (or one reused for a later daemon) carries none of its
-// hooks forward.
-func unregisterResizeHook(cfg Config) {
+// bridgeNudgeOption is the session option carrying the resize-nudge path — the
+// file watchLocalClient stats each tick instead of forking a size query
+// (#433). The config's own hooks read it: tmux-reflow-windows touches it on the
+// two events that already run a reflow, and window-resized/client-detached
+// carry their own gated hooks. The bridge publishes the path, never a hook of
+// its own: a session-scoped hook array REPLACES the session's view of the
+// global one (measured, #647), which is how client-resized and
+// client-session-changed stopped reaching the reflow hooks inside a mirror and
+// left its window bar stale until an unrelated event (#820).
+const bridgeNudgeOption = "@bridge_nudge"
+
+// registerResizeNudge publishes nudgePath as a session option the config's own
+// hooks touch — no fork on the daemon's side, just a stat once a tick sees the
+// touch. It also clears the session-scoped hooks a pre-#820 daemon left
+// behind, so a session reused across the binary swap cannot keep shadowing the
+// globals.
+func registerResizeNudge(cfg Config, nudgePath string) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	for _, event := range resizeHookEvents {
+	for _, event := range legacyResizeHooks {
 		cfg.LocalTmux("set-hook", "-u", "-t", cfg.LocalSess, event)
 	}
+	cfg.LocalTmux("set-option", "-t", cfg.LocalSess, bridgeNudgeOption, nudgePath)
+}
+
+// unregisterResizeNudge unsets the option registerResizeNudge published, for
+// the paths where teardown's own kill-session is not what removes it.
+func unregisterResizeNudge(cfg Config) {
+	if cfg.LocalSess == "" {
+		return
+	}
+	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, bridgeNudgeOption)
 }
 
 // stream owns the command side of the control connection. It serializes writes
@@ -814,9 +814,10 @@ func Run(cfg Config) error {
 		}
 		return out, err
 	}
-	// nudgePath is the file registerResizeHook's client-resized hook touches;
-	// removed here so a stale touch from a prior daemon on this same socket
-	// path can't be mistaken for a resize before the hook ever fires again.
+	// nudgePath is the file the @bridge_nudge option points at, touched by the
+	// config's hooks; removed here so a stale touch from a prior daemon on this
+	// same socket path can't be mistaken for a resize before the option is ever
+	// published again.
 	nudgePath := cfg.SockPath + resizeNudgeSuffix
 	os.Remove(nudgePath)
 	// stopWatch stops the resize watcher (started just before the main loop).
@@ -849,7 +850,7 @@ func Run(cfg Config) error {
 	teardown := func() {
 		close(stopWatch)
 		clearPhase(cfg)
-		unregisterResizeHook(cfg)
+		unregisterResizeNudge(cfg)
 		os.Remove(nudgePath)
 		if agents != nil {
 			agents.clear()
@@ -904,13 +905,13 @@ func Run(cfg Config) error {
 		}
 	}
 
-	// Before the mirror windows exist, not after they are all set up: the hook
-	// only touches nudgePath, so arming it early costs one stat a tick, while
-	// arming it late drops every resize landing during setup — and setup is the
-	// slow part, spanning a spawn/hello/seed round-trip per window plus the
+	// Before the mirror windows exist, not after they are all set up: the touch
+	// only writes one option, so publishing it early costs nothing, while
+	// publishing it late drops every resize landing during setup — and setup is
+	// the slow part, spanning a spawn/hello/seed round-trip per window plus the
 	// reconcile below. A dropped nudge is not lost work but a 30s wait for
-	// resizeFallbackInterval, which is the delay the hook exists to avoid.
-	registerResizeHook(cfg, nudgePath)
+	// resizeFallbackInterval, which is the delay the nudge exists to avoid.
+	registerResizeNudge(cfg, nudgePath)
 
 	// Mirror each remote window into its own local window. The first reuses the
 	// launcher's initial window; the rest are appended.
