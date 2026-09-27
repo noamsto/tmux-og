@@ -1806,7 +1806,7 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	}
 	keptRows := make([]listItem, 0, len(m.remoteItems))
 	for _, it := range m.remoteItems {
-		if it.remoteSess != "" && killed[it.remoteHost+"\x00"+it.remoteSess] {
+		if it.remoteSess != "" && killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
 			continue
 		}
 		keptRows = append(keptRows, it)
