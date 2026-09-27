@@ -503,7 +503,14 @@
               sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
 
               [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -v '@float_geom'; then
+
+              # The stock Empty menu (#769's non-mirror branch) carries tmux's own
+              # `new-pane ; join-pane`, tiled at once — never a float. Strip that
+              # exact item text, not the bindings, so a changed upstream item
+              # is still scanned.
+              sed 's/\\"New Pane\\" p { new-pane ; join-pane }//g' joined >scrubbed
+
+              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v '@float_geom'; then
                 echo "float bind above has no @float_geom stamp — tmux-float-refit cannot refit it" >&2
                 exit 1
               fi
@@ -511,7 +518,7 @@
               # And the remain-on-exit pin (#587), asserted for the same reason:
               # a bind that forgets it looks right until it is pressed inside a
               # mirror window, whose own remain-on-exit the pane inherits.
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -v 'remain-on-exit off'; then
+              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v 'remain-on-exit off'; then
                 echo "float bind above does not pin remain-on-exit off — its pane will linger dead inside a mirror window" >&2
                 exit 1
               fi
@@ -2171,6 +2178,57 @@
               [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
               export CTL_PROTOCOL_VERSION
               bats tests/rename-bind-integration.bats
+              touch $out
+            '';
+
+          # A keypress AND a right-click, not the conf text: tmux's own default
+          # menus, re-bound on a mirror window (#769), driven for real through
+          # the same attached-client + recording-stub harness as
+          # rename-bind-integration-tests above, for the same reason — a
+          # keybind or a mouse binding fires only for a real attached client.
+          # TMUX_RAW, the raw pinned binary (not the wrapper, which always adds
+          # `-f <conf>`), is what the stock-tripwire and version-gate tests
+          # source a bare `%if`…`%endif` block into. enrich/agent-usage off for
+          # the same reason as rename-bind-integration-tests: their monitor
+          # hooks fire on the server's own 5s clock regardless of clients and
+          # would contend with wait_for_frame's poll.
+          menu-bind-integration-tests = let
+            menuBindTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "menu-bind-integration-tests" {
+              # gawk splits a stockmenus.txt line into its table/key fields;
+              # gnused extracts the %if…%endif block and the conf's version
+              # literal. grep -P finds the verb after `--sock=#+{q:@bridge_sock}`.
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
+              TMUX_BIN = "${menuBindTmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+              CONF = "${menuBindTmuxConfig.tmuxConf}";
+              STOCK_MENUS = ./generator/render/stockmenus.txt;
+              CTL_GO = ./picker/remotebridge/daemon/ctl.go;
+              # A hostile window-name fixture is UTF-8, and so is the status
+              # line it is read back from.
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              # argv[0] of every ctl frame, read from the one source of truth so a
+              # protocol bump doesn't read as a wire-shape regression.
+              protocol_go=${./picker/remotebridge/wire/protocol.go}
+              CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
+              [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
+              export CTL_PROTOCOL_VERSION
+              bats tests/menu-bind-integration.bats
               touch $out
             '';
 

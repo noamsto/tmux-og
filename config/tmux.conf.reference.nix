@@ -132,6 +132,191 @@
   # @bridge_sock is always in --sock= form, never word-initial; bridgeGate guarantees it is non-empty.
   bridgeCtl = "${picker-bridge-ctl-bin} --display-error=#{q:client_name} --sock=#{q:@bridge_sock}";
 
+  # === Remote bridge: tmux's stock menus, re-bound behind bridgeGate (#769) ===
+  # Mirrors generator/render/menus.go byte for byte; the stock branch is read
+  # from the same stockmenus.txt. See docs/agents/bridge-daemon.md.
+  menuStockLines = lib.filter (l: l != "") (lib.splitString "\n" (builtins.readFile ../generator/render/stockmenus.txt));
+  menuStock = map (line: let
+    m = builtins.match "bind-key +-T +([^ ]+) +([^ ]+) +(.*)" line;
+  in
+    if m == null
+    then throw "stockmenus.txt: malformed line: ${line}"
+    else {
+      table = builtins.elemAt m 0;
+      key = builtins.elemAt m 1;
+      cmd = builtins.elemAt m 2;
+    })
+  menuStockLines;
+
+  # A mirror item's command is format-expanded when the menu is built and
+  # parsed again when the item is chosen, so every run-time format in it is
+  # escaped once per layer above it: menuEsc1 for display-menu's build,
+  # menuEsc2 when a run-shell -C expansion sits above that too.
+  menuEsc1 = builtins.replaceStrings ["#"] ["##"];
+  menuEsc2 = s: menuEsc1 (menuEsc1 s);
+  # menuQuote escapes args_escape's set for a double-quoted word (\, ", $)
+  # and wraps the result in ".
+  menuQuote = s: "\"" + builtins.replaceStrings ["\\" "\"" "$"] ["\\\\" "\\\"" "\\$"] s + "\"";
+
+  menuCtlRun = verb: args: "run-shell \"${bridgeCtl} " + verb + " #{q:@bridge_pane}" + args + "\"";
+
+  menuRenamePrompt = "command-prompt -I'#{@window_bridge_name}' { run-shell \"${bridgeCtl} rename #{q:@bridge_pane} #{qs:1}\" %1 }";
+
+  mirrorWindowMenu = pos:
+    "display-menu -T \"#[align=centre]#{window_index}:#{window_name}\" "
+    + pos
+    + " \"#{?#{>:#{session_windows},1},,-}Swap Left\" l { swap-window -t :-1 }"
+    + " \"#{?#{>:#{session_windows},1},,-}Swap Right\" r { swap-window -t :+1 }"
+    + " '' Kill X { "
+    + menuEsc1 (menuCtlRun "kill-window" "")
+    + " }"
+    + " Rename n { "
+    + menuEsc1 menuRenamePrompt
+    + " }"
+    + " '' \"New Window\" w { "
+    + menuEsc1 (menuCtlRun "new-window" "")
+    + " }";
+
+  # The stock pane menu's copy-mode, paste and mouse-word span: it only
+  # touches the renderer pane, so it stays verbatim on a mirror.
+  paneMenuLocalItems =
+    "\"#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}\" < { send-keys -X history-top }"
+    + " \"#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Bottom,}\" > { send-keys -X history-bottom } ''"
+    + " \"#{?#{==:#{pane_mode},copy-mode},#{?copy_line_numbers,Hide Line Numbers,Show Line Numbers},}\" L { send-keys -X line-numbers-toggle }"
+    + " \"#{?#{==:#{pane_mode},copy-mode},#{?refresh_active,Refresh Off,Refresh On},}\" r { send-keys -X refresh-toggle } ''"
+    + " \"#{?#{&&:#{buffer_size},#{!:#{pane_in_mode}}},Paste #[underscore]#{=/9/...:buffer_sample},}\" p { paste-buffer } ''"
+    + " \"#{?mouse_word,Search For #[underscore]#{=/9/...:mouse_word},}\" C-r { if-shell -F \"#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}\" \"copy-mode -t=\" ; send-keys -X -t = search-backward -- \"#{q:mouse_word}\" }"
+    + " \"#{?mouse_word,Type #[underscore]#{=/9/...:mouse_word},}\" C-y { copy-mode -q ; send-keys -l \"#{q:mouse_word}\" }"
+    + " \"#{?mouse_word,Copy #[underscore]#{=/9/...:mouse_word},}\" c { copy-mode -q ; set-buffer \"#{q:mouse_word}\" }"
+    + " \"#{?mouse_line,Copy Line,}\" l { copy-mode -q ; set-buffer \"#{q:mouse_line}\" } ''"
+    + " \"#{?mouse_hyperlink,Type #[underscore]#{=/9/...:mouse_hyperlink},}\" C-h { copy-mode -q ; send-keys -l \"#{q:mouse_hyperlink}\" }"
+    + " \"#{?mouse_hyperlink,Copy #[underscore]#{=/9/...:mouse_hyperlink},}\" h { copy-mode -q ; set-buffer \"#{q:mouse_hyperlink}\" } ''";
+
+  # mirrorPaneMenu keeps Respawn as the one local structural item, relabelled:
+  # on a mirror it redials the renderer (#547) rather than restarting a
+  # program.
+  mirrorPaneMenu = pos:
+    "display-menu -T \"#[align=centre]#{pane_index} (#{pane_id})\" "
+    + pos
+    + " "
+    + paneMenuLocalItems
+    + " \"#{?#{!:#{pane_floating_flag}},Horizontal Split,}\" h { "
+    + menuEsc1 (menuCtlRun "split-h" "")
+    + " }"
+    + " \"#{?#{!:#{pane_floating_flag}},Vertical Split,}\" v { "
+    + menuEsc1 (menuCtlRun "split-v" "")
+    + " }"
+    + " '' \"#{?#{&&:#{!:#{pane_floating_flag}},#{>:#{window_panes},1}},Swap Up,}\" u { "
+    + menuEsc1 (menuCtlRun "swap" " U")
+    + " }"
+    + " \"#{?#{&&:#{!:#{pane_floating_flag}},#{>:#{window_panes},1}},Swap Down,}\" d { "
+    + menuEsc1 (menuCtlRun "swap" " D")
+    + " }"
+    + " '' Kill X { "
+    + menuEsc1 (menuCtlRun "kill-pane" "")
+    + " }"
+    + " Reconnect R { respawn-pane -k }"
+    + " \"#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}\" z { "
+    + menuEsc1 (menuCtlRun "zoom" "")
+    + " }";
+
+  # mirrorSessionMenu keeps the stock run-shell -C shape, which the Switch-To
+  # loop's #{S:} needs; that expansion is the second layer menuEsc2 accounts
+  # for.
+  mirrorSessionMenu = let
+    menu =
+      "display-menu -t= -xM -yW -T '#[align=centre]#{session_name}'  #{S/t:#{?#{&&:#{<:#{loop_index},6},#{!:#{session_active}}},'Switch To #[underscore]#{session_name}' '' {switch-client -t=#{session_id}#} ,}}"
+      + " '' 'Renumber' 'N' {move-window -r}"
+      + " 'Detach' 'd' {"
+      + menuEsc2 ("run-shell -b '" + script.og-remote-detach + "/bin/og-remote-detach #{qs:session_name}'")
+      + "}"
+      + " '' 'New Session' 's' {new-session}"
+      + " 'New Window' 'w' {"
+      + menuEsc2 ("run-shell '" + bridgeCtl + " new-window #{q:@bridge_pane}'")
+      + "}";
+  in
+    "run-shell -C " + menuQuote menu;
+
+  mirrorEmptyMenu =
+    "display-menu -T \"#[align=centre]#{window_index}:#{window_name}\" -t = -x M -y M \"New Window\" w { "
+    + menuEsc1 (menuCtlRun "new-window" "")
+    + " }";
+
+  menuMirrorPaneM = mirrorPaneMenu "-t = -x M -y M";
+
+  # menuMirrors mirrors generator/render/menus.go's menuBinds map, keyed the
+  # same way (table ++ " " ++ key).
+  menuMirrors = {
+    "prefix <" = {
+      note = "Display window menu";
+      mirror = mirrorWindowMenu "-x W -y W";
+    };
+    "prefix >" = {
+      note = "Display pane menu";
+      mirror = mirrorPaneMenu "-x P -y P";
+    };
+    "root MouseDown3Pane" = {
+      note = "Display pane menu";
+      mirror = "if-shell -F -t = \"#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}\" { select-pane -t = ; send-keys -M } { " + menuMirrorPaneM + " }";
+    };
+    "root M-MouseDown3Pane" = {
+      note = "Display pane menu";
+      mirror = menuMirrorPaneM;
+    };
+    "root MouseDown3Status" = {
+      note = "Display window menu";
+      mirror = mirrorWindowMenu "-t = -x W -y W";
+    };
+    "root M-MouseDown3Status" = {
+      note = "Display window menu";
+      mirror = mirrorWindowMenu "-t = -x W -y W";
+    };
+    "root MouseDown3StatusLeft" = {
+      note = "Display session menu";
+      mirror = mirrorSessionMenu;
+    };
+    "root M-MouseDown3StatusLeft" = {
+      note = "Display session menu";
+      mirror = mirrorSessionMenu;
+    };
+    "root MouseDown3Empty" = {
+      note = "Display new pane/window menu";
+      mirror = mirrorEmptyMenu;
+    };
+    "root M-MouseDown3Empty" = {
+      note = "Display new pane/window menu";
+      mirror = mirrorEmptyMenu;
+    };
+  };
+
+  # menuBindLine mirrors generator/render/menus.go's menuBinds loop body.
+  menuBindLine = s: let
+    m =
+      menuMirrors."${s.table} ${s.key}"
+      or (throw "stockmenus.txt: no mirror menu for ${s.table} ${s.key}");
+    notePart = lib.optionalString (m.note != "") "-N '${m.note}' ";
+    # Mouse bindings gate on the event's target, not the current pane.
+    targetPart = lib.optionalString (s.table == "root") "-t = ";
+  in
+    "bind-key "
+    + notePart
+    + "-T ${s.table} ${s.key} if-shell -F "
+    + targetPart
+    + "'${bridgeGate}' { "
+    + m.mirror
+    + " } "
+    + menuQuote s.cmd;
+
+  # The block is %if-gated on the pinned #{version} the stock text was
+  # captured from: the stock menus carry next-only commands, and a block
+  # built at source time would make an older resident server reject the
+  # whole config (#407).
+  menuBinds = lib.concatStringsSep "\n" (
+    ["%if \"#{==:#{version},next-3.9}\""]
+    ++ map menuBindLine menuStock
+    ++ ["%endif"]
+  );
+
   # A mirror window's own @crew_*/@pr_* describe the launcher's repo; the daemon
   # ships the remote window's under @bridge_*. These are read live at render
   # time, so the choice has to be a format conditional. Built per option name,
@@ -563,6 +748,13 @@
     # kill-session through the same command queue a foreground run-shell holds.
     bind-key -N 'Detach client' d if-shell -F '${bridgeGate}' { run-shell -b "${script.og-remote-detach}/bin/og-remote-detach #{qs:session_name}" } { detach-client }
     set -g detach-on-destroy off
+    # tmux's own default menus, re-bound so that on a mirror window every
+    # structural item goes through the bridge's ctl verbs and acts on the remote
+    # (#769; classification in docs/agents/bridge-daemon.md). The non-mirror branch
+    # is tmux's stock command verbatim, as a string so a same-version server that
+    # lacks one of its commands fails that menu, never the config load; the %if
+    # keeps any other server version on its own stock menus (#407).
+    ${menuBinds}
 
     # Vim-tmux navigation (respects zoom)
     # tmux substitutes $is_vim into each bind at parse time, so this string IS an

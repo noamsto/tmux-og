@@ -13,6 +13,7 @@ func keysPaths() *paths.Paths {
 		Scripts: map[string]string{
 			"tmux-pr-enrich":   "/store/tmux-pr-enrich",
 			"tmux-issue-stamp": "/store/tmux-issue-stamp",
+			"og-remote-detach": "/store/og-remote-detach",
 		},
 		Bin: map[string]string{
 			"og-remote-bridge-ctl": "/store/ctl",
