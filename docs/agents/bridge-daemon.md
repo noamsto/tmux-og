@@ -287,7 +287,7 @@ Inventory, measured with `list-keys` on a scratch server of the pinned
 | Swap Left / Swap Right | `swap-window -t :-1` / `:+1` | local — reorders local tabs only, and a mirror is addressed by id, never local index |
 | Swap Marked | `swap-window` | hidden — the marked pane can sit in another session |
 | Kill | `kill-window` | ctl `kill-window` (no confirm, stock parity) |
-| Respawn | `respawn-window -k` | hidden — locally destroys every renderer but the first, a desync the daemon can't detect; needs a remote re-seed the ctl path can't request today |
+| Respawn | `respawn-window -k` | hidden — locally destroys every renderer but the first, a desync the daemon can't detect; needs a remote re-seed the ctl path can't request today (#784) |
 | Mark / Unmark | `select-pane -m` | hidden — only feeds Swap Marked / `join-pane`, both structural |
 | Rename | `command-prompt -F -I "#W" { rename-window … }` | ctl `rename`, the same prompt the `,` keybind uses |
 | New After / New At End | `new-window -a` / `new-window` | ctl `new-window`, one "New Window" item — the daemon always appends at `{end}` |
@@ -343,7 +343,7 @@ keybind's command, so it inherits the keybind's measured quoting. The session
 menu's title and its Switch-To loop keep stock's bare `#{session_name}` under
 `run-shell -C`, which tmux re-parses as command text — a pre-existing exposure
 (not introduced by #769) for a mirror session whose local name embeds the
-remote session name (`og-remote-open`), tracked as a follow-up: #TBD-session-name.
+remote session name (`og-remote-open`), tracked in #783.
 
 **Old resident servers (#407).** A config is parsed and every `{ … }` block
 built — commands looked up, flags parsed — before any of it runs
