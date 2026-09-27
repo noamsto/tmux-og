@@ -44,7 +44,8 @@ var (
 
 // The re-typing structs: what survives a decode into these is all that is ever
 // carried. json tags match picker/statusline's usageCache, which decodes the
-// output. spend.label and spend.period are not rendered and so not carried.
+// output. spend.label is now rendered (validated the same way a window label
+// is) and so carried; spend.period is still not rendered and so still dropped.
 type usageWindow struct {
 	Label   string  `json:"label"`
 	Pct     float64 `json:"pct"`
@@ -52,14 +53,20 @@ type usageWindow struct {
 }
 
 type usageSpend struct {
+	Label    string   `json:"label,omitempty"`
 	USD      float64  `json:"usd"`
 	LimitUSD *float64 `json:"limit_usd,omitempty"`
+}
+
+type usageBalance struct {
+	USDRemaining float64 `json:"usd_remaining"`
 }
 
 type usageCache struct {
 	Windows []usageWindow `json:"windows"`
 	Monthly *usageWindow  `json:"monthly,omitempty"`
 	Spend   *usageSpend   `json:"spend,omitempty"`
+	Balance *usageBalance `json:"balance,omitempty"`
 }
 
 // usageOpenSet normalises the open half exactly as the renderer's openAgents
@@ -84,6 +91,11 @@ func validUsageWindow(w usageWindow) bool {
 
 func validUsageMoney(v float64) bool { return v >= 0 && v <= 1e7 }
 
+// validUsageBalance is deliberately wider than validUsageMoney: an overspent
+// OpenRouter account can carry a negative remaining balance, and that's a
+// legitimate value to carry, not garbage.
+func validUsageBalance(v float64) bool { return v >= -1e7 && v <= 1e7 }
+
 // validUsageCache is the identity-field policy: one bad field drops the whole
 // agent, since a partial reading of it would render as a different account.
 func validUsageCache(c usageCache) bool {
@@ -98,7 +110,10 @@ func validUsageCache(c usageCache) bool {
 	if c.Monthly != nil && !validUsageWindow(*c.Monthly) {
 		return false
 	}
-	if s := c.Spend; s != nil && (!validUsageMoney(s.USD) || s.LimitUSD != nil && !validUsageMoney(*s.LimitUSD)) {
+	if s := c.Spend; s != nil && (!validUsageMoney(s.USD) || s.LimitUSD != nil && !validUsageMoney(*s.LimitUSD) || s.Label != "" && !usageLabelRe.MatchString(s.Label)) {
+		return false
+	}
+	if c.Balance != nil && !validUsageBalance(c.Balance.USDRemaining) {
 		return false
 	}
 	return true

@@ -87,7 +87,8 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   host whose only clients are bridges, #603) drives provider scripts that
   normalize vendor API responses into `/tmp/og-agent-usage/<agent>.json`
   (`{windows:[{label,pct,reset_at?}], monthly:{label,pct,reset_at?},
-  spend:{label,usd,period,limit_usd?}}`); `tmux-statusline` (Go) only reads them — it
+  spend:{label,usd,period,limit_usd?}, balance:{usd_remaining}?}`);
+  `tmux-statusline` (Go) only reads them — it
   never curls. `spend` is optional: absent in an older cache or a provider
   that has none, it decodes as `nil` (`usageCache.Spend *usageSpend`,
   `picker/statusline/usage.go:20`) and the segment simply skips the `$`
@@ -96,12 +97,20 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   USD — cursor's `GetHardLimit.hardLimit` (cents ÷ 100), pi's OpenRouter
   `/api/v1/key` `limit` (already USD) — and the key is omitted, not nulled,
   when no cap is set; present, the renderer shows `$<spend>/$<limit>`.
-  No schema-version field was added for this — every cache field
-  added since the format shipped has been an optional sibling (`monthly`,
-  `reset_at`, `spend`, now `limit_usd`), so an old or new poller and an old or new
-  renderer already interoperate by omission alone; a later remote-mirror
-  follow-up should keep adding optional siblings rather than inventing a
-  version scheme.
+  `spend.label` renders as a trailing suffix (e.g. `$1.20 mo`) for every
+  agent except cursor — see the pi bullet below for why cursor is pinned
+  unchanged. `balance` is a separate top-level optional sibling
+  (`usageCache.Balance *usageBalance`) carrying a provider's remaining
+  prepaid credit, independent of `spend`/`limit_usd` (a per-key spending
+  cap and an account's remaining balance answer different questions); when
+  present it renders as its own `$<amt> left` clause, joined onto the spend
+  clause with ` · ` (or standing alone if a provider ever reports a balance
+  with no spend). No schema-version field was added for this — every cache
+  field added since the format shipped has been an optional sibling
+  (`monthly`, `reset_at`, `spend`, `limit_usd`, now `balance`), so an old
+  or new poller and an old or new renderer already interoperate by
+  omission alone; a later remote-mirror follow-up should keep adding
+  optional siblings rather than inventing a version scheme.
 - **Auth is the CLIs' own.** Each provider extracts the token from the CLI's
   credential file and hits the same endpoint the CLI's own usage view uses.
   No configured API keys (pi is the one exception — see below); an
@@ -167,7 +176,35 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `limit_remaining` is null still shows its budget. `limit`/`limit_remaining`
   need no cents→USD conversion: they're the same "credits" unit as
   `usage_monthly`, and OpenRouter's docs (openrouter.ai/docs/faq) state
-  credits are USD-denominated 1:1.
+  credits are USD-denominated 1:1. `tmux-agent-usage-pi.sh` also fetches
+  `GET /api/v1/credits` (same bearer token) for the account's remaining
+  prepaid balance (`total_credits - total_usage`), written as
+  `balance.usd_remaining` — a separate, top-level sibling of `spend`, not
+  nested inside it, since a per-key spending cap (`spend.limit_usd`) and
+  the account's overall remaining credit answer different questions and
+  neither subsumes the other; the segment shows both when both exist
+  (`$5.00/$20 mo · $18 left`). `/api/v1/credits` requires a **management**
+  key, not the ordinary inference key pi's `auth.json` normally holds —
+  OpenRouter's API returns 403 ("Only management keys can perform this
+  operation") for an inference key, so on a typical setup this call is
+  refused and `balance` is simply omitted; a malformed or non-object
+  response degrades the same way. Either way `spend`/`monthly`/`windows`
+  (from `/api/v1/key`) are unaffected — a refused/broken `/credits` call
+  never aborts the cache write, same "failed fetch leaves the previous
+  figure alone" invariant as every other failure mode here.
+  The segment also appends `spend.label` (e.g. `mo`) as a trailing suffix
+  — `$1.20 mo` rather than a bare `$1.20` — for every agent **except
+  cursor**, whose pre-existing render (`$12/$7.50`) is pinned
+  byte-identical by `TestUsageSegmentCursorRenderUnchanged`; this is a
+  deliberate per-agent exception to keep that render unchanged, not a
+  data-driven distinction — the label text itself still comes from the
+  cache's own `Label` field, never a hardcoded string.
+  No staleness cue was added for either figure: the cache carries no
+  fetch-time field today (locally or across the bridge), and adding one
+  would need a new `fetched_at` field, clock-skew handling in the daemon,
+  and more segment width — for a figure that already refreshes every
+  `@og-usage-tick` poll and, on a failed fetch, simply leaves the previous
+  cached figure in place rather than showing something wrong.
 - **Mirror/remote panes never count toward the *local* gate.** Both
   `openAgents()` and `scan_open_agents` key strictly off
   `pane_current_command`/the manifest basenames and never look at

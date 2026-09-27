@@ -102,11 +102,23 @@ func TestSanitizeUsage(t *testing.T) {
 			absent: []string{"extra", "#"},
 		},
 		{
-			name:   "spend label and period are not carried",
+			name:   "spend label is carried, period is not",
 			v:      `pi |{"pi":{"windows":[],"spend":{"label":"spendlbl","usd":3,"period":"month"}}}`,
-			want:   map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 3}}},
-			absent: []string{"spendlbl", "period", "month"},
+			want:   map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 3, Label: "spendlbl"}}},
+			absent: []string{"period", "month"},
 		},
+		{name: "an invalid spend label drops the agent", v: `pi |{"pi":{"windows":[],"spend":{"label":"#(evil)","usd":3}}}`, absent: []string{"#", "evil"}},
+		{
+			name: "balance is carried",
+			v:    `pi |{"pi":{"windows":[],"balance":{"usd_remaining":18.4}}}`,
+			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Balance: &usageBalance{USDRemaining: 18.4}}},
+		},
+		{
+			name: "a negative balance is carried",
+			v:    `pi |{"pi":{"windows":[],"balance":{"usd_remaining":-3.5}}}`,
+			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Balance: &usageBalance{USDRemaining: -3.5}}},
+		},
+		{name: "an out-of-range balance drops the agent", v: `pi |{"pi":{"windows":[],"balance":{"usd_remaining":2e7}}}`},
 		{
 			name: "skew shifts reset_at and leaves 0 alone",
 			v:    `claude |{"claude":{"windows":[{"label":"5h","pct":1,"reset_at":1000},{"label":"wk","pct":2}],"monthly":{"label":"mo","pct":3,"reset_at":2000}}}`,

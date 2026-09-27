@@ -13,6 +13,14 @@
 # limit_remaining are "credits", same unit as usage_monthly; OpenRouter's own
 # docs (openrouter.ai/docs/faq) say credits are USD-denominated 1:1, so no
 # conversion is needed.
+#
+# A second call to /api/v1/credits fetches remaining account balance
+# (total_credits - total_usage). That endpoint requires a management key;
+# pi's auth.json normally holds an ordinary inference key, which OpenRouter
+# refuses ("Only management keys can perform this operation", a 403) — so
+# refusal is the expected common case, not an error. That fetch never exits
+# the script; a refused, empty, or malformed response just omits `balance`
+# from the output, leaving `spend` (and everything else) unaffected.
 set -uo pipefail
 
 CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
@@ -50,8 +58,13 @@ resp=$(curl -fsS --max-time 10 \
 	-H "Authorization: Bearer $token" \
 	https://openrouter.ai/api/v1/key 2>/dev/null) || exit 0
 
-out=$(jq -c '
+credits=$(curl -fsS --max-time 10 \
+	-H "Authorization: Bearer $token" \
+	https://openrouter.ai/api/v1/credits 2>/dev/null) || credits=''
+
+out=$(jq -c --arg credits "$credits" '
 	.data as $d |
+	($credits | try fromjson catch null) as $c |
 	{
 		windows: [],
 		monthly: (if ($d.limit // 0) > 0 and $d.limit_remaining != null
@@ -62,7 +75,12 @@ out=$(jq -c '
 			else null end),
 		spend: ({label: "mo", usd: ($d.usage_monthly // 0), period: "month"}
 			+ (if ($d.limit // 0) > 0 then {limit_usd: $d.limit} else {} end))
-	}' <<<"$resp" 2>/dev/null) || exit 0
+	}
+	+ (if ($c | type) == "object" and ($c.data | type) == "object"
+			and ($c.data.total_credits | type) == "number"
+			and ($c.data.total_usage | type) == "number"
+		then {balance: {usd_remaining: ($c.data.total_credits - $c.data.total_usage)}}
+		else {} end)' <<<"$resp" 2>/dev/null) || exit 0
 
 mkdir -p "$CACHE_DIR" 2>/dev/null
 tmp="$CACHE_DIR/.pi.json.$$"

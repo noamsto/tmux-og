@@ -18,6 +18,7 @@ type usageCache struct {
 	Windows []usageWindow `json:"windows"`
 	Monthly *usageWindow  `json:"monthly"`
 	Spend   *usageSpend   `json:"spend"`
+	Balance *usageBalance `json:"balance"`
 }
 
 type usageWindow struct {
@@ -27,13 +28,22 @@ type usageWindow struct {
 }
 
 // usageSpend is the dollar figure an agent has spent over Period ("month",
-// "cycle"). Label and Period describe the figure for other consumers; the
-// segment renders only USD and, when the provider knows a budget, LimitUSD.
+// "cycle"). The segment renders USD, LimitUSD when the provider knows a
+// budget, and Label as a trailing suffix (e.g. "$1.20 mo") for every agent
+// except cursor, whose rendering predates the label suffix and stays
+// unchanged. usageBalance carries a provider's remaining prepaid balance
+// (e.g. an OpenRouter API key), rendered as its own "$<amt> left" clause.
 type usageSpend struct {
 	Label    string   `json:"label"`
 	USD      float64  `json:"usd"`
 	Period   string   `json:"period"`
 	LimitUSD *float64 `json:"limit_usd,omitempty"`
+}
+
+// usageBalance is a provider's remaining prepaid balance, independent of
+// Spend (a provider could in principle report one without the other).
+type usageBalance struct {
+	USDRemaining float64 `json:"usd_remaining"`
 }
 
 const usageCacheDir = "/tmp/og-agent-usage"
@@ -188,11 +198,16 @@ func usageDollars(v float64) string {
 	return fmt.Sprintf("%.0f", v)
 }
 
-// usageSegment renders "<icon> <pct>·<label> … $<usd>[/$<limit>]" per open
-// agent with data, joined and trailing-padded for the right-aligned group. The
-// monthly window only appears at/above the configured threshold; spend always
-// appears when cached, $0 included, with the budget appended when the provider
-// knows one; an agent with nothing to show (e.g. an uncapped enterprise tier)
+// usageSegment renders "<icon> <pct>·<label> … $<usd>[/$<limit>][ <label>][ ·
+// $<balance> left]" per open agent with data, joined and trailing-padded for
+// the right-aligned group. The monthly window only appears at/above the
+// configured threshold; spend always appears when cached, $0 included, with
+// the budget appended when the provider knows one and, for every agent but
+// cursor, the spend's own Label appended as a suffix (cursor's rendering
+// predates the label suffix and is pinned unchanged). A remaining balance
+// renders as its own "$<amt> left" clause, joined onto the spend clause with
+// " · " when both exist for an agent, or standing alone when only a balance
+// is cached. An agent with nothing to show (e.g. an uncapped enterprise tier)
 // drops out entirely.
 func usageSegment(a args, caches map[string]usageCache, open map[string]bool, now int64) string {
 	if a.usageMonthlyThreshold <= 0 {
@@ -218,12 +233,32 @@ func usageSegment(a args, caches map[string]usageCache, open map[string]bool, no
 		if c.Monthly != nil && c.Monthly.Pct >= float64(a.usageMonthlyThreshold) {
 			parts = append(parts, render(*c.Monthly))
 		}
+		var spendClause string
 		if c.Spend != nil {
-			s := "#[fg=" + a.thmSubtext0 + "]$" + usageDollars(c.Spend.USD)
+			spendClause = "$" + usageDollars(c.Spend.USD)
 			if c.Spend.LimitUSD != nil {
-				s += "/$" + usageDollars(*c.Spend.LimitUSD)
+				spendClause += "/$" + usageDollars(*c.Spend.LimitUSD)
 			}
-			parts = append(parts, s)
+			// cursor's rendering predates the label suffix and is pinned
+			// unchanged; this is not a data-driven distinction.
+			if agent != "cursor" && c.Spend.Label != "" {
+				spendClause += " " + c.Spend.Label
+			}
+		}
+		if c.Balance != nil {
+			v := c.Balance.USDRemaining
+			balanceClause := "$" + usageDollars(v) + " left"
+			if v < 0 {
+				balanceClause = "-$" + usageDollars(-v) + " left"
+			}
+			if spendClause != "" {
+				spendClause += " · " + balanceClause
+			} else {
+				spendClause = balanceClause
+			}
+		}
+		if spendClause != "" {
+			parts = append(parts, "#[fg="+a.thmSubtext0+"]"+spendClause)
 		}
 		if len(parts) == 0 {
 			continue

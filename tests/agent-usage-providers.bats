@@ -127,6 +127,41 @@ default_pi() {
 	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":3.5,"period":"month"}' ]
 }
 
+@test "pi: balance present adds usd_remaining alongside spend" {
+	default_pi
+	pi_key_fixture '{"limit":null,"limit_remaining":null,"limit_reset":null,"usage_monthly":1.2}'
+	echo '{"data":{"total_credits":20,"total_usage":1.6}}' >"$FIXTURES/credits.json"
+	run_pi
+	[ "$(jq -c .balance "$(pi_cache)")" = '{"usd_remaining":18.4}' ]
+	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":1.2,"period":"month"}' ]
+}
+
+@test "pi: balance endpoint refused leaves no balance field, spend still written" {
+	default_pi
+	pi_key_fixture '{"limit":null,"limit_remaining":null,"limit_reset":null,"usage_monthly":1.2}'
+	run_pi
+	[ "$(jq 'has("balance")' "$(pi_cache)")" = false ]
+	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":1.2,"period":"month"}' ]
+}
+
+@test "pi: a non-JSON credits response leaves no balance field, spend still written" {
+	default_pi
+	pi_key_fixture '{"limit":null,"limit_remaining":null,"limit_reset":null,"usage_monthly":1.2}'
+	printf 'not json\n' >"$FIXTURES/credits.json"
+	run_pi
+	[ "$(jq 'has("balance")' "$(pi_cache)")" = false ]
+	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":1.2,"period":"month"}' ]
+}
+
+@test "pi: a credits response with a non-object data leaves no balance field, spend still written" {
+	default_pi
+	pi_key_fixture '{"limit":null,"limit_remaining":null,"limit_reset":null,"usage_monthly":1.2}'
+	echo '{"data":"x"}' >"$FIXTURES/credits.json"
+	run_pi
+	[ "$(jq 'has("balance")' "$(pi_cache)")" = false ]
+	[ "$(jq -c .spend "$(pi_cache)")" = '{"label":"mo","usd":1.2,"period":"month"}' ]
+}
+
 # Key resolution: EXPECT_TOKEN is the key the provider should have chosen, so
 # pi.json appearing proves the choice.
 

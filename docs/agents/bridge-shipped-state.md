@@ -183,10 +183,17 @@ The remote publishes its own caches and the daemon ships them across (#743).
   window/monthly `label` failing `^[A-Za-z0-9._-]{1,12}$` (excludes `#`, `|`,
   spaces, braces, so a `#(…)`/`#{…}`/`#[…]` payload cannot survive), more than
   `usageMaxWindows` (8) windows, `pct` outside `[0, 1000]`, `usd`/`limit_usd`
-  outside `[0, 1e7]`, or a negative `reset_at`. `spend.label`/`spend.period`
-  are not declared on the daemon's `usageSpend` at all — only the
-  statusline's struct has them, and it never renders them — so the typed
-  decode drops them like any other unknown field.
+  outside `[0, 1e7]`, or a negative `reset_at`. `spend.label` **is** declared
+  on the daemon's `usageSpend` and carried — it renders as a trailing suffix
+  in the segment now, so it's validated the same alphabet as a window label,
+  but only when non-empty (an absent label stays valid, for an older cache or
+  a provider that never sets one). `spend.period` is still not declared on
+  the daemon's struct — nothing renders it, so the typed decode drops it like
+  any other unknown field. `balance.usd_remaining` is a separate top-level
+  field (sibling of `spend`, mirroring the statusline's `usageCache.Balance`)
+  validated to `[-1e7, 1e7]` — wider than `spend.usd`/`limit_usd`'s `[0, 1e7]`
+  since an overspent OpenRouter account can carry a legitimately negative
+  remaining balance.
 - **A final guard rejects the marshaled output if it contains `|` or `#`** —
   unreachable by construction (the validated alphabet already excludes both),
   checked anyway because the cost of being wrong isn't cosmetic: `|` matters
