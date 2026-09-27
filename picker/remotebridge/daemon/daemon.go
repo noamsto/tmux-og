@@ -820,18 +820,16 @@ func runMirror(cfg Config) error {
 	// this daemon as dead and recreated the session under a daemon of its own:
 	// this run must neither remove that daemon's socket nor stamp and respawn
 	// into a session that is no longer the one it was launched into. The check
-	// sits as late as it can — the two remote round trips above are each a
-	// window in which og-remote-open can win the race, so asking before them
-	// would only narrow it. Everything below this point touches the local
-	// session or its files.
+	// sits after the two remote reads above — each is a window in which
+	// og-remote-open can recreate the session — and everything below it touches
+	// the local session or its files.
 	if cfg.reopened && !ownsLocalSession(cfg) {
 		hold.close()
 		return errNotOurs
 	}
-	// Stamped only after the ownership check: a session og-remote-open recreated
-	// under this name during those round trips must not receive this mirror's
-	// session path. The bare name is safe here only because the check just
-	// proved it still stands; teardown and the other paths target the pin.
+	// Stamped after the ownership check: a session og-remote-open recreated in
+	// the reads above must not receive this mirror's session path. The bare name
+	// is safe only because the check just proved it still stands.
 	if sessionPath != "" {
 		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", sessionPath)
 	}
