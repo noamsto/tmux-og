@@ -28,6 +28,50 @@ func TestSeedPlainNoAlt(t *testing.T) {
 	}
 }
 
+// TestSeedClearsAltScreenAndCursorKeys: a remote that left the alt screen or
+// application cursor keys during a gap reports them off, and the seed must
+// emit the DECRST clears — asserting only the "on" modes leaves the mirror
+// stuck in a mode the remote already left (#803).
+func TestSeedClearsAltScreenAndCursorKeys(t *testing.T) {
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil))
+	if !strings.Contains(out, "\x1b[?1049l") {
+		t.Errorf("seed must clear the alt screen: %q", out)
+	}
+	if !strings.Contains(out, "\x1b[?1l") {
+		t.Errorf("seed must clear application cursor keys: %q", out)
+	}
+	if strings.Contains(out, "\x1b[?1049h") || strings.Contains(out, "\x1b[?1h") {
+		t.Errorf("seed must not set alt/app-cursor modes the remote does not have: %q", out)
+	}
+}
+
+// TestSeedClearsModesBeforeTheRepaint: ?1049l restores the saved main screen,
+// so it (and the app-cursor clear) must precede the 2J/captured repaint, or
+// the restore would clobber the freshly reseeded contents.
+func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
+	out := string(Seed([]byte("x"), 0, 0, true, true, nil))
+	paint := strings.Index(out, "\x1b[2J")
+	if paint < 0 {
+		t.Fatalf("seed has no repaint: %q", out)
+	}
+	for _, clear := range []string{"\x1b[?1049l", "\x1b[?1l"} {
+		at := strings.Index(out, clear)
+		if at < 0 {
+			t.Errorf("seed missing clear %s: %q", clear, out)
+			continue
+		}
+		if at > paint {
+			t.Errorf("clear %s must precede the repaint: %q", clear, out)
+		}
+	}
+	if strings.Index(out, "\x1b[?1049l") > strings.Index(out, "\x1b[?1049h") {
+		t.Errorf("alt-screen clear must precede the set: %q", out)
+	}
+	if strings.Index(out, "\x1b[?1l") > strings.Index(out, "\x1b[?1h") {
+		t.Errorf("app-cursor clear must precede the set: %q", out)
+	}
+}
+
 func TestSeedResetsAttrsBeforeErase(t *testing.T) {
 	for _, alt := range []bool{false, true} {
 		out := string(Seed([]byte("x"), 0, 0, alt, false, nil))
