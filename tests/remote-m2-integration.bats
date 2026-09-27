@@ -3398,6 +3398,125 @@ wake_parked_mirror() {
 	[ "$dead" = 0 ]
 }
 
+# #784: respawn-pane -k clears the remote screen, which control mode never
+# carries — so the verb must also ask the daemon to re-seed, or the mirror keeps
+# the old program's bytes. This drives the ctl path a real keybind runs.
+@test "ctl respawn-pane restarts the REMOTE program and the mirror drops the stale screen" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 respawnpane
+
+	pane="$(remote_pane_of 0)"
+	[ -n "$pane" ]
+
+	old="OLDPANE_$$"
+	seen_old=no
+	for _ in $(seq 1 60); do
+		$SRC send-keys -t rem "printf '$old\\n'" Enter
+		for _ in $(seq 1 5); do
+			if mirror_contains 1 "$old"; then
+				seen_old=yes
+				break 2
+			fi
+			sleep 0.1
+		done
+	done
+
+	run "$CTL" --sock "$sock" respawn-pane "$pane"
+	[ "$status" -eq 0 ]
+
+	# The pane's process was replaced by a fresh shell, so re-inject the marker
+	# into the surviving remote pane and wait for the mirror to repaint.
+	new="NEWPANE_$$"
+	seen_new=no
+	for _ in $(seq 1 80); do
+		$SRC send-keys -t rem "printf '$new\\n'" Enter
+		for _ in $(seq 1 5); do
+			if mirror_contains 1 "$new"; then
+				seen_new=yes
+				break 2
+			fi
+			sleep 0.1
+		done
+	done
+	stale="$(mirror_contains 1 "$old" && echo yes || echo no)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$seen_old" = yes ]
+	[ "$seen_new" = yes ]
+	# The re-seed's clear wiped the old program's screen; it must not linger.
+	[ "$stale" = no ]
+}
+
+# #784: respawn-window -k destroys every remote pane but the window's first, so
+# the layout reconcile collapses the mirror and the re-seed repaints the
+# survivor. The pane id the bind carried may not be the survivor, hence the
+# window-scoped re-seed.
+@test "ctl respawn-window collapses the REMOTE window and re-seeds the mirror" {
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 150 -y 40
+	bridge_up 2 respawnwin
+
+	pane="$(remote_pane_of 0)"
+	[ -n "$pane" ]
+
+	# A marker in each remote pane, so the collapse has two stale screens to
+	# drop rather than one.
+	m1="WINONE_$$"
+	m2="WINTWO_$$"
+	i=0
+	while IFS= read -r rp; do
+		i=$((i + 1))
+		case "$i" in
+		1) m="$m1" ;;
+		2) m="$m2" ;;
+		esac
+		for _ in $(seq 1 60); do
+			$SRC send-keys -t "$rp" "printf '$m\\n'" Enter
+			if mirror_contains 2 "$m"; then break; fi
+			sleep 0.1
+		done
+	done < <($SRC list-panes -t rem -F '#{pane_id}')
+
+	run "$CTL" --sock "$sock" respawn-window "$pane"
+	[ "$status" -eq 0 ]
+
+	# The remote window keeps only its first pane, and the mirror follows.
+	src_n=""
+	dst_n=""
+	for _ in $(seq 1 80); do
+		src_n="$($SRC list-panes -t rem -F '#{pane_id}' | wc -l)"
+		dst_n="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
+		[ "$src_n" -eq 1 ] && [ "$dst_n" -eq 1 ] && break
+		sleep 0.15
+	done
+
+	new="NEWWIN_$$"
+	seen_new=no
+	for _ in $(seq 1 80); do
+		$SRC send-keys -t rem "printf '$new\\n'" Enter
+		for _ in $(seq 1 5); do
+			if mirror_contains 1 "$new"; then
+				seen_new=yes
+				break 2
+			fi
+			sleep 0.1
+		done
+	done
+	stale="$(mirror_contains 2 "$m1" || mirror_contains 2 "$m2" && echo yes || echo no)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$src_n" -eq 1 ]
+	[ "$dst_n" -eq 1 ]
+	[ "$seen_new" = yes ]
+	[ "$stale" = no ]
+}
+
 # Crash net: SIGKILL the renderer process (not respawn). remain-on-exit holds
 # a corpse; healDeadRenderers then rebuilds a live mirror.
 @test "killing a renderer process leaves the session standing and heal restores the mirror" {

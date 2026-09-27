@@ -30,7 +30,7 @@ const (
 // table changes at all — a new verb included, since an old daemon answers one
 // with "unknown verb" and the new keybind looks broken rather than stale — so
 // the mismatch is a message rather than a silently-ignored gesture.
-const CtlProtocolVersion = "6"
+const CtlProtocolVersion = "7"
 
 // EncodeArgv packs argv as NUL-separated fields. NUL-separated rather than
 // space-joined so a window name containing spaces or quotes survives without a

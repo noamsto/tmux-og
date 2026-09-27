@@ -326,6 +326,7 @@ func TestMirrorCtlItemsUseTheKeybindEntryPoint(t *testing.T) {
 	verbs := map[string]bool{
 		"kill-window": true, "kill-pane": true, "rename": true, "split-h": true,
 		"split-v": true, "swap": true, "zoom": true, "new-window": true,
+		"respawn-pane": true, "respawn-window": true,
 	}
 	branches := mirrorBranches(t)
 	for _, key := range []string{
@@ -351,6 +352,30 @@ func TestMirrorCtlItemsUseTheKeybindEntryPoint(t *testing.T) {
 				t.Fatalf("%s: a format in %q would expand at menu build", key, arg)
 			}
 		}
+	}
+}
+
+// respawn-pane/-window clear the remote screen; the mirror cannot see the
+// clear, so each menu item asks the daemon for a remote respawn and the daemon
+// re-seeds. The pane menu keeps the local Reconnect (renderer redial, #547) on
+// a second key, since one menu cannot carry two items on R.
+func TestMirrorRespawnItemsRouteToCtl(t *testing.T) {
+	p := keysPaths()
+	branches := mirrorBranches(t)
+
+	window := branches["prefix <"]
+	wantWindow := `Respawn R { ` + esc1(ctlRun(p, "respawn-window", "")) + ` }`
+	if !strings.Contains(window, wantWindow) {
+		t.Errorf("window menu missing %q in %q", wantWindow, window)
+	}
+
+	pane := branches["prefix >"]
+	wantPane := `Respawn R { ` + esc1(ctlRun(p, "respawn-pane", "")) + ` }`
+	if !strings.Contains(pane, wantPane) {
+		t.Errorf("pane menu missing %q in %q", wantPane, pane)
+	}
+	if !strings.Contains(pane, `Reconnect e { respawn-pane -k }`) {
+		t.Errorf("pane menu must keep the local Reconnect redial: %q", pane)
 	}
 }
 

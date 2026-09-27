@@ -31,6 +31,7 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 		want    []string
 		windows bool
 		layout  string
+		reseed  string
 	}{
 		{
 			name:   "split -h carries the pane cwd and targets the pane by id",
@@ -203,6 +204,24 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			want:   []string{"rotate-window -D -t %3"},
 			layout: "@1",
 		},
+		{
+			name:   "respawn-pane restarts the remote pane and asks for a re-seed",
+			argv:   []string{wire.CtlProtocolVersion, "respawn-pane", "%3"},
+			want:   []string{"respawn-pane -k -t %3"},
+			reseed: "@1",
+		},
+		{
+			// respawn-window destroys every remote pane but the first, so it
+			// re-seeds the window and the layout reconcile drops the lost
+			// local renderers; the surviving pane is the window's FIRST, not
+			// necessarily the active one, which is why the re-seed is
+			// window-scoped. It re-activates the first pane, so it moves.
+			name:   "respawn-window restarts the remote window with a layout reconcile and a re-seed",
+			argv:   []string{wire.CtlProtocolVersion, "respawn-window", "%3"},
+			want:   []string{"respawn-window -k -t @1"},
+			layout: "@1",
+			reseed: "@1",
+		},
 	}
 
 	for _, tc := range tests {
@@ -220,6 +239,9 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			}
 			if req.wantLayout != tc.layout {
 				t.Errorf("wantLayout = %q, want %q", req.wantLayout, tc.layout)
+			}
+			if req.wantReseed != tc.reseed {
+				t.Errorf("wantReseed = %q, want %q", req.wantReseed, tc.reseed)
 			}
 		})
 	}
@@ -294,6 +316,35 @@ func TestParseCtlRotateInvalidatesActiveBelief(t *testing.T) {
 		if req.wantLayout != "@1" {
 			t.Errorf("layout %s wantLayout = %q, want @1", name, req.wantLayout)
 		}
+	}
+}
+
+// respawn-pane keeps the same pane id and active pane, so it must NOT
+// invalidate the focus belief; respawn-window destroys every pane but the
+// window's first and re-activates it, so it must.
+func TestParseCtlRespawnInvalidatesActiveBelief(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "respawn-pane", "%3"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl respawn-pane: %v", err)
+	}
+	if req.invalidate != "" {
+		t.Errorf("respawn-pane invalidate = %q, want none", req.invalidate)
+	}
+	if req.wantLayout != "" {
+		t.Errorf("respawn-pane wantLayout = %q, want none", req.wantLayout)
+	}
+
+	req, err = c.parseCtl([]string{wire.CtlProtocolVersion, "respawn-window", "%3"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl respawn-window: %v", err)
+	}
+	if req.invalidate != "@1" {
+		t.Errorf("respawn-window invalidate = %q, want @1", req.invalidate)
+	}
+	if req.wantWindows {
+		t.Error("respawn-window wants a window reconcile, want none (the window survives)")
 	}
 }
 
@@ -386,6 +437,9 @@ func TestTakeIntentsCoalescesAndDrains(t *testing.T) {
 		{wire.CtlProtocolVersion, "split-v", "%3"}, // same window: coalesces
 		{wire.CtlProtocolVersion, "split-h", "%9"}, // different window
 		{wire.CtlProtocolVersion, "new-window", "%2"},
+		{wire.CtlProtocolVersion, "respawn-pane", "%2"},   // reseed @1
+		{wire.CtlProtocolVersion, "respawn-window", "%3"}, // reseed + layout @1, coalesces
+		{wire.CtlProtocolVersion, "respawn-pane", "%9"},   // reseed @2
 	} {
 		req, err := c.parseCtl(argv, "rem")
 		if err != nil {
@@ -394,17 +448,23 @@ func TestTakeIntentsCoalescesAndDrains(t *testing.T) {
 		c.submit(req, func(...string) bool { return true })
 	}
 
-	windows, layouts := c.takeIntents()
+	windows, layouts, reseeds := c.takeIntents()
 	if !windows {
 		t.Error("new-window should have registered the window reconcile")
 	}
 	if len(layouts) != 2 {
 		t.Errorf("layouts = %v, want 2 distinct windows", layouts)
 	}
+	// @1 and @2 each got respawns; @1 coalesces its respawn-pane and
+	// respawn-window into one entry, so exactly the two respawned windows
+	// remain.
+	if len(reseeds) != 2 {
+		t.Errorf("reseeds = %v, want 2 distinct windows", reseeds)
+	}
 
-	windows, layouts = c.takeIntents()
-	if windows || len(layouts) != 0 {
-		t.Errorf("second take should be empty, got %v %v", windows, layouts)
+	windows, layouts, reseeds = c.takeIntents()
+	if windows || len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("second take should be empty, got %v %v %v", windows, layouts, reseeds)
 	}
 }
 
@@ -416,8 +476,8 @@ func TestForgetWindowDropsState(t *testing.T) {
 
 	c.forgetWindow("@1")
 
-	if _, layouts := c.takeIntents(); len(layouts) != 0 {
-		t.Errorf("layouts = %v, want none after forgetWindow", layouts)
+	if _, layouts, reseeds := c.takeIntents(); len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("layouts = %v reseeds = %v, want none after forgetWindow", layouts, reseeds)
 	}
 	if _, err := c.parseCtl([]string{wire.CtlProtocolVersion, "split-h", "%3"}, "rem"); err == nil {
 		t.Error("a pane of a forgotten window must no longer resolve")
@@ -1401,8 +1461,8 @@ func TestHandleCtlNacksAndRaisesOnAStaleViewer(t *testing.T) {
 	}
 	// No intent may be registered either, or the next drain reconciles a
 	// window for a command that was never sent.
-	if windows, layouts := cst.takeIntents(); windows || len(layouts) != 0 {
-		t.Errorf("intents = (%v, %v), want none", windows, layouts)
+	if windows, layouts, reseeds := cst.takeIntents(); windows || len(layouts) != 0 || len(reseeds) != 0 {
+		t.Errorf("intents = (%v, %v, %v), want none", windows, layouts, reseeds)
 	}
 	if got := view.Desired(); got != "foot" {
 		t.Errorf("Desired = %q, want foot — the raised dial reads it", got)

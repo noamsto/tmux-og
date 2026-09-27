@@ -170,6 +170,9 @@
     + " '' Kill X { "
     + menuEsc1 (menuCtlRun "kill-window" "")
     + " }"
+    + " Respawn R { "
+    + menuEsc1 (menuCtlRun "respawn-window" "")
+    + " }"
     + " Rename n { "
     + menuEsc1 menuRenamePrompt
     + " }"
@@ -192,9 +195,10 @@
     + " \"#{?mouse_hyperlink,Type #[underscore]#{=/9/...:mouse_hyperlink},}\" C-h { copy-mode -q ; send-keys -l \"#{q:mouse_hyperlink}\" }"
     + " \"#{?mouse_hyperlink,Copy #[underscore]#{=/9/...:mouse_hyperlink},}\" h { copy-mode -q ; set-buffer \"#{q:mouse_hyperlink}\" } ''";
 
-  # mirrorPaneMenu keeps Respawn as the one local structural item, relabelled:
-  # on a mirror it redials the renderer (#547) rather than restarting a
-  # program.
+  # mirrorPaneMenu keeps two distinct gestures: Respawn asks the REMOTE to
+  # restart the program in the pane (stock label and key), and Reconnect redials
+  # the local renderer (#547), moved off R because one menu cannot carry two
+  # items on one key.
   mirrorPaneMenu = pos:
     "display-menu -T \"#[align=centre]#{pane_index} (#{pane_id})\" "
     + pos
@@ -215,7 +219,10 @@
     + " '' Kill X { "
     + menuEsc1 (menuCtlRun "kill-pane" "")
     + " }"
-    + " Reconnect R { respawn-pane -k }"
+    + " Respawn R { "
+    + menuEsc1 (menuCtlRun "respawn-pane" "")
+    + " }"
+    + " Reconnect e { respawn-pane -k }"
     + " \"#{?#{>:#{window_panes},1},,-}#{?window_zoomed_flag,Unzoom,Zoom}\" z { "
     + menuEsc1 (menuCtlRun "zoom" "")
     + " }";
