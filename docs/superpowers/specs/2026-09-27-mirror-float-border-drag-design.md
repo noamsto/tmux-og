@@ -141,14 +141,15 @@ matches `^%[0-9]+$`, then runs one local
 `--display-error` path, when the pane is gone, carries no `@bridge_pane`, or
 is not floating, or when the resolved `@bridge_pane` does not match
 `^%[0-9]+$`. Otherwise it sends the daemon
-`float-geom <@bridge_pane> <x> <y> <w> <h> <winW> <winH>`. The daemon verb
+`float-geom <@bridge_pane> <local-pane> <x> <y> <w> <h> <winW> <winH>`. The daemon verb
 stays a pure translation of explicit arguments, validated and testable like
 every other verb. The local pane lookup lives on the host where the local
 panes are.
 
 ### 3. The `float-geom` verb (daemon, `ctl.go`)
 
-`float-geom <pane> <x> <y> <w> <h> <winW> <winH>` takes 6 args, all
+`float-geom <pane> <local-pane> <x> <y> <w> <h> <winW> <winH>` takes 7 args. The
+local pane is checked against `^%[0-9]+$`, and the other six are
 validated as decimal integers with bounds: `w`, `h` in `1..9999`; `winW`,
 `winH` in `3..9999`, the smallest window a bordered box fits in; `x`, `y` in `-9999..9999`, because a float dragged partly off
 screen reports a negative `pane_left` (measured `-5`). The request carries the
@@ -209,13 +210,23 @@ dragged to (clamped), so the move is a no-op on screen, and the renderer is
 re-sized and re-seeded as for any geometry change. **The reconcile path is not
 modified.**
 
+**Revised after code review.** `planFloatOps` diffs the last-applied *remote*
+cell, never the local float's actual box. So when the clamp maps the drag
+back onto the remote's current geometry, the remote does not change, no
+`Move` follows, and the local float stays off-screen. Measured: a flush-left
+float dragged 8 cells further left ended at local `-7,6` against remote `1,6`.
+So when `clampInner` changed the box, the verb also carries the local
+`resize-pane`/`move-pane` onto the clamped box. The handler runs them
+*before* the remote send, so any later reconcile stays authoritative.
+
 ## Scope
 
 **In:**
 
-- `MouseDrag1Border` and `M-MouseDrag1Border` on a daemon-owned mirror float.
-  Every drag shape tmux offers on a float is covered: each edge, each corner,
-  and the top-border move.
+- `MouseDrag1Border`, `M-MouseDrag1Border` and `M-MouseDrag1Pane` (the
+  Alt-drag from inside a float, added after review) on a daemon-owned mirror
+  float. Every drag shape tmux offers on a float is covered: each edge, each
+  corner, the top-border move, and the Alt-drag move.
 - The `float-geom` verb, and ctl's `float-drag` resolution.
 - The which-key picker (`picker/whichkey.go`) skips the `og-bridge-drag`
   table. Its 160 mouse rows are not keys a person presses from a menu.

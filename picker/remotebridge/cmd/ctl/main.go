@@ -83,7 +83,7 @@ func resolveFloatDrag(localPane string) ([]string, error) {
 	if floating != "1" {
 		return nil, fmt.Errorf("float-drag: %s: not floating", localPane)
 	}
-	return append([]string{"float-geom", bridgePane}, fields[2:]...), nil
+	return append([]string{"float-geom", bridgePane, localPane}, fields[2:]...), nil
 }
 
 func main() {

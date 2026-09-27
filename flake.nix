@@ -2357,7 +2357,8 @@
             };
           in
             pkgs.runCommand "float-drag-integration-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.procps];
+              # gawk maps a remote pane id to its local mirror (mirror_of).
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk];
               TMUX_BIN = "${floatDragTmuxConfig.tmux-wrapped}/bin/tmux";
               TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
               DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";

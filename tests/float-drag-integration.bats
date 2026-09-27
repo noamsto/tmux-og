@@ -62,12 +62,16 @@ BUDGET_SECS=12
 
 # mirror_up mirrors a remote window holding a tiled split and one float, then
 # attaches a real client to the mirror. Sets RF (remote float), LF (its local
-# mirror) and LT (the local mirror of the remote's right-hand tiled pane).
+# mirror) and LT (the local mirror of the remote's right-hand tiled pane). Any
+# args override the remote float's new-pane geometry/border flags (default
+# -x 40 -y 12 -X 10 -Y 5).
 mirror_up() {
+	local float_args=("$@")
+	((${#float_args[@]})) || float_args=(-x 40 -y 12 -X 10 -Y 5)
 	$SRC new-session -d -s rem -x 100 -y 30
 	local rt
 	rt="$($SRC split-window -d -h -t rem -P -F '#{pane_id}' "sleep 300")"
-	RF="$($SRC new-pane -d -t rem -x 40 -y 12 -X 10 -Y 5 -P -F '#{pane_id}' "sleep 300")"
+	RF="$($SRC new-pane -d -t rem "${float_args[@]}" -P -F '#{pane_id}' "sleep 300")"
 	$DST new-session -d -s host-sess -x 100 -y 30
 	# The splash popup would take the first click.
 	$DST set-option -g @splash_shown 1
@@ -120,13 +124,17 @@ sgr() {
 }
 
 # wait_agree waits up to 2s for the remote float and its mirror to report the
-# same geometry, which must also differ from $1 (the geometry before the drag).
+# same geometry, which must also differ from $1 (the geometry before the
+# drag) unless $2 is passed (a snap-back drag, whose final geometry equals
+# the pre-drag one).
 wait_agree() {
-	local before="$1" l r deadline=$((SECONDS + 2))
+	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + 2))
 	while :; do
 		l="$(geom "$DST" "$LF")"
 		r="$(geom "$SRC" "$RF")"
-		[[ $l == "$r" && $l != "$before" ]] && return 0
+		if [[ $l == "$r" ]] && { [[ -n $allow_same ]] || [[ $l != "$before" ]]; }; then
+			return 0
+		fi
 		((SECONDS < deadline)) || break
 		sleep 0.1
 	done
@@ -193,5 +201,44 @@ wait_agree() {
 	sgr 32 $(($(field pane_left) + $(field pane_width) + 10)) $((y + 3)) M
 	$DST select-pane -t "$LT"
 	sgr 0 $(($(field pane_left) + $(field pane_width) + 10)) $((y + 3)) m
+	wait_agree "$before"
+}
+
+@test "an Alt-drag from inside a mirror float moves the REMOTE float" {
+	mirror_up
+	local before x y
+	before="$(geom "$DST" "$LF")"
+	x=$(($(field pane_left) + 5))
+	y=$(($(field pane_top) + 3))
+	# Button code 8 is Meta; 40 marks motion with Meta held.
+	sgr 8 "$x" "$y" M
+	sgr 40 $((x + 6)) $((y + 2)) M
+	sgr 8 $((x + 6)) $((y + 2)) m
+	wait_agree "$before"
+}
+
+@test "a flush float dragged past its edge snaps back to the remote" {
+	mirror_up -x 40 -y 12 -X 0 -Y 5
+	local before x y
+	before="$(geom "$DST" "$LF")"
+	# Grab the top border far enough in that the drag 8 cells left stays on
+	# screen: an SGR report left of column 1 is dropped and would move nothing.
+	x=$(($(field pane_left) + 20))
+	y=$(($(field pane_top) - 1))
+	sgr 8 "$x" "$y" M
+	sgr 40 $((x - 8)) "$y" M
+	sgr 8 $((x - 8)) "$y" m
+	wait_agree "$before" allow_same
+}
+
+@test "a borderless remote float lands on the local inner box" {
+	mirror_up -B none -x 40 -y 12 -X 10 -Y 5
+	local before x y
+	before="$(geom "$DST" "$LF")"
+	x=$(($(field pane_left) - 1))
+	y=$(($(field pane_top) + 3))
+	sgr 0 "$x" "$y" M
+	sgr 32 $((x - 5)) "$y" M
+	sgr 0 $((x - 5)) "$y" m
 	wait_agree "$before"
 }

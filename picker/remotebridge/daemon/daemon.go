@@ -769,7 +769,7 @@ func Run(cfg Config) error {
 	// keeps og-remote-open reusing this bridge instead of stacking a second
 	// daemon on the same socket.
 	go acceptConns(listener, connCh, func(argv []string) error {
-		return handleCtl(cst, replacer, carousel, argv, cfg.RemoteSession, sendCtl)
+		return handleCtl(cst, replacer, carousel, argv, cfg.RemoteSession, cfg.LocalTmux, sendCtl)
 	})
 
 	// @bridge_sock is the carrier a keybind reads to reach this daemon. Stamped

@@ -94,7 +94,7 @@ func TestResolveFloatDrag(t *testing.T) {
 		if !reflect.DeepEqual(*got, want) {
 			t.Fatalf("tmux argv = %#v, want %#v", *got, want)
 		}
-		wantArgs := []string{"float-geom", "%3", "11", "6", "38", "10", "100", "30"}
+		wantArgs := []string{"float-geom", "%3", "%7", "11", "6", "38", "10", "100", "30"}
 		if !reflect.DeepEqual(args, wantArgs) {
 			t.Fatalf("args = %#v, want %#v", args, wantArgs)
 		}

@@ -357,8 +357,8 @@ picker rather than the local one:
 **Known limitations** (documented, not solved here):
 
 - Remote copy-mode / scrollback is not pre-seeded locally yet (M2.4).
-- Mouse: border-drag self-reverts; right-click mega-menu and
-  `M-MouseDrag1Border` still act locally.
+- Mouse: a border drag on a tiled mirror pane still resizes only the local
+  panes (#823); a mirror float's border or Alt-drag reaches the remote (#797).
 - Root-table `M-H`/`M-J`/`M-K`/`M-L` window nav has no remote counterpart;
   `prefix ;` does not fire `after-select-pane`.
 - OSC 52 clipboard / focus-event passthrough unprobed; kitty graphics won't
