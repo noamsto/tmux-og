@@ -20,6 +20,10 @@ set -uo pipefail
 target=${1:-}
 [[ -z $target ]] && exit 0
 
+# The window-resized hook sets @float_refit_pending before forking this run,
+# so the rest of a resize burst skips while it is on its way. Clearing it in
+# the same command list as this read — the script's first tmux call — means
+# any event it suppressed predates the read.
 while IFS='|' read -r pane geom; do
 	read -r width height xoff yoff <<<"$geom"
 	# Floats created outside the binds (a mouse Ctrl-drag) carry no stamp, so
@@ -36,4 +40,4 @@ while IFS='|' read -r pane geom; do
 	tmux resize-pane -t "$pane" -x "$width" -y "$height"
 	tmux move-pane -t "$pane" -X "$xoff" -Y "$yoff"
 done < <(tmux list-panes -t "$target" -f '#{pane_floating_flag}' \
-	-F '#{pane_id}|#{@float_geom}' 2>/dev/null)
+	-F '#{pane_id}|#{@float_geom}' \; set-option -wu -t "$target" @float_refit_pending 2>/dev/null)

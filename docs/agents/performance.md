@@ -102,6 +102,11 @@ evaluated in-process with no fork:
   window's decision signature — every input the layout decision reads, not
   just geometry — differs from `@grid_refit_layout`.
 
+- **Pending marker (#810).** Both gates also skip while the window's
+  `@float_refit_pending` / `@grid_refit_pending` equals the live `WxH` /
+  signature. The hook writes the marker right before it forks; the script
+  clears it in its first tmux call (below).
+
 Each script stamps the state it last verified. Crew grids needed their own
 gate because they are the busy windows: every dispatched worker window is
 one. `scripts.md` has the stamp rules. The signature is not
@@ -147,12 +152,73 @@ setup):
 | busy | 2 071 | 188 |
 | reattach | 6 427 | 429 |
 
-**What the "after" residual is.** A *real* resize, such as a client of
+**What the "after" residual was.** A *real* resize, such as a client of
 another size attaching, still refits every grid and stamped float, as it
 should. The daemon's per-window caps then fire a burst of redundant events
-for those windows. Events that arrive before the first forked run has
-written its stamp see the old stamp and fork too. Coalescing that burst is a
-follow-up. Plain windows fork nothing.
+for those windows. Events that arrived before the first forked run had
+written its stamp saw the old stamp and forked too. #810 coalesces that
+burst (below). Plain windows fork nothing.
+
+### Coalescing a resize burst (#810)
+
+Each gated hook writes a window-scoped pending marker right before its
+`run-shell -b`: `@float_refit_pending` = `WxH`, `@grid_refit_pending` = the
+grid signature. The gate also skips while the live state equals the marker.
+So the rest of the burst skips while the first run is on its way.
+
+The script clears the marker **in its first tmux call**, in the same client
+command list as its state read (`tmux-grid-refit`'s snapshot
+`display-message`, which also carries the `@crew_grid` and zoom reads;
+`tmux-float-refit`'s `list-panes`). Commands in one command list run
+back-to-back on the server thread, so no gate is evaluated in between.
+
+**Why a marker cannot hide a needed refit:**
+- An event is skipped only while the marker is set, and it is set only
+  between a hook's fork and that run's first tmux call.
+- So every event the marker suppresses predates everything that run reads.
+  The run acts on a state at least as new as the event.
+- Events after the clear are gated by the stamp exactly as above.
+- Early exits (zoomed, not a grid, no lead, lock loser) all come after the
+  clear. A zoomed run leaves nothing behind, so the unzoom's own
+  `window-layout-changed` forks normally.
+- A lock loser still drops its work, as before #810. Coalescing removes the
+  redundant burst forks that sometimes retried once the holder released, so
+  a loser that read a new state is likelier to stay unrefit until the next
+  event.
+
+**Keyed on the state**, not a flag: a marker left behind — only possible
+when the run is killed before its first tmux call, or `run-shell -b` fails
+to fork — blocks events for that exact state only. Any other state forks,
+and its run clears it.
+
+What still forks: events that land after a run's read and before its stamp
+(the lead read and three `read_opt`s on the grid's fast path, the per-pane
+stamp on the float path). Folding those reads into the snapshot would narrow
+it further; their values are free text, so that needs `|`-safe rendering.
+
+A `set-option` of a user option fires neither `window-resized` nor
+`window-layout-changed` on tmux-next (probed), so the marker writes and the
+clear do not re-trigger the gates.
+
+**Measured** (`VLOG=1`, `busy` + `reattach`, two rounds per build,
+alternating, same session; "before" is `main` a9e2ceb with #807, "after" is
+#810). The host was noisier than during #807's run, so compare the columns
+with each other, not with #807's table. Times are ms.
+
+| Scenario | Before p50 | Before p99 | Before max | After p50 | After p99 | After max |
+| --- | --- | --- | --- | --- | --- | --- |
+| busy | 1.8–2.6 | 13.9–19.9 | 23.8–311 | 1.9–3.6 | 17.1–39.0 | 241–259 |
+| reattach | 7.7–7.9 | 370–388 | 478–484 | 4.3–6.0 | 237–255 | 292–510 |
+
+| Forked refit jobs | Before | After |
+| --- | --- | --- |
+| busy | 25–234 | 24–29 |
+| reattach | 600–666 | 56–65 |
+
+Re-attach forks about 10× fewer refit jobs, and its p99 drops by about a
+third. Max stays noisy in both builds: one "after" round hit 510 ms. The
+busy forks vary widely before (one round hit a burst: 234 jobs) and stay
+flat after; its latency spread is noise.
 
 ## What did not matter (measured)
 
@@ -210,5 +276,9 @@ foreground run is deliberate ordering.
 
   Real resizes, the stale-stamp float sequence and the #760 layout-change
   cases must still refit.
+- The #810 tests in the same file pin the pending marker: a burst on an
+  unverified grid or a stale float forks exactly one job; a lock loser, a
+  zoomed run never block a later refit, and a left-behind marker never blocks
+  a different state (it still blocks its own exact state, above).
 - A new `window-*` hook that forks per event multiplies under this fan-out
   the same way. Gate it in-process, or measure it with the harness.

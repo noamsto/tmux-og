@@ -8,9 +8,10 @@
 #                            pass #{q:window_id})
 # No-op unless the window carries @crew_grid=1, so a window that is not a crew
 # grid — and any non-tmux-og server — is untouched. Silent and convergent: an
-# unchanged grid issues no state-changing tmux command and emits no reflow
-# notification (@grid_refit_sig caches the last applied decision, and the
-# read-only probes before it are cheap).
+# unchanged grid issues no layout-changing tmux command and emits no reflow
+# notification — it writes only its own @grid_refit_* bookkeeping options
+# (@grid_refit_sig caches the last applied decision, and the read-only probes
+# before it are cheap).
 #
 # Two triggers, because a grid can change shape without a resize (#760): the
 # window-resized[10] hook covers a client resize, and window-layout-changed
@@ -57,10 +58,21 @@ acquire_lock() {
 	mkdir "$dir" 2>/dev/null
 }
 
-[[ "$(read_opt @crew_grid 0)" == 1 ]] || exit 0
+read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
+
+# One snapshot, so the stamp below describes exactly the state the verdict
+# used. The signature is the last field: it carries free-text option values,
+# and as the final `read` variable it absorbs any '|' in them.
+#
+# The hooks set @grid_refit_pending before forking this run, so the rest of a
+# resize burst skips while it is on its way. Clearing it in this command list
+# means every event it suppressed predates everything this run reads, so this
+# must stay the first tmux call.
+IFS='|' read -r is_grid zoomed w h pane_ids stored_sig geom <<<"$(tmux display-message -p -t "$target" "#{==:#{@crew_grid},1}|#{window_zoomed_flag}|#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|$grid_sig_fmt" \; set-option -wu -t "$target" @grid_refit_pending 2>/dev/null)"
+[[ $is_grid == 1 ]] || exit 0
 
 # Zoom is user state: a zoomed grid is left exactly as the user left it.
-[[ "$(tmux display-message -p -t "$target" '#{window_zoomed_flag}' 2>/dev/null)" == 1 ]] && exit 0
+[[ $zoomed == 1 ]] && exit 0
 
 # The lead pane is the main pane. No lead -> not a grid we can lay out.
 # Floats are excluded everywhere (#760): window-layout-changed fires on a float
@@ -68,12 +80,6 @@ acquire_lock() {
 lead=$(tmux list-panes -t "$target" -f '#{&&:#{==:#{@crew_role},lead},#{!:#{pane_floating_flag}}}' -F '#{pane_id}' 2>/dev/null | head -1)
 [[ -n $lead ]] || exit 0
 
-read_panes() { tmux list-panes -t "$target" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' 2>/dev/null; }
-
-# One snapshot, so the stamp below describes exactly the state the verdict
-# used. The signature is the last field: it carries free-text option values,
-# and as the final `read` variable it absorbs any '|' in them.
-IFS='|' read -r w h pane_ids stored_sig geom <<<"$(tmux display-message -p -t "$target" "#{window_width}|#{window_height}|#{P:#{?pane_floating_flag,,#{pane_index}:#{pane_id} }}|#{@grid_refit_sig}|$grid_sig_fmt" 2>/dev/null)"
 [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || exit 0
 # #{P:} is not layout order on tmux-next (a swap-pane leaves it unchanged);
 # pane_index is.
