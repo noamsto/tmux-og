@@ -1061,14 +1061,34 @@
     # Undebounced, unlike the reflow above — the work is two no-op-when-unchanged
     # tmux commands per stamped float, and tracking a live terminal drag is the
     # point.
-    set-hook -g window-resized          'run-shell -b "${script.tmux-float-refit}/bin/tmux-float-refit #{q:window_id}"'
+    #
+    # Every one of these three hooks used to run-shell unconditionally. tmux-next
+    # recalculates every window on the server on a single `refresh-client -C`, so
+    # a mirrored session's client resize (the remote bridge's steady state) fired
+    # all three hooks on every window on the server, not just the one that
+    # changed — a fork storm that stalled keystroke echo under load (#793). The
+    # `if -F` gates below are evaluated in-process (no fork) and only let the
+    # `run-shell -b` through when the script could actually act: never for a
+    # window that is neither a crew grid nor holds a stamped float, and never for
+    # an event that leaves a grid/float window in a state its script already
+    # verified. The stamps the gates compare against (`@float_refit_size`,
+    # `@grid_refit_layout`) are owned by the scripts, not written here.
+    set-hook -g window-resized          { if -F '#{P:#{?#{&&:#{&&:#{pane_floating_flag},#{@float_geom}},#{!=:#{window_width}x#{window_height},#{@float_refit_size}}},1,}}' { run-shell -b "${script.tmux-float-refit}/bin/tmux-float-refit #{q:window_id}" } }
 
     # Responsive dispatcher grid layout (#749). Indexed [10] beside the
     # tmux-float-refit setter at index 0, so a single resize fires both; the bare
     # `set-hook -gu window-resized` above clears every index on reload. The
     # dispatcher calls tmux-grid-refit itself after adding or removing a role
     # pane. Read-only on the @crew_* hints it consumes.
-    set-hook -g window-resized[10]      'run-shell -b "${script.tmux-grid-refit}/bin/tmux-grid-refit #{q:window_id}"'
+    #
+    # The gate's geometry signature (window size + every tiled pane's id and
+    # geometry) must stay byte-identical to `grid_sig_fmt` in tmux-grid-refit.sh
+    # — a bats guard fails the build if they drift. It is not `#{window_layout}`:
+    # on tmux-next that format renders per client (JSON for a CLI client, the
+    # legacy string for a control client), so a stamp written by the script would
+    # never match a gate evaluated for the bridge's control client; this
+    # signature prints identically for both.
+    set-hook -g window-resized[10]      { if -F '#{&&:#{==:#{@crew_grid},1},#{!=:#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{@grid_refit_layout}}}' { run-shell -b "${script.tmux-grid-refit}/bin/tmux-grid-refit #{q:window_id}" } }
 
     # A pane split/kill/move changes the layout without resizing the window, so
     # window-resized never fires and the lead keeps whatever cells tmux
@@ -1076,7 +1096,9 @@
     # split-then-kill. window-layout-changed fires on every layout mutation and
     # tmux-grid-refit re-normalises the grid; it stays a no-op on anything else,
     # and the script excludes floating panes (which also fire this hook).
-    set-hook -g window-layout-changed   'run-shell -b "${script.tmux-grid-refit}/bin/tmux-grid-refit #{q:window_id}"'
+    #
+    # Same gate and signature as window-resized[10] above (see that comment).
+    set-hook -g window-layout-changed   { if -F '#{&&:#{==:#{@crew_grid},1},#{!=:#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{@grid_refit_layout}}}' { run-shell -b "${script.tmux-grid-refit}/bin/tmux-grid-refit #{q:window_id}" } }
 
     # Tag every newly-created window as a worktree window from its cwd — at
     # creation, regardless of creator or CLAUDECODE (issue #95). new-session

@@ -7,6 +7,7 @@ Spec: `docs/superpowers/specs/2026-09-27-typing-lag-resize-storm-design.md`.
 | File | Purpose |
 |---|---|
 | `config/tmux.conf.tmpl` | Wrap the three refit `set-hook` lines (window-resized, window-resized[10], window-layout-changed) in one-line `if -F` gates; comment why. |
+| `config/tmux.conf.reference.nix` | Byte-for-byte reference of the rendered conf (`tmux-conf-extraction-assertions`): mirror the three hook lines and their comments. |
 | `scripts/tmux-grid-refit.sh` | Read size, tiled pane ids, geometry signature and stored `@grid_refit_sig` in one `display-message`; stamp `@grid_refit_layout` on the fast-path sig-match exit only. |
 | `scripts/tmux-float-refit.sh` | Stamp `@float_refit_size` per float (`set-option -pF`) before refitting it. |
 | `tests/grid-refit.bats` | Regression guard: fork-count tests against the production hook lines on a `-v` server, plus the real-resize, stale-stamp and settle cases. |
