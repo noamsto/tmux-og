@@ -244,8 +244,9 @@ not-yet-open sessions listed under it as a tree. Enter runs `og-remote-open`
 (or call it directly: `og-remote-open <host> [<sess>]`) — on a host row it
 opens that host's most-recent session. A bridged session moves up into the
 session list, tagged with its host in the **Host** column. Live window
-add/close/rename sync through the control-mode daemon; structural keybinds
-inside a mirror window act on the remote.
+add/close/rename sync through the control-mode daemon; structural keybinds and
+tmux's own menus (right-click, `prefix <` / `prefix >`) inside a mirror window
+act on the remote.
 
 `prefix + d` inside a mirror detaches the **bridge** rather than the client:
 the daemon exits, the mirror session goes, and the remote — which only ever

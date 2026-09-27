@@ -2174,6 +2174,57 @@
               touch $out
             '';
 
+          # A keypress AND a right-click, not the conf text: tmux's own default
+          # menus, re-bound on a mirror window (#769), driven for real through
+          # the same attached-client + recording-stub harness as
+          # rename-bind-integration-tests above, for the same reason — a
+          # keybind or a mouse binding fires only for a real attached client.
+          # TMUX_RAW, the raw pinned binary (not the wrapper, which always adds
+          # `-f <conf>`), is what the stock-tripwire and version-gate tests
+          # source a bare `%if`…`%endif` block into. enrich/agent-usage off for
+          # the same reason as rename-bind-integration-tests: their monitor
+          # hooks fire on the server's own 5s clock regardless of clients and
+          # would contend with wait_for_frame's poll.
+          menu-bind-integration-tests = let
+            menuBindTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "menu-bind-integration-tests" {
+              # gawk splits a stockmenus.txt line into its table/key fields;
+              # gnused extracts the %if…%endif block and the conf's version
+              # literal. grep -P finds the verb after `--sock=#+{q:@bridge_sock}`.
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
+              TMUX_BIN = "${menuBindTmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+              CONF = "${menuBindTmuxConfig.tmuxConf}";
+              STOCK_MENUS = ./generator/render/stockmenus.txt;
+              CTL_GO = ./picker/remotebridge/daemon/ctl.go;
+              # A hostile window-name fixture is UTF-8, and so is the status
+              # line it is read back from.
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              # argv[0] of every ctl frame, read from the one source of truth so a
+              # protocol bump doesn't read as a wire-shape regression.
+              protocol_go=${./picker/remotebridge/wire/protocol.go}
+              CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
+              [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
+              export CTL_PROTOCOL_VERSION
+              bats tests/menu-bind-integration.bats
+              touch $out
+            '';
+
           # Behavioural coverage for the tool binds (#679): a second press must
           # focus the float the window already holds for that tool instead of
           # stacking another at the same geometry. Same attached-client harness

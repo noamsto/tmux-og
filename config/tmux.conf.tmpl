@@ -236,6 +236,13 @@ bind-key -N 'Kill window' & if-shell -F '{{.BridgeGate}}' { confirm-before -p "k
 # kill-session through the same command queue a foreground run-shell holds.
 bind-key -N 'Detach client' d if-shell -F '{{.BridgeGate}}' { run-shell -b "{{index .Paths.Scripts "og-remote-detach"}} #{qs:session_name}" } { detach-client }
 set -g detach-on-destroy off
+# tmux's own default menus, re-bound so that on a mirror window every
+# structural item goes through the bridge's ctl verbs and acts on the remote
+# (#769; classification in docs/agents/bridge-daemon.md). The non-mirror branch
+# is tmux's stock command verbatim, as a string so a same-version server that
+# lacks one of its commands fails that menu, never the config load; the %if
+# keeps any other server version on its own stock menus (#407).
+{{.MenuBinds}}
 
 # Vim-tmux navigation (respects zoom)
 # tmux substitutes $is_vim into each bind at parse time, so this string IS an

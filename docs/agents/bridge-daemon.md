@@ -237,7 +237,7 @@ is the one requirement that reports itself: the asking side prints
 
 ## Mirror invariants
 
-- **A renderer's exit must not be structural.** `spawnRenderer` passes the sock path and the **remote** pane id as renderer arguments (`respawn-pane -k -t <local> -- <bin> <sock> <%N>`), so a bare `respawn-pane` (tmux's default Respawn binds: `prefix + <`, `prefix + >`, and both right-click pane menus) re-runs the same command and redials — pane environment does not survive that gesture, argv does. The daemon's main loop adopts that hello (`rebindRenderer`); `waitHellos` is not running, and the pane is live so heal would never see it. A genuine crash still exits, and with the host's `remain-on-exit off` the pane then closed, taking the window and, for a single-pane mirror, the whole mirror session with it (#547). `stampMirrorWindow` therefore still sets `remain-on-exit on` as a window option on every mirror window: a dying renderer leaves a corpse, never a lost session. The corpse is invisible to everything else — a dead pane is still a pane to `list-panes`, so the pane diff reads the local set as matching the remote's and reconcile correctly does nothing — so `healDeadRenderers` is what finds it, keyed on `#{pane_dead}` with `@bridge_pane` set (a dead float the daemon never created is the user's, not ours to reap, and a corpse's `pane_current_command` still reads `renderer`, so a command-name probe is blind to it). It repairs via `resetWindow`, not `retireMirror`: `closeWindow`'s `kill-window` on a live single-window mirror session destroys the session, which is the failure being repaired. Capped at `deadRendererStrikes` rebuilds per window (#657). The corpse is invisible to everything else *except* `select-layout`, which **counts a dead pane in the window's pane total** and refuses any layout that disagrees — `have 3 panes but need 2`, measured; floats, by contrast, are not counted, so the tiled-only `L.Raw` stays right for them. So while a corpse is present every reshape is refused, `applyLayout` returns `ok=false`, and the caller correctly suppresses the resize and the reseed — leaving the mirror on stale geometry while its live renderers go on painting the remote's current screen into it, which reads as a garbled window. Nothing recovers on the non-structural path: a pure reshape runs no `applyPaneOps`, so `errLocalPanesDesynced`'s count check never runs. `applyLayout`'s second return value closes that — a refusal it can attribute to a pane-count mismatch (read without disturbing `w.localPanes`, empty answer treated as no evidence) rebuilds through the same `resetWindow` the structural path uses (#672).
+- **A renderer's exit must not be structural.** `spawnRenderer` passes the sock path and the **remote** pane id as renderer arguments (`respawn-pane -k -t <local> -- <bin> <sock> <%N>`), so a bare `respawn-pane` (the pane menus offer this gesture on a mirror as their **Reconnect** item; the window menu no longer offers Respawn on a mirror, #769) re-runs the same command and redials — pane environment does not survive that gesture, argv does. The daemon's main loop adopts that hello (`rebindRenderer`); `waitHellos` is not running, and the pane is live so heal would never see it. A genuine crash still exits, and with the host's `remain-on-exit off` the pane then closed, taking the window and, for a single-pane mirror, the whole mirror session with it (#547). `stampMirrorWindow` therefore still sets `remain-on-exit on` as a window option on every mirror window: a dying renderer leaves a corpse, never a lost session. The corpse is invisible to everything else — a dead pane is still a pane to `list-panes`, so the pane diff reads the local set as matching the remote's and reconcile correctly does nothing — so `healDeadRenderers` is what finds it, keyed on `#{pane_dead}` with `@bridge_pane` set (a dead float the daemon never created is the user's, not ours to reap, and a corpse's `pane_current_command` still reads `renderer`, so a command-name probe is blind to it). It repairs via `resetWindow`, not `retireMirror`: `closeWindow`'s `kill-window` on a live single-window mirror session destroys the session, which is the failure being repaired. Capped at `deadRendererStrikes` rebuilds per window (#657). The corpse is invisible to everything else *except* `select-layout`, which **counts a dead pane in the window's pane total** and refuses any layout that disagrees — `have 3 panes but need 2`, measured; floats, by contrast, are not counted, so the tiled-only `L.Raw` stays right for them. So while a corpse is present every reshape is refused, `applyLayout` returns `ok=false`, and the caller correctly suppresses the resize and the reseed — leaving the mirror on stale geometry while its live renderers go on painting the remote's current screen into it, which reads as a garbled window. Nothing recovers on the non-structural path: a pure reshape runs no `applyPaneOps`, so `errLocalPanesDesynced`'s count check never runs. `applyLayout`'s second return value closes that — a refusal it can attribute to a pane-count mismatch (read without disturbing `w.localPanes`, empty answer treated as no evidence) rebuilds through the same `resetWindow` the structural path uses (#672).
 
   `healDeadRenderers` is driven by the maintenance sweep (`windowSweeper.sweep`, gated by `windowSweepInterval`, run unconditionally every main-loop iteration) as a lower-cadence backstop, but the common case is event-driven (#657): `pumpInput` runs one goroutine per renderer connection and already returns the instant its `wire.ReadFrame` errors — exactly what a renderer's process exit does to its end of the unix socket, whether crash, clean exit, or the daemon's own deliberate close during a reconcile. That goroutine calls `cfg.RendererDied` (`death.wake`), which arms a `deathNudge` — a debounced `*time.Timer` shaped like `carouselProbe`, firing after `deathSweepDelay` (250ms, giving tmux's own `pane_dead` update time to land, since the socket EOF has no ordering guarantee against it). `runConn`'s `select` case then calls `windowSweeper.force()` (resets `lastPass` to zero) so the very next sweep pass actually runs instead of being silently floored by `windowSweepInterval` — a bare wake with no force can be swallowed by that floor, leaving the event path no faster than the sweep it's meant to shortcut. A renderer that never connects at all (no hello) has no `pumpInput` goroutine to EOF, so that death stays backstop-only. Deliberately **not** a `pane-died` tmux hook, despite one being the more obvious precedent (`registerResizeHook`'s touch/poll shape, #433): a session-scoped `set-hook -t <session> pane-died` was measured to entirely replace the session's view of the *global* `pane-died` array rather than add to it, which would silently shadow the global `pane-died` hook `tmux-reap-pane` already relies on (#647) and disable claude-status reaping inside every mirror session.
 
@@ -253,3 +253,114 @@ is the one requirement that reports itself: the asking side prints
 - **`@bridge_host`** — session-scoped ssh host the mirror session's windows really live on, stamped by `og-remote-open`. `tmux-statusline` renders it after the session pill on `@bridge_win` windows, so a mirror is never read as local.
 - **`@bridge_session_path`** — session-scoped remote `#{session_path}`, stamped once per bridge by the daemon. The mirror session's own `session_path` is the launcher's cwd (`og-remote-open` passes no `-c`), so the session picker's Path column reads this instead on a `@bridge_host` row, and renders nothing when it is unset.
 - **`get-clipboard request`** (`set -s`, next to `set-clipboard on`, #694): tmux answers an app's OSC 52 *read* per `get-clipboard`, not `set-clipboard`. The default `buffer` replies synchronously from the server's own newest paste buffer, so on a mirrored host the query never crosses the bridge and the remote app pastes stale remote content. With `request`, a server whose only clients are control-mode stays silent, the query propagates through the bridge, and the local tmux asks the local terminal. Tradeoff: on a terminal with no OSC 52 read support an app's read now returns nothing instead of tmux's newest buffer — tmux has no fallback. Asserted in `float-conf-assertions`.
+
+## Menus in a mirror window (#769)
+
+tmux's own default menus (the config defines none itself) ran structural
+commands — `kill-window`, `kill-pane`, `rename-window`, `split-window`,
+`new-window`, `swap-pane`, `resize-pane -Z`, `respawn-*`, `select-pane -m`,
+`break-pane`/`join-pane`, `rename-session`, `detach-client` — directly on the
+local mirror: "Kill" from a menu killed the local mirror window only, the
+remote window survived, and the daemon fought the loss. The rule: an item that
+changes a remote object goes through the existing ctl entry point when a verb
+exists (same `bridgeGate`, same `bridgeCtl`, `picker/remotebridge/daemon/ctl.go`
+— no new verb was needed); an item touching only local state (copy mode, paste
+buffers, other sessions, local tab order) stays stock; an item with no faithful
+ctl verb is hidden on a mirror. Implemented in `generator/render/menus.go`.
+
+Inventory, measured with `list-keys` on a scratch server of the pinned
+`next-3.9`, byte-identical between `-f /dev/null` and the built config:
+
+| Binding | Menu | Reachable here? |
+|---|---|---|
+| `prefix <`, `MouseDown3Status`, `M-MouseDown3Status` | window menu | yes |
+| `prefix >`, `MouseDown3Pane` (else-branch of its `mouse_any_flag` test), `M-MouseDown3Pane` | pane menu | yes |
+| `MouseDown3StatusLeft`, `M-MouseDown3StatusLeft` | session menu (`run-shell -C "display-menu …"`) | yes |
+| `MouseDown3Empty`, `M-MouseDown3Empty` | "empty space" menu (New Pane / New Window) | yes (empty window area) |
+| `MouseDown1Control9` | "Kill pane?" confirm menu | no — fires only on a `range=control\|9` in `pane-border-format`; this config's format carries no control range |
+| `move` table `,` / `.` | float Move / Move & Resize menus | no — nothing binds `switch-client -T move` |
+
+### Window menu (`prefix <`, `MouseDown3Status`, `M-MouseDown3Status`)
+
+| Item | Stock command | On a mirror |
+|---|---|---|
+| Swap Left / Swap Right | `swap-window -t :-1` / `:+1` | local — reorders local tabs only, and a mirror is addressed by id, never local index |
+| Swap Marked | `swap-window` | hidden — the marked pane can sit in another session |
+| Kill | `kill-window` | ctl `kill-window` (no confirm, stock parity) |
+| Respawn | `respawn-window -k` | hidden — locally destroys every renderer but the first, a desync the daemon can't detect; needs a remote re-seed the ctl path can't request today |
+| Mark / Unmark | `select-pane -m` | hidden — only feeds Swap Marked / `join-pane`, both structural |
+| Rename | `command-prompt -F -I "#W" { rename-window … }` | ctl `rename`, the same prompt the `,` keybind uses |
+| New After / New At End | `new-window -a` / `new-window` | ctl `new-window`, one "New Window" item — the daemon always appends at `{end}` |
+
+### Pane menu (`prefix >`, `MouseDown3Pane`, `M-MouseDown3Pane`)
+
+| Item | Stock command | On a mirror |
+|---|---|---|
+| Go To Top/Bottom, Line Numbers, Refresh, Search For / Copy word, line, hyperlink | copy-mode `send-keys -X …`, `set-buffer` | local — the renderer pane's own copy mode |
+| Paste, Type word / hyperlink | `paste-buffer`, `send-keys -l` | local — pane input, already forwarded by the renderer |
+| Move, Move & Resize, Tile, Float | `move-pane -P`, `resize-pane -x/-y`, `join-pane`, `break-pane -W` | hidden — no ctl verb for float geometry/tiling |
+| Horizontal Split / Vertical Split | `split-window -h` / `-v` | ctl `split-h` / `split-v` |
+| Swap Up / Swap Down | `swap-pane -U` / `-D` | ctl `swap U` / `swap D` |
+| Swap Marked | `swap-pane` | hidden |
+| Kill | `kill-pane` | ctl `kill-pane` (no confirm, stock parity) |
+| Respawn | `respawn-pane -k` | local, relabelled **Reconnect** (`R`) — the #547 renderer-redial gesture; the stock label reads as "restart the program", which it isn't here |
+| Mark / Unmark | `select-pane -m` | hidden |
+| Zoom / Unzoom | `resize-pane -Z` | ctl `zoom` (a local zoom leaves the remote pane at its old size) |
+
+Each kept item keeps its stock visibility condition. `MouseDown3Pane` keeps its
+stock guard on a mirror too: when the pane's program asked for the mouse
+(`mouse_any_flag`), the click goes to it (`send-keys -M`); otherwise the mirror
+pane menu opens.
+
+### Session menu (`MouseDown3StatusLeft`, `M-MouseDown3StatusLeft`)
+
+| Item | Stock command | On a mirror session |
+|---|---|---|
+| Switch To `<session>` (≤6) | `switch-client -t=<id>` | local |
+| Renumber | `move-window -r` | local — presentation only, `renumber-windows` is already on |
+| Rename | `command-prompt … rename-session` | hidden — a renamed mirror session reads as gone and tears the mirror down (#680) |
+| Detach | `detach-client` | `og-remote-detach`, as `prefix + d` routes it in a mirror |
+| New Session | `new-session` | local |
+| New Window | `new-window` | ctl `new-window` — a local `new-window` would plant a non-mirror window in the mirror session |
+
+### Empty-space menu (`MouseDown3Empty`, `M-MouseDown3Empty`)
+
+| Item | Stock command | On a mirror |
+|---|---|---|
+| New Pane | `new-pane ; join-pane` | hidden — a local pane inside a mirror window |
+| New Window | `new-window` | ctl `new-window` |
+
+**Expansion layers.** A menu item's command is format-expanded when the menu is
+*built* (`menu.c:143-151`), then parsed again when the item is *chosen*
+(`menu.c:553-555`); a `run-shell` inside it expands its own argument a third
+time at run. So a run-time format must be escaped once per layer above it, or
+it resolves too early and a remote-derived value gets spliced into text tmux
+parses again. Written as `##{…}` in the window/pane/empty-space menus (one
+layer: display-menu build); `####{…}` in the session menu, which is itself
+inside `run-shell -C "display-menu …"` (two layers: the `-C` expansion, then
+the build). After build expansion, each added command is byte-identical to its
+keybind's command, so it inherits the keybind's measured quoting.
+
+**Old resident servers (#407).** A config is parsed and every `{ … }` block
+built — commands looked up, flags parsed — before any of it runs
+(`cmd-parse.y:846`), and the stock menus carry next-only commands (`new-pane`,
+`move-pane -P`, `break-pane -W`) an older resident server doesn't have. Two
+guards: the whole block sits inside `%if "#{==:#{version},next-3.9}" … %endif`
+— `%if` drops a false block before it is built, so any other server version
+never sees the text and keeps its own stock menus unchanged; and the stock
+branch of each `if-shell` is a **string**, not a brace block — a same-version
+server built from an older commit that lacks one of those commands then fails
+only that one menu when opened, never the config load (the mirror branch stays
+a brace block of long-standing commands). The stock text itself lives in
+`generator/render/stockmenus.txt`, captured verbatim from the pinned tmux; the
+`menu-bind-integration-tests` flake check diffs it against the raw pinned
+tmux's `list-keys` for the same ten bindings, so a `flake.lock` bump that
+changes a default menu fails that check until the new item is classified here.
+
+Measured quirk: on next-3.9 a right-click on a **non-current** window tab
+opens no menu at all — true on a stock `-f /dev/null` server too, not a
+regression here.
+
+Out of scope: `MouseDown1Control7/8/9` and the `move` table are unreachable in
+this config (nothing binds `switch-client -T move`, and this config's
+`pane-border-format` carries no control range).
