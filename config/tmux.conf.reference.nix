@@ -133,15 +133,8 @@
   bridgeCtl = "${picker-bridge-ctl-bin} --display-error=#{q:client_name} --sock=#{q:@bridge_sock}";
 
   # === Remote bridge: tmux's stock menus, re-bound behind bridgeGate (#769) ===
-  # generator/render/menus.go is the source of truth this mirrors byte for
-  # byte; the extraction check diffs this file's render against its output, so
-  # the two are edited together. See docs/agents/bridge-daemon.md.
-  #
-  # The non-mirror branch of every bind below is tmux's own stock command,
-  # captured verbatim from the pinned binary into
-  # generator/render/stockmenus.txt and reproduced here without alteration —
-  # never rebuilt from scratch, so an upstream menu change is a data diff, not
-  # a semantic one.
+  # Mirrors generator/render/menus.go byte for byte; the stock branch is read
+  # from the same stockmenus.txt. See docs/agents/bridge-daemon.md.
   menuStockLines = lib.filter (l: l != "") (lib.splitString "\n" (builtins.readFile ../generator/render/stockmenus.txt));
   menuStock = map (line: let
     m = builtins.match "bind-key +-T +([^ ]+) +([^ ]+) +(.*)" line;

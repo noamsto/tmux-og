@@ -295,14 +295,10 @@ walk_tokens() {
 			done
 			if ((i < n)); then
 				if ((has_c)); then
-					# -C's argument is a tmux command, not a shell string -- run-shell
-					# -C hands it straight to cmd_parse, never through sh -c -- so
-					# recurse into it as a command line (which can itself hold a
-					# nested run-shell) instead of scanning it for #{...}. This
-					# recursion polices shell sinks nested inside that command; a
-					# bare format in -C's OWN argument gets re-parsed by tmux
-					# itself (e.g. a menu -T title), which is a tmux-side re-parse
-					# hazard this scanner does not police -- out of scope here.
+					# -C hands its argument to cmd_parse, never to sh -c, so walk it
+					# as a command line for the shell strings nested in it. A bare
+					# format in the argument itself is re-parsed by tmux, not a
+					# shell -- a hazard outside this scanner.
 					local arg="${_toks[i]}"
 					tmux_tokenize "$arg"
 					walk_tokens "$lineno" "${TOKENS[@]}"

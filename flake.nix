@@ -504,13 +504,10 @@
 
               [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
 
-              # tmux's own stock Empty menu (#769's non-mirror branch) carries a
-              # verbatim New Pane item: tmux's own `new-pane ; join-pane`,
-              # joined into the layout at once by join-pane — never a float.
-              # Strip that exact item text before scanning, so a bind line is
-              # exempted only where that's its sole new-pane occurrence — never
-              # by which key it's bound to — and a future tmux that turns the
-              # Empty menu's New Pane into something float-shaped stays caught.
+              # The stock Empty menu (#769's non-mirror branch) carries tmux's own
+              # `new-pane ; join-pane`, tiled at once — never a float. Strip that
+              # exact item text, not the bindings, so a changed upstream item
+              # is still scanned.
               sed 's/\\"New Pane\\" p { new-pane ; join-pane }//g' joined >scrubbed
 
               if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v '@float_geom'; then
