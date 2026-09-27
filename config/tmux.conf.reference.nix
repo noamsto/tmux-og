@@ -263,35 +263,35 @@
       mirror = mirrorPaneMenu "-x P -y P";
     };
     "root MouseDown3Pane" = {
-      note = "";
+      note = "Display pane menu";
       mirror = "if-shell -F -t = \"#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}\" { select-pane -t = ; send-keys -M } { " + menuMirrorPaneM + " }";
     };
     "root M-MouseDown3Pane" = {
-      note = "";
+      note = "Display pane menu";
       mirror = menuMirrorPaneM;
     };
     "root MouseDown3Status" = {
-      note = "";
+      note = "Display window menu";
       mirror = mirrorWindowMenu "-t = -x W -y W";
     };
     "root M-MouseDown3Status" = {
-      note = "";
+      note = "Display window menu";
       mirror = mirrorWindowMenu "-t = -x W -y W";
     };
     "root MouseDown3StatusLeft" = {
-      note = "";
+      note = "Display session menu";
       mirror = mirrorSessionMenu;
     };
     "root M-MouseDown3StatusLeft" = {
-      note = "";
+      note = "Display session menu";
       mirror = mirrorSessionMenu;
     };
     "root MouseDown3Empty" = {
-      note = "";
+      note = "Display new pane/window menu";
       mirror = mirrorEmptyMenu;
     };
     "root M-MouseDown3Empty" = {
-      note = "";
+      note = "Display new pane/window menu";
       mirror = mirrorEmptyMenu;
     };
   };

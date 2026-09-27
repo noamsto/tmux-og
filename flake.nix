@@ -503,7 +503,13 @@
               sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
 
               [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -v '@float_geom'; then
+
+              # MouseDown3Empty / M-MouseDown3Empty carry tmux's own stock Empty
+              # menu verbatim (#769's non-mirror branch): its New Pane item is
+              # tmux's own `new-pane ; join-pane`, joined into the layout at
+              # once by join-pane — never a float — so these two are excluded
+              # here rather than stamped.
+              if grep -E '^bind(-key)? .*new-pane' joined | grep -vE -- '-T root M?-?MouseDown3Empty ' | grep -v '@float_geom'; then
                 echo "float bind above has no @float_geom stamp — tmux-float-refit cannot refit it" >&2
                 exit 1
               fi
@@ -511,7 +517,7 @@
               # And the remain-on-exit pin (#587), asserted for the same reason:
               # a bind that forgets it looks right until it is pressed inside a
               # mirror window, whose own remain-on-exit the pane inherits.
-              if grep -E '^bind(-key)? .*new-pane' joined | grep -v 'remain-on-exit off'; then
+              if grep -E '^bind(-key)? .*new-pane' joined | grep -vE -- '-T root M?-?MouseDown3Empty ' | grep -v 'remain-on-exit off'; then
                 echo "float bind above does not pin remain-on-exit off — its pane will linger dead inside a mirror window" >&2
                 exit 1
               fi

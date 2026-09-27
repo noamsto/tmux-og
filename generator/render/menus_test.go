@@ -167,6 +167,31 @@ func TestPrefixMenusKeepStockNotes(t *testing.T) {
 	}
 }
 
+// TestEveryMenuBindHasNote pins every menu bind's -N note, including the eight
+// root mouse binds: the which-key popup and the bind-note-assertions flake
+// check both read -N, so a mirror bind without one is silent everywhere.
+func TestEveryMenuBindHasNote(t *testing.T) {
+	notes := map[string]string{
+		"prefix <":                    "Display window menu",
+		"prefix >":                    "Display pane menu",
+		"root MouseDown3Pane":         "Display pane menu",
+		"root M-MouseDown3Pane":       "Display pane menu",
+		"root MouseDown3Status":       "Display window menu",
+		"root M-MouseDown3Status":     "Display window menu",
+		"root MouseDown3StatusLeft":   "Display session menu",
+		"root M-MouseDown3StatusLeft": "Display session menu",
+		"root MouseDown3Empty":        "Display new pane/window menu",
+		"root M-MouseDown3Empty":      "Display new pane/window menu",
+	}
+	lines := menuBindLines(t)
+	for i, key := range menuKeys {
+		want := "bind-key -N '" + notes[key] + "' -T " + key + " "
+		if !strings.HasPrefix(lines[i], want) {
+			t.Fatalf("%s: line = %q, want prefix %q", key, lines[i][:min(80, len(lines[i]))], want)
+		}
+	}
+}
+
 // mirrorBranches maps each menu key to its bind line's mirror block: the text
 // between the gate and the quoted stock branch, braces included.
 func mirrorBranches(t *testing.T) map[string]string {

@@ -130,14 +130,14 @@ func menuBinds(p *paths.Paths) string {
 	mirrors := map[string]struct{ note, mirror string }{
 		"prefix <":                    {"Display window menu", mirrorWindowMenu(p, "-x W -y W")},
 		"prefix >":                    {"Display pane menu", mirrorPaneMenu(p, "-x P -y P")},
-		"root MouseDown3Pane":         {"", `if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { ` + paneM + ` }`},
-		"root M-MouseDown3Pane":       {"", paneM},
-		"root MouseDown3Status":       {"", mirrorWindowMenu(p, "-t = -x W -y W")},
-		"root M-MouseDown3Status":     {"", mirrorWindowMenu(p, "-t = -x W -y W")},
-		"root MouseDown3StatusLeft":   {"", mirrorSessionMenu(p)},
-		"root M-MouseDown3StatusLeft": {"", mirrorSessionMenu(p)},
-		"root MouseDown3Empty":        {"", mirrorEmptyMenu(p)},
-		"root M-MouseDown3Empty":      {"", mirrorEmptyMenu(p)},
+		"root MouseDown3Pane":         {"Display pane menu", `if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { ` + paneM + ` }`},
+		"root M-MouseDown3Pane":       {"Display pane menu", paneM},
+		"root MouseDown3Status":       {"Display window menu", mirrorWindowMenu(p, "-t = -x W -y W")},
+		"root M-MouseDown3Status":     {"Display window menu", mirrorWindowMenu(p, "-t = -x W -y W")},
+		"root MouseDown3StatusLeft":   {"Display session menu", mirrorSessionMenu(p)},
+		"root M-MouseDown3StatusLeft": {"Display session menu", mirrorSessionMenu(p)},
+		"root MouseDown3Empty":        {"Display new pane/window menu", mirrorEmptyMenu(p)},
+		"root M-MouseDown3Empty":      {"Display new pane/window menu", mirrorEmptyMenu(p)},
 	}
 	lines := []string{`%if "#{==:#{version},` + stockMenuVersion + `}"`}
 	for _, s := range stockMenus {
