@@ -23,9 +23,17 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	// the live stream this seed interrupts leaves one set, so without this reset
 	// the erase floods the whole pane with that colour.
 	b.WriteString("\x1b[m")
+	// Clear-then-set for the alt screen and application cursor keys, the same
+	// way writeMouseMode does for the mouse: a mode the remote turned off during
+	// a gap (a %pause, or a frame dropped under sink backpressure) must not
+	// survive the reseed. ?1049l restores the saved main screen, so the clears
+	// run BEFORE the repaint below and cannot clobber it; the sets re-enter the
+	// modes the remote is still in.
+	b.WriteString("\x1b[?1049l")
 	if altScreen {
 		b.WriteString("\x1b[?1049h")
 	}
+	b.WriteString("\x1b[?1l")
 	if appCursorKeys {
 		b.WriteString("\x1b[?1h")
 	}
