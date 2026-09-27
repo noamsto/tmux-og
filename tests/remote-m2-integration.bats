@@ -4060,10 +4060,8 @@ mirror_of_remote() {
 }
 
 # #748: server_client_handle_dead_key dismisses a dead remain-on-exit=key
-# (or failed-key) pane on any key that isn't a mouse report, a focus report,
-# or bracketed paste. pumpInput's guard sends the same kill-pane to the
-# REMOTE before it forwards the key, so the mirror's key dismisses the
-# remote pane, not just the local corpse.
+# (or failed-key) pane on any non-mouse key. The mirror only ever sends pane
+# input, so pumpInput's remote-guarded kill-pane is what reaches that rule.
 @test "a dead remote key-pane is dismissed by a key in its mirror (#748)" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	dead="$($SRC split-window -d -k -P -F '#{pane_id}' -t rem true)"
@@ -4142,11 +4140,9 @@ mirror_of_remote() {
 	[ "$dst_n" -eq 1 ]
 }
 
-# #748: remain-on-exit=on is the case server_client_handle_dead_key never
-# dismisses on a plain key — only `prefix + x` / ctl kill-pane does. This
-# pins that a live pane still gets ordinary input, that a dead `on` pane
-# (tiled and floating) ignores the same key, and that the explicit kill-pane
-# gesture still closes both.
+# #748: server_client_handle_dead_key never dismisses a dead remain-on-exit=on
+# pane on a plain key; only `prefix + x` (ctl kill-pane) does. The live base
+# pane is remain-on-exit=key, so only the guard's pane_dead check spares it.
 @test "a key leaves a live pane and a dead remain-on-exit-on pane alone (#748)" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	base="$($SRC display-message -p -t rem -F '#{pane_id}')"

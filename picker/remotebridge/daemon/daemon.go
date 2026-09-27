@@ -2565,9 +2565,8 @@ func isDismissKey(b []byte) bool {
 	return false
 }
 
-// skipSGRMouse consumes a "\x1b[<" mouse report — digits and ';' up to the
-// terminating 'M' or 'm' — or to the end of b if that terminator never
-// arrives.
+// skipSGRMouse consumes a "\x1b[<" mouse report through its 'M'/'m', or to
+// the end of b if the terminator never arrives.
 func skipSGRMouse(b []byte) []byte {
 	i := 3
 	for i < len(b) {
@@ -2595,10 +2594,8 @@ func skipX10Mouse(b []byte) []byte {
 }
 
 // deadKeyCmd mirrors server_client_handle_dead_key: a dead pane whose
-// remain-on-exit is key or failed-key is killed by any key left after
-// isDismissKey's exclusions — paste content included, same as locally.
-// on/failed dead panes are left for the ctl kill-pane verb (prefix + x),
-// same as locally.
+// remain-on-exit is key or failed-key is killed by any key. A dead on/failed
+// pane is left for the ctl kill-pane verb (prefix + x), as locally.
 func deadKeyCmd(pane string) string {
 	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{||:#{==:#{remain-on-exit},key},#{==:#{remain-on-exit},failed-key}}}' 'kill-pane -t %s'", pane, pane)
 }
