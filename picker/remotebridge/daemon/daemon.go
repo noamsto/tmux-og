@@ -2530,10 +2530,9 @@ var escCarryGrace = 50 * time.Millisecond
 // A frame boundary is not an input-event boundary: the renderer reads its pty
 // 4096 bytes at a time, so a mouse report or other escape sequence can straddle
 // two frames. An incomplete trailing escape sequence is carried over to the next
-// frame instead of being classified — without that, the tail of a split mouse
-// report starts the next frame and reads as a key, dismissing a dead
-// `remain-on-exit key` pane on a click (#790). A carry no later frame completes
-// is flushed after escCarryGrace, so a real lone Escape is still delivered.
+// frame, where classification and the paste scan see it whole. A carry no later
+// frame completes is flushed after escCarryGrace, so a real lone Escape is still
+// delivered.
 //
 // died fires for every connection close, not just crashes — the caller
 // (sweeper.sweep, once the debounced timer forces it) re-derives which
