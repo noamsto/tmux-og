@@ -443,3 +443,68 @@ func TestCardPendingWithoutProgressKeepsGlyph(t *testing.T) {
 		t.Errorf("expected plain pending badge and no progress text\n%s", out)
 	}
 }
+
+// TestCardMaxWidthBackstop: card()'s outer style must clamp content to
+// m.width even when a block skips truncate() entirely — claudeBlock()
+// renders w.task with no upper bound today, exactly the scenario #773's
+// backstop guards against. Every rendered line must stay within m.width, and
+// the border must stay intact on both edges rather than get clipped by a
+// naive MaxWidth on the bordered style itself.
+func TestCardMaxWidthBackstop(t *testing.T) {
+	m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
+		branch: "b",
+		task:   strings.Repeat("x", 200),
+	}}
+	out := render(m)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected a bordered multi-line card, got %d lines: %q", len(lines), out)
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Errorf("line %d exceeds card width %d (got %d): %q", i, m.width, w, line)
+		}
+	}
+	first, last := lines[0], lines[len(lines)-1]
+	if !strings.HasPrefix(first, "╭") || !strings.HasSuffix(first, "╮") {
+		t.Errorf("top border missing or clipped: %q", first)
+	}
+	if !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
+		t.Errorf("bottom border missing or clipped: %q", last)
+	}
+	for i, line := range lines[1 : len(lines)-1] {
+		if !strings.HasPrefix(line, "│") || !strings.HasSuffix(line, "│") {
+			t.Errorf("row %d missing side border: %q", i+1, line)
+		}
+	}
+}
+
+// TestCardNoRoomForFrameStaysWithinWidth: at or below the border+padding
+// frame size (startup before the first WindowSizeMsg, or an absurdly small
+// popup), lipgloss treats MaxWidth(0)/MaxHeight(0) as "unset" rather than
+// "clamp to zero" — without card()'s own guard for this case, the backstop
+// would silently disengage exactly where it matters most.
+func TestCardNoRoomForFrameStaysWithinWidth(t *testing.T) {
+	cases := []struct {
+		name          string
+		width, height int
+	}{
+		{"zero size (pre-WindowSizeMsg)", 0, 0},
+		{"width at frame size", 4, 18},
+		{"height at frame size", 60, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model{cfg: testCfg(), width: tc.width, height: tc.height, win: winState{
+				branch: "b",
+				task:   strings.Repeat("x", 200),
+			}}
+			out := render(m)
+			for _, line := range strings.Split(out, "\n") {
+				if w := lipgloss.Width(line); w > tc.width {
+					t.Errorf("line exceeds width %d (got %d): %q", tc.width, w, line)
+				}
+			}
+		})
+	}
+}
