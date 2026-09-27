@@ -223,6 +223,41 @@ func TestBridgeRefreshDoneMsgFlashesRealOutcome(t *testing.T) {
 	}
 }
 
+// TestFooterDegradesGracefully sweeps card widths from the minimum up and
+// verifies footer() never exceeds the available inner width, and items are
+// dropped or shortened whole rather than cut mid-label by the outer MaxWidth.
+func TestFooterDegradesGracefully(t *testing.T) {
+	base := model{
+		cfg: testCfg(), height: heightFloor,
+		win: winState{
+			issueProvider: "linear", issueID: "ENG-6794",
+			issueURL:   "https://linear.app/x/issue/ENG-6794",
+			prNumber: "103", prState: "open", prCheck: "success",
+			prMergeable: "mergeable", prTitle: "kitty nav",
+			branch: "feat/103-kitty-nav",
+		},
+	}
+
+	for w := widthFloor; w <= 80; w += 2 {
+		m := base
+		m.width = w
+		footer := m.footer()
+		if fw := lipgloss.Width(footer); fw > m.titleWidth() {
+			t.Errorf("width=%d: footer width %d > titleWidth %d; raw=%q",
+				w, fw, m.titleWidth(), stripANSI(footer))
+		}
+
+		// With a long flash that previously overflowed at narrow widths.
+		m.flash = "error: bridge daemon unreachable — will retry on next tick"
+		m.flashIsError = true
+		footer2 := m.footer()
+		if fw2 := lipgloss.Width(footer2); fw2 > m.titleWidth() {
+			t.Errorf("width=%d (flash): footer width %d > titleWidth %d; raw=%q",
+				w, fw2, m.titleWidth(), stripANSI(footer2))
+		}
+	}
+}
+
 // TestFooterFlashColor pins the color-by-outcome contract (#762): an error
 // flash renders in c.red, a confirmation flash in c.green.
 func TestFooterFlashColor(t *testing.T) {
