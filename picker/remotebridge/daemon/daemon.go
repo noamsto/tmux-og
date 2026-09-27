@@ -2541,16 +2541,12 @@ func modalClearCmd(pane string) string {
 	return fmt.Sprintf("if -F -t %s '#{&&:#{pane_dead},#{pane_modal_flag}}' 'display-popup -C -t %s'", pane, pane)
 }
 
-// isDismissKey reports whether a frame has a real key left once mouse
-// reports and paste markers are stripped out — the only two things
-// server_client_handle_dead_key excludes (KEYC_IS_MOUSE, KEYC_IS_PASTE).
-// Paste content bytes are not excluded there: the dead-key check runs before
-// tmux's bracket-paste diversion, so a paste's first content byte dismisses
-// a dead key pane same as a typed key. Focus reports are stripped for a
-// bridge-only reason — locally a dead pane never gets one (window.c skips a
-// PANE_EXITED pane), so one reaching the daemon is local tmux's own
-// pane-focus notification, not a keystroke. Callers never pass it an empty
-// slice.
+// isDismissKey reports whether a frame has a key left once every mouse report
+// and paste marker is skipped — all server_client_handle_dead_key excludes. A
+// paste body counts: tmux checks for a dead pane before its bracket-paste
+// diversion. Focus reports are skipped too, a bridge-only choice: a dead pane
+// never gets one locally, so one here is local tmux's pane-focus notification.
+// Callers never pass it an empty slice.
 func isDismissKey(b []byte) bool {
 	for len(b) > 0 {
 		switch {
@@ -2584,11 +2580,11 @@ func skipSGRMouse(b []byte) []byte {
 	return b[i:]
 }
 
-// skipX10Mouse consumes a "\x1b[M" report and its three parameter bytes.
-// tmux (input-keys.c) writes each parameter as 1 or 2 UTF-8 bytes, so each
-// is decoded as one rune; an invalid byte decodes as size 1, which also
-// covers X10's raw single-byte parameters. Fewer than three params left in
-// b consumes to the end.
+// skipX10Mouse consumes a "\x1b[M" report and its three parameters. In UTF-8
+// mode (1005) tmux writes each as 1 or 2 bytes, so each is decoded as a rune;
+// a raw X10 byte decodes as size 1 unless two coordinate bytes happen to form
+// valid UTF-8 (column 162+, row 96+), which misreads the report's end. Fewer
+// than three params left in b consumes to the end.
 func skipX10Mouse(b []byte) []byte {
 	i := 3
 	for p := 0; p < 3 && i < len(b); p++ {

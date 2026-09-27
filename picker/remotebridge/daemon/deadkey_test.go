@@ -105,10 +105,10 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 		}
 	}
 
-	// Prove every guard/send-keys queued above has already run: a control
-	// client executes commands in the order it receives them, so once the
-	// server answers this wait-for, sent last on the same connection, every
-	// earlier command is done.
+	// The second-frame writes above ordered each survivor's first-frame guard
+	// ahead of this signal, and a control client runs commands in order, so
+	// once wait-for returns those guards have run. The dead panes' kills are
+	// not ordered by it; they are polled for below.
 	send("wait-for -S og748")
 	waitCmd := tmux("wait-for", "og748")
 	if err := waitCmd.Start(); err != nil {
