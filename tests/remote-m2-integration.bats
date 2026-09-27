@@ -3243,6 +3243,19 @@ outage_end() {
 	rm -f "$OG_DAEMON_TEST_OUTAGE_FILE"
 }
 
+# server_restart replaces SRC mid-outage: the old server dies through its
+# moved-aside socket, a fresh one starts on the original path with the named
+# sessions (none = no server at all), and the outage marker goes so dials reach it.
+server_restart() {
+	tmux -S "$src_sock.away" kill-server 2>/dev/null || true
+	rm -f "$src_sock.away"
+	local s
+	for s in "$@"; do
+		$SRC new-session -d -s "$s" -x 100 -y 30
+	done
+	rm -f "$OG_DAEMON_TEST_OUTAGE_FILE"
+}
+
 # PARK_DIM_STYLE mirrors daemon/park.go's parkDimStyle byte-for-byte.
 PARK_DIM_STYLE='fg=#{@thm_overlay_0},bg=#{@thm_mantle}'
 
@@ -3303,6 +3316,63 @@ wake_parked_mirror() {
 	done
 	printf 'wake_parked_mirror(%s): last @bridge_state=%q\n--- daemon log ---\n' "$tag" "$state" >&3
 	[ -n "$log" ] && tail -60 "$log" >&3 2>/dev/null || true
+	return 1
+}
+
+# press_until_log presses "x" into the mirror pane (a parked or refused
+# mirror's own wake input) every ~0.1s until $2 appears in log $1, or the
+# budget runs out. Shared by every #817 case that needs a wake to reach a
+# re-dial: a single press is not enough to rely on (see wake_parked_mirror's
+# own comment — the waker arms a beat after the badge turns "parked", and an
+# early dial can fail and re-park before this press's effect lands).
+press_until_log() {
+	local log="$1" pattern="$2" tag="$3"
+	local deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		grep -q "$pattern" "$log" 2>/dev/null && return 0
+		$DST send-keys -t host-sess:1 x 2>/dev/null || true
+		sleep 0.1
+	done
+	printf 'press_until_log(%s): pattern %q never appeared\n--- daemon log ---\n' "$tag" "$pattern" >&3
+	tail -60 "$log" >&3 2>/dev/null || true
+	return 1
+}
+
+# wait_live polls until @bridge_state is empty AND the mirror paints $1 —
+# used after a re-open lands, to confirm the rebuilt mirror is both connected
+# and actually mirroring the NEW remote's content, not just no-longer-parked.
+wait_live() {
+	local needle="$1" tag="$2" log="$3"
+	local deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS)) state=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		state="$($DST show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+		[ -z "$state" ] && mirror_contains 1 "$needle" && return 0
+		sleep 0.1
+	done
+	printf 'wait_live(%s): last @bridge_state=%q, needle=%q not painted\n--- daemon log ---\n' "$tag" "$state" "$needle" >&3
+	[ -n "$log" ] && tail -60 "$log" >&3 2>/dev/null || true
+	return 1
+}
+
+# wait_daemon_exit polls (bounded) for daemon_pid to exit on its own. Unlike a
+# bare `wait "$daemon_pid"`, this never blocks indefinitely: #817 daemons keep
+# running after a re-open, so an unbounded wait here would hang a case whose
+# assertions expect the daemon to still be alive. $3 is the iteration budget
+# at 0.1s each (default 150 = 15s). Falls back to SIGKILL so cleanup always
+# proceeds; the caller records the polled yes/no itself.
+wait_daemon_exit() {
+	local tag="$1" log="$2" budget="${3:-150}" i
+	for ((i = 0; i < budget; i++)); do
+		if ! kill -0 "$daemon_pid" 2>/dev/null; then
+			wait "$daemon_pid" 2>/dev/null || true
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'wait_daemon_exit(%s): daemon still alive after %sms\n--- daemon log ---\n' "$tag" "$((budget * 100))" >&3
+	[ -n "$log" ] && tail -60 "$log" >&3 2>/dev/null || true
+	kill -9 "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
 	return 1
 }
 
@@ -3376,7 +3446,13 @@ wake_parked_mirror() {
 	[ "$relay_env" = "OG_RELAY_GRAPHICS=" ]
 }
 
-@test "a control-connection drop into a different tmux server tears the mirror down" {
+# #817: a control-connection drop that lands on a same-named session on a
+# DIFFERENT tmux server used to be a hard teardown; the daemon now tears the
+# OLD mirror down internally and re-opens a fresh one onto the new server, in
+# the same local session, without exiting. This pins the re-open: the
+# mismatch log line still fires, but the ending is a live, re-mirroring
+# daemon rather than a dead socket.
+@test "a control-connection drop into a different tmux server re-opens the mirror onto it" {
 	$SRC new-session -d -s rem -x 100 -y 30 3>&-
 	$DST new-session -d -s host-sess -x 100 -y 30
 	bridge_up 1 dds
@@ -3399,7 +3475,7 @@ wake_parked_mirror() {
 	# wave through; a fresh server also renumbers panes from %0, colliding
 	# with the ids this mirror's registry still holds. That leak window
 	# (attach to identity reply) is not assertable here — teardown kills the
-	# mirror milliseconds later — so
+	# OLD mirror windows milliseconds later — so
 	# TestReattachDropsOutputFromAnUnverifiedConnection pins it instead.
 	old_src_pid="$($SRC display-message -p '#{pid}' 2>/dev/null || true)"
 	$SRC kill-server 2>/dev/null || true
@@ -3407,8 +3483,8 @@ wake_parked_mirror() {
 	$SRC new-session -d -s rem -x 100 -y 30 3>&-
 
 	# Positive evidence of the mismatch — the daemon's own stderr line — not
-	# "the mirror is gone" alone: if the race above went the other way the
-	# mirror would end up gone anyway, via the harness's own kill-server, and
+	# "the mirror re-opened" alone: if the race above went the other way the
+	# mirror would end up reconnecting to the OLD server, legitimately, and
 	# the test would be a silent false-green.
 	mismatch=no
 	for _ in $(seq 1 100); do
@@ -3419,13 +3495,33 @@ wake_parked_mirror() {
 		sleep 0.1
 	done
 
+	reopened=no
+	for _ in $(seq 1 100); do
+		grep -q "re-opening" "$BATS_TEST_TMPDIR/dds.log" 2>/dev/null && {
+			reopened=yes
+			break
+		}
+		sleep 0.1
+	done
+
+	# A marker sent to the NEW rem, painted into the rebuilt mirror, proves the
+	# re-open is actually live rather than just logged.
+	$SRC send-keys -t rem 'echo DROP_REOPEN_6W1' Enter
+	live=no
+	wait_live DROP_REOPEN_6W1 dds "$BATS_TEST_TMPDIR/dds.log" && live=yes
+
+	alive=no
+	kill -0 "$daemon_pid" 2>/dev/null && alive=yes
+
+	# Paired kill+wait, never a bare wait: the daemon now keeps running after
+	# a re-open, so a bare `wait "$daemon_pid"` here would hang forever.
+	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
 
 	[ "$mismatch" = yes ]
-	[ ! -e "$sock" ]
-	[ ! -e "$sock.pid" ]
-	run $DST has-session -t =host-sess
-	[ "$status" -ne 0 ]
+	[ "$reopened" = yes ]
+	[ "$live" = yes ]
+	[ "$alive" = yes ]
 }
 
 @test "a pane paused when the connection drops resumes and keeps repainting after reconnect" {
@@ -3821,47 +3917,275 @@ wake_parked_mirror() {
 	[ "$status" -ne 0 ]
 }
 
-@test "a keypress that wakes a parked mirror into a different tmux server tears the mirror down" {
+# #817: a parked mirror whose remote server restarted WITHOUT its session
+# never gets a matching identity to re-open onto — every re-dial reaches the
+# new server and is refused the attach (no session "rem" there at all). The
+# daemon waits out the bounded restore window on that refusal, then gives up
+# for good: a one-window tombstone explaining the remote is gone, and the
+# daemon itself exits (unlike the "different tmux server" case above, which
+# keeps running).
+@test "a parked mirror whose remote server restarted without its session ends in a tombstone" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
-	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
-	bridge_up 1 mpk
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s OG_DAEMON_RESTORE_MAX_ELAPSED=3s
+	bridge_up 1 tmb
 
 	outage_start
-	wait_bridge_state parked mpk "$BATS_TEST_TMPDIR/mpk.log"
+	wait_bridge_state parked tmb "$BATS_TEST_TMPDIR/tmb.log"
 
-	outage_end
-	# Recreate rem on a FRESH server before the wake dials it — same
-	# identity-mismatch setup as "a control-connection drop into a different
-	# tmux server tears the mirror down" above, just reached via a wake.
-	$SRC kill-server 2>/dev/null || true
-	$SRC new-session -d -s rem -x 100 -y 30
+	# A fresh server on the original socket path, but with no "rem" session on
+	# it at all — the restart this test is named for.
+	server_restart other
 
-	# A single press is not enough to rely on here either (see
-	# wake_parked_mirror above: the waker arms a beat after @bridge_state
-	# turns "parked", and a wake cycle's own first dial can fail and re-park
-	# before this fresh, same-named server is ever reached) — keep pressing
-	# until the mismatch lands in the log, or the daemon has already torn
-	# down and pressing is moot.
-	mismatch=no
-	for _ in $(seq 1 "$((PARK_WAIT_BUDGET_SECS * 10))"); do
-		grep -q "different tmux server" "$BATS_TEST_TMPDIR/mpk.log" 2>/dev/null && {
-			mismatch=yes
+	refused=no
+	press_until_log "$BATS_TEST_TMPDIR/tmb.log" "refused the attach" tmb && refused=yes
+
+	# Nothing re-dials it back to life from here: bounded poll for the daemon
+	# to exit ON ITS OWN once the restore window (3s) runs out still refused.
+	exited=no
+	wait_daemon_exit tmb "$BATS_TEST_TMPDIR/tmb.log" 200 && exited=yes
+
+	win_count="$($DST list-windows -t host-sess 2>/dev/null | wc -l)"
+	tomb_pane="$($DST list-panes -t host-sess -F '#{pane_id}' 2>/dev/null | head -1)"
+	tomb_text="$($DST capture-pane -p -t "$tomb_pane" 2>/dev/null || true)"
+	bridge_sock="$($DST show-options -v -t host-sess -q @bridge_sock 2>/dev/null || true)"
+	bridge_session="$($DST show-options -v -t host-sess -q @bridge_session 2>/dev/null || true)"
+
+	# The pane's own shell is still sitting on `read -r`, waiting for Enter —
+	# sending it closes the pane, and with it (remain-on-exit off) the window
+	# and the last-window session.
+	$DST send-keys -t "$tomb_pane" Enter 2>/dev/null || true
+	closed=no
+	for _ in $(seq 1 50); do
+		run $DST has-session -t =host-sess
+		[ "$status" -ne 0 ] && {
+			closed=yes
 			break
 		}
-		if kill -0 "$daemon_pid" 2>/dev/null; then
-			$DST send-keys -t host-sess:1 x 2>/dev/null || true
-		fi
 		sleep 0.1
 	done
 
-	wait "$daemon_pid" 2>/dev/null || true
-
-	[ "$mismatch" = yes ]
+	[ "$refused" = yes ]
+	[ "$exited" = yes ]
 	[ ! -e "$sock" ]
 	[ ! -e "$sock.pid" ]
-	run $DST has-session -t =host-sess
-	[ "$status" -ne 0 ]
+	[ "$win_count" -eq 1 ]
+	[[ $tomb_text == *"no longer exists"* ]]
+	[ -z "$bridge_sock" ]
+	[ "$bridge_session" = rem ]
+	[ "$closed" = yes ]
+}
+
+# #817: a parked mirror whose remote server restarted but landed the SAME
+# session name on it (a real restart, not a session that was simply closed)
+# re-opens onto the new server in place — the rebuilt mirror carries no trace
+# of the old server's content, and once viewed, the mirror tells whoever is
+# watching that it just re-opened.
+@test "a parked mirror whose remote server restarted re-opens onto the same-named session" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s
+	bridge_up 1 rsm
+
+	$SRC send-keys -t rem 'echo OLDSRV_4K1' Enter
+	old_painted=no
+	for _ in $(seq 1 60); do
+		mirror_contains 1 OLDSRV_4K1 && {
+			old_painted=yes
+			break
+		}
+		sleep 0.1
+	done
+	[ "$old_painted" = yes ]
+
+	outage_start
+	wait_bridge_state parked rsm "$BATS_TEST_TMPDIR/rsm.log"
+
+	# A fresh server on the original socket path, WITH "rem" on it this time.
+	server_restart rem
+	$SRC send-keys -t rem 'echo NEWSRV_8P3' Enter
+
+	reopened=no
+	press_until_log "$BATS_TEST_TMPDIR/rsm.log" "re-opening" rsm && reopened=yes
+
+	live=no
+	wait_live NEWSRV_8P3 rsm "$BATS_TEST_TMPDIR/rsm.log" && live=yes
+
+	alive=no
+	kill -0 "$daemon_pid" 2>/dev/null && alive=yes
+	transport="$(transport_child)"
+
+	clean=yes
+	while IFS= read -r win_id; do
+		for opt in window-style window-active-style; do
+			style="$($DST show-options -w -t "$win_id" -qv "$opt" 2>/dev/null || true)"
+			[ -z "$style" ] || clean=no
+		done
+	done < <($DST list-windows -t host-sess -F '#{window_id}')
+	win_count="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+	bridge_win="$($DST show-options -w -t host-sess:1 -qv @bridge_win 2>/dev/null || true)"
+
+	# No pane anywhere in the rebuilt mirror — including scrollback — still
+	# carries the OLD server's content.
+	leaked=no
+	while IFS= read -r pane_id; do
+		$DST capture-pane -p -S - -t "$pane_id" 2>/dev/null | grep -q OLDSRV_4K1 && leaked=yes
+	done < <($DST list-panes -s -t host-sess -F '#{pane_id}')
+
+	# A real client, attached only AFTER the re-open, must be told about it.
+	OBS="tmux -L m2obs"
+	$OBS new-session -d -s obs -x 100 -y 30 "$DST attach -t host-sess"
+
+	noticed=no
+	for _ in $(seq 1 50); do
+		$OBS capture-pane -p -t obs 2>/dev/null | grep -q "tmux server restarted" && {
+			noticed=yes
+			break
+		}
+		sleep 0.5
+	done
+	if [ "$noticed" != yes ]; then
+		printf 'obs never saw the restart notice\n--- daemon log ---\n' >&3
+		tail -60 "$BATS_TEST_TMPDIR/rsm.log" >&3 2>/dev/null || true
+	fi
+
+	notice_logged=no
+	grep -q "now mirroring a fresh rem" "$BATS_TEST_TMPDIR/rsm.log" 2>/dev/null && notice_logged=yes
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$reopened" = yes ]
+	[ "$live" = yes ]
+	[ "$alive" = yes ]
+	[ -n "$transport" ]
+	[ "$clean" = yes ]
+	[ "$win_count" -eq 1 ]
+	[ "$bridge_win" = 1 ]
+	[ "$leaked" = no ]
+	[ "$notice_logged" = yes ]
+	[ "$noticed" = yes ]
+}
+
+# #817: a refused attach does not have to end in a tombstone — if the session
+# comes back on the SAME server before the restore window runs out (someone
+# restarted just the session, or a supervisor recreated it), the next re-dial
+# in that same window finds it and re-opens onto it like any other identity
+# change.
+@test "a refused mirror re-opens when the session is restored inside the window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s OG_DAEMON_RESTORE_MAX_ELAPSED=15s
+	bridge_up 1 rsw
+
+	outage_start
+	wait_bridge_state parked rsw "$BATS_TEST_TMPDIR/rsw.log"
+
+	server_restart other
+
+	refused=no
+	press_until_log "$BATS_TEST_TMPDIR/rsw.log" "refused the attach" rsw && refused=yes
+	[ "$refused" = yes ]
+
+	# The session comes back on the SAME (new) server, inside the 15s restore
+	# window — a different tmux server pid than the one bridge_up dialled, so
+	# this still goes through the re-open path, not a warm reconnect.
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC send-keys -t rem 'echo RESTORED_2M9' Enter
+
+	reopened=no
+	press_until_log "$BATS_TEST_TMPDIR/rsw.log" "re-opening" rsw && reopened=yes
+
+	live=no
+	wait_live RESTORED_2M9 rsw "$BATS_TEST_TMPDIR/rsw.log" && live=yes
+
+	alive=no
+	kill -0 "$daemon_pid" 2>/dev/null && alive=yes
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$reopened" = yes ]
+	[ "$live" = yes ]
+	[ "$alive" = yes ]
+}
+
+# #817: a parked mirror is not just a passive wait for input — it probes the
+# remote on its own, on a slow interval, so an outage that clears while
+# nobody is looking still self-heals. A probe that fails re-parks QUIETLY
+# (park.go's afterProbe/quiet path): no second "unreachable; parked" log and
+# no re-dim, since nothing changed from the user's point of view. Only a
+# genuinely NEW outage (one that follows a successful reconnect) re-logs and
+# re-dims.
+@test "a parked mirror re-probes on its own once the outage clears" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s OG_DAEMON_PARK_PROBE_INTERVAL=1s
+	bridge_up 1 prb
+
+	outage_start
+	wait_bridge_state parked prb "$BATS_TEST_TMPDIR/prb.log"
+
+	# Written to the AWAY server directly — the outage is still up, so this is
+	# only picked up once a self-driven probe reconnects and reseeds.
+	tmux -S "$src_sock.away" send-keys -t rem 'echo PROBED_5T2' Enter
+	outage_end
+
+	# No keypress here — this park must clear on its own.
+	unparked=no
+	wait_bridge_state "" prb "$BATS_TEST_TMPDIR/prb.log" && unparked=yes
+	# Asserted here: without a reconnect there is no transport for the second
+	# outage below to drop.
+	if [ "$unparked" != yes ]; then
+		kill "$daemon_pid" 2>/dev/null || true
+		wait "$daemon_pid" 2>/dev/null || true
+	fi
+	[ "$unparked" = yes ]
+
+	painted=no
+	for _ in $(seq 1 60); do
+		mirror_contains 1 PROBED_5T2 && {
+			painted=yes
+			break
+		}
+		sleep 0.15
+	done
+
+	undimmed=yes
+	while IFS= read -r win_id; do
+		for opt in window-style window-active-style; do
+			style="$($DST show-options -w -t "$win_id" -qv "$opt" 2>/dev/null || true)"
+			[ -z "$style" ] || undimmed=no
+		done
+	done < <($DST list-windows -t host-sess -F '#{window_id}')
+
+	probed_logged=no
+	grep -q "probing" "$BATS_TEST_TMPDIR/prb.log" 2>/dev/null && probed_logged=yes
+
+	# A SECOND outage: this is a fresh drop following a successful reconnect,
+	# so it must dim and log again — not fall into the quiet re-park path a
+	# failed probe uses.
+	outage_start
+	wait_bridge_state parked prb "$BATS_TEST_TMPDIR/prb.log"
+
+	redimmed=yes
+	while IFS= read -r win_id; do
+		for opt in window-style window-active-style; do
+			style="$($DST show-options -w -v -t "$win_id" "$opt" 2>/dev/null || true)"
+			[ "$style" = "$PARK_DIM_STYLE" ] || redimmed=no
+		done
+	done < <($DST list-windows -t host-sess -F '#{window_id}')
+
+	reparked_count="$(grep -c 'unreachable; parked' "$BATS_TEST_TMPDIR/prb.log" 2>/dev/null)" || true
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$painted" = yes ]
+	[ "$undimmed" = yes ]
+	[ "$probed_logged" = yes ]
+	[ "$redimmed" = yes ]
+	[ "${reparked_count:-0}" -ge 2 ]
 }
 
 # The zoom test above asserts the flag and the pane dims agree; this one
