@@ -1246,6 +1246,289 @@ relay_env() {
 	[ "$new_transport" = "$old_transport" ]
 }
 
+# Every wait in these mouse cases polls against BRIDGE_UP_BUDGET_SECS as a stall
+# detector: each observable is one seed, reseed or rebuild (healDeadRenderers
+# sweeps once a second), the same order of work bridge_up's budget was sized for.
+#
+# mouse_up attaches a real client to the mirror session from a pty host (m2obs)
+# and binds the wheel the way tmux-og's better-mouse-mode does — forward it when
+# the pane tracks the mouse, otherwise enter copy-mode — so a wheel event takes
+# the same routing decision production does (#757).
+mouse_up() {
+	OBS="tmux -L m2obs"
+	$OBS kill-server 2>/dev/null || true
+	$DST set -g mouse on
+	$DST bind -n WheelUpPane if -F '#{mouse_any_flag}' 'send-keys -M' 'copy-mode -e'
+	$OBS new-session -d -s obsM -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host-sess"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$($DST list-clients -t host-sess 2>/dev/null | grep -c '^')" -ge 1 ] && break
+		sleep 0.1
+	done
+	[ "$($DST list-clients -t host-sess 2>/dev/null | grep -c '^')" -ge 1 ]
+}
+
+# wheel_up is the outer terminal reporting an SGR wheel-up at column 20, row 10:
+# the attached client parses it and dispatches WheelUpPane on the mirror pane.
+wheel_up() {
+	$OBS send-keys -t obsM -H 1b 5b 3c 36 34 3b 32 30 3b 31 30 4d
+}
+
+# wait_mirror_mouse polls the mirror pane's mouse flags until they read $1.
+wait_mirror_mouse() {
+	local got=""
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		got="$($DST display-message -p -t host-sess:1.0 '#{mouse_any_flag} #{mouse_sgr_flag}' 2>/dev/null)"
+		[ "$got" = "$1" ] && return 0
+		sleep 0.1
+	done
+	echo "mirror mouse flags: got '$got', want '$1'" >&3
+	return 1
+}
+
+# mouse_probe starts a remote program in a new pane that turns on the DECSET
+# mouse modes for encoding $2 (sgr: 1000/1002 + 1006, x10: 1000 alone) and
+# then logs its raw input to $3. $1 picks the pane: "tiled" splits the window,
+# "float" opens a float over the left half. Prints the remote pane id.
+mouse_probe() {
+	local kind="$1" enc="$2" log="$3" modes
+	case "$kind/$enc" in
+	float/sgr) modes="1002 1006" ;; # button-event, so a drag reports too
+	*/sgr) modes="1000 1006" ;;
+	*/x10) modes="1000" ;;
+	esac
+	# One script per pane: bash reads a script as it runs, so rewriting a
+	# shared one under a probe that is still starting cuts it short.
+	local prog="$BATS_TEST_TMPDIR/probe-$kind.sh"
+	cat >"$prog" <<'EOF'
+for m in $2; do printf '\033[?%sh' "$m"; done
+stty raw -echo
+exec cat >"$1"
+EOF
+	: >"$log"
+	if [ "$kind" = float ]; then
+		$SRC new-pane -t rem -x 40 -y 12 -X 8 -Y 8 -P -F '#{pane_id}' "bash $prog $log '$modes'"
+	else
+		$SRC split-window -d -h -t rem -P -F '#{pane_id}' "bash $prog $log '$modes'"
+	fi
+}
+
+# mirror_of prints the local pane rendering remote pane $1.
+mirror_of() {
+	$DST list-panes -t host-sess:1 -F '#{pane_id}|#{@bridge_pane}' 2>/dev/null | awk -F'|' -v r="$1" '$2 == r {print $1}'
+}
+
+# wait_mirror_tracking waits for remote pane $1's mirror to exist, differ from
+# $2 (the pid it had before a rebuild, or empty), and track the mouse.
+wait_mirror_tracking() {
+	local lp="" pid=""
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		lp="$(mirror_of "$1")"
+		if [ -n "$lp" ]; then
+			pid="$($DST display-message -p -t "$lp" '#{pane_pid}')"
+			[ "$pid" != "$2" ] && [ "$($DST display-message -p -t "$lp" '#{mouse_any_flag}')" = 1 ] && return 0
+		fi
+		sleep 0.1
+	done
+	echo "mirror of $1 (local '$lp', pid '$pid') never tracked the mouse" >&3
+	return 1
+}
+
+# mouse_at sends client input $1 (an SGR report prefix, e.g. "0") as a press
+# (M) or release (m) $2 at cell ($3,$4) of local pane $5 — the outer terminal
+# always speaks SGR; local tmux re-encodes for the pane's own mode.
+mouse_at() {
+	local lt
+	lt="$($DST display-message -p -t "$5" '#{pane_left} #{pane_top}')"
+	$OBS send-keys -t obsM -l $'\e[<'"$1;$((${lt% *} + $3 + 1));$((${lt#* } + $4 + 1))$2"
+}
+
+# click_wheel_drag clicks, wheels up and drags at cell (3,2) of the mirror of
+# remote pane $1.
+click_wheel_drag() {
+	local lp
+	lp="$(mirror_of "$1")"
+	mouse_at 0 M 3 2 "$lp"
+	mouse_at 0 m 3 2 "$lp"
+	mouse_at 64 M 3 2 "$lp"
+	mouse_at 0 M 3 2 "$lp"
+	mouse_at 32 M 5 3 "$lp"
+	mouse_at 0 m 5 3 "$lp"
+}
+
+# probe_got waits for log $1 to hold what encoding $2 makes of a press,
+# release and wheel-up at pane cell (3,2), plus, for $3 = drag, the motion to
+# (5,3) that only button-event tracking reports.
+probe_got() {
+	local log="$1" seqs=()
+	if [ "$2" = sgr ]; then
+		seqs=($'\e[<0;4;3M' $'\e[<0;4;3m' $'\e[<64;4;3M')
+		[ "${3:-}" = drag ] && seqs+=($'\e[<32;6;4M')
+	else
+		seqs=($'\e[M $#' $'\e[M#$#' $'\e[M`$#')
+	fi
+	local w missing
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		missing=0
+		for w in "${seqs[@]}"; do
+			grep -qF -- "$w" "$log" || missing=1
+		done
+		[ "$missing" = 0 ] && return 0
+		sleep 0.1
+	done
+	printf 'probe %s (%s) got: %q\n' "$log" "$2" "$(cat "$log")" >&3
+	return 1
+}
+
+# mouse_matrix drives a tiled probe (encoding $2) and a float probe (encoding
+# $3) through path $1 and checks both still receive a click, a wheel and — for
+# an SGR float — a drag afterwards:
+#   pre      the programs turned the mouse on before the mirror attached
+#   respawn  respawn-pane -k on each mirror pane (rebindRenderer's re-dial)
+#   kill     the tiled renderer is SIGKILLed (heal -> resetWindow rebuild)
+# Each path hands the mirror panes a seed without the live DECSET behind it.
+mouse_matrix() {
+	local path="$1" tenc="$2" fenc="$3"
+	local tlog="$BATS_TEST_TMPDIR/tiled.log" flog="$BATS_TEST_TMPDIR/float.log"
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	if [ "$path" = pre ]; then
+		trp="$(mouse_probe tiled "$tenc" "$tlog")"
+		frp="$(mouse_probe float "$fenc" "$flog")"
+		# The modes must be on before the daemon attaches, or they reach the
+		# mirror as live output and the seed goes untested.
+		deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+		while [ "$SECONDS" -lt "$deadline" ]; do
+			[ "$($SRC display-message -p -t "$trp" '#{mouse_any_flag}')$($SRC display-message -p -t "$frp" '#{mouse_any_flag}')" = 11 ] && break
+			sleep 0.1
+		done
+		[ "$($SRC display-message -p -t "$trp" '#{mouse_any_flag}')$($SRC display-message -p -t "$frp" '#{mouse_any_flag}')" = 11 ]
+		"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+			--session rem --window 1 --local-sess host-sess \
+			--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/mm.sock" \
+			>"$BATS_TEST_TMPDIR/mm.log" 2>&1 &
+		daemon_pid=$!
+	else
+		bridge_up 1 "mm-$path"
+		trp="$(mouse_probe tiled "$tenc" "$tlog")"
+		frp="$(mouse_probe float "$fenc" "$flog")"
+	fi
+	wait_mirror_tracking "$trp" ""
+	wait_mirror_tracking "$frp" ""
+	mouse_up
+
+	case "$path" in
+	respawn)
+		tpid="$($DST display-message -p -t "$(mirror_of "$trp")" '#{pane_pid}')"
+		fpid="$($DST display-message -p -t "$(mirror_of "$frp")" '#{pane_pid}')"
+		$DST respawn-pane -k -t "$(mirror_of "$trp")"
+		$DST respawn-pane -k -t "$(mirror_of "$frp")"
+		;;
+	kill)
+		tpid="$($DST display-message -p -t "$(mirror_of "$trp")" '#{pane_pid}')"
+		fpid="$($DST display-message -p -t "$(mirror_of "$frp")" '#{pane_pid}')"
+		kill -9 "$tpid"
+		;;
+	*) tpid="" fpid="" ;;
+	esac
+	wait_mirror_tracking "$trp" "$tpid"
+	wait_mirror_tracking "$frp" "$fpid"
+
+	click_wheel_drag "$trp"
+	click_wheel_drag "$frp"
+	probe_got "$tlog" "$tenc"
+	probe_got "$flog" "$fenc" drag
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
+@test "mouse modes set before the mirror attached reach a tiled pane (SGR) and a float (X10)" {
+	mouse_matrix pre sgr x10
+}
+
+@test "mouse modes set before the mirror attached reach a tiled pane (X10) and a float (SGR)" {
+	mouse_matrix pre x10 sgr
+}
+
+@test "mouse modes survive respawn-pane -k of a tiled mirror pane (SGR) and a float (X10)" {
+	mouse_matrix respawn sgr x10
+}
+
+@test "mouse modes survive respawn-pane -k of a tiled mirror pane (X10) and a float (SGR)" {
+	mouse_matrix respawn x10 sgr
+}
+
+@test "mouse modes survive a renderer kill and rebuild, tiled (SGR) and float (X10)" {
+	mouse_matrix kill sgr x10
+}
+
+@test "mouse modes survive a renderer kill and rebuild, tiled (X10) and float (SGR)" {
+	mouse_matrix kill x10 sgr
+}
+
+@test "a reseed clears mouse tracking the remote turned off while its pane was paused" {
+	go="$BATS_TEST_TMPDIR/mouse-go"
+	prog="$BATS_TEST_TMPDIR/mstale-prog.sh"
+	cat >"$prog" <<EOF
+until [ -e $go.1 ]; do sleep 0.1; done
+printf '\\033[?1000h\\033[?1006h'
+until [ -e $go.2 ]; do sleep 0.1; done
+printf '\\033[?1006l\\033[?1000l'
+exec cat -v
+EOF
+	$SRC new-session -d -s rem -x 100 -y 30 "bash $prog"
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 mstale
+	# Turned on live, after the seed: the mirror follows the stream.
+	touch "$go.1"
+	wait_mirror_mouse "1 1"
+	mouse_up
+
+	# Hold the daemon off its control stream and pause the pane for its client,
+	# so tmux discards the remote's mouse-off instead of sending it. Nothing
+	# between STOP and CONT may fail: a stopped daemon would outlive the test.
+	kill -STOP "$daemon_pid"
+	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)" || true
+	paused=no
+	[ -n "$cc" ] && $SRC refresh-client -t "$cc" -A "$($SRC display-message -p -t rem '#{pane_id}'):pause" && paused=yes
+	touch "$go.2"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$($SRC display-message -p -t rem '#{mouse_any_flag}')" = 0 ] && break
+		sleep 0.1
+	done
+	kill -CONT "$daemon_pid"
+
+	# The daemon's %pause -> %continue -> reseed is what must clear it.
+	cleared=yes
+	wait_mirror_mouse "0 0" || cleared=no
+	wheel_up
+	in_mode=0
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		in_mode="$($DST display-message -p -t host-sess:1.0 '#{pane_in_mode}')"
+		[ "$in_mode" = 1 ] && break
+		sleep 0.1
+	done
+	leaked="$($SRC capture-pane -p -t rem | grep -c '\[<64;' || true)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	# Without the pause, the mouse-off arrives live and clears the mirror
+	# whether or not the reseed does.
+	[ "$paused" = yes ]
+	[ "$cleared" = yes ]
+	[ "$in_mode" = 1 ]
+	[ "$leaked" = 0 ]
+}
+
 # === M2.3: structural input (ctl -> daemon -> remote -> mirror) ===
 #
 # These drive the ctl binary directly against the daemon's socket, which is the

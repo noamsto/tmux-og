@@ -108,7 +108,7 @@ func deadRT(...string) replies {
 // the capture. Every test below seeds exactly one float.
 func oneSeedScript(screen string) string {
 	return strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1",
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1",
 		"%begin 1 2 1", screen, "%end 1 2 1",
 	}, "\n") + "\n"
 }

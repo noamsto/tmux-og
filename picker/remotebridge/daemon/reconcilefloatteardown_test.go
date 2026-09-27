@@ -141,9 +141,9 @@ func TestReseedPanesRepaintsMirroredFloats(t *testing.T) {
 
 	var issued []string
 	rt := recordingRT(strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1", // %1 cursor
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // %1 cursor
 		"%begin 1 2 1", "TILED", "%end 1 2 1", // %1 capture
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // %9 cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // %9 cursor
 		"%begin 1 4 1", "FLOAT", "%end 1 4 1", // %9 capture
 	}, "\n")+"\n", &issued)
 

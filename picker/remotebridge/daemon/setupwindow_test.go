@@ -99,9 +99,9 @@ func TestSetupWindowResizesEachPaneFromItsOwnLayoutCell(t *testing.T) {
 	script := strings.Join([]string{
 		"%begin 1 1 1", "%end 1 1 1", // ConvergeCmd
 		"%begin 1 2 1", layout + " %0 0", "%end 1 2 1", // readLayout
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
 		"%begin 1 4 1", "SEED-0", "%end 1 4 1", // PaneSeeds(%0): capture
-		"%begin 1 5 1", "0 0 0 0", "%end 1 5 1", // PaneSeeds(%2): cursor
+		"%begin 1 5 1", "0 0 0 0 0 0 0 0 0", "%end 1 5 1", // PaneSeeds(%2): cursor
 		"%begin 1 6 1", "SEED-2", "%end 1 6 1", // PaneSeeds(%2): capture
 	}, "\n") + "\n"
 
@@ -265,7 +265,7 @@ func TestSetupWindowFailsWhenSolePaneSeedFails(t *testing.T) {
 	script := strings.Join([]string{
 		"%begin 1 1 1", "%end 1 1 1", // ConvergeCmd
 		"%begin 1 2 1", "b2c3,80x24,0,0,0 %0 0", "%end 1 2 1", // readLayout
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeeds(%0): cursor
 		"%begin 1 4 1", "%error 1 4 1", // PaneSeeds(%0): capture, pane gone
 	}, "\n") + "\n"
 
@@ -306,7 +306,7 @@ func TestSetupWindowAssertsRemoteZoom(t *testing.T) {
 	script := strings.Join([]string{
 		"%begin 1 1 1", "%end 1 1 1", // ConvergeCmd
 		"%begin 1 2 1", layout + " %3 1", "%end 1 2 1", // readLayout: zoomed, pane %3 active
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeeds(%3): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeeds(%3): cursor
 		"%begin 1 4 1", "SEED-3", "%end 1 4 1", // PaneSeeds(%3): capture
 	}, "\n") + "\n"
 

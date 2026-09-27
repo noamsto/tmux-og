@@ -390,9 +390,9 @@ func TestNoticeGeometryOnlyAppliesFromNotification(t *testing.T) {
 
 	w := shapedMirror(t)
 	script := strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1", // PaneSeed(%0): cursor
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // PaneSeed(%0): cursor
 		"%begin 1 2 1", "SEED0", "%end 1 2 1", // PaneSeed(%0): capture
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeed(%1): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeed(%1): cursor
 		"%begin 1 4 1", "SEED1", "%end 1 4 1", // PaneSeed(%1): capture
 		"%begin 1 5 1", noticeReshapedLayout + " %0 0", "%end 1 5 1", // trailing re-read: converged
 	}, "\n") + "\n"
@@ -451,9 +451,9 @@ func TestNoticeGeometryOnlyBehindAMirroredFloatAppliesFromNotification(t *testin
 	w.floatGeom["%9"] = float9
 	L := mustLayout(t, noticeReshapedFloatLayout)
 	script := strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1", // PaneSeed(%0): cursor
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // PaneSeed(%0): cursor
 		"%begin 1 2 1", "SEED0", "%end 1 2 1", // PaneSeed(%0): capture
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // PaneSeed(%1): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeed(%1): cursor
 		"%begin 1 4 1", "SEED1", "%end 1 4 1", // PaneSeed(%1): capture
 		"%begin 1 5 1", noticeReshapedFloatLayout + " %0 0", "%end 1 5 1", // trailing re-read: converged
 	}, "\n") + "\n"
@@ -504,14 +504,14 @@ func TestNoticeStaleGeometryHeals(t *testing.T) {
 
 	w := shapedMirror(t)
 	script := strings.Join([]string{
-		"%begin 1 1 1", "0 0 0 0", "%end 1 1 1", // pass 1 PaneSeed(%0): cursor
+		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // pass 1 PaneSeed(%0): cursor
 		"%begin 1 2 1", "SEED0", "%end 1 2 1", // pass 1 PaneSeed(%0): capture
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // pass 1 PaneSeed(%1): cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // pass 1 PaneSeed(%1): cursor
 		"%begin 1 4 1", "SEED1", "%end 1 4 1", // pass 1 PaneSeed(%1): capture
 		"%begin 1 5 1", noticeReshapedLayoutC + " %0 0", "%end 1 5 1", // trailing re-read: remote moved on to C
-		"%begin 1 6 1", "0 0 0 0", "%end 1 6 1", // pass 2 PaneSeed(%0): cursor
+		"%begin 1 6 1", "0 0 0 0 0 0 0 0 0", "%end 1 6 1", // pass 2 PaneSeed(%0): cursor
 		"%begin 1 7 1", "SEED0", "%end 1 7 1", // pass 2 PaneSeed(%0): capture
-		"%begin 1 8 1", "0 0 0 0", "%end 1 8 1", // pass 2 PaneSeed(%1): cursor
+		"%begin 1 8 1", "0 0 0 0 0 0 0 0 0", "%end 1 8 1", // pass 2 PaneSeed(%1): cursor
 		"%begin 1 9 1", "SEED1", "%end 1 9 1", // pass 2 PaneSeed(%1): capture
 		"%begin 1 10 1", noticeReshapedLayoutC + " %0 0", "%end 1 10 1", // trailing re-read: converged on C
 	}, "\n") + "\n"

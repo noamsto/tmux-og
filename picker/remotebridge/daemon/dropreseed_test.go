@@ -79,7 +79,7 @@ func TestReseedDroppedRepaintsFromCapture(t *testing.T) {
 	// PaneSeed's two round-trips: cursor, then capture.
 	rt, _ := scriptedRT(strings.Join([]string{
 		"%begin 1 1 1",
-		"0 0 0 0",
+		"0 0 0 0 0 0 0 0 0",
 		"%end 1 1 1",
 		"%begin 1 2 1",
 		"FRESH-CAPTURE",
@@ -125,7 +125,7 @@ func TestReseedDroppedReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 
 	rt, _ := scriptedRT(strings.Join([]string{
 		"%begin 1 1 1",
-		"0 0 0 0",
+		"0 0 0 0 0 0 0 0 0",
 		"%end 1 1 1",
 		"%begin 1 2 1",
 		"FRESH-CAPTURE",

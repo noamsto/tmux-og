@@ -43,7 +43,7 @@ type roundTrip = func(cmds ...string) replies
 func one(rt roundTrip, cmd string) (controlmode.Line, bool) { return rt(cmd)() }
 
 func cursorCmd(paneID string) string {
-	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag}'", paneID)
+	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag}'", paneID)
 }
 
 func captureCmd(paneID string) string {
@@ -91,7 +91,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 	for i, id := range paneIDs {
 		curLine, curOK := next()
 		capLine, capOK := next()
-		cx, cy, alt, appck := parseCursor(curLine, curOK)
+		cx, cy, alt, appck, mouse := parseCursor(curLine, curOK)
 		captured, isErr := parseCapture(capLine, capOK)
 		// isErr, not len(captured)==0: a genuinely blank pane is a valid
 		// successful capture with empty Data, so an emptiness check alone
@@ -104,7 +104,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 			onSeed(i, nil, fmt.Errorf("capture-pane failed for %s", id))
 			continue
 		}
-		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck), nil)
+		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse), nil)
 	}
 }
 
@@ -113,20 +113,33 @@ func replaceLF(b []byte) []byte {
 }
 
 // parseCursor parses an already-read display-message reply into
-// "cursor_x cursor_y alternate_on keypad_cursor_flag". An error reply or a
-// dead stream degrades to (0,0,false,false) rather than rejecting the seed —
-// only the capture-pane reply can do that (see parseCapture).
-func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool) {
+// "cursor_x cursor_y alternate_on keypad_cursor_flag mouse_standard_flag
+// mouse_button_flag mouse_all_flag mouse_sgr_flag mouse_utf8_flag". An error
+// reply or a dead stream degrades to (0,0,false,false,nil) rather than
+// rejecting the seed — only the capture-pane reply can do that (see
+// parseCapture). mouse is nil (unknown) unless all nine fields are present: a
+// remote tmux lacking one of the mouse formats expands it empty, which drops
+// the count but leaves the four cursor fields in place.
+func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode) {
 	if !ok || l.Kind == controlmode.Error {
-		return 0, 0, false, false
+		return 0, 0, false, false, nil
 	}
 	fields := strings.Fields(string(l.Data))
-	if len(fields) != 4 {
-		return 0, 0, false, false
+	if len(fields) < 4 {
+		return 0, 0, false, false, nil
 	}
 	cx, _ = strconv.Atoi(fields[0])
 	cy, _ = strconv.Atoi(fields[1])
-	return cx, cy, fields[2] == "1", fields[3] == "1"
+	if len(fields) == 9 {
+		mouse = &render.MouseMode{
+			Standard: fields[4] == "1",
+			Button:   fields[5] == "1",
+			All:      fields[6] == "1",
+			SGR:      fields[7] == "1",
+			UTF8:     fields[8] == "1",
+		}
+	}
+	return cx, cy, fields[2] == "1", fields[3] == "1", mouse
 }
 
 // parseCapture parses an already-read capture-pane reply and reports whether

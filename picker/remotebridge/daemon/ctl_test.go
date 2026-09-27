@@ -1200,7 +1200,7 @@ func TestCtlResolvesAFloatAddedByTheReconcile(t *testing.T) {
 	rt := setupWindowRT(strings.Join([]string{
 		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout: the float is already there
 		"%begin 1 2 1", tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
-		"%begin 1 3 1", "0 0 0 0", "%end 1 3 1", // the new float's seed: cursor
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // the new float's seed: cursor
 		"%begin 1 4 1", "FLOAT", "%end 1 4 1", // the new float's seed: capture
 	}, "\n") + "\n")
 
