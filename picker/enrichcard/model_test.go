@@ -516,6 +516,40 @@ func TestTruncateWidthAware(t *testing.T) {
 	}
 }
 
+// TestTruncateDegenerateBoundaries: truncate() at max <= 1 must still produce
+// output that is never wider than max — max=0 returns empty, max=1 returns at
+// most 1 cell. The previous guard (pre-#776) returned s untruncated at these
+// widths.
+func TestTruncateDegenerateBoundaries(t *testing.T) {
+	inputs := []string{
+		"hello world",
+		"打开失败",
+		"🚨 open failed",
+	}
+	for _, s := range inputs {
+		t.Run("max=0/"+s, func(t *testing.T) {
+			got := truncate(s, 0)
+			if w := lipgloss.Width(got); w > 0 {
+				t.Errorf("truncate(%q, 0) = %q, width %d > 0", s, got, w)
+			}
+		})
+		t.Run("max=1/"+s, func(t *testing.T) {
+			got := truncate(s, 1)
+			if w := lipgloss.Width(got); w > 1 {
+				t.Errorf("truncate(%q, 1) = %q, width %d > 1", s, got, w)
+			}
+		})
+	}
+
+	// Empty input: no content to truncate.
+	if got := truncate("", 0); got != "" {
+		t.Errorf("truncate(%q, 0) = %q, want %q", "", got, "")
+	}
+	if got := truncate("", 1); got != "" {
+		t.Errorf("truncate(%q, 1) = %q, want %q", "", got, "")
+	}
+}
+
 func TestShouldStampIssue(t *testing.T) {
 	full := cfg{issueStampBin: "/bin/true"}
 	win := winState{branch: "feat/x"}
@@ -621,5 +655,38 @@ func TestCardNoRoomForFrameStaysWithinWidth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTitleWidthChrome: titleWidth() must subtract cardHorizFrameSize (not
+// a stale literal) from m.width, and the frame size must match the actual
+// border+padding used in card().
+func TestTitleWidthChrome(t *testing.T) {
+	outer := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#fff")).
+		Padding(0, 1)
+
+	if h := outer.GetHorizontalFrameSize(); h != cardHorizFrameSize {
+		t.Errorf("card style GetHorizontalFrameSize() = %d, cardHorizFrameSize = %d; they must match", h, cardHorizFrameSize)
+	}
+
+	m := model{cfg: testCfg(), width: 60}
+	if got := m.titleWidth(); got != 60-cardHorizFrameSize {
+		t.Errorf("titleWidth() at width 60 = %d, want %d (60-%d)", got, 60-cardHorizFrameSize, cardHorizFrameSize)
+	}
+
+	m2 := model{cfg: testCfg(), width: 100}
+	if got := m2.titleWidth(); got > 80 {
+		t.Errorf("titleWidth() at width 100 = %d, want <= 80", got)
+	}
+
+	m3 := model{cfg: testCfg(), width: 12}
+	if got := m3.titleWidth(); got < 10 {
+		t.Errorf("titleWidth() at width 12 = %d, want >= 10", got)
+	}
+	m4 := model{cfg: testCfg(), width: 4}
+	if got := m4.titleWidth(); got < 10 {
+		t.Errorf("titleWidth() at width 4 = %d, want >= 10", got)
 	}
 }
