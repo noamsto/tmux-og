@@ -45,9 +45,8 @@ var (
 )
 
 // attachPostKillDrain bounds the post-Wait drain once the group has been
-// signalled: a descendant that survived the kill must not add a second grace to
-// the done message. The drained lines are cosmetic — drainLines never updates
-// cur — so a short bound loses nothing.
+// signalled, so a descendant that survived the kill cannot add a second grace to
+// the done message.
 const attachPostKillDrain = 250 * time.Millisecond
 
 func attachPhaseLabel(p attachPhase) string {
@@ -263,10 +262,9 @@ func (r *attachRun) run() {
 
 // drainLines forwards the phase lines still in the pipe after the launcher
 // exited: a fast launcher's last lines otherwise lose the race to Wait. A
-// descendant still holding the write end bounds this by the grace, not EOF — but
-// only when the launcher exited on its own. After a cancel or timeout already
-// signalled the group, a short attachPostKillDrain bound applies instead, so an
-// orphan that survived the kill cannot add a second grace to the done message.
+// descendant still holding the write end bounds this by the grace, not EOF;
+// after a cancel or timeout already signalled the group it uses
+// attachPostKillDrain instead.
 func (r *attachRun) drainLines(lines <-chan attachPhase, pr *os.File, killed bool) {
 	if lines == nil {
 		return

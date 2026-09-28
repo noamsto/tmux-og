@@ -197,8 +197,7 @@ func orphanPipeBody(ready string) string {
 }
 
 // A descendant holding the phase pipe must not add a full grace to the done
-// message. On main drainLines waited r.grace for the pipe to close, so a cancel
-// took ~one grace longer than the kill itself (#821).
+// message, so a cancel stays bounded by the kill itself.
 func TestAttachCancelBoundedByOrphanHoldingPipe(t *testing.T) {
 	shrinkAttachTimings(t, nil)
 	attachKillGrace = 2 * time.Second
