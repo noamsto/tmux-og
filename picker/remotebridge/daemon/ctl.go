@@ -727,10 +727,17 @@ const maxRemoteToolCwd = 4096
 // spelling to ${p1ATH=}. #* passes through both. Keep this body #*-only so it
 // stays correct if it ever moves near a run-shell verb, or if a tmux bump
 // extends expansion to split-window.
+//
+// The BROWSER restore right after the PATH one guards the same seam: fish's
+// login-profile rebuild may export its own BROWSER, which would shadow the
+// tmux global BROWSER=<og-open path> and silently disable URL forwarding for
+// this tool.
 func toolResolveScript(tool string) string {
 	return fmt.Sprintf(
 		"p=$(tmux show-environment -g PATH 2>/dev/null); "+
 			"case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; "+
+			"b=$(tmux show-environment -g BROWSER 2>/dev/null); "+
+			"case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; "+
 			"command -v %s >/dev/null 2>&1 && exec %s; "+
 			"echo tmux-og: %s is not on PATH on this host; sleep 5",
 		tool, tool, tool)

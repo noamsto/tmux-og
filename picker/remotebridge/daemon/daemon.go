@@ -117,6 +117,10 @@ type Config struct {
 	// local is LocalSess as Run pinned it at startup; every path that may
 	// destroy or rebuild the session after it could have gone checks it.
 	local localPin
+	// OpenURL opens a URL a mirrored session's og-open forwarded, on this
+	// machine (injected; prod = BrowserOpener). nil disables the og_open
+	// subscription entirely.
+	OpenURL func(url string) error
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -1050,6 +1054,7 @@ func runMirror(cfg Config) error {
 		labels   *labelShipper
 		res      *resShipper
 		usage    *usageShipper
+		opener   *urlOpener
 		loopTick *time.Ticker
 	)
 	teardown := func() {
@@ -1206,12 +1211,14 @@ func runMirror(cfg Config) error {
 	labels = newLabelShipper()
 	res = newResShipper(pin.id, skew)
 	usage = newUsageShipper(skew)
+	opener = newURLOpener(cfg, pin.id, cfg.OpenURL)
 	// Subscriptions are per control client, so this runs once per attach — here
 	// for the first one, and at the end of repair for every reconnect. The two
 	// shippers with a poll mode keep polling if the remote refuses; res and usage
 	// have none, and could not trust the answer anyway — a spec tmux cannot
-	// parse is dropped with no %error.
-	subscribe := func() { labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt) }
+	// parse is dropped with no %error. opener re-seeds and re-registers the
+	// og_open subscription the same way.
+	subscribe := func() { labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt); opener.connect(rt) }
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
 	// its floor on every reconnect.
@@ -1280,6 +1287,11 @@ func runMirror(cfg Config) error {
 			}
 			if v, ok := subscriptionValue(l, usageSubName); ok {
 				usage.queue(v)
+			}
+			// Handled immediately — opener.handle issues no round-trip, unlike
+			// the shippers above, which queue for the coalescing loop.
+			if v, ok := subscriptionValue(l, openSubName); ok && len(l.Args) > 1 {
+				opener.handle(l.Args[1], v)
 			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {

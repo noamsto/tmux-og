@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -320,5 +322,145 @@ func TestRunBounded(t *testing.T) {
 	t.Setenv("BROWSER", "x")
 	if err := runBounded(exec.Command("sh", "-c", `test -z "${BROWSER+x}"`), time.Second); err != nil {
 		t.Errorf("BROWSER must be stripped from the child's env: %v", err)
+	}
+}
+
+// waitReplyLine returns the next command reply (End or Error) off lines,
+// silently draining any notification riding inside the same guarded block —
+// og_open's own initial subscription report, seen here as a bystander of the
+// subscribe command's reply.
+func waitReplyLine(t *testing.T, lines <-chan controlmode.Line, timeout time.Duration) controlmode.Line {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case l, more := <-lines:
+			if !more {
+				t.Fatal("control client closed its stream before a reply arrived")
+			}
+			if l.Kind == controlmode.End || l.Kind == controlmode.Error {
+				return l
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for a command reply")
+		}
+	}
+}
+
+// waitOpenRecords blocks until an og_open subscription report parses to want.
+func waitOpenRecords(t *testing.T, lines <-chan controlmode.Line, want []openRecord) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case l, more := <-lines:
+			if !more {
+				t.Fatal("control client closed its stream before the subscription report arrived")
+			}
+			if v, ok := subscriptionValue(l, openSubName); ok && reflect.DeepEqual(parseOpenRecords(v), want) {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the og_open subscription report")
+		}
+	}
+}
+
+// TestOpenURLCommandsAgainstLiveTmux is the live-tmux counterpart to
+// TestURLOpenerConnectOrder: a scripted roundTrip proves connect's command
+// order, but only a real server can say the session-scoped subscribe spelling
+// and the -F client-name expansion are what tmux actually does with them —
+// same reasoning as TestSessionResSubscriptionIsSessionScoped, which this is
+// modelled on.
+func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		// OG_REQUIRE_TMUX is set by pickerChecked's checkPhase in flake.nix,
+		// which also puts tmux in nativeBuildInputs — so a missing tmux there
+		// means that input was pruned, not that this is a dev machine.
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+
+	if out, err := tmux("set-option", "-t", "w", openURLOpt, " 1-1|https://old").CombinedOutput(); err != nil {
+		t.Fatalf("seed %s: %v\n%s", openURLOpt, err, out)
+	}
+
+	ctl := tmux("-C", "attach-session", "-t", "w")
+	stdin, err := ctl.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := ctl.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctl.Start(); err != nil {
+		t.Fatalf("control client: %v", err)
+	}
+	t.Cleanup(func() {
+		ctl.Process.Kill()
+		ctl.Wait()
+	})
+
+	lines := make(chan controlmode.Line, 256)
+	go func() {
+		defer close(lines)
+		rd := controlmode.NewReader(stdout)
+		for {
+			l, ok := rd.Next()
+			if !ok {
+				return
+			}
+			lines <- l
+		}
+	}()
+
+	// The implicit reply to the attach-session the transport itself ran —
+	// nobody's command, but still the first guarded block on the stream.
+	if l := waitReplyLine(t, lines, 5*time.Second); l.Kind == controlmode.Error {
+		t.Fatalf("attach refused: %s", l.Data)
+	}
+
+	out, err := tmux("display", "-p", "-t", "w", "#{session_id}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("session id: %v\n%s", err, out)
+	}
+	sessID := strings.TrimSpace(string(out))
+
+	cmds := connectCmds(" -t " + tmuxQuote(sessID))
+	for i, cmd := range cmds {
+		if _, err := fmt.Fprintln(stdin, cmd); err != nil {
+			t.Fatalf("send %q: %v", cmd, err)
+		}
+		l := waitReplyLine(t, lines, 5*time.Second)
+		if l.Kind == controlmode.Error {
+			t.Fatalf("cmd %d %q: %s", i, cmd, l.Data)
+		}
+		// The seed command is first, per connectCmds' order.
+		if i == 0 {
+			if got := string(l.Data); got != " 1-1|https://old" {
+				t.Fatalf("seed reply = %q, want %q", got, " 1-1|https://old")
+			}
+		}
+	}
+
+	if out, err := tmux("set-option", "-a", "-t", "w", openURLOpt, " 1-2|https://new").CombinedOutput(); err != nil {
+		t.Fatalf("append %s: %v\n%s", openURLOpt, err, out)
+	}
+	waitOpenRecords(t, lines, []openRecord{{"1-1", "https://old"}, {"1-2", "https://new"}})
+
+	clientOpt, err := tmux("show-options", "-v", "-t", "w", openClientOpt).CombinedOutput()
+	if err != nil {
+		t.Fatalf("show-options %s: %v\n%s", openClientOpt, err, clientOpt)
+	}
+	clientName, err := tmux("list-clients", "-t", "w", "-F", "#{client_name}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list-clients: %v\n%s", err, clientName)
+	}
+	if got, want := strings.TrimSpace(string(clientOpt)), strings.TrimSpace(string(clientName)); got != want {
+		t.Errorf("%s = %q, want the control client's name %q", openClientOpt, got, want)
 	}
 }

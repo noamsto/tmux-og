@@ -1047,6 +1047,10 @@
                   echo "--prefix render carries no path under the given prefix" >&2
                   exit 1
                 fi
+                if ! grep -Fq 'set-environment -g BROWSER "/opt/tmux-og/bin/og-open"' prefixout/tmux.conf; then
+                  echo "--prefix render carries no og-open BROWSER line" >&2
+                  exit 1
+                fi
                 # Presence is not completeness: the two greps above sit at lines
                 # 2 and 32 of a ~550-line render, so a truncation past those
                 # still satisfies them. The prefix render differs from its

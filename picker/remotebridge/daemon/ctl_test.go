@@ -1358,6 +1358,47 @@ func TestToolPathRestore(t *testing.T) {
 	}
 }
 
+// A remote profile (fish's login rebuild) may export its own BROWSER, which
+// would override the tmux global BROWSER=<og-open path> and silently disable
+// URL forwarding; the restore must win over that, exactly as the PATH restore
+// wins over fish's rebuilt PATH.
+func TestToolBrowserRestore(t *testing.T) {
+	// The restore prefix, verbatim from the shipped script.
+	prefix, _, found := strings.Cut(toolResolveScript("prdash"), "command -v")
+	if !found {
+		t.Fatal("toolResolveScript no longer has a command -v")
+	}
+
+	tests := []struct {
+		name string
+		stub string
+		want string
+	}{
+		{"global present", "echo BROWSER=/nix/store/x/bin/og-open", "/nix/store/x/bin/og-open"},
+		{"variable unset", "echo unknown variable: BROWSER >&2; exit 1", "profile"},
+		{"empty value", "echo BROWSER=", "profile"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stub := filepath.Join(dir, "tmux")
+			script := "#!/bin/sh\ncase \"$3\" in\nBROWSER) " + tc.stub + ";;\nPATH) echo PATH=/opt/a;;\nesac\n"
+			if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", "-c", prefix+`printf %s "${BROWSER-unset}"`)
+			cmd.Env = []string{"PATH=" + dir + ":/login", "BROWSER=profile"}
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got := string(out); got != tc.want {
+				t.Errorf("BROWSER = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // split-window does not format-expand its shell-command but run-shell does, so
 // the restore trims with #* rather than #PATH= — under run-shell the latter's
 // #P would expand to the pane index. Keep the body free of every sequence tmux
