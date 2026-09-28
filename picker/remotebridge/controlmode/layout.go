@@ -141,7 +141,7 @@ func parseTree(s string) (*node, []PaneCell, error) {
 		return nil, nil, fmt.Errorf("layout: no checksum separator in %q", s)
 	}
 	p := &layoutParser{s: body}
-	root, err := p.cell()
+	root, err := p.cell(0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -276,7 +276,15 @@ type layoutParser struct {
 }
 
 // cell := WxH,X,Y [ , id | { children } | [ children ] ]
-func (p *layoutParser) cell() (*node, error) {
+//
+// depth is the nesting level, mirroring buildV2Node: the root cell is 0 and
+// each split's children are one deeper. The tree comes from the remote, so
+// the recursion is bounded at maxLayoutDepth to keep a pathologically nested
+// v1 string from overflowing the goroutine stack.
+func (p *layoutParser) cell(depth int) (*node, error) {
+	if depth > maxLayoutDepth {
+		return nil, fmt.Errorf("layout: v1 nesting exceeds %d", maxLayoutDepth)
+	}
 	n := &node{}
 	var err error
 	if n.w, err = p.intUntil('x'); err != nil {
@@ -302,18 +310,18 @@ func (p *layoutParser) cell() (*node, error) {
 		n.id = "%" + p.numRun()
 	case '{':
 		n.kind = '{'
-		return p.split(n, '}')
+		return p.split(n, '}', depth)
 	case '[':
 		n.kind = '['
-		return p.split(n, ']')
+		return p.split(n, ']', depth)
 	}
 	return n, nil
 }
 
-func (p *layoutParser) split(n *node, end byte) (*node, error) {
+func (p *layoutParser) split(n *node, end byte, depth int) (*node, error) {
 	p.pos++ // consume the already-matched opening delimiter
 	for {
-		c, err := p.cell()
+		c, err := p.cell(depth + 1)
 		if err != nil {
 			return nil, err
 		}
