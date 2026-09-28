@@ -30,7 +30,10 @@
 # `spend`/`monthly`/`remaining_usd` are unaffected either way.
 set -uo pipefail
 
-CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
+# The dispatcher (tmux-agent-usage.sh) resolves and owner-checks the cache
+# dir, then exports it; run with none set, there's nowhere trusted to write.
+CACHE_DIR="${OG_AGENT_USAGE_DIR:-}"
+[[ -n $CACHE_DIR ]] || exit 0
 AUTH="${PI_AUTH:-$HOME/.pi/agent/auth.json}"
 
 # pi's key syntax: `!cmd` runs a shell command (never executed here — a
@@ -106,6 +109,5 @@ out=$(jq -c --arg credits "$credits" '
 		then {balance: {usd_remaining: ($c.data.total_credits - $c.data.total_usage)}}
 		else {} end)' <<<"$resp" 2>/dev/null) || exit 0
 
-mkdir -p "$CACHE_DIR" 2>/dev/null
 tmp="$CACHE_DIR/.pi.json.$$"
 printf '%s\n' "$out" >"$tmp" && mv -f "$tmp" "$CACHE_DIR/pi.json"

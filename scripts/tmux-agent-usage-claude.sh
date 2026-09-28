@@ -5,7 +5,10 @@
 # token, non-JSON) leaves the previous cache untouched.
 set -uo pipefail
 
-CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
+# The dispatcher (tmux-agent-usage.sh) resolves and owner-checks the cache
+# dir, then exports it; run with none set, there's nowhere trusted to write.
+CACHE_DIR="${OG_AGENT_USAGE_DIR:-}"
+[[ -n $CACHE_DIR ]] || exit 0
 CREDS="${CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
 
 token=$(jq -r '.claudeAiOauth.accessToken // empty' "$CREDS" 2>/dev/null)
@@ -32,6 +35,5 @@ out=$(jq -c '
 			else null end)
 	}' <<<"$resp" 2>/dev/null) || exit 0
 
-mkdir -p "$CACHE_DIR" 2>/dev/null
 tmp="$CACHE_DIR/.claude.json.$$"
 printf '%s\n' "$out" >"$tmp" && mv -f "$tmp" "$CACHE_DIR/claude.json"

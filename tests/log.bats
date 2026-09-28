@@ -72,3 +72,44 @@ setup() {
 	acquire_lock "$lock"
 	[ -d "$lock" ]
 }
+
+@test "owner_only_dir accepts a caller-owned 0700 dir, REPLY 0 with no FILE" {
+	local dir="$BATS_TEST_TMPDIR/owned"
+	mkdir -m 700 "$dir"
+	run owner_only_dir "$dir"
+	[ "$status" -eq 0 ]
+}
+
+@test "owner_only_dir refuses a group/other-readable dir" {
+	local dir="$BATS_TEST_TMPDIR/open"
+	mkdir -m 755 "$dir"
+	run owner_only_dir "$dir"
+	[ "$status" -eq 1 ]
+}
+
+@test "owner_only_dir refuses a symlink standing in for the dir" {
+	local real="$BATS_TEST_TMPDIR/real" link="$BATS_TEST_TMPDIR/link"
+	mkdir -m 700 "$real"
+	ln -s "$real" "$link"
+	run owner_only_dir "$link"
+	[ "$status" -eq 1 ]
+}
+
+@test "owner_only_dir sets REPLY to FILE's mtime when FILE exists" {
+	local dir="$BATS_TEST_TMPDIR/stamped"
+	mkdir -m 700 "$dir"
+	touch "$dir/f"
+	local want
+	want=$(stat -c %Y "$dir/f")
+	owner_only_dir "$dir" "$dir/f"
+	[ "$REPLY" = "$want" ]
+}
+
+@test "owner_only_dir sets REPLY to 0 when FILE is absent, still trusts DIR" {
+	local dir="$BATS_TEST_TMPDIR/absent-file"
+	mkdir -m 700 "$dir"
+	run owner_only_dir "$dir" "$dir/missing"
+	[ "$status" -eq 0 ]
+	owner_only_dir "$dir" "$dir/missing"
+	[ "$REPLY" = 0 ]
+}

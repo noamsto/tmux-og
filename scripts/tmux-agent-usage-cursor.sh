@@ -13,7 +13,10 @@
 # limit rides along as spend.limit_usd; with none the key is omitted.
 set -uo pipefail
 
-CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
+# The dispatcher (tmux-agent-usage.sh) resolves and owner-checks the cache
+# dir, then exports it; run with none set, there's nowhere trusted to write.
+CACHE_DIR="${OG_AGENT_USAGE_DIR:-}"
+[[ -n $CACHE_DIR ]] || exit 0
 AUTH="${CURSOR_AUTH:-$HOME/.config/cursor/auth.json}"
 API="https://api2.cursor.sh/aiserver.v1.DashboardService"
 
@@ -61,6 +64,5 @@ out=$(jq -cn --argjson agg "$agg" --argjson hard "$hard" --argjson cycle "$cycle
 			else null end)
 	}' 2>/dev/null) || exit 0
 
-mkdir -p "$CACHE_DIR" 2>/dev/null
 tmp="$CACHE_DIR/.cursor.json.$$"
 printf '%s\n' "$out" >"$tmp" && mv -f "$tmp" "$CACHE_DIR/cursor.json"

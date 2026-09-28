@@ -85,12 +85,19 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `@og-usage-tick` monitor hook, not status-format[0] — a control-mode
   client renders no status line, so a status-driven poller never runs on a
   host whose only clients are bridges, #603) drives provider scripts that
-  normalize vendor API responses into `/tmp/og-agent-usage/<agent>.json`
+  normalize vendor API responses into
+  `$XDG_RUNTIME_DIR/og-agent-usage-<uid>/<agent>.json` (else `$TMPDIR` or
+  `/tmp`; `OG_AGENT_USAGE_DIR` overrides)
   (`{windows:[{label,pct,reset_at?}], monthly:{label,pct,reset_at?},
   spend:{label,usd,period,limit_usd?,remaining_usd?,remaining_label?},
   balance:{usd_remaining}?}`);
   `tmux-statusline` (Go) only reads them — it
-  never curls. `spend` is optional: absent in an older cache or a provider
+  never curls. The dispatcher owner-checks the cache dir (real directory, not
+  a symlink, owned by the caller's uid, no group/other permission bits;
+  `owner_only_dir` in `lib-log.sh`, Go twin `ownerdir.OwnerOnly`) before any
+  read/write, creating it `0700` and never chmod'ing an existing one — a
+  dir another account got to first is refused, not trusted, and the segment
+  simply shows nothing that refresh. `spend` is optional: absent in an older cache or a provider
   that has none, it decodes as `nil` (`usageCache.Spend *usageSpend`,
   `picker/statusline/usage.go:20`) and the segment simply skips the `$`
   figure for that agent; when present it renders unconditionally, no

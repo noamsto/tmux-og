@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
 
 // usageCache mirrors the normalized JSON the tmux-agent-usage-* provider
-// scripts write to usageCacheDir/<agent>.json. Balance is a fallback tier
+// scripts write to usageCacheDir()/<agent>.json. Balance is a fallback tier
 // used only when Spend.RemainingUSD is nil (no per-key cap known); the two
 // are mutually exclusive by construction since a provider script only ever
 // writes one.
@@ -57,14 +59,25 @@ type usageBalance struct {
 	USDRemaining float64 `json:"usd_remaining"`
 }
 
-const usageCacheDir = "/tmp/og-agent-usage"
+// usageCacheDir is the per-user agent-usage cache dir. OG_AGENT_USAGE_DIR
+// overrides it; must match the shell resolver in scripts/tmux-agent-usage.sh.
+func usageCacheDir() string {
+	return perUserDir("OG_AGENT_USAGE_DIR", "og-agent-usage")
+}
 
 // usageAgentOrder fixes the left-to-right agent order in the segment.
 var usageAgentOrder = []string{"claude", "codex", "cursor", "pi"}
 
-// loadUsageCaches reads whatever provider caches exist. Missing or malformed
-// files are skipped — the poller rewrites them atomically on the next pass.
+// loadUsageCaches reads whatever provider caches exist, but only from a dir
+// that is caller-owned and private (ownerdir.OwnerOnly) — another local
+// account could otherwise plant the dir first and feed the statusline its own
+// figures, so an untrusted dir fails closed to no data rather than reading it.
+// Missing or malformed files are skipped — the poller rewrites them atomically
+// on the next pass.
 func loadUsageCaches(dir string) map[string]usageCache {
+	if !ownerdir.OwnerOnly(dir) {
+		return map[string]usageCache{}
+	}
 	out := map[string]usageCache{}
 	for _, agent := range usageAgentOrder {
 		data, err := os.ReadFile(filepath.Join(dir, agent+".json"))

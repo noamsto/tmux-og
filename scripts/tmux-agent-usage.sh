@@ -2,11 +2,13 @@
 # Coding-agent usage-limit poller. Two entry modes:
 #   --tick      cheap gate from status-format[0]; daemonizes a pass when stale
 #   --tick-run  one pass: refresh every OPEN, authed agent's cache concurrently
-# Always exits 0. Cache: /tmp/og-agent-usage/<agent>.json, rendered by
-# tmux-statusline (Go). Providers curl the usage endpoints with the CLIs' own
-# stored tokens — no extra API keys. Tick-run also publishes the surviving
-# caches onto the global @og_agent_usage option, for the remote bridge daemon
-# to ship into a mirror session's statusline (docs/agents/bridge-shipped-state.md).
+# Always exits 0. Cache: $XDG_RUNTIME_DIR/og-agent-usage-<uid>/<agent>.json
+# (else $TMPDIR or /tmp; OG_AGENT_USAGE_DIR overrides), owner-checked before
+# any read/write, rendered by tmux-statusline (Go). Providers curl the usage
+# endpoints with the CLIs' own stored tokens — no extra API keys. Tick-run
+# also publishes the surviving caches onto the global @og_agent_usage option,
+# for the remote bridge daemon to ship into a mirror session's statusline
+# (docs/agents/bridge-shipped-state.md).
 #
 # scan_open_agents populates OPEN[cmd]=1 per manifest-command pane seen, from
 # one `list-panes -a` call. Tick mode gates on "any agent open at all"
@@ -24,7 +26,17 @@ set -uo pipefail
 # shellcheck source=/dev/null
 source @lib_log@
 
-CACHE_DIR="${OG_AGENT_USAGE_DIR:-/tmp/og-agent-usage}"
+# Per-user default, matching picker/statusline's usageCacheDir(): absolute
+# XDG_RUNTIME_DIR, else TMPDIR/tmp, trailing slashes stripped (filepath.Join
+# semantics on the Go side).
+if [[ -n ${OG_AGENT_USAGE_DIR:-} ]]; then
+	CACHE_DIR="$OG_AGENT_USAGE_DIR"
+else
+	base="${XDG_RUNTIME_DIR:-}"
+	[[ $base == /* ]] || base="${TMPDIR:-/tmp}"
+	while [[ $base == */ && $base != / ]]; do base=${base%/}; done
+	CACHE_DIR="$base/og-agent-usage-$UID"
+fi
 REFRESH_SECONDS="@refresh_seconds@"
 # Space-separated pane-command basenames from the agentdetect manifests
 # (claude codex cursor-agent pi) — same source as the update-icons sweep.
@@ -73,8 +85,9 @@ mode="tick"
 
 if [[ $mode == "tick" ]]; then
 	last_tick="$CACHE_DIR/.last-tick"
-	if [[ -f $last_tick ]] && ((EPOCHSECONDS - $(file_mtime "$last_tick") < REFRESH_SECONDS)); then
-		exit 0
+	if [[ -f $last_tick ]]; then
+		owner_only_dir "$CACHE_DIR" "$last_tick" || exit 0
+		((EPOCHSECONDS - REPLY < REFRESH_SECONDS)) && exit 0
 	fi
 	# Gate BEFORE the stamp: a tick with no agent must not spend the cycle, or
 	# the first tick after an agent appears waits out another one and the segment
@@ -82,8 +95,12 @@ if [[ $mode == "tick" ]]; then
 	scan_open_agents
 	((${#OPEN[@]})) || exit 0
 	# Mark fresh BEFORE daemonizing (same best-effort trade as tmux-pr-enrich):
-	# a crashed pass waits one cycle.
-	mkdir -p "$CACHE_DIR" 2>/dev/null
+	# a crashed pass waits one cycle. mkdir -m only sets the mode on create —
+	# an existing dir is never chmod'd (fail closed), so the owner check after
+	# it can still refuse.
+	# shellcheck disable=SC2174  # only the leaf (og-agent-usage-<uid>) needs 700; its parent (XDG_RUNTIME_DIR/TMPDIR) already exists
+	mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null
+	owner_only_dir "$CACHE_DIR" || exit 0
 	touch "$last_tick"
 	detach "${BASH_SOURCE[0]}" --tick-run
 	exit 0
@@ -94,7 +111,10 @@ fi
 # exit between the tick's gate and the detached pass.
 scan_open_agents
 ((${#OPEN[@]})) || exit 0
-mkdir -p "$CACHE_DIR" 2>/dev/null
+# shellcheck disable=SC2174  # only the leaf (og-agent-usage-<uid>) needs 700; its parent (XDG_RUNTIME_DIR/TMPDIR) already exists
+mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null
+owner_only_dir "$CACHE_DIR" || exit 0
+export OG_AGENT_USAGE_DIR="$CACHE_DIR"
 
 # Stale-cache-on-reopen: per-agent gating below would otherwise reintroduce,
 # at agent granularity, the exact bug the gate-before-stamp ordering exists
