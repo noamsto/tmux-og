@@ -89,7 +89,7 @@ func waitForFile(t *testing.T, path string, within time.Duration) {
 func TestAttachUpdateNeverLaunchesSynchronously(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "STARTED")
-	bin := fakeLauncher(t, "touch "+started+"\nprintf 'connect\\n' >&3\nsleep 30")
+	bin := fakeLauncher(t, "touch "+started+"\nprintf 'connect\\n' >&3\nexec sleep 30")
 	m := attachTestModel(bin)
 	m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == "remote:lab:mono" })
 
@@ -136,6 +136,8 @@ func TestAttachUpdateNeverLaunchesSynchronously(t *testing.T) {
 	// attachKillGrace, not a fixed 5s: a TERM that doesn't land forces the
 	// production code itself to wait out the grace before KILL, so the test's
 	// own deadline must never race that constant (cf. TestAttachCancelEscalatesToKill).
+	// The launcher execs sleep, so no descendant holds the phase pipe; the orphan
+	// case is pinned by TestAttachCancelBoundedByOrphanHoldingPipe.
 	msg = awaitAttachMsg(t, ch2, attachKillGrace+2*time.Second, func(m tea.Msg) bool {
 		d, ok := m.(attachDoneMsg)
 		return ok && d.id == id
