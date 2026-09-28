@@ -213,8 +213,8 @@ func boundedOpenRecords(v string) ([]openRecord, bool) {
 
 // handle opens every unseen valid record in one og_open report from session
 // sess, within the rate limits, then forgets every nonce the report no longer
-// carries — og-open's own cap reset is what bounds seen. An oversized value is
-// dropped whole and seen kept, so the reset value that follows still opens.
+// carries. An oversized value is dropped whole and seen kept, so the small
+// value og-open's reset leaves behind still opens.
 func (o *urlOpener) handle(sess, v string) {
 	if o == nil || (o.session != "" && sess != o.session) {
 		return

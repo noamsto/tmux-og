@@ -555,9 +555,7 @@ func waitOpenRecords(t *testing.T, lines <-chan controlmode.Line, want []openRec
 // TestOpenURLCommandsAgainstLiveTmux is the live-tmux counterpart to
 // TestURLOpenerConnectOrder: a scripted roundTrip proves connect's command
 // order, but only a real server can say the session-scoped subscribe spelling
-// and the -F client-name expansion are what tmux actually does with them —
-// same reasoning as TestSessionResSubscriptionIsSessionScoped, which this is
-// modelled on.
+// and the -F client-name expansion are what tmux actually does with them.
 func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		// OG_REQUIRE_TMUX is set by pickerChecked's checkPhase in flake.nix,

@@ -2,14 +2,10 @@
 # $BROWSER: opens a URL on the controlling host when this pane's session is
 # bridged to a mirror whose control client is a live og_open subscriber
 # (registered in @og_open_client by the bridge daemon), otherwise on this
-# host via the platform opener. Validation (scheme, disallowed characters,
-# length cap) applies only to the forwarded (bridged) path: whitespace is the
-# record separator of the forwarded log, a trailing `;` is tmux's argv
-# command separator, and only http(s) may cross the bridge. Off a bridge,
-# og-open IS the platform opener, so any argument passes through untouched.
-# Body is POSIX sh so it lints unchanged under the bash header every
-# scripts/*.sh ships with. See
-# docs/superpowers/specs/2026-09-28-og-open-controller-url-design.md §1.
+# host via the platform opener. Only the forwarded path validates: whitespace
+# separates the forwarded log's records, a trailing `;` is tmux's argv command
+# separator, and only http(s) may cross the bridge. Off a bridge any argument
+# passes through untouched. See docs/agents/bridge-shipped-state.md.
 set -uo pipefail
 
 case $# in
