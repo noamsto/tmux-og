@@ -35,8 +35,7 @@ func Ensure(dir string) bool {
 }
 
 // Trusted reports whether dir is safe to read or write: not a symlink, is a
-// dir, owned by us, and unreadable/unwritable by anyone else. It exists so
-// consumers depend on one package for both resolution and the trust check.
+// dir, owned by us, and unreadable/unwritable by anyone else.
 func Trusted(dir string) bool {
 	return ownerdir.OwnerOnly(dir)
 }

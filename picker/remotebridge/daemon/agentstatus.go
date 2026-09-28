@@ -180,12 +180,9 @@ type agentShipper struct {
 	// the dispatch that queued them.
 	pending map[string]paneStatus
 
-	// unsynced marks a local pane id whose last-seen row was recorded in
-	// written while the dir was untrusted, so its files were never written.
-	// stamp must not let the unchanged-row skip suppress it once the dir
-	// becomes trusted and the remote row hasn't moved since. Lazily
-	// initialised (nil reads/deletes are no-ops) so test literals built
-	// without it stay valid.
+	// unsynced marks pane ids whose row was recorded in written while the dir
+	// was untrusted, so their files were never written; they bypass the
+	// unchanged-row skip until a trusted pass writes them. Lazily initialised.
 	unsynced map[string]bool
 }
 
@@ -299,10 +296,8 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 	// that one fork per row instead of one per pass (#712). Cached once it
 	// succeeds, so the steady state is unchanged.
 	localPID := a.localServerPID(cfg)
-	// Checked once per batch, not per row: a loose or planted dir must not
-	// receive remote-sourced content, but reaping bookkeeping (live, written,
-	// the tmux-option stamps below) is unaffected — only the file writes and
-	// removes are the injectable surface.
+	// Gates only the file writes and removes: a loose or planted dir must not
+	// receive remote-sourced content, while the tmux-option stamps carry none.
 	trusted := claudestatus.Ensure(a.dir)
 
 	for _, r := range rows {

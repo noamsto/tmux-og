@@ -459,10 +459,7 @@ func main() {
 	prefixActive, ok := a.fetchVolatile()
 
 	claudeDir := claudestatus.Dir()
-	// A loose or planted dir must not feed the agent segment (its files would
-	// render as trusted state) — gate the segment at render time rather than
-	// blanking claudeDir here, which would make its readers join off a
-	// relative "" path instead.
+	// A loose or planted dir's files must not render as trusted state.
 	claudeTrusted := claudestatus.Trusted(claudeDir)
 
 	// On a failed fetch the volatile fields are empty; the last-good frame
@@ -472,9 +469,6 @@ func main() {
 		return
 	}
 
-	// list-panes only feeds the gated agent segment, so an untrusted dir skips
-	// it too — otherwise a planted screen/ file would fork tmux every tick off
-	// a root this process must not trust.
 	liveIDs, panesOK := gatedLiveIDs(claudeDir, claudeTrusted, a.session)
 	// list-panes failed the same way display-message can. Caching this frame
 	// would freeze a segment built as if the session had no panes. Cold start
