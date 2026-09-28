@@ -1015,17 +1015,17 @@ func TestIsCachedRemoteSelfAliasRejectsGroupWritableDir(t *testing.T) {
 func TestIsCachedRemoteSelfAliasRejectsSymlinkedDir(t *testing.T) {
 	useRemoteCache(t)
 
-	real := filepath.Join(t.TempDir(), "real")
-	if err := os.MkdirAll(real, 0o700); err != nil {
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(real, "localhost"), []byte("1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(target, "localhost"), []byte("1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(remoteSelfCacheDir()), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(real, remoteSelfCacheDir()); err != nil {
+	if err := os.Symlink(target, remoteSelfCacheDir()); err != nil {
 		t.Fatal(err)
 	}
 	if isCachedRemoteSelfAlias("localhost") {
