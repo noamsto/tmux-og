@@ -1270,11 +1270,6 @@
     # Pane borders
     setw -g pane-border-status top
     setw -g pane-border-format "━━━━━"
-    # A mirror's borders take their colour from the bridged crew options (#640):
-    # the pane's own role colour, else the window's agent colour, which is how
-    # the remote colours the same borders.
-    setw -g pane-active-border-style "bg=#{@thm_bg},fg=#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{@thm_mauve}}}"
-    setw -g pane-border-style "bg=#{@thm_bg},fg=#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{@thm_overlay_1}}}"
     setw -g pane-border-lines heavy
 
     # Pane background: dim inactive

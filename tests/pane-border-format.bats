@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
-# Tests the pane-border-format ternary built by scripts/tmux-apply-theme-colors.sh,
-# and the -O/-K/-C flags adopted on the ^o remote-picker float (#648).
+# Tests the pane-border-format ternary and pane-{active-,}border-style built by
+# scripts/tmux-apply-theme-colors.sh (#858: full window title on the anchor
+# pane's border), and the -O/-K/-C flags adopted on the ^o remote-picker float
+# (#648).
 #
 # Runs against a private, config-less tmux server (like tests/float-refit.bats)
 # so `display-message -p -F` evaluates the REAL script's output, not a
@@ -26,9 +28,9 @@ setup() {
 	tmux -f /dev/null new-session -d -s S -x 80 -y 24
 	WIN="$(tmux -u display-message -p -t S '#{window_id}')"
 
-	# All eight @thm_* variables the script reads (only bg/overlay_1/mauve/green
-	# feed pane-border-format, but the script also reads crust/teal/yellow/
-	# surface_1 for the @fingers-*-style lines below it — set all eight so
+	# All ten @thm_* variables the script reads (only bg/overlay_1/mauve/green/
+	# peach/red feed pane-border-format, but the script also reads crust/teal/
+	# yellow/surface_1 for the @fingers-*-style lines below it — set all ten so
 	# hex_to_256 has real input instead of running on empty strings).
 	tmux set -g @thm_crust '#11111b'
 	tmux set -g @thm_bg '#1e1e2e'
@@ -38,6 +40,8 @@ setup() {
 	tmux set -g @thm_teal '#94e2d5'
 	tmux set -g @thm_yellow '#f9e2af'
 	tmux set -g @thm_surface_1 '#45475a'
+	tmux set -g @thm_peach '#fab387'
+	tmux set -g @thm_red '#f38ba8'
 
 	SCRIPT="$(dirname "$BATS_TEST_DIRNAME")/scripts/tmux-apply-theme-colors.sh"
 	bash "$SCRIPT"
@@ -59,8 +63,47 @@ setup() {
 }
 
 teardown() {
+	tmux -L og-outer kill-server 2>/dev/null || true
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"
+}
+
+# --- helpers ---
+
+# Strips #[...] style directives so assertions compare visible text only.
+plain() {
+	sed 's/#\[[^]]*\]//g'
+}
+
+# Renders the real $FMT (as evaluated live from the script's setw -g) for a
+# given pane/window target, with directives stripped.
+render() {
+	tmux -u display-message -p -t "$1" -F "$FMT" | plain
+}
+
+# Stamps a full window title (id + rest) on $WIN, as tmux-reflow-windows does
+# for every window (mirrors included).
+title() {
+	tmux setw -t "$WIN" @window_label_id '#858 '
+	tmux setw -t "$WIN" @window_label_rest_long 'feat: full title'
+}
+
+# A fake aeye binary so the pane_start_command detector matches.
+fake_aeye() {
+	mkdir -p "$OG_TMUX_DIR/bin"
+	cat >"$OG_TMUX_DIR/bin/aeye" <<-'EOF'
+		#!/bin/sh
+		exec sleep 60
+	EOF
+	chmod +x "$OG_TMUX_DIR/bin/aeye"
+}
+
+# The border-style option the script now sets, resolved for one pane.
+style() {
+	case "$2" in
+	active) tmux -u display -p -t "$1" '#{E:pane-active-border-style}' ;;
+	inactive) tmux -u display -p -t "$1" '#{E:pane-border-style}' ;;
+	esac
 }
 
 @test "labeled float, active pane: renders the mauve title" {
@@ -82,18 +125,281 @@ teardown() {
 	[[ -z $broken ]]
 }
 
-@test "bridged crew role renders bold role + state" {
-	tmux set -p -t "$WIN" @bridge_crew_role reviewer
-	tmux set -p -t "$WIN" @bridge_crew_state working
-	out="$(tmux -u display-message -p -t "$WIN" -F "$FMT")"
-	[[ $out == *"reviewer"* ]]
-	[[ $out == *"working"* ]]
+@test "float label wins over the anchor's title" {
+	title
+	if ! tmux new-pane -t "$WIN" -O -K -C -x 60% -y 60% -X 20% -Y 20% -B heavy -A sh 2>/dev/null; then
+		skip "this tmux advertises -O/-K/-C but rejects them at parse time"
+	fi
+	float="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}' | head -n1)"
+	[ -n "$float" ] || skip "this tmux does not report pane_floating_flag"
+	tmux set -p -t "$float" @pane_label lazygit
+	out="$(render "$float")"
+	[ "$out" = "━━ lazygit ━━" ]
+}
+
+@test "aeye pane detected by start command, anchor keeps its title" {
+	tmux setw -t "$WIN" @crew_name coral
+	tmux setw -t "$WIN" @window_has_agent 1
+	tmux setw -t "$WIN" @crew_color colour99
+	title
+	fake_aeye
+	anchor="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux split-window -h -d -t "$anchor" "$OG_TMUX_DIR/bin/aeye 7"
+	aeye_pane="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${anchor}$")"
+
+	out_aeye="$(render "$aeye_pane")"
+	[ "$out_aeye" = "━━ aeye ━━" ]
+
+	out_anchor="$(render "$anchor")"
+	[ "$out_anchor" = "━━ coral · #858 feat: full title ━━" ]
+
+	style_aeye="$(style "$aeye_pane" inactive)"
+	[[ $style_aeye == *"fg=#7f849c"* ]]
+	[[ $style_aeye != *"colour99"* ]]
+
+	style_anchor="$(style "$anchor" inactive)"
+	[[ $style_anchor == *"colour99"* ]]
+}
+
+@test "aeye pane detected by @claude_img_src option" {
+	title
+	anchor="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux split-window -h -d -t "$anchor"
+	aeye_pane="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${anchor}$")"
+	tmux set -p -t "$aeye_pane" @claude_img_src '1-%1'
+
+	out="$(render "$aeye_pane")"
+	[ "$out" = "━━ aeye ━━" ]
+}
+
+@test "mirror role pane renders bold role + glyph + state, no title" {
+	tmux setw -t "$WIN" @bridge_win 1
+	title
+	left="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux split-window -h -d -t "$left"
+	right="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${left}$")"
+	tmux set -p -t "$right" @bridge_crew_role reviewer
+	tmux set -p -t "$right" @bridge_crew_state working
+
+	out="$(render "$right")"
+	[ "$out" = "━━ reviewer ● working ━━" ]
+
+	tmux set -p -t "$right" @bridge_crew_role_color colour114
+	style_out="$(style "$right" inactive)"
+	[[ $style_out == *"fg=colour114"* ]]
 }
 
 @test "bridged crew name (no role) renders the codename" {
-	tmux set -p -t "$WIN" @bridge_crew_name coral
-	out="$(tmux -u display-message -p -t "$WIN" -F "$FMT")"
-	[[ $out == *"coral"* ]]
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_crew_name coral
+	out="$(render "$WIN")"
+	[ "$out" = "━━ coral ━━" ]
+}
+
+@test "bridged crew name without @bridge_win renders the plain bar" {
+	tmux setw -t "$WIN" @bridge_crew_name coral
+	out="$(render "$WIN")"
+	[ "$out" = "━━━━━" ]
+}
+
+@test "mirror crew name only renders codename + title" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_crew_name coral
+	title
+	out="$(render "$WIN")"
+	[ "$out" = "━━ coral · #858 feat: full title ━━" ]
+}
+
+@test "local crew grid: anchor shows codename+state+title, role panes show their own" {
+	# Wide session so the narrow side splits below still leave the anchor (A)
+	# enough width to render its full title unclipped (W's budget math is
+	# covered separately by the long-title test).
+	tmux resize-window -t "$WIN" -x 200 -y 30
+	tmux setw -t "$WIN" @crew_name coral
+	tmux setw -t "$WIN" @window_has_agent 1
+	title
+	A="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux set -p -t "$A" @crew_role lead
+	tmux set -p -t "$A" @crew_state blocked
+	tmux set -p -t "$A" @crew_source watchdog
+	tmux set -p -t "$A" @crew_detail 'awaiting reply'
+
+	tmux split-window -h -d -p 15 -t "$A"
+	B="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${A}$")"
+	tmux set -p -t "$B" @crew_role plan-critic
+	tmux set -p -t "$B" @crew_state working
+	tmux set -p -t "$B" @crew_role_color colour111
+
+	tmux split-window -v -d -t "$B"
+	C="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v -e "^${A}$" -e "^${B}$")"
+	tmux set -p -t "$C" @crew_role reviewer
+
+	out_a="$(render "$A")"
+	[ "$out_a" = "━━ coral · ⚠ blocked (watchdog) · awaiting reply · #858 feat: full title ━━" ]
+
+	out_b="$(render "$B")"
+	[ "$out_b" = "━━ plan-critic ● working ━━" ]
+	style_b="$(style "$B" inactive)"
+	[[ $style_b == *"fg=colour111"* ]]
+
+	out_c="$(render "$C")"
+	[ "$out_c" = "━━ reviewer ━━" ]
+
+	titled=0
+	for p in "$A" "$B" "$C"; do
+		r="$(render "$p")"
+		[[ $r == *"#858"* ]] && titled=$((titled + 1))
+	done
+	[ "$titled" -eq 1 ]
+}
+
+@test "mirror lead pane shows codename + state + title, no 'lead' word" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_crew_name coral
+	title
+	tmux set -p -t "$WIN" @bridge_crew_role lead
+	tmux set -p -t "$WIN" @bridge_crew_state idle
+	out="$(render "$WIN")"
+	[ "$out" = "━━ coral · ○ idle · #858 feat: full title ━━" ]
+}
+
+@test "local crew name without @window_has_agent: no codename, title only" {
+	tmux setw -t "$WIN" @crew_name coral
+	title
+	out="$(render "$WIN")"
+	[ "$out" = "━━ #858 feat: full title ━━" ]
+}
+
+@test "plain single pane with title shows the title alone" {
+	title
+	out="$(render "$WIN")"
+	[ "$out" = "━━ #858 feat: full title ━━" ]
+}
+
+@test "active split shows the dot, inactive anchor keeps the title" {
+	title
+	left="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux split-window -h -t "$WIN"
+	right="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${left}$")"
+	tmux select-pane -t "$right"
+
+	out_right="$(render "$right")"
+	[ "$out_right" = "━━ ● ━━" ]
+	out_left="$(render "$left")"
+	[ "$out_left" = "━━ #858 feat: full title ━━" ]
+
+	tmux select-pane -t "$left"
+	out_left2="$(render "$left")"
+	[ "$out_left2" = "━━ #858 feat: full title ━━" ]
+	out_right2="$(render "$right")"
+	[ "$out_right2" = "━━━━━" ]
+}
+
+@test "lead pane with aeye split: title on the lead, aeye shows its own label" {
+	title
+	A="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux set -p -t "$A" @crew_role lead
+	fake_aeye
+	tmux split-window -h -d -t "$A" "$OG_TMUX_DIR/bin/aeye 9"
+	aeye_pane="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${A}$")"
+
+	out_aeye="$(render "$aeye_pane")"
+	[ "$out_aeye" = "━━ aeye ━━" ]
+	out_a="$(render "$A")"
+	[[ $out_a == *"#858"* ]]
+}
+
+@test "aeye as the anchor pane: no pane shows the title" {
+	title
+	right="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	fake_aeye
+	tmux split-window -h -b -d -t "$right" "$OG_TMUX_DIR/bin/aeye 10"
+	aeye_pane="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${right}$")"
+
+	out_aeye="$(render "$aeye_pane")"
+	[ "$out_aeye" = "━━ aeye ━━" ]
+	out_right="$(render "$right")"
+	[[ $out_right != *"#858"* ]]
+}
+
+@test "long title is clipped to the width budget" {
+	tmux resize-window -t "$WIN" -x 40 -y 24
+	rest="$(printf 'a%.0s' $(seq 1 100))"
+	tmux setw -t "$WIN" @window_label_id '#858 '
+	tmux setw -t "$WIN" @window_label_rest_long "$rest"
+
+	expect_a="$(printf 'a%.0s' $(seq 1 26))"
+	out="$(render "$WIN")"
+	[ "$out" = "━━ #858 ${expect_a}… ━━" ]
+
+	tmux setw -t "$WIN" @window_has_agent 1
+	tmux setw -t "$WIN" @crew_name coral
+	expect_a2="$(printf 'a%.0s' $(seq 1 18))"
+	out2="$(render "$WIN")"
+	[ "$out2" = "━━ coral · #858 ${expect_a2}… ━━" ]
+}
+
+@test "a dispatcher-set pane-border-format overrides ours until unset" {
+	title
+	tmux setw -t "$WIN" pane-border-format 'DISPATCH-LEAD'
+	resolved="$(tmux -u display-message -p -t "$WIN" -F '#{pane-border-format}')"
+	[ "$resolved" = "DISPATCH-LEAD" ]
+
+	tmux set -p -t "$WIN" pane-border-format 'DISPATCH-ROLE'
+	resolved="$(tmux -u display-message -p -t "$WIN" -F '#{pane-border-format}')"
+	[ "$resolved" = "DISPATCH-ROLE" ]
+
+	tmux set -p -u -t "$WIN" pane-border-format
+	tmux setw -u -t "$WIN" pane-border-format
+	resolved="$(tmux -u display-message -p -t "$WIN" -F '#{pane-border-format}')"
+	[ "$resolved" = "$FMT" ]
+}
+
+@test "state glyph vocabulary" {
+	tmux set -p -t "$WIN" @crew_role worker
+	for pair in "idle:○" "done:✓" "pr_open:✓" "failed:✗" "exited:✗" "bogus:○"; do
+		state="${pair%%:*}"
+		glyph="${pair##*:}"
+		tmux set -p -t "$WIN" @crew_state "$state"
+		out="$(render "$WIN")"
+		[[ $out == *"$glyph"* ]]
+	done
+}
+
+@test "drawn border: a real client renders the clipped title with its ellipsis and wrap" {
+	# A long rest fills the entire label width, so the line ends exactly at
+	# " ━━" with no trailing fill dashes (a short title leaves the row padded
+	# with "─" past the format text, which this assertion would also pass by
+	# accident).
+	rest="$(printf 'a%.0s' $(seq 1 100))"
+	tmux setw -t "$WIN" @window_label_id '#858 '
+	tmux setw -t "$WIN" @window_label_rest_long "$rest"
+	tmux setw -t "$WIN" @crew_name coral
+	tmux setw -t "$WIN" @window_has_agent 1
+	tmux resize-window -t "$WIN" -x 40 -y 12
+	tmux set -g status off
+	tmux setw -t "$WIN" pane-border-status top
+
+	tmux -L og-outer -f /dev/null new-session -d -x 40 -y 12 \
+		"env -u TMUX tmux -u -L default attach -t S"
+	outer_pane="$(tmux -L og-outer list-panes -a -F '#{pane_id}' | head -n1)"
+
+	found=0
+	for _ in $(seq 1 50); do
+		if tmux -u list-clients 2>/dev/null | grep -q .; then
+			found=1
+			break
+		fi
+		sleep 0.1
+	done
+	if [ "$found" -ne 1 ]; then
+		skip "inner client never attached"
+	fi
+	echo "# drawn-border ran" >&3
+
+	line1="$(tmux -u -L og-outer capture-pane -p -t "$outer_pane" | sed -n '1p')"
+	[[ $line1 == *"…"* ]]
+	[[ $line1 == *" ━━" ]]
 }
 
 @test "multi-pane active marker renders the green dot" {
