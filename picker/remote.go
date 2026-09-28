@@ -70,8 +70,16 @@ func remoteKillSessionBody(sess string) string {
 }
 
 // remoteSelfCacheDir holds alias→self verdicts so pendingRemoteItems can omit
-// known-self hosts on the first paint without another ssh probe.
-var remoteSelfCacheDir = "/tmp/og-remote-self"
+// known-self hosts on the first paint without another ssh probe. Per-user,
+// a sibling of remoteSessionCacheDir; "" when no absolute base resolves, and
+// must be ownerdir.OwnerOnly before anything in it is trusted.
+func remoteSelfCacheDir() string {
+	dir := remoteSessionCacheDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(dir), "remote-self")
+}
 
 // remoteRestorableCmd emits the remote host's own hostname (line 1, used to
 // verify a fetched snapshot really belongs to this host) followed by
@@ -229,50 +237,37 @@ func hostFileName(host string) string {
 }
 
 func remoteSelfCachePath(host string) string {
-	return filepath.Join(remoteSelfCacheDir, hostFileName(host))
+	return filepath.Join(remoteSelfCacheDir(), hostFileName(host))
 }
 
 func markCachedRemoteSelfAlias(host string) {
-	_ = os.MkdirAll(remoteSelfCacheDir, 0o700)
+	dir := remoteSelfCacheDir()
+	if dir == "" || os.MkdirAll(dir, 0o700) != nil || !ownerdir.OwnerOnly(dir) {
+		return
+	}
 	_ = os.WriteFile(remoteSelfCachePath(host), []byte("1\n"), 0o600)
 }
 
 func clearCachedRemoteSelfAlias(host string) {
+	dir := remoteSelfCacheDir()
+	if dir == "" || !ownerdir.OwnerOnly(dir) {
+		return
+	}
 	_ = os.Remove(remoteSelfCachePath(host))
 }
 
 func isCachedRemoteSelfAlias(host string) bool {
-	if !remoteSelfCacheDirTrusted() {
+	dir := remoteSelfCacheDir()
+	if dir == "" || !ownerdir.OwnerOnly(dir) {
 		return false
 	}
 	path := remoteSelfCachePath(host)
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	if !info.Mode().IsRegular() {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(os.Getuid()) {
-		return false
-	}
-	return true
-}
-
-func remoteSelfCacheDirTrusted() bool {
-	info, err := os.Stat(remoteSelfCacheDir)
-	if err != nil {
-		return false
-	}
-	if !info.IsDir() {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Getuid()) {
-		return false
-	}
-	if info.Mode().Perm()&0o002 != 0 {
 		return false
 	}
 	return true
