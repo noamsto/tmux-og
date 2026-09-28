@@ -97,7 +97,7 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `owner_only_dir` in `lib-log.sh`, Go twin `ownerdir.OwnerOnly`) before any
   read/write, creating it `0700` and never chmod'ing an existing one — a
   dir another account got to first is refused, not trusted, and the segment
-  simply shows nothing that refresh. `spend` is optional: absent in an older cache or a provider
+  simply shows nothing for that refresh. `spend` is optional: absent in an older cache or a provider
   that has none, it decodes as `nil` (`usageCache.Spend *usageSpend`,
   `picker/statusline/usage.go:20`) and the segment simply skips the `$`
   figure for that agent; when present it renders unconditionally, no

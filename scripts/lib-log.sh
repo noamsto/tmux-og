@@ -30,22 +30,25 @@ file_mtime() { "$OG_STAT" -c %Y "$1" 2>/dev/null || echo 0; }
 
 # owner_only_dir DIR [FILE] -> REPLY=FILE's mtime (0 if absent). True iff DIR
 # is a real directory (not a symlink — GNU stat's default is lstat, so a
-# symlink reports type "symbolic link"), owned by $UID, with no group/other
-# permission bits. FILE, when given, must live inside DIR. Shell twin of
-# picker/ownerdir.OwnerOnly.
+# symlink's own mode carries S_IFLNK, not S_IFDIR), owned by $UID, with no
+# group/other permission bits. FILE, when given, must live inside DIR. Type
+# and permissions both come from the raw mode bits (%f, hex), never a
+# formatted type string: %F is gettext-localized (e.g. "Verzeichnis" under
+# de_DE), so a string compare would silently fail closed under a non-C locale.
+# Shell twin of picker/ownerdir.OwnerOnly.
 owner_only_dir() {
-	local out uid mode type mtime
+	local out uid raw mtime
 	# A missing FILE makes stat exit nonzero while still printing DIR's line;
 	# parse $out regardless. `|| :` on both this and the read group below keeps
 	# that expected nonzero from tripping a caller's `set -e`.
-	out=$("$OG_STAT" -c '%u %a %Y %F' -- "$@" 2>/dev/null) || :
+	out=$("$OG_STAT" -c '%u %f %Y' -- "$@" 2>/dev/null) || :
 	{
-		read -r uid mode _ type
-		read -r _ _ mtime _
+		read -r uid raw _
+		read -r _ _ mtime
 	} <<<"$out" || :
 	REPLY=${mtime:-0}
-	[[ $uid == "$UID" && $type == directory ]] || return 1
-	(((8#$mode & 8#077) == 0))
+	[[ $uid == "$UID" && -n $raw ]] || return 1
+	(((16#$raw & 8#170000) == 8#040000 && (16#$raw & 8#077) == 0))
 }
 
 # acquire_lock DIR — non-blocking lock via atomic mkdir; `flock` is Linux-only

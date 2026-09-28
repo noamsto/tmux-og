@@ -113,3 +113,19 @@ setup() {
 	owner_only_dir "$dir" "$dir/missing"
 	[ "$REPLY" = 0 ]
 }
+
+@test "owner_only_dir accepts a 0700 dir under a gettext-localized locale" {
+	local dir="$BATS_TEST_TMPDIR/localized"
+	mkdir -m 700 "$dir"
+	export LC_ALL=de_DE.UTF-8 LANG=de_DE.UTF-8
+	run owner_only_dir "$dir"
+	[ "$status" -eq 0 ]
+}
+
+@test "owner_only_dir refuses a caller-owned 0600 file passed as DIR" {
+	local file="$BATS_TEST_TMPDIR/plain-file"
+	touch "$file"
+	chmod 600 "$file"
+	run owner_only_dir "$file"
+	[ "$status" -eq 1 ]
+}
