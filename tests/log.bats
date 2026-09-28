@@ -119,7 +119,7 @@ setup() {
 	real_stat=$(command -v stat)
 	stub="$BATS_TEST_TMPDIR/stat-no-percentF"
 	cat >"$stub" <<-EOF
-		#!/usr/bin/env bash
+		#!$BASH
 		# Test double for a localized-coreutils stat: refuses to run with any
 		# %F in its format args, standing in for gettext turning it into
 		# "Verzeichnis" instead of "directory".
