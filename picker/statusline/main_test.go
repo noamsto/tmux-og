@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,8 +185,44 @@ func TestSessionSegmentBridgeIdlessRest(t *testing.T) {
 	}
 }
 
-func TestLastGoodRoundTrip(t *testing.T) {
+func TestStatuslineCacheDirHonorsOverride(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("OG_STATUSLINE_CACHE_DIR", dir)
+	if got := statuslineCacheDir(); got != dir {
+		t.Fatalf("override ignored: got %q want %q", got, dir)
+	}
+}
+
+func TestStatuslineCacheDirPerUserDefault(t *testing.T) {
+	t.Setenv("OG_STATUSLINE_CACHE_DIR", "")
+	name := fmt.Sprintf("og-statusline-%d", os.Getuid())
+	xdg := filepath.Join(t.TempDir(), "xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+	if got, want := statuslineCacheDir(), filepath.Join(xdg, name); got != want {
+		t.Fatalf("runtime-dir default = %q, want %q", got, want)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	if got, want := statuslineCacheDir(), filepath.Join(tmp, name); got != want {
+		t.Fatalf("TMPDIR default = %q, want %q", got, want)
+	}
+	// Both unset: os.TempDir() -> /tmp; must still be per-user, never the literal.
+	t.Setenv("TMPDIR", "")
+	if got, want := statuslineCacheDir(), filepath.Join("/tmp", name); got != want {
+		t.Fatalf("both-unset default = %q, want %q", got, want)
+	}
+}
+
+func TestLastGoodRoundTrip(t *testing.T) {
+	// t.TempDir() is created 0777&^umask, not owner-only.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := readLastGood(dir, "work"); ok {
 		t.Fatal("cold cache should miss")
 	}
@@ -199,6 +236,9 @@ func TestLastGoodRoundTrip(t *testing.T) {
 
 func TestLastGoodSessionIsolated(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	writeLastGood(dir, "a/b", "line-ab")
 	writeLastGood(dir, "c d", "line-cd")
 	if got, _ := readLastGood(dir, "a/b"); got != "line-ab" {
@@ -206,6 +246,72 @@ func TestLastGoodSessionIsolated(t *testing.T) {
 	}
 	if got, _ := readLastGood(dir, "c d"); got != "line-cd" {
 		t.Fatalf("session with space = %q", got)
+	}
+}
+
+func TestLastGoodRefusesForeignModeDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "c")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cacheFileName("work")), []byte("evil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := readLastGood(dir, "work"); ok {
+		t.Fatalf("readLastGood on world-writable dir = %q,true, want miss", got)
+	}
+	writeLastGood(dir, "work", "mine")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != cacheFileName("work") {
+		t.Fatalf("dir entries = %v, want only %q", entries, cacheFileName("work"))
+	}
+	got, err := os.ReadFile(filepath.Join(dir, cacheFileName("work")))
+	if err != nil || string(got) != "evil" {
+		t.Fatalf("cache file = %q,%v, want %q,nil", got, err, "evil")
+	}
+}
+
+func TestLastGoodRefusesSymlinkedDir(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, cacheFileName("work")), []byte("evil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(filepath.Dir(real), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := readLastGood(link, "work"); ok {
+		t.Fatalf("readLastGood on symlinked dir = %q,true, want miss", got)
+	}
+	writeLastGood(link, "work", "mine")
+	got, err := os.ReadFile(filepath.Join(real, cacheFileName("work")))
+	if err != nil || string(got) != "evil" {
+		t.Fatalf("real dir cache file = %q,%v, want %q,nil", got, err, "evil")
+	}
+}
+
+func TestLastGoodCreatesPrivateDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "new")
+	writeLastGood(dir, "work", "mine")
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("dir perm = %o, want 0700", perm)
+	}
+	got, ok := readLastGood(dir, "work")
+	if !ok || got != "mine" {
+		t.Fatalf("round-trip = %q,%v, want %q,true", got, ok, "mine")
 	}
 }
 

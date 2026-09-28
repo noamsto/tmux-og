@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/noamsto/themestate"
+	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
 
 // gitOutput runs git with a short timeout so a stalled repo (NFS, held
@@ -89,9 +90,21 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	return f[0] == "1", true
 }
 
-// statuslineCacheDir holds the per-session last-good rendered line so a failed
-// fetchVolatile re-paints the previous frame rather than a degraded one.
-const statuslineCacheDir = "/tmp/og-statusline"
+// statuslineCacheDir is the per-session last-good frame store. It is
+// uid-qualified so two accounts on one host cannot collide, and
+// OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers. The dir
+// must be caller-owned and private (ownerdir.OwnerOnly); readLastGood and
+// writeLastGood both refuse it otherwise.
+func statuslineCacheDir() string {
+	if dir := os.Getenv("OG_STATUSLINE_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if !filepath.IsAbs(base) {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, fmt.Sprintf("og-statusline-%d", os.Getuid()))
+}
 
 // cacheFileName maps a session name to a filesystem-safe file name; distinct
 // names stay distinct (any non-safe byte becomes its 2-hex escape).
@@ -109,6 +122,9 @@ func cacheFileName(session string) string {
 }
 
 func readLastGood(dir, session string) (string, bool) {
+	if !ownerdir.OwnerOnly(dir) {
+		return "", false
+	}
 	out, err := os.ReadFile(filepath.Join(dir, cacheFileName(session)))
 	if err != nil {
 		return "", false
@@ -117,12 +133,12 @@ func readLastGood(dir, session string) (string, bool) {
 }
 
 func writeLastGood(dir, session, line string) {
-	if os.MkdirAll(dir, 0o755) != nil {
+	if os.MkdirAll(dir, 0o700) != nil || !ownerdir.OwnerOnly(dir) {
 		return
 	}
 	path := filepath.Join(dir, cacheFileName(session))
 	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
-	if os.WriteFile(tmp, []byte(line), 0o644) != nil {
+	if os.WriteFile(tmp, []byte(line), 0o600) != nil {
 		return
 	}
 	os.Rename(tmp, path)
@@ -423,7 +439,7 @@ func main() {
 	// tickers but cannot be used here: publishing an empty line every tick
 	// would blank line 0. The cached frame keeps the previous content painted,
 	// and tmux keeps only the LAST complete line, so the render below wins.
-	lastGood, hadLastGood := readLastGood(statuslineCacheDir, a.session)
+	lastGood, hadLastGood := readLastGood(statuslineCacheDir(), a.session)
 	if hadLastGood {
 		os.Stdout.WriteString(lastGood + "\n")
 	} else {
@@ -471,7 +487,7 @@ func main() {
 	line := strings.ReplaceAll(
 		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, liveIDs), "\n", " ")
 	if ok && panesOK {
-		writeLastGood(statuslineCacheDir, a.session, line)
+		writeLastGood(statuslineCacheDir(), a.session, line)
 	}
 	os.Stdout.WriteString(line + "\n")
 }
