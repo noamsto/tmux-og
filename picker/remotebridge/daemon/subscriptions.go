@@ -34,6 +34,7 @@ const (
 	agentSubName = "og_agents"
 	resSubName   = "og_res"
 	usageSubName = "og_usage"
+	openSubName  = "og_open"
 )
 
 // subscribeCmd builds the subscribe command for one format. Quoted as a single

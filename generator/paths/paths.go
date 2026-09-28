@@ -35,6 +35,7 @@ var RequiredScripts = []string{
 	"og-debug",
 	"og-notify",
 	"og-notify-center",
+	"og-open",
 	"og-remote-auth",
 	"og-remote-detach",
 	"og-remote-open",

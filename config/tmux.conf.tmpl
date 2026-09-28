@@ -44,6 +44,12 @@ set -ga update-environment KITTY_LISTEN_ON
 # the carousel never follows tmux focus and the launcher degrades to a split.
 set -ga update-environment AEYE_HOST
 
+# $BROWSER-aware tools (prdash, gh --web) in every server-started pane go
+# through og-open, which forwards to the controlling host when this session
+# is bridged and is the platform opener otherwise. A store path, not the
+# bare name: a resident server's PATH predates a rebuild (#407).
+set-environment -g BROWSER "{{index .Paths.Scripts "og-open"}}"
+
 # Timing
 set -s escape-time 0
 set -g repeat-time 300

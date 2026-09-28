@@ -248,6 +248,16 @@
               touch $out
             '';
 
+          og-open-tests =
+            pkgs.runCommand "og-open-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.bash];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/og-open.bats
+              touch $out
+            '';
+
           icons-tests =
             pkgs.runCommand "icons-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
@@ -1035,6 +1045,10 @@
                 fi
                 if ! grep -Fq /opt/tmux-og/bin/ prefixout/tmux.conf; then
                   echo "--prefix render carries no path under the given prefix" >&2
+                  exit 1
+                fi
+                if ! grep -Fq 'set-environment -g BROWSER "/opt/tmux-og/bin/og-open"' prefixout/tmux.conf; then
+                  echo "--prefix render carries no og-open BROWSER line" >&2
                   exit 1
                 fi
                 # Presence is not completeness: the two greps above sit at lines
@@ -2260,6 +2274,9 @@
               # The raw source file is what ships: this script carries no
               # build-time placeholder substitution.
               DETACH = ./scripts/og-remote-detach.sh;
+              # Same "raw source ships" reasoning as DETACH: og-open needs no
+              # build-time placeholder substitution either.
+              OG_OPEN = ./scripts/og-open.sh;
             } ''
               cp -r ${./tests} tests
               export HOME=$TMPDIR

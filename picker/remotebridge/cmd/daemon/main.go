@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -425,6 +426,7 @@ func main() {
 		View:           view,
 		NewGraphics:    newGraphics(ctlSock, tr.currentPath, *host, *cacheDir, *gfxMax, view.Relay, *gfxRelayMaxBytes),
 		ParkProbe:      *parkProbe,
+		OpenURL:        daemon.BrowserOpener(runtime.GOOS),
 	}
 	if *retryMaxElapsed > 0 {
 		b := daemon.DefaultBackoff(time.Now)
