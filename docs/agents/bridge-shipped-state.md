@@ -127,7 +127,8 @@ the ssh `ps` leg survives only as the version-skew fallback
 ## Remote Agent Usage
 
 The top-right usage segment normally reads *this* host's
-`/tmp/og-agent-usage/<agent>.json` caches, gated by a local `list-panes -a`
+`$XDG_RUNTIME_DIR/og-agent-usage-<uid>/<agent>.json` (else `$TMPDIR`/`/tmp`)
+caches, gated by a local `list-panes -a`
 (`enrichment.md`'s "Agent Usage Limits"). In a mirror session every pane runs
 a renderer, so that gate and those caches describe the wrong host entirely.
 The remote publishes its own caches and the daemon ships them across (#743).

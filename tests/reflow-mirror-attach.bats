@@ -32,7 +32,8 @@ setup() {
 	export OG_ENRICH_CACHE_DIR="$TMUX_TMPDIR/og-pr"
 	export OG_AGENT_USAGE_DIR="$TMUX_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$TMUX_TMPDIR/og-enrich-lock"
-	mkdir -p "$CLAUDE_STATUS_DIR" "$OG_ENRICH_CACHE_DIR" "$OG_AGENT_USAGE_DIR" "$OG_ENRICH_LOCK_DIR"
+	mkdir -p "$CLAUDE_STATUS_DIR" "$OG_ENRICH_CACHE_DIR" "$OG_ENRICH_LOCK_DIR"
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 
 	# The daemon execs a bare `tmux` for its local server; it must be the
 	# wrapper (the real conf), not whatever tmux the harness PATH carries.

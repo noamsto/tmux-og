@@ -2654,7 +2654,7 @@ $pane 1" ]; then
 	# holding a different figure -- the mirror render must ignore both.
 	$DST new-session -d -s lo -x 80 -y 24 "$BATS_TEST_TMPDIR/bin/claude -c 'sleep 600; :'"
 	local_usage_dir="$BATS_TEST_TMPDIR/local-usage"
-	mkdir -p "$local_usage_dir"
+	mkdir -m 700 "$local_usage_dir"
 	printf '{"windows":[{"label":"5h","pct":11}]}' >"$local_usage_dir/claude.json"
 
 	bridge_up 1 usage --host lab

@@ -19,6 +19,7 @@ setup() {
 	mkdir -p "$FAKEBIN" "$FIXTURES"
 	export FIXTURES
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/cache"
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	export HOME="$BATS_TEST_TMPDIR"
 	unset OPENROUTER_API_KEY PI_AUTH CURSOR_AUTH OG_OPENROUTER_MGMT_KEY_FILE OPENROUTER_MANAGEMENT_KEY XDG_CONFIG_HOME
 
@@ -278,4 +279,18 @@ default_pi() {
 	export OPENROUTER_API_KEY=sk-or-test-fallback-not-a-key EXPECT_TOKEN=sk-or-test-fallback-not-a-key
 	run_pi
 	[ -e "$(pi_cache)" ]
+}
+
+# The dispatcher exports the owner-checked dir; providers have no fallback.
+
+@test "provider: OG_AGENT_USAGE_DIR unset writes nothing, never touches the real default" {
+	unset OG_AGENT_USAGE_DIR
+	export XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/xdg"
+	export TMPDIR="$BATS_TEST_TMPDIR/tmp"
+	mkdir -p "$XDG_RUNTIME_DIR" "$TMPDIR"
+	cursor_setup
+	echo '{"hardLimit":5000}' >"$FIXTURES/GetHardLimit.json"
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ -z "$(find "$XDG_RUNTIME_DIR" "$TMPDIR" -mindepth 1 2>/dev/null)" ]
 }

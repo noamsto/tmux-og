@@ -90,20 +90,25 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	return f[0] == "1", true
 }
 
-// statuslineCacheDir is the per-session last-good frame store. It is
-// uid-qualified so two accounts on one host cannot collide, and
-// OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers. The dir
-// must be caller-owned and private (ownerdir.OwnerOnly); readLastGood and
-// writeLastGood both refuse it otherwise.
-func statuslineCacheDir() string {
-	if dir := os.Getenv("OG_STATUSLINE_CACHE_DIR"); dir != "" {
+// perUserDir is $env, else <XDG_RUNTIME_DIR or TMPDIR>/<name>-<uid>, uid-qualified
+// so two accounts on one host cannot collide.
+func perUserDir(env, name string) string {
+	if dir := os.Getenv(env); dir != "" {
 		return dir
 	}
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if !filepath.IsAbs(base) {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, fmt.Sprintf("og-statusline-%d", os.Getuid()))
+	return filepath.Join(base, fmt.Sprintf("%s-%d", name, os.Getuid()))
+}
+
+// statuslineCacheDir is the per-session last-good frame store.
+// OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers. The dir
+// must be caller-owned and private (ownerdir.OwnerOnly); readLastGood and
+// writeLastGood both refuse it otherwise.
+func statuslineCacheDir() string {
+	return perUserDir("OG_STATUSLINE_CACHE_DIR", "og-statusline")
 }
 
 // cacheFileName maps a session name to a filesystem-safe file name; distinct
@@ -473,11 +478,7 @@ func main() {
 	// mirror would otherwise fall into the local path for that frame.
 	usage := ""
 	if a.usageMonthlyThreshold > 0 && ok {
-		usageDir := os.Getenv("OG_AGENT_USAGE_DIR")
-		if usageDir == "" {
-			usageDir = usageCacheDir
-		}
-		usage = usageFor(a, usageDir, openAgents, time.Now().Unix())
+		usage = usageFor(a, usageCacheDir(), openAgents, time.Now().Unix())
 	}
 
 	// One job-output line is one status frame, and tmux publishes only the LAST

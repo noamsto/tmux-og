@@ -22,8 +22,8 @@ export TMUX_TMPDIR=$work/t
 # A private TMUX_TMPDIR does not isolate agent state: CLAUDE_STATUS_DIR
 # defaults to /tmp/claude-status, shared with every tmux server on the machine.
 export CLAUDE_STATUS_DIR=$work/cs
-# Same story for the usage cache: /tmp/og-agent-usage holds the user's real
-# rate-limit numbers.
+# Same story for the usage cache: $XDG_RUNTIME_DIR/og-agent-usage-<uid> holds
+# the user's real rate-limit numbers.
 export OG_AGENT_USAGE_DIR=$work/usage
 # Keeps the user's shell rc, zoxide db, gh/agent credentials and theme state out
 # of the frame.
@@ -33,7 +33,8 @@ export XDG_STATE_HOME=$HOME/.local/state XDG_CACHE_HOME=$HOME/.cache
 export GIT_CONFIG_GLOBAL=$HOME/.gitconfig
 export SHELL=$OG_DEMO_SHELL
 unset TMUX TMUX_PANE
-mkdir -p "$TMUX_TMPDIR" "$CLAUDE_STATUS_DIR" "$OG_AGENT_USAGE_DIR" "$work/bin" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+mkdir -p "$TMUX_TMPDIR" "$CLAUDE_STATUS_DIR" "$work/bin" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 
 cleanup() {
 	"$OG_DEMO_TMUX_RAW" -L ogd-outer kill-server 2>/dev/null || true

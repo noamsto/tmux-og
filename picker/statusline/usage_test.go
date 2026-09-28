@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,10 @@ func TestLoadUsageCachesSkipsMissingAndMalformed(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}],"monthly":null}`), 0o644)
 	os.WriteFile(filepath.Join(dir, "codex.json"), []byte(`not json`), 0o644)
+	// t.TempDir() is created 0777&^umask, not owner-only.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	caches := loadUsageCaches(dir)
 	if len(caches) != 1 {
@@ -24,6 +29,9 @@ func TestLoadUsageCachesSkipsMissingAndMalformed(t *testing.T) {
 func TestLoadUsageCachesOldSchemaNoSpendField(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}],"monthly":{"label":"mo","pct":60}}`), 0o644)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	caches := loadUsageCaches(dir)
 	c, ok := caches["claude"]
@@ -449,6 +457,9 @@ func TestUsageSegmentPiSpendWithRemainingNoLabel(t *testing.T) {
 func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	caches := loadUsageCaches(dir)
 	c, ok := caches["pi"]
@@ -466,6 +477,9 @@ func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
 func TestLoadUsageCachesSpendWithoutLimitRendersSpendAlone(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	caches := loadUsageCaches(dir)
 	c, ok := caches["pi"]
@@ -557,6 +571,9 @@ func TestUsageForMirrorMalformedBridgeUsageRendersNothing(t *testing.T) {
 func TestUsageForLocalSessionRendersLocalFigure(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	a := args{
 		usageMonthlyThreshold: 50,
@@ -567,6 +584,87 @@ func TestUsageForLocalSessionRendersLocalFigure(t *testing.T) {
 	got := usageFor(a, dir, localOpen, 0)
 	if !strings.Contains(got, "11%·5h") {
 		t.Fatalf("got %q, want it to contain 11%%·5h", got)
+	}
+}
+
+func TestUsageCacheDirHonorsOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OG_AGENT_USAGE_DIR", dir)
+	if got := usageCacheDir(); got != dir {
+		t.Fatalf("override ignored: got %q want %q", got, dir)
+	}
+}
+
+func TestUsageCacheDirPerUserDefault(t *testing.T) {
+	t.Setenv("OG_AGENT_USAGE_DIR", "")
+	name := fmt.Sprintf("og-agent-usage-%d", os.Getuid())
+
+	xdg := filepath.Join(t.TempDir(), "xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+	if got, want := usageCacheDir(), filepath.Join(xdg, name); got != want {
+		t.Fatalf("XDG_RUNTIME_DIR default = %q, want %q", got, want)
+	}
+
+	// A relative XDG_RUNTIME_DIR is not absolute, so it falls through to TMPDIR.
+	t.Setenv("XDG_RUNTIME_DIR", "rel")
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp+string(filepath.Separator))
+	if got, want := usageCacheDir(), filepath.Join(tmp, name); got != want {
+		t.Fatalf("TMPDIR default = %q, want %q", got, want)
+	}
+
+	// Both unset: os.TempDir() -> /tmp; must still be per-user, never the literal.
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	t.Setenv("TMPDIR", "")
+	if got, want := usageCacheDir(), filepath.Join("/tmp", name); got != want {
+		t.Fatalf("both-unset default = %q, want %q", got, want)
+	}
+	if got := usageCacheDir(); got == "/tmp/og-agent-usage" {
+		t.Fatalf("got the old machine-wide literal %q", got)
+	}
+}
+
+func TestLoadUsageCachesRefusesForeignModeDir(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if caches := loadUsageCaches(dir); len(caches) != 0 {
+		t.Fatalf("caches = %v, want empty for a group/other-readable dir", caches)
+	}
+}
+
+func TestLoadUsageCachesRefusesSymlinkedDir(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(real, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
+	link := filepath.Join(filepath.Dir(real), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if caches := loadUsageCaches(link); len(caches) != 0 {
+		t.Fatalf("caches = %v, want empty for a symlinked dir", caches)
+	}
+}
+
+func TestLoadUsageCachesReadsPrivateDir(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	caches := loadUsageCaches(dir)
+	if c, ok := caches["claude"]; !ok || c.Windows[0].Pct != 42 {
+		t.Fatalf("caches = %v, want claude pct 42", caches)
 	}
 }
 

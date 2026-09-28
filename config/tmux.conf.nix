@@ -90,9 +90,11 @@
   # update-icons each tick.
   resumeCarouselEnable ? false,
   # Coding-agent usage-limit stats on line 0 (threaded from the module).
-  # Polled by tmux-agent-usage into /tmp/og-agent-usage/<agent>.json with
-  # each CLI's own stored token; rendered by tmux-statusline while any agent
-  # pane exists. The monthly window shows only at/above the threshold percent.
+  # Polled by tmux-agent-usage into
+  # $XDG_RUNTIME_DIR/og-agent-usage-<uid>/<agent>.json (else $TMPDIR or /tmp;
+  # OG_AGENT_USAGE_DIR overrides), owner-checked and 0700, with each CLI's own
+  # stored token; rendered by tmux-statusline while any agent pane exists. The
+  # monthly window shows only at/above the threshold percent.
   agentUsageEnable ? true,
   agentUsageRefreshSeconds ? 120,
   agentUsageMonthlyThreshold ? 50,

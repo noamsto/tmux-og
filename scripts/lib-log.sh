@@ -28,6 +28,24 @@ fi
 file_size() { "$OG_STAT" -c %s "$1" 2>/dev/null || echo 0; }
 file_mtime() { "$OG_STAT" -c %Y "$1" 2>/dev/null || echo 0; }
 
+# owner_only_dir DIR [FILE] -> REPLY=FILE's mtime (0 if absent). True iff DIR
+# is a real directory (stat lstat's, so a symlink fails), owned by $UID, with
+# no group/other bits; FILE must live inside DIR. Shell twin of
+# picker/ownerdir.OwnerOnly. Type comes from the raw mode (%f): %F is
+# gettext-localized.
+owner_only_dir() {
+	local out uid raw mtime
+	# A missing FILE makes stat exit nonzero after printing DIR's line.
+	out=$("$OG_STAT" -c '%u %f %Y' -- "$@" 2>/dev/null) || :
+	{
+		read -r uid raw _
+		read -r _ _ mtime
+	} <<<"$out" || :
+	REPLY=${mtime:-0}
+	[[ $uid == "$UID" && -n $raw ]] || return 1
+	(((16#$raw & 8#170000) == 8#040000 && (16#$raw & 8#077) == 0))
+}
+
 # acquire_lock DIR — non-blocking lock via atomic mkdir; `flock` is Linux-only
 # (absent on macOS), so it can't be the primitive. Call INSIDE the subshell
 # whose exit should release the lock: a successful acquire arms an EXIT trap

@@ -42,6 +42,92 @@ setup() {
 
 last_tick() { echo "$OG_AGENT_USAGE_DIR/.last-tick"; }
 
+# --- CACHE_DIR resolution (no OG_AGENT_USAGE_DIR override) ---
+
+@test "tick: with no override, resolves under XDG_RUNTIME_DIR and creates it 0700" {
+	unset OG_AGENT_USAGE_DIR
+	export XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/xdg"
+	mkdir -p "$XDG_RUNTIME_DIR"
+	export FAKE_PANES='claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ "$status" -eq 0 ]
+	local dir="$XDG_RUNTIME_DIR/og-agent-usage-$UID"
+	[ -d "$dir" ]
+	[ "$(stat -c %a "$dir")" = 700 ]
+	[ -e "$dir/.last-tick" ]
+}
+
+@test "tick: a relative XDG_RUNTIME_DIR is ignored, TMPDIR's trailing slash stripped" {
+	unset OG_AGENT_USAGE_DIR
+	export XDG_RUNTIME_DIR="rel"
+	export TMPDIR="$BATS_TEST_TMPDIR/tmp/"
+	mkdir -p "$TMPDIR"
+	export FAKE_PANES='claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ "$status" -eq 0 ]
+	local dir="$BATS_TEST_TMPDIR/tmp/og-agent-usage-$UID"
+	[ -d "$dir" ]
+	[ "$(stat -c %a "$dir")" = 700 ]
+}
+
+@test "tick: with no XDG_RUNTIME_DIR at all, TMPDIR's trailing slash is stripped" {
+	unset OG_AGENT_USAGE_DIR XDG_RUNTIME_DIR
+	export TMPDIR="$BATS_TEST_TMPDIR/tmp/"
+	mkdir -p "$TMPDIR"
+	export FAKE_PANES='claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ "$status" -eq 0 ]
+	local dir="$BATS_TEST_TMPDIR/tmp/og-agent-usage-$UID"
+	[ -d "$dir" ]
+}
+
+# --- owner-only gate ---
+
+@test "tick-run: a world/group-readable cache dir is refused, leaves the cache untouched" {
+	export FAKE_PANES='claude'
+	mkdir -m 755 "$OG_AGENT_USAGE_DIR"
+	echo '{}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$USAGE_LOG" ]
+	[ ! -s "$TMUX_SET_LOG" ]
+	[ -e "$OG_AGENT_USAGE_DIR/claude.json" ]
+}
+
+@test "tick-run: OG_AGENT_USAGE_DIR as a symlink to a 0700 dir is refused" {
+	export FAKE_PANES='claude'
+	local real="$BATS_TEST_TMPDIR/real-cache"
+	mkdir -m 700 "$real"
+	echo '{}' >"$real/claude.json"
+	ln -s "$real" "$OG_AGENT_USAGE_DIR"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$USAGE_LOG" ]
+	[ -e "$real/claude.json" ]
+}
+
+@test "tick: a fresh stamp in a world-readable dir is not trusted" {
+	export FAKE_PANES='claude'
+	mkdir -m 755 "$OG_AGENT_USAGE_DIR"
+	touch "$(last_tick)"
+	local before
+	before=$(stat -c %Y "$(last_tick)")
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ "$status" -eq 0 ]
+	[ "$(stat -c %Y "$(last_tick)")" = "$before" ]
+	[ ! -s "$USAGE_LOG" ]
+}
+
+@test "tick-run: a fresh nonexistent override dir is created 0700 and the provider runs" {
+	export FAKE_PANES='claude'
+	rm -rf "$OG_AGENT_USAGE_DIR"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ -d "$OG_AGENT_USAGE_DIR" ]
+	[ "$(stat -c %a "$OG_AGENT_USAGE_DIR")" = 700 ]
+	[ "$(cat "$USAGE_LOG")" = "claude" ]
+}
+
 @test "tick: no agent pane leaves .last-tick unstamped" {
 	export FAKE_PANES='bash
 fish'
@@ -67,7 +153,7 @@ claude'
 
 @test "tick: a fresh stamp short-circuits before the gate forks tmux" {
 	export FAKE_PANES='claude'
-	mkdir -p "$OG_AGENT_USAGE_DIR"
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	touch "$(last_tick)"
 	# A tmux that fails the test if called at all: inside the refresh window the
 	# tick must return on the mtime check alone.
@@ -128,7 +214,7 @@ claude'
 
 @test "tick-run: a closed agent's cache is cleared, an open one's kept" {
 	export FAKE_PANES='claude'
-	mkdir -p "$OG_AGENT_USAGE_DIR"
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	# cursor-agent's cache is keyed "cursor", not its pane command.
 	for f in claude pi cursor; do echo '{}' >"$OG_AGENT_USAGE_DIR/$f.json"; done
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
@@ -139,7 +225,7 @@ claude'
 }
 
 @test "tick-run: a failed pane scan clears no cache" {
-	mkdir -p "$OG_AGENT_USAGE_DIR"
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	echo '{}' >"$OG_AGENT_USAGE_DIR/claude.json"
 	cat >"$FAKEBIN/tmux" <<-'EOF'
 		#!/bin/sh
@@ -153,7 +239,7 @@ claude'
 
 @test "tick-run: publishes the surviving caches onto @og_agent_usage" {
 	export FAKE_PANES='claude'
-	mkdir -p "$OG_AGENT_USAGE_DIR"
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	echo '{"windows":[{"label":"5h","pct":42}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
 	# codex isn't open, so tick-run clears this before publish_usage reads
 	# the cache dir — the assertion below confirms it's absent either way.
