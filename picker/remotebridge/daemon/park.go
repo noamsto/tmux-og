@@ -70,8 +70,11 @@ func (w *parkWaker) disarm() { w.armed.Store(false) }
 // again by every reflow-driven touch of the resize-nudge file — they press a
 // key instead.
 type focusEdge struct {
-	// nudged reads the resize-nudge mtime; the session hooks behind it already
-	// fire on client-session-changed, which is the focus change.
+	// nudged reads the resize-nudge mtime; the config's client-session-changed
+	// reflow (which touches @bridge_nudge on the way through) is what fires when
+	// a client switches ONTO this session — the focus change. A switch away
+	// dispatches with the *new* session as its context, so this session is not
+	// nudged then; the 30s fallback covers that.
 	nudged  func() (time.Time, bool)
 	viewing func() bool
 	last    time.Time

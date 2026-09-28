@@ -73,18 +73,31 @@ fi
 # (detail mode + column widths + row cap) depends only on the window set and the
 # client size, not on which window is active — focus only changes the active
 # tab's color, which tmux re-renders on its own without a reflow.
-# One display-message fetches the window count, the stored key and the height
-# (the fast path runs on every reflow, so keeping its forks down matters).
+# One display-message fetches the window count, the stored key, the height, and
+# the bridge nudge path (the fast path runs on every reflow, so keeping its
+# forks down matters).
 # '|'-delimited, not newline: tmux rewrites a newline in a format to "_" for any
 # client without a UTF-8 locale, exactly as it does a tab (#373) — which
 # collapsed all three fields into win_count, so prev_key was always empty (cache
 # never hit) and HEIGHT always 0 (the 4th status row could never unlock).
-IFS='|' read -r win_count prev_key HEIGHT < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}' 2>/dev/null)
+# @bridge_nudge is last so a '|' in the path stays inside that field.
+IFS='|' read -r win_count prev_key HEIGHT NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}|#{@bridge_nudge}' 2>/dev/null)
 # Height only gates the extra window row, so a size-neutral client (empty
 # client_height) falls back to the baseline cap instead of skipping the reflow
 # the way an empty width has to. Resolve it before it reaches the cache key so
 # the key can never be stamped with a trailing blank field.
 [[ $HEIGHT =~ ^[1-9][0-9]*$ ]] || HEIGHT=0
+# Remote-bridge resize nudge (#433): a mirror session carries @bridge_nudge —
+# the file its daemon's watcher stats each tick instead of forking a size
+# query — and this pass touches it on the way through, a cache hit included, so
+# the watcher sees the event even when nothing renders. It cannot live in a
+# session-scoped hook: one replaces the session's view of the global array
+# (#647) and would shadow the hooks that reach this script (#820). Set by the
+# bridge as a session option; absent everywhere else, where the touch costs
+# nothing.
+if [[ -n $NUDGE ]]; then
+	touch -- "$NUDGE" 2>/dev/null || true
+fi
 cache_key="${win_count}:${WIDTH}:${HEIGHT}"
 if ((! FORCE)) && [[ $cache_key == "$prev_key" ]]; then
 	log_enabled && log_event reflow event cache_hit wins "$win_count" width "$WIDTH" height "$HEIGHT" sess "$SESSION"

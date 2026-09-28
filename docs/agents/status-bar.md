@@ -30,3 +30,17 @@ The renderer must never emit a label wider than its column. When even the floors
 
 A row is given up only once clipping can no longer save it (#686). `total_long` charges each window its own PR segment, so a badge arriving (`" <glyph> #<n>"`, 6-7 cells, +2 with the draft marker prepended) can push a full row past `available` — and the grid it falls into costs a whole status line *and* caps every label at `MAX_REST_WIDTH`, so it shows *less* text than the row it replaced. Rung 1.5 therefore shaves the overshoot off the widest labels instead (`reflow_clip_rests`, water-filled: every rest above a common cap is cut to it, so a short label never pays) and keeps one row, falling through to the grid only when a clipped label would drop below `SINGLE_CLIP_FLOOR` (16 cells of branch/title). The clip lands on `@window_label_disp` alone, which is why the global `status-format[1]` renders that rather than the `@labels_mode` ternary over `@window_label_rest_long`/`_short` — those stay the full identity `picker/main.go`, `tmux-statusline` and the bridge's `windowlabels.go` read.
 
+## Bridge resize nudge
+
+A remote-bridge mirror session carries `@bridge_nudge`: the path its daemon's
+watcher stats each tick instead of forking a size query (`bridge-daemon.md`,
+#433). A reflow pass touches it on the way through — after the empty-width
+bail so a no-client pass still does not stamp anything (#235), but before the
+cache check, so a cache hit nudges too. That is how `client-resized` and
+`client-session-changed` (the two events already routed here) also nudge;
+`window-resized` and `client-detached` carry their own gated hooks in the conf.
+The bridge publishes the path as a session option rather than a
+session-scoped hook because a session hook array replaces the session's view
+of the global one (#647) — the shadowing that left a mirror's window bar stale
+until an unrelated event (#820).
+

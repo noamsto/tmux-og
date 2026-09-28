@@ -125,8 +125,10 @@ option.
   terminal-feature currently attached to the mirror session** — not, since
   #574, a single sample of whichever client launched the bridge.
   `#{I/f:sixel}` is interrogated continuously off `list-clients` (the
-  daemon's `watchLocalClient` watcher, nudged by `client-session-changed` and
-  `client-detached` session hooks) rather than once via a launch-time
+  daemon's `watchLocalClient` watcher, nudged through `@bridge_nudge` — touched
+  by the config's `client-session-changed` reflow and its gated
+  `client-detached` hook, never by a session-scoped hook, #820) rather than
+  once via a launch-time
   `display-message`, and every `Proxy.Filter` plus the `OG_RELAY_GRAPHICS`
   publish site load the *same* `graphics.RelaySource` cell, so the local drop
   and the published value can never disagree. Still deliberately tmux's own

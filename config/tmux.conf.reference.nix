@@ -1066,6 +1066,7 @@
     set-hook -gu client-resized[20]
     set-hook -gu after-new-session
     set-hook -gu client-session-changed
+    set-hook -gu client-detached
     set-hook -gu client-attached
     set-hook -gu client-attached[20]
     set-hook -gu window-resized
@@ -1158,6 +1159,22 @@
     # signature appears in both grid gates and both marker writes; a drifted
     # copy fails safe (it only stops skipping) and turns grid-refit.bats red.
     set-hook -g window-resized[10]      { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{&&:#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_pending}}}}' { set -wF @grid_refit_pending '#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}' ; run-shell -b "${script.tmux-grid-refit}/bin/tmux-grid-refit #{q:window_id}" } }
+
+    # Remote-bridge resize nudge (#433). A mirror session carries @bridge_nudge:
+    # the path its daemon's watcher stats each tick instead of forking a size
+    # query, touched on the events that can move the local area. The daemon
+    # publishes the path as a session option, never as a session-scoped hook — a
+    # session hook array replaces the session's view of the global one (#647),
+    # which is how client-session-changed/client-resized stopped reaching the
+    # reflow hooks inside a mirror and left its window bar stale until an
+    # unrelated event (#820). The two events that already reflow carry the touch
+    # in tmux-reflow-windows; window-resized gets no reflow on purpose (the
+    # bridge's own per-window converge resizes), so it needs this gated hook.
+    # Indexed [20] beside the refit gates; the bare `set-hook -gu window-resized`
+    # above clears it on reload, and client-detached is cleared with the other
+    # client hooks.
+    set-hook -g window-resized[20]      { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
+    set-hook -g client-detached         { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
 
     # A pane split/kill/move changes the layout without resizing the window, so
     # window-resized never fires and the lead keeps whatever cells tmux
