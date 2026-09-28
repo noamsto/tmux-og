@@ -2,6 +2,7 @@ package controlmode
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -355,4 +356,212 @@ func depthBombLayout(depth int) string {
 		body = `{"t":"h","w":1,"h":1,"x":0,"y":0,"c":[` + body + `,` + sibling + `]}`
 	}
 	return `{"V":2,"L":` + body + `}`
+}
+
+// TestTiledLayout checks that TiledLayout parses either format, prunes
+// floats the same way ParseLayout does, and rewrites every surviving leaf id
+// through the given map. wantBody is the Raw body after the checksum prefix
+// (the prefix itself is only checked for shape/round-trip, never a literal,
+// since it's a fresh checksum TiledLayout computes).
+func TestTiledLayout(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        string
+		ids       map[string]string
+		wantBody  string
+		wantPanes []string
+		wantW     int
+		wantH     int
+	}{
+		{
+			name:      "v2 two tiled panes with a float between them",
+			in:        `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[{"t":"p","w":50,"h":30,"x":0,"y":0,"I":"%0"},{"t":"p","w":18,"h":6,"x":6,"y":4,"z":0,"I":"%2"},{"t":"p","w":49,"h":30,"x":51,"y":0,"I":"%1"}]}}`,
+			ids:       map[string]string{"%0": "%10", "%1": "%11"},
+			wantBody:  "100x30,0,0{50x30,0,0,10,49x30,51,0,11}",
+			wantPanes: []string{"%10", "%11"},
+			wantW:     100, wantH: 30,
+		},
+		{
+			name:      "v1 with a trailing float section",
+			in:        "9999,100x30,0,0{50x30,0,0,0,49x30,51,0,1}<20x8,5,3,2>",
+			ids:       map[string]string{"%0": "%10", "%1": "%11"},
+			wantBody:  "100x30,0,0{50x30,0,0,10,49x30,51,0,11}",
+			wantPanes: []string{"%10", "%11"},
+			wantW:     100, wantH: 30,
+		},
+		{
+			name:      "3+ panes nested, v1",
+			in:        "abcd,100x30,0,0{50x30,0,0,0,49x30,51,0[49x15,51,0,1,49x14,51,16,2]}",
+			ids:       map[string]string{"%0": "%5", "%1": "%6", "%2": "%7"},
+			wantBody:  "100x30,0,0{50x30,0,0,5,49x30,51,0[49x15,51,0,6,49x14,51,16,7]}",
+			wantPanes: []string{"%5", "%6", "%7"},
+			wantW:     100, wantH: 30,
+		},
+		{
+			name:      "3+ panes nested, v2",
+			in:        `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[{"t":"p","w":50,"h":30,"x":0,"y":0,"I":"%0"},{"t":"v","w":49,"h":30,"x":51,"y":0,"c":[{"t":"p","w":49,"h":15,"x":51,"y":0,"I":"%1"},{"t":"p","w":49,"h":14,"x":51,"y":16,"I":"%2"}]}]}}`,
+			ids:       map[string]string{"%0": "%5", "%1": "%6", "%2": "%7"},
+			wantBody:  "100x30,0,0{50x30,0,0,5,49x30,51,0[49x15,51,0,6,49x14,51,16,7]}",
+			wantPanes: []string{"%5", "%6", "%7"},
+			wantW:     100, wantH: 30,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := func(pid string) (string, bool) {
+				v, ok := tt.ids[pid]
+				return v, ok
+			}
+			got, err := TiledLayout(tt.in, id)
+			if err != nil {
+				t.Fatalf("TiledLayout(%q) error: %v", tt.in, err)
+			}
+			if got.W != tt.wantW || got.H != tt.wantH {
+				t.Errorf("window dims = %dx%d, want %dx%d", got.W, got.H, tt.wantW, tt.wantH)
+			}
+			if got.Floats != nil {
+				t.Errorf("Floats = %+v, want nil", got.Floats)
+			}
+			var ids []string
+			for _, p := range got.Panes {
+				ids = append(ids, p.ID)
+			}
+			if len(ids) != len(tt.wantPanes) {
+				t.Fatalf("pane ids = %v, want %v", ids, tt.wantPanes)
+			}
+			for i := range ids {
+				if ids[i] != tt.wantPanes[i] {
+					t.Errorf("pane[%d] id = %s, want %s", i, ids[i], tt.wantPanes[i])
+				}
+			}
+			_, body, ok := strings.Cut(got.Raw, ",")
+			if !ok {
+				t.Fatalf("Raw = %q, missing checksum separator", got.Raw)
+			}
+			if body != tt.wantBody {
+				t.Errorf("Raw body = %q, want %q", body, tt.wantBody)
+			}
+
+			// Checksum validity: the rebuilt Raw must itself parse back
+			// through ParseLayout and round-trip byte-identically.
+			reparsed, err := ParseLayout(got.Raw)
+			if err != nil {
+				t.Fatalf("ParseLayout(%q) error: %v", got.Raw, err)
+			}
+			if reparsed.Raw != got.Raw {
+				t.Errorf("round-trip Raw = %q, want %q", reparsed.Raw, got.Raw)
+			}
+			var reIDs []string
+			for _, p := range reparsed.Panes {
+				reIDs = append(reIDs, p.ID)
+			}
+			if len(reIDs) != len(ids) {
+				t.Fatalf("round-trip pane ids = %v, want %v", reIDs, ids)
+			}
+			for i := range reIDs {
+				if reIDs[i] != ids[i] {
+					t.Errorf("round-trip pane[%d] id = %s, want %s", i, reIDs[i], ids[i])
+				}
+			}
+		})
+	}
+}
+
+// TestTiledLayoutIdentityMatchesParseLayout pins that, mapped through the
+// identity function, TiledLayout's Raw is byte-identical to ParseLayout's —
+// both rebuild the same pruned, tiled-only tree the same way.
+func TestTiledLayoutIdentityMatchesParseLayout(t *testing.T) {
+	identity := func(id string) (string, bool) { return id, true }
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{
+			name: "two tiled panes with a float between them",
+			in:   `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[{"t":"p","w":50,"h":30,"x":0,"y":0,"I":"%0"},{"t":"p","w":18,"h":6,"x":6,"y":4,"z":0,"I":"%2"},{"t":"p","w":49,"h":30,"x":51,"y":0,"I":"%1"}]}}`,
+		},
+		{
+			name: "3+ panes nested",
+			in:   `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[{"t":"p","w":50,"h":30,"x":0,"y":0,"I":"%0"},{"t":"v","w":49,"h":30,"x":51,"y":0,"c":[{"t":"p","w":49,"h":15,"x":51,"y":0,"I":"%1"},{"t":"p","w":49,"h":14,"x":51,"y":16,"I":"%2"}]}]}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tiled, err := TiledLayout(tt.in, identity)
+			if err != nil {
+				t.Fatalf("TiledLayout(%q) error: %v", tt.in, err)
+			}
+			parsed, err := ParseLayout(tt.in)
+			if err != nil {
+				t.Fatalf("ParseLayout(%q) error: %v", tt.in, err)
+			}
+			if tiled.Raw != parsed.Raw {
+				t.Errorf("TiledLayout Raw = %q, want ParseLayout Raw %q", tiled.Raw, parsed.Raw)
+			}
+		})
+	}
+}
+
+// TestTiledLayoutHostileChecksumPrefix pins that Raw is always rebuilt from
+// the parsed tree, never s echoed: a v1 checksum prefix carrying shell
+// metacharacters must not survive into the result.
+func TestTiledLayoutHostileChecksumPrefix(t *testing.T) {
+	in := "x'; kill-server,100x30,0,0,1"
+	identity := func(id string) (string, bool) { return id, true }
+	got, err := TiledLayout(in, identity)
+	if err != nil {
+		t.Fatalf("TiledLayout(%q) error: %v", in, err)
+	}
+	if strings.Contains(got.Raw, "kill") {
+		t.Errorf("Raw = %q, leaked raw input text", got.Raw)
+	}
+	prefix, body, ok := strings.Cut(got.Raw, ",")
+	if !ok {
+		t.Fatalf("Raw = %q, missing checksum separator", got.Raw)
+	}
+	if len(prefix) != 4 {
+		t.Errorf("checksum prefix = %q, want 4 hex digits", prefix)
+	}
+	for _, r := range prefix {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Errorf("checksum prefix = %q, want hex digits", prefix)
+		}
+	}
+	if body != "100x30,0,0,1" {
+		t.Errorf("body = %q, want %q", body, "100x30,0,0,1")
+	}
+}
+
+// TestTiledLayoutErrors checks the id-mapping and parse-grammar failure
+// modes: an id the map doesn't know, a mapped value that isn't "%"+digits,
+// malformed input in either format, and a layout whose only pane leaf is a
+// float.
+func TestTiledLayoutErrors(t *testing.T) {
+	onlyFloats := `{"V":2,"L":{"t":"h","w":10,"h":10,"x":0,"y":0,"c":[` +
+		`{"t":"p","w":5,"h":5,"x":0,"y":0,"I":"%0","z":0},` +
+		`{"t":"p","w":5,"h":5,"x":5,"y":0,"I":"%1","z":1}]}}`
+	tests := []struct {
+		name string
+		in   string
+		ids  map[string]string
+	}{
+		{"unmapped tiled leaf", "abcd,100x30,0,0,1", nil},
+		{"mapped value missing %: bare digits", "abcd,100x30,0,0,1", map[string]string{"%1": "5"}},
+		{"mapped value not %+digits: %x", "abcd,100x30,0,0,1", map[string]string{"%1": "%x"}},
+		{"mapped value empty", "abcd,100x30,0,0,1", map[string]string{"%1": ""}},
+		{"malformed v1, no checksum separator", "garbage", nil},
+		{"malformed v2, missing L fields", `{"V":2}`, nil},
+		{"v2 layout with only float leaves", onlyFloats, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := func(pid string) (string, bool) {
+				v, ok := tt.ids[pid]
+				return v, ok
+			}
+			if _, err := TiledLayout(tt.in, id); err == nil {
+				t.Errorf("TiledLayout(%q) expected error, got nil", tt.in)
+			}
+		})
+	}
 }

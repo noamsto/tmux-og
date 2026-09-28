@@ -1269,10 +1269,11 @@ func runMirror(cfg Config) error {
 					return true
 				}
 			}
-			for _, remoteID := range layouts {
+			for remoteID, sent := range layouts {
 				// A layout intent for a window reconcileWindows just closed has
 				// nothing to reconcile.
 				if mw, ok := reg.byRemoteID(remoteID); ok {
+					mw.noteLocalLayout(sent)
 					if reconcileLayout(cfg, mw, send, router, waitHellosFn, cst, cv, rt) {
 						retireMirror(cfg, send, router, waitHellosFn, cst, reg, cv, rt, remoteID)
 					}

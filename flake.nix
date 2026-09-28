@@ -2374,7 +2374,9 @@
           # local server running the emitted conf, a real attached client fed
           # SGR mouse input, and the conf's own ctl. A drag bind, like any
           # mouse binding, fires only for an attached client, and whether the
-          # REMOTE float follows is only visible with a live daemon. Enrich/
+          # REMOTE float follows is only visible with a live daemon. The same
+          # harness also drives a divider drag between two TILED mirror panes
+          # (#823), routed through the daemon's `tile-layout` verb. Enrich/
           # agent-usage off for the contention reason rename-bind-integration-
           # tests gives.
           float-drag-integration-tests = let
@@ -2395,6 +2397,7 @@
               TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
               DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
               RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
             } ''

@@ -42,6 +42,21 @@ func wantFloatResize(pane string, w, h int) string {
 		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h)))
 }
 
+// wantTileLayout builds tile-layout's exact if-shell command from the plain
+// order/w/h/raw a tiledArg result carries, rather than by calling
+// tileLayoutCommand, so the test pins the wire shape independently of it.
+func wantTileLayout(pane string, order []string, w, h int, raw string) string {
+	var ids strings.Builder
+	for _, id := range order {
+		ids.WriteString(id)
+		ids.WriteByte(' ')
+	}
+	cond := fmt.Sprintf("#{&&:#{==:#{P/i:#{?pane_floating_flag,,#{pane_id} }},%s},#{&&:#{==:#{window_width}x#{window_height},%dx%d},#{==:#{window_zoomed_flag},0}}}",
+		ids.String(), w, h)
+	inner := fmt.Sprintf("select-layout -t %s %s", pane, tmuxQuote(raw))
+	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote(cond), tmuxQuote(inner))
+}
+
 // wantLocalFloatResize is floatResizeArgv's argv for an outer w x h box.
 func wantLocalFloatResize(pane string, w, h int) []string {
 	return []string{"if-shell", "-t", pane, "-F", "#{pane_floating_flag}", wantFloatResize(pane, w, h)}
@@ -338,6 +353,10 @@ func TestParseCtlRejects(t *testing.T) {
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
+		{"tile-layout wants its one layout argument", []string{wire.CtlProtocolVersion, "tile-layout", "%3"}, "wants 1 argument"},
+		{"tile-layout rejects a second argument", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "a", "b"}, "wants 1 argument"},
+		{"tile-layout rejects unparsable text", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "garbage"}, "layout:"},
+		{"tile-layout rejects a v1 leaf with an empty id", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "csum,100x30,0,0,"}, "no valid remote id"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -437,6 +456,157 @@ func TestParseCtlFloatGeomFlags(t *testing.T) {
 	}
 }
 
+// A v1 tiled layout string, checksum and all, is re-parsed and rebuilt from
+// scratch: the fresh checksum below was hand-verified against layoutChecksum
+// (tile-layout must never trust the wire body's own checksum, hostile or
+// stale as it may be).
+const tileLayoutWantRaw = "eb98,100x30,0,0{50x30,0,0,3,49x30,51,0,4}"
+
+func TestParseCtlTileLayout(t *testing.T) {
+	c := newCtlStateWith("@1", "%3", "%4")
+	// A wrong checksum prefix on the wire: parseCtl must recompute it rather
+	// than trust or forward the one sent.
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%3", "0000,100x30,0,0{50x30,0,0,3,49x30,51,0,4}"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl tile-layout: %v", err)
+	}
+	want := []string{wantTileLayout("%3", []string{"%3", "%4"}, 100, 30, tileLayoutWantRaw)}
+	if !reflect.DeepEqual(req.cmds, want) {
+		t.Errorf("cmds = %q, want %q", req.cmds, want)
+	}
+	if req.wantLayout != "@1" {
+		t.Errorf("wantLayout = %q, want @1", req.wantLayout)
+	}
+	if req.sentLayout != tileLayoutWantRaw {
+		t.Errorf("sentLayout = %q, want %q", req.sentLayout, tileLayoutWantRaw)
+	}
+	if req.invalidate != "" {
+		t.Errorf("invalidate = %q, want none", req.invalidate)
+	}
+}
+
+// A v2 layout carrying a float leaf must prune to the same tiled command as
+// the v1 shape above: the daemon rebuilds Raw from the parsed tree, so the
+// wire format the ctl client happened to send never shapes the result.
+func TestParseCtlTileLayoutV2PrunesFloats(t *testing.T) {
+	c := newCtlStateWith("@1", "%3", "%4")
+	v2 := `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[` +
+		`{"t":"p","w":50,"h":30,"x":0,"y":0,"I":"%3"},` +
+		`{"t":"p","w":49,"h":30,"x":51,"y":0,"I":"%4"},` +
+		`{"t":"p","w":10,"h":10,"x":5,"y":5,"I":"%5","z":1}]}}`
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%3", v2}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl tile-layout v2: %v", err)
+	}
+	want := []string{wantTileLayout("%3", []string{"%3", "%4"}, 100, 30, tileLayoutWantRaw)}
+	if !reflect.DeepEqual(req.cmds, want) {
+		t.Errorf("cmds = %q, want %q", req.cmds, want)
+	}
+}
+
+// A hostile checksum prefix is discarded along with the rest of the raw
+// text: Raw is always rebuilt from the parsed tree, never echoed.
+func TestParseCtlTileLayoutRejectsHostileChecksum(t *testing.T) {
+	c := newCtlStateWith("@1", "%3", "%4")
+	hostile := "x'; kill-server,100x30,0,0{50x30,0,0,3,49x30,51,0,4}"
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%3", hostile}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl tile-layout: %v", err)
+	}
+	for _, cmd := range req.cmds {
+		if strings.Contains(cmd, "kill-server") {
+			t.Fatalf("cmds = %q, hostile text reached the command", req.cmds)
+		}
+	}
+}
+
+// TestTileLayoutIntentCoalescing pins wantLayout's per-window sentLayout
+// bookkeeping: a drag's sentLayout wins over a plain layout verb coalescing
+// into the same window regardless of order, a later drag replaces an earlier
+// one, a plain layout verb alone leaves no sentLayout, and forgetWindow drops
+// a pending drag.
+func TestTileLayoutIntentCoalescing(t *testing.T) {
+	const raw1 = "csum,50x30,0,0,2"
+	const raw2 = "csum,50x30,0,0,3"
+
+	tileReq := func(c *ctlState, raw string) ctlRequest {
+		req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%2", raw}, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl tile-layout: %v", err)
+		}
+		return req
+	}
+	layoutReq := func(c *ctlState) ctlRequest {
+		req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "layout", "%2", "tiled"}, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl layout: %v", err)
+		}
+		return req
+	}
+	send := func(...string) bool { return true }
+
+	t.Run("tile-layout then layout coalesces to the drag's sentLayout", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		req := tileReq(c, raw1)
+		S := req.sentLayout
+		c.submit(req, send)
+		c.submit(layoutReq(c), send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": S}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("layout then tile-layout coalesces to the drag's sentLayout", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(layoutReq(c), send)
+		req := tileReq(c, raw1)
+		S := req.sentLayout
+		c.submit(req, send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": S}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("two drags: the later replaces the earlier", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(tileReq(c, raw1), send)
+		req2 := tileReq(c, raw2)
+		S2 := req2.sentLayout
+		c.submit(req2, send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": S2}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("layout alone carries no sentLayout", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(layoutReq(c), send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": ""}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("forgetWindow drops a pending drag", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(tileReq(c, raw1), send)
+		c.forgetWindow("@1")
+
+		if _, layouts, _ := c.takeIntents(); len(layouts) != 0 {
+			t.Errorf("layouts = %v, want none after forgetWindow", layouts)
+		}
+	})
+}
+
 func TestParseCtlPingProbesCompatibilityBeforePaneLookup(t *testing.T) {
 	c := newCtlState()
 	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "ping", "placeholder"}, "rem")
@@ -498,7 +668,7 @@ func TestSubmitRegistersIntentBeforeSending(t *testing.T) {
 	ok := c.submit(req, func(...string) bool {
 		// Read the field directly: takeIntents would deadlock on the held mutex,
 		// which is itself the property under test.
-		sawIntent = c.wantLayout["@1"]
+		_, sawIntent = c.wantLayout["@1"]
 		return true
 	})
 	if !ok {

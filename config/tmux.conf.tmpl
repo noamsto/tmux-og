@@ -263,10 +263,10 @@ set -g detach-on-destroy off
 # keeps any other server version on its own stock menus (#407).
 {{.MenuBinds}}
 
-# Mirror float border drag reaches the remote (#797): the drag start stashes
-# the float's pane id and switches into a one-shot table that catches the
-# drag end and routes it to ctl float-drag, since tmux's own float drag fires
-# no hook while it runs.
+# A mirror pane's border drag reaches the remote, a float's (#797) or a
+# tiled divider's (#823): the drag start stashes the pane id and switches
+# into a one-shot table that catches the drag end and routes it to ctl
+# drag, since tmux's own drag fires no hook while it runs.
 {{.DragBinds}}
 
 # Vim-tmux navigation (respects zoom)

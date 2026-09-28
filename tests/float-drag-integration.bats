@@ -12,12 +12,18 @@ bats_require_minimum_version 1.5.0
 # daemon's local commands and the conf's own ctl run exactly as they would for
 # a user. The local server's status line sits on top, so every SGR row carries
 # its height.
+#
+# The same harness also covers the TILED divider case (#823): dragging the
+# border between two tiled mirror panes must resize the REMOTE panes, routed
+# through ctl `drag` -> the daemon's `tile-layout` verb, guarded so a stale or
+# reordered layout is refused and the mirror snaps back to the remote's truth.
 
 setup() {
 	TMUX_BIN="${TMUX_BIN:?set TMUX_BIN to the built wrapper}"
 	TMUX_RAW="${TMUX_RAW:?set TMUX_RAW to the raw pinned binary}"
 	DAEMON="${DAEMON:?set DAEMON to the built og-remote-bridge-daemon}"
 	RENDERER="${RENDERER:?set RENDERER to the built og-remote-bridge-renderer}"
+	CTL="${CTL:?set CTL to the built og-remote-bridge-ctl}"
 
 	# A short fixed dir: tmux -L resolves under $TMUX_TMPDIR and the unix
 	# socket path limit is 108 chars.
@@ -99,8 +105,68 @@ mirror_up() {
 	return 1
 }
 
+# mirror_tiled_up mirrors a remote window holding just a -h tiled split (no
+# float), then attaches a real client to the mirror. Any args are eval'd, in
+# order, after the base split — each may reference $rl/$rt (the remote left/
+# right pane ids, local to this function) to shape the layout further before
+# the daemon starts. Sets RL, RT (remote left/right tiled panes) and LL, LT
+# (their local mirrors).
+mirror_tiled_up() {
+	local rl rt
+	rl="$($SRC new-session -d -s rem -x 100 -y 30 -P -F '#{pane_id}')"
+	rt="$($SRC split-window -d -h -t rem -P -F '#{pane_id}' "sleep 300")"
+	local shape
+	for shape in "$@"; do
+		eval "$shape"
+	done
+	RL="$rl" RT="$rt"
+	$DST new-session -d -s host-sess -x 100 -y 30
+	# The splash popup would take the first click.
+	$DST set-option -g @splash_shown 1
+	"$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$SOCK" >"$BATS_TEST_TMPDIR/daemon.log" 2>&1 &
+	DAEMON_PID=$!
+	$OBS new-session -d -s obs -x 100 -y 32 "env -u TMUX TERM=xterm-256color $TMUX_BIN -L fddst attach -t host-sess"
+
+	local deadline=$((SECONDS + BUDGET_SECS))
+	LL="" LT=""
+	while ((SECONDS < deadline)); do
+		LL="$(mirror_of "$RL")"
+		LT="$(mirror_of "$RT")"
+		if [[ -n $LL && -n $LT ]] && [[ "$(tiled_geoms "$DST")" == "$(tiled_geoms "$SRC")" ]] &&
+			[[ "$($DST list-clients -t host-sess 2>/dev/null | wc -l)" -ge 1 ]]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'tiled mirror never agreed: LL=%s LT=%s\nlocal:\n%s\nremote:\n%s\n--- daemon log ---\n' \
+		"$LL" "$LT" "$(tiled_geoms "$DST" 2>&1)" "$(tiled_geoms "$SRC")" >&3
+	tail -30 "$BATS_TEST_TMPDIR/daemon.log" >&3
+	return 1
+}
+
 mirror_of() {
 	$DST list-panes -a -F '#{pane_id}|#{@bridge_pane}' 2>/dev/null | awk -F'|' -v r="$1" '$2 == r {print $1}'
+}
+
+# other_tiled_pane returns the non-floating local pane other than $1 in its
+# window (mirror_up doesn't stash the local left tiled pane's id, only $LT).
+other_tiled_pane() {
+	$DST list-panes -a -F '#{pane_floating_flag}|#{pane_id}' 2>/dev/null | awk -F'|' -v x="$1" '$1 == 0 && $2 != x {print $2}'
+}
+
+# leftmost_tiled_pane returns the tiled pane with the smallest pane_left in
+# the mirrored window on the given server ($SRC or $DST).
+leftmost_tiled_pane() {
+	local srv="$1" winid
+	if [[ $srv == "$SRC" ]]; then
+		winid=rem
+	else
+		winid="$($DST display-message -p -t "$LT" '#{window_id}')"
+	fi
+	$srv list-panes -t "$winid" -F '#{pane_floating_flag}|#{pane_left}|#{pane_id}' |
+		awk -F'|' '$1 == 0' | sort -t'|' -k2,2n | head -1 | cut -d'|' -f3
 }
 
 # geom prints a pane's inner box, the unit both servers agree on.
@@ -108,9 +174,28 @@ geom() {
 	$1 display-message -p -t "$2" '#{pane_left},#{pane_top} #{pane_width}x#{pane_height}'
 }
 
+# tiled_geoms prints the tiled (non-floating) panes of the mirrored window as
+# sorted "left,top WxH" lines: the remote's `rem` window on SRC, the mirror
+# window on DST (found from a local tiled pane's #{window_id}).
+tiled_geoms() {
+	local srv="$1" winid
+	if [[ $srv == "$SRC" ]]; then
+		winid=rem
+	else
+		winid="$($DST display-message -p -t "$LT" '#{window_id}')"
+	fi
+	$srv list-panes -t "$winid" -F '#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}' |
+		awk -F'|' '$1 == 0 {print $2","$3" "$4"x"$5}' | sort
+}
+
 # field reads one format of the local float.
 field() {
 	$DST display-message -p -t "$LF" "#{$1}"
+}
+
+# pfield reads one format of a given local pane.
+pfield() {
+	$DST display-message -p -t "$1" "#{$2}"
 }
 
 # sgr sends one SGR mouse report, button code $1 at window cell ($2,$3), $4 = M
@@ -118,7 +203,7 @@ field() {
 # report is 1-based client cells, and the status line sits above the window.
 sgr() {
 	local top
-	top="$($DST display-message -p -t "$LF" '#{?#{==:#{status-position},top},#{status},0}')"
+	top="$($DST display-message -p -t host-sess '#{?#{==:#{status-position},top},#{status},0}')"
 	case "$top" in on) top=1 ;; off) top=0 ;; esac
 	$OBS send-keys -t obs -l $'\e[<'"$1;$(($2 + 1));$(($3 + 1 + top))$4"
 	sleep 0.1
@@ -140,6 +225,25 @@ wait_agree() {
 		sleep 0.1
 	done
 	printf 'no agreement within 2s: before=%s local=%s remote=%s\n--- daemon log ---\n' "$before" "$l" "$r" >&3
+	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+	return 1
+}
+
+# wait_tiled_agree is wait_agree's counterpart for the whole tiled layout: it
+# waits up to 2s for every tiled pane's geometry to agree between the mirror
+# and the remote.
+wait_tiled_agree() {
+	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + 2))
+	while :; do
+		l="$(tiled_geoms "$DST")"
+		r="$(tiled_geoms "$SRC")"
+		if [[ $l == "$r" ]] && { [[ -n $allow_same ]] || [[ $l != "$before" ]]; }; then
+			return 0
+		fi
+		((SECONDS < deadline)) || break
+		sleep 0.1
+	done
+	printf 'no tiled agreement within 2s: before=%s\nlocal:\n%s\nremote:\n%s\n--- daemon log ---\n' "$before" "$l" "$r" >&3
 	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
 	return 1
 }
@@ -343,4 +447,119 @@ rel() {
 	before="$(geom "$DST" "$LF")"
 	$SRC resize-pane -t "$RF" -y 9
 	wait_agree "$before"
+}
+
+# A mouse drag on the divider between two TILED mirror panes reaches the
+# REMOTE panes (#823): dragging it locally resized only the local panes while
+# the remote kept its old sizes. Routed through ctl `drag` -> the daemon's
+# `tile-layout` verb, guarded by a pane-order/size/zoom match so a stale or
+# reordered request is refused and the mirror reconciles back to the remote.
+
+@test "a divider drag between two tiled mirror panes resizes the REMOTE panes" {
+	mirror_tiled_up
+	local before rw0 x y
+	before="$(tiled_geoms "$DST")"
+	rw0="$($SRC display-message -p -t "$RL" '#{pane_width}')"
+	x=$(($(pfield "$LL" pane_left) + $(pfield "$LL" pane_width)))
+	y=$(($(pfield "$LL" pane_top) + 3))
+	sgr 0 "$x" "$y" M
+	sgr 32 $((x - 10)) "$y" M
+	sgr 0 $((x - 10)) "$y" m
+	wait_tiled_agree "$before"
+	[[ "$($SRC display-message -p -t "$RL" '#{pane_width}')" == "$((rw0 - 10))" ]]
+}
+
+@test "a tiled divider drag with a mirror float open leaves the float alone" {
+	mirror_up
+	local ll before_t before_f x y
+	ll="$(other_tiled_pane "$LT")"
+	before_t="$(tiled_geoms "$DST")"
+	before_f="$(geom "$DST" "$LF")"
+	x=$(($(pfield "$ll" pane_left) + $(pfield "$ll" pane_width)))
+	# Below the default float's row range (Y 5, height 12), so the press lands
+	# on the divider, not the float.
+	y=$(($(pfield "$ll" pane_top) + $(pfield "$ll" pane_height) - 3))
+	sgr 0 "$x" "$y" M
+	sgr 32 $((x - 10)) "$y" M
+	sgr 0 $((x - 10)) "$y" m
+	wait_tiled_agree "$before_t"
+	[[ "$(geom "$DST" "$LF")" == "$before_f" ]]
+	[[ "$(geom "$SRC" "$RF")" == "$before_f" ]]
+}
+
+@test "a divider drag in a 3-pane nested layout reaches the remote" {
+	# shellcheck disable=SC2016 # eval'd inside mirror_tiled_up, where $SRC/$rt are in scope
+	mirror_tiled_up '$SRC split-window -d -v -t "$rt" "sleep 300"'
+	local before x y
+	before="$(tiled_geoms "$DST")"
+	x=$(($(pfield "$LT" pane_left) + 5))
+	y=$(($(pfield "$LT" pane_top) + $(pfield "$LT" pane_height)))
+	sgr 0 "$x" "$y" M
+	sgr 32 "$x" $((y + 3)) M
+	sgr 0 "$x" $((y + 3)) m
+	wait_tiled_agree "$before"
+}
+
+@test "a divider drag on a rotated remote reaches the remote" {
+	# shellcheck disable=SC2016 # eval'd inside mirror_tiled_up, where $SRC/$rt are in scope
+	mirror_tiled_up \
+		'$SRC split-window -d -h -t "$rt" "sleep 300"' \
+		'$SRC select-layout -t rem even-horizontal' \
+		'$SRC rotate-window -t rem'
+	local before ll x y
+	before="$(tiled_geoms "$DST")"
+	ll="$(leftmost_tiled_pane "$DST")"
+	x=$(($(pfield "$ll" pane_left) + $(pfield "$ll" pane_width)))
+	y=$(($(pfield "$ll" pane_top) + 3))
+	sgr 0 "$x" "$y" M
+	sgr 32 $((x - 5)) "$y" M
+	sgr 0 $((x - 5)) "$y" m
+	wait_tiled_agree "$before"
+}
+
+@test "a divider drag in a local non-mirror window still resizes it locally" {
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$DST set-option -g @splash_shown 1
+	$DST split-window -d -h -t host-sess "sleep 300"
+	$OBS new-session -d -s obs -x 100 -y 32 "env -u TMUX TERM=xterm-256color $TMUX_BIN -L fddst attach -t host-sess"
+	local deadline=$((SECONDS + BUDGET_SECS))
+	while ((SECONDS < deadline)); do
+		[[ "$($DST list-clients -t host-sess 2>/dev/null | wc -l)" -ge 1 ]] && break
+		sleep 0.1
+	done
+	local ll x y w0
+	ll="$($DST list-panes -t host-sess -F '#{pane_left}|#{pane_id}' | awk -F'|' '$1 == 0 {print $2}')"
+	w0="$(pfield "$ll" pane_width)"
+	x=$(($(pfield "$ll" pane_left) + w0))
+	y=$(($(pfield "$ll" pane_top) + 3))
+	sgr 0 "$x" "$y" M
+	sgr 32 $((x - 10)) "$y" M
+	sgr 0 $((x - 10)) "$y" m
+	local wdeadline=$((SECONDS + 2))
+	while ((SECONDS < wdeadline)); do
+		[[ "$(pfield "$ll" pane_width)" == "$((w0 - 10))" ]] && break
+		sleep 0.1
+	done
+	[[ "$(pfield "$ll" pane_width)" == "$((w0 - 10))" ]]
+}
+
+@test "a tile-layout whose pane order does not match the remote is refused, and the mirror snaps back" {
+	mirror_tiled_up
+	local remote_before skewed_local layout skewed
+	remote_before="$(tiled_geoms "$SRC")"
+	$DST resize-pane -t "$LL" -L 10
+	skewed_local="$(tiled_geoms "$DST")"
+	layout="$($DST display-message -p -t "$LL" '#{window_layout}')"
+	# Swap in the remote ids REVERSED (local left -> remote right, local right
+	# -> remote left) so the daemon's pane-order guard refuses the request.
+	# Placeholders first: a local id and a remote id can collide numerically
+	# and corrupt a direct substitution.
+	skewed="$layout"
+	skewed="${skewed//$LL/@@A@@}"
+	skewed="${skewed//$LT/@@B@@}"
+	skewed="${skewed//@@A@@/$RT}"
+	skewed="${skewed//@@B@@/$RL}"
+	run "$CTL" --sock "$SOCK" tile-layout "$RL" "$skewed"
+	wait_tiled_agree "$skewed_local"
+	[[ "$(tiled_geoms "$SRC")" == "$remote_before" ]]
 }

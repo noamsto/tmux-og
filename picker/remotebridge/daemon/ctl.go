@@ -51,7 +51,11 @@ type ctlState struct {
 
 	// Intents coalesce, so a burst of gestures in one window is one reconcile.
 	wantWindows bool
-	wantLayout  map[string]bool
+	// wantLayout maps a remote window id with a pending layout reconcile to
+	// the tiled layout a tile-layout drag already sent it, or "" for any
+	// other layout-touching verb. See ctlRequest.sentLayout and submit for
+	// how a value here is chosen.
+	wantLayout map[string]string
 	// wantReseed names remote WINDOWS whose mirror needs a fresh screen —
 	// respawn-pane/-window clear the remote screen, and control mode never
 	// carries the clear, so the mirror keeps stale bytes until the pane is
@@ -65,7 +69,7 @@ func newCtlState() *ctlState {
 	return &ctlState{
 		paneToWin:  map[string]string{},
 		focus:      map[string]*focusState{},
-		wantLayout: map[string]bool{},
+		wantLayout: map[string]string{},
 		wantReseed: map[string]bool{},
 	}
 }
@@ -104,16 +108,16 @@ func (c *ctlState) forgetWindow(remoteWin string) {
 	delete(c.wantReseed, remoteWin)
 }
 
-// takeIntents removes and returns the pending reconcile work.
-func (c *ctlState) takeIntents() (windows bool, layouts []string, reseeds []string) {
+// takeIntents removes and returns the pending reconcile work. layouts maps
+// each window with a pending layout reconcile to the sentLayout wantLayout
+// held for it — see ctlState.wantLayout.
+func (c *ctlState) takeIntents() (windows bool, layouts map[string]string, reseeds []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	windows = c.wantWindows
 	c.wantWindows = false
-	for w := range c.wantLayout {
-		layouts = append(layouts, w)
-		delete(c.wantLayout, w)
-	}
+	layouts = c.wantLayout
+	c.wantLayout = map[string]string{}
 	for w := range c.wantReseed {
 		reseeds = append(reseeds, w)
 		delete(c.wantReseed, w)
@@ -128,6 +132,9 @@ type ctlRequest struct {
 	local       [][]string // local tmux argv lists, run in order before cmds
 	wantWindows bool
 	wantLayout  string // remote window id, or "" for none
+	// sentLayout is the tiled layout the local window already shows after a
+	// drag, "" otherwise; see noteLocalLayout.
+	sentLayout string
 	// wantReseed names the remote window whose mirror needs a fresh screen
 	// after this verb, or "" for none. See ctlState.wantReseed for why it is
 	// window-scoped rather than a pane id.
@@ -177,7 +184,11 @@ type verb struct {
 	// (#593). A field here for needsView's reason: the table stays the only
 	// thing that knows what a verb means.
 	probe bool
-	build func(pane, win, sess string, args []string) ([]string, error)
+	// localLayout marks a verb whose one argument is a tiled layout the local
+	// window already shows, so the reconcile it schedules must not trust a
+	// dedup key recorded before it (mirrorWindow.noteLocalLayout).
+	localLayout bool
+	build       func(pane, win, sess string, args []string) ([]string, error)
 	// buildLocal, when set, returns local tmux argv lists the handler runs
 	// before build's remote commands. Called only once build has accepted
 	// the same args.
@@ -281,6 +292,45 @@ func floatGeomCommand(pane string, c controlmode.PaneCell) string {
 	inner := fmt.Sprintf("if-shell -t %s -F %s %s %s",
 		pane, tmuxQuote("#{==:#{pane-border-lines},none}"), tmuxQuote(none), tmuxQuote(bordered))
 	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
+}
+
+// tiledArg parses a tile-layout argument: a tiled layout string already
+// carrying remote pane ids (the ctl client maps its local window's layout to
+// remote ids before sending). TiledLayout's identity map validates each leaf
+// is "%"+digits and re-serializes Raw from the parsed tree, so neither a
+// hostile checksum prefix nor any other raw wire text can survive into it.
+func tiledArg(s string) (controlmode.Layout, error) {
+	return controlmode.TiledLayout(s, func(id string) (string, bool) { return id, true })
+}
+
+// tileLayoutCommand asks the remote to reshape pane's window to L, guarded so
+// the command is a no-op unless the remote's tiled panes are still in the
+// order L was built from, the window is still L's size, and it isn't zoomed.
+//
+// A v1 select-layout assigns tiled panes to cells positionally in the
+// window's pane-LIST order, skipping floats (tmux layout_assign_fallback_tiled),
+// so the guard must walk that same order: #{P/i:} does (SORT_INDEX), while a
+// bare #{P:} sorts by pane id (SORT_CREATION) instead — measured after
+// rotate-window on a three-pane window: pane list %2 %1 %3, #{P/i:} %2 %1 %3,
+// #{P:} %1 %2 %3. The size guard exists because select-layout resizes the
+// window to the string's own size, and the mirror window is fitted to the
+// remote's rather than the other way round; the zoom guard because
+// select-layout unzooms. A remote that fails any of these is left alone.
+//
+// Verified by hand on the pinned tmux: this exact quoting shape applies a
+// matching layout and is a no-op against a swapped pane order, floats
+// untouched either way.
+func tileLayoutCommand(pane string, L controlmode.Layout) string {
+	var order strings.Builder
+	for _, id := range RemotePaneOrder(L) {
+		order.WriteString(id)
+		order.WriteByte(' ')
+	}
+	cond := fmt.Sprintf(
+		"#{&&:#{==:#{P/i:#{?pane_floating_flag,,#{pane_id} }},%s},#{&&:#{==:#{window_width}x#{window_height},%dx%d},#{==:#{window_zoomed_flag},0}}}",
+		order.String(), L.W, L.H)
+	inner := fmt.Sprintf("select-layout -t %s %s", pane, tmuxQuote(L.Raw))
+	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote(cond), tmuxQuote(inner))
 }
 
 var localPaneRe = regexp.MustCompile(`^%[0-9]+$`)
@@ -559,6 +609,18 @@ var verbs = map[string]verb{
 			floatResizeArgv(g.localPane, inner, g.winW, g.winH),
 			floatMoveArgv(g.localPane, inner, g.winW, g.winH),
 		}, nil
+	}},
+	// A tiled mirror border drag (#823), routed from ctl drag with the local
+	// window's tiled layout mapped to remote ids; the string is re-parsed and
+	// rebuilt so raw text is never forwarded; floats untouched (v1 string,
+	// tmux preserves floating cells for version 1); not `moves` — select-layout
+	// keeps the active pane.
+	"tile-layout": {args: 1, layout: true, localLayout: true, build: func(pane, _, _ string, a []string) ([]string, error) {
+		L, err := tiledArg(a[0])
+		if err != nil {
+			return nil, err
+		}
+		return []string{tileLayoutCommand(pane, L)}, nil
 	}},
 	// A mirror's pane content is bytes the remote's programs coloured from the
 	// remote's own theme state, so a local toggle cannot reach it: this asks the
@@ -840,6 +902,13 @@ func (c *ctlState) parseCtl(argv []string, sess string) (ctlRequest, error) {
 	if v.probe {
 		req.probePane = pane
 	}
+	if v.localLayout {
+		L, err := tiledArg(args[0])
+		if err != nil {
+			return ctlRequest{}, err
+		}
+		req.sentLayout = L.Raw
+	}
 	if v.layout {
 		req.wantLayout = win
 	}
@@ -876,7 +945,14 @@ func (c *ctlState) submit(req ctlRequest, send func(...string) bool) bool {
 		c.wantWindows = true
 	}
 	if req.wantLayout != "" {
-		c.wantLayout[req.wantLayout] = true
+		// A drag's sentLayout wins over a plain layout verb coalescing into the
+		// same window either way round — the local window shows the last one —
+		// while "" from a plain verb must never overwrite a pending drag.
+		if req.sentLayout != "" {
+			c.wantLayout[req.wantLayout] = req.sentLayout
+		} else if _, ok := c.wantLayout[req.wantLayout]; !ok {
+			c.wantLayout[req.wantLayout] = ""
+		}
 	}
 	if req.wantReseed != "" {
 		c.wantReseed[req.wantReseed] = true

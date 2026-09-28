@@ -73,7 +73,7 @@ func TestParseListKeysRows(t *testing.T) {
 		// picks from a menu; only the raw ctrl+r dump (listKeysRaw) still
 		// shows them verbatim.
 		out := strings.Join([]string{
-			"og-bridge-drag|`||run-shell \"og-remote-bridge-ctl float-drag\"|MouseDragEnd1Pane",
+			"og-bridge-drag|`||run-shell \"og-remote-bridge-ctl drag\"|MouseDragEnd1Pane",
 			`prefix|C-a |1|Pick session|s`,
 		}, "\n")
 		rows := parseListKeysRows(out)

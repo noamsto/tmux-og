@@ -5,7 +5,7 @@
 //
 // Usage: ctl --sock <path> <verb> <remote-pane-id> [args...]
 //
-//	ctl --sock <path> float-drag <local-pane-id>
+//	ctl --sock <path> drag <local-pane-id>
 package main
 
 import (
@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
@@ -46,32 +47,61 @@ var runTmuxOut = func(args ...string) (string, error) {
 
 var panePattern = regexp.MustCompile(`^%[0-9]+$`)
 
-const floatDragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}"
+const dragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}|#{P:#{pane_id}=#{@bridge_pane} }|#{window_layout}"
 
-// resolveFloatDrag turns the local float id a drag-end bind stashed into a
-// float-geom request. The bind cannot expand the float's geometry itself:
-// its format context is wherever the button was released, and a
-// `-t '#{…}'` target is never format-expanded.
-func resolveFloatDrag(localPane string) ([]string, error) {
+// resolveDrag turns the local pane id a drag-end bind stashed into a request
+// for the daemon. The bind cannot resolve this itself: its format context is
+// wherever the button was released, and a `-t '#{…}'` target is never
+// format-expanded — so ctl re-reads the stashed pane directly.
+//
+// A single display-message call reads the pane's own geometry, every local
+// pane's `@bridge_pane` mapping (as P: pairs) and the local window's layout
+// together, so the map and the layout describe the same instant — no risk of
+// a mapping read here and a layout read a moment later racing a reflow.
+//
+// A floating pane returns today's float-geom request unchanged. A tiled pane
+// instead maps the window's layout onto remote pane ids via @bridge_pane and
+// returns a tile-layout request: the daemon reshapes the remote mirror to
+// match. Routing the remap through @bridge_pane rather than assuming local
+// and remote ids line up means a desynced mirror errors out here instead of
+// reshaping the wrong remote panes.
+func resolveDrag(localPane string) ([]string, error) {
 	if !panePattern.MatchString(localPane) {
-		return nil, fmt.Errorf("float-drag: bad local pane %q", localPane)
+		return nil, fmt.Errorf("drag: bad local pane %q", localPane)
 	}
-	out, err := runTmuxOut("display-message", "-p", "-t", localPane, floatDragFormat)
+	out, err := runTmuxOut("display-message", "-p", "-t", localPane, dragFormat)
 	if err != nil {
-		return nil, fmt.Errorf("float-drag: resolve %s: %w", localPane, err)
+		return nil, fmt.Errorf("drag: resolve %s: %w", localPane, err)
 	}
-	fields := strings.Split(strings.TrimSpace(out), "|")
-	if len(fields) != 8 {
-		return nil, fmt.Errorf("float-drag: %s: want 8 fields, got %q", localPane, out)
+	fields := strings.SplitN(strings.TrimSpace(out), "|", 10)
+	if len(fields) != 10 {
+		return nil, fmt.Errorf("drag: %s: want 10 fields, got %q", localPane, out)
 	}
 	bridgePane, floating := fields[0], fields[1]
 	if !panePattern.MatchString(bridgePane) {
-		return nil, fmt.Errorf("float-drag: %s: not a mirror float (bad @bridge_pane %q)", localPane, bridgePane)
+		return nil, fmt.Errorf("drag: %s: not a mirror pane (bad @bridge_pane %q)", localPane, bridgePane)
 	}
-	if floating != "1" {
-		return nil, fmt.Errorf("float-drag: %s: not floating", localPane)
+	if floating == "1" {
+		return append([]string{"float-geom", bridgePane, localPane}, fields[2:8]...), nil
 	}
-	return append([]string{"float-geom", bridgePane, localPane}, fields[2:]...), nil
+
+	remoteByLocal := make(map[string]string)
+	for _, pair := range strings.Fields(fields[8]) {
+		local, remote, ok := strings.Cut(pair, "=")
+		if !ok || !panePattern.MatchString(remote) {
+			continue
+		}
+		remoteByLocal[local] = remote
+	}
+	lookup := func(id string) (string, bool) {
+		remote, ok := remoteByLocal[id]
+		return remote, ok
+	}
+	L, err := controlmode.TiledLayout(fields[9], lookup)
+	if err != nil {
+		return nil, fmt.Errorf("drag: %s: %w", localPane, err)
+	}
+	return []string{"tile-layout", bridgePane, L.Raw}, nil
 }
 
 func main() {
@@ -83,7 +113,7 @@ func main() {
 		fail("no --sock (is this a bridge window?)")
 	}
 	if flag.NArg() < 2 {
-		fail("usage: ctl --sock <path> <verb> <remote-pane-id> [args...] | float-drag <local-pane-id>")
+		fail("usage: ctl --sock <path> <verb> <remote-pane-id> [args...] | drag <local-pane-id>")
 	}
 
 	args := flag.Args()
@@ -93,8 +123,8 @@ func main() {
 	if args[0] == "focus" && len(args) == 2 {
 		args = append(args, strconv.FormatInt(time.Now().UnixNano(), 10))
 	}
-	if args[0] == "float-drag" && len(args) == 2 {
-		resolved, err := resolveFloatDrag(args[1])
+	if args[0] == "drag" && len(args) == 2 {
+		resolved, err := resolveDrag(args[1])
 		if err != nil {
 			if *displayError != "" && showError(*displayError, err) == nil {
 				return

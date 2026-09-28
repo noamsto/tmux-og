@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
@@ -69,8 +70,10 @@ func TestShowErrorPassesExactCtlErrorToTmux(t *testing.T) {
 	}
 }
 
-func TestResolveFloatDrag(t *testing.T) {
-	wantFormat := "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}"
+func TestResolveDrag(t *testing.T) {
+	wantFormat := "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}|#{P:#{pane_id}=#{@bridge_pane} }|#{window_layout}"
+
+	const v2Layout = `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[{"t":"p","w":50,"h":30,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":18,"h":6,"x":6,"y":4,"i":2,"z":0,"I":"%2"},{"t":"p","w":49,"h":30,"x":51,"y":0,"i":1,"I":"%1"}]}}`
 
 	stub := func(t *testing.T, reply string, err error) *[]string {
 		t.Helper()
@@ -85,10 +88,10 @@ func TestResolveFloatDrag(t *testing.T) {
 	}
 
 	t.Run("resolves a floating bridge pane", func(t *testing.T) {
-		got := stub(t, "%3|1|11|6|38|10|100|30\n", nil)
-		args, err := resolveFloatDrag("%7")
+		got := stub(t, "%3|1|11|6|38|10|100|30| |{}\n", nil)
+		args, err := resolveDrag("%7")
 		if err != nil {
-			t.Fatalf("resolveFloatDrag() error = %v", err)
+			t.Fatalf("resolveDrag() error = %v", err)
 		}
 		want := []string{"display-message", "-p", "-t", "%7", wantFormat}
 		if !reflect.DeepEqual(*got, want) {
@@ -100,6 +103,37 @@ func TestResolveFloatDrag(t *testing.T) {
 		}
 	})
 
+	t.Run("resolves a tiled bridge pane into a remapped layout", func(t *testing.T) {
+		reply := "%21|0|11|6|38|10|100|30|%0=%20 %1=%21 %2= |" + v2Layout + "\n"
+		stub(t, reply, nil)
+		args, err := resolveDrag("%1")
+		if err != nil {
+			t.Fatalf("resolveDrag() error = %v", err)
+		}
+		if len(args) != 3 || args[0] != "tile-layout" || args[1] != "%21" {
+			t.Fatalf("args = %#v, want [tile-layout %%21 <raw>]", args)
+		}
+		_, body, ok := strings.Cut(args[2], ",")
+		if !ok {
+			t.Fatalf("raw layout %q has no checksum separator", args[2])
+		}
+		wantBody := "100x30,0,0{50x30,0,0,20,49x30,51,0,21}"
+		if body != wantBody {
+			t.Fatalf("layout body = %q, want %q", body, wantBody)
+		}
+		if _, err := controlmode.ParseLayout(args[2]); err != nil {
+			t.Fatalf("controlmode.ParseLayout(%q) error = %v", args[2], err)
+		}
+	})
+
+	t.Run("refuses a tiled pane missing from the @bridge_pane map", func(t *testing.T) {
+		reply := "%21|0|11|6|38|10|100|30|%0= %1=%21 %2= |" + v2Layout + "\n"
+		stub(t, reply, nil)
+		if _, err := resolveDrag("%1"); err == nil || !strings.Contains(err.Error(), "%0") {
+			t.Fatalf("resolveDrag() error = %v, want error mentioning %%0", err)
+		}
+	})
+
 	t.Run("refuses a non-pane-id argument without calling tmux", func(t *testing.T) {
 		called := false
 		original := runTmuxOut
@@ -108,8 +142,8 @@ func TestResolveFloatDrag(t *testing.T) {
 			called = true
 			return "", nil
 		}
-		if _, err := resolveFloatDrag("7"); err == nil {
-			t.Fatal("resolveFloatDrag(\"7\") error = nil, want refusal")
+		if _, err := resolveDrag("7"); err == nil {
+			t.Fatal("resolveDrag(\"7\") error = nil, want refusal")
 		}
 		if called {
 			t.Fatal("runTmuxOut called for a non-pane-id argument")
@@ -124,8 +158,8 @@ func TestResolveFloatDrag(t *testing.T) {
 			called = true
 			return "", nil
 		}
-		if _, err := resolveFloatDrag("%7;x"); err == nil {
-			t.Fatal("resolveFloatDrag(\"%7;x\") error = nil, want refusal")
+		if _, err := resolveDrag("%7;x"); err == nil {
+			t.Fatal("resolveDrag(\"%7;x\") error = nil, want refusal")
 		}
 		if called {
 			t.Fatal("runTmuxOut called for %7;x")
@@ -134,36 +168,29 @@ func TestResolveFloatDrag(t *testing.T) {
 
 	t.Run("refuses a tmux error", func(t *testing.T) {
 		stub(t, "", errors.New("can't find pane %7"))
-		if _, err := resolveFloatDrag("%7"); err == nil {
-			t.Fatal("resolveFloatDrag() error = nil, want tmux error surfaced")
+		if _, err := resolveDrag("%7"); err == nil {
+			t.Fatal("resolveDrag() error = nil, want tmux error surfaced")
 		}
 	})
 
 	t.Run("refuses an empty @bridge_pane", func(t *testing.T) {
-		stub(t, "|1|11|6|38|10|100|30\n", nil)
-		if _, err := resolveFloatDrag("%7"); err == nil {
-			t.Fatal("resolveFloatDrag() error = nil, want refusal for empty @bridge_pane")
-		}
-	})
-
-	t.Run("refuses a non-floating pane", func(t *testing.T) {
-		stub(t, "%3|0|11|6|38|10|100|30\n", nil)
-		if _, err := resolveFloatDrag("%7"); err == nil {
-			t.Fatal("resolveFloatDrag() error = nil, want refusal for pane_floating_flag=0")
+		stub(t, "|1|11|6|38|10|100|30| |{}\n", nil)
+		if _, err := resolveDrag("%7"); err == nil {
+			t.Fatal("resolveDrag() error = nil, want refusal for empty @bridge_pane")
 		}
 	})
 
 	t.Run("refuses a malformed @bridge_pane", func(t *testing.T) {
-		stub(t, "%3;x|1|11|6|38|10|100|30\n", nil)
-		if _, err := resolveFloatDrag("%7"); err == nil {
-			t.Fatal("resolveFloatDrag() error = nil, want refusal for malformed @bridge_pane")
+		stub(t, "%3;x|1|11|6|38|10|100|30| |{}\n", nil)
+		if _, err := resolveDrag("%7"); err == nil {
+			t.Fatal("resolveDrag() error = nil, want refusal for malformed @bridge_pane")
 		}
 	})
 
 	t.Run("refuses a reply with the wrong field count", func(t *testing.T) {
 		stub(t, "%3|1|11|6|38|10|100\n", nil)
-		if _, err := resolveFloatDrag("%7"); err == nil {
-			t.Fatal("resolveFloatDrag() error = nil, want refusal for wrong field count")
+		if _, err := resolveDrag("%7"); err == nil {
+			t.Fatal("resolveDrag() error = nil, want refusal for wrong field count")
 		}
 	})
 }
