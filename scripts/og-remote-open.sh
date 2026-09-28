@@ -249,6 +249,26 @@ if [[ -n $sess ]]; then
 	probe_script+="
 sess_lit=$(shell_quote "$sess")
 sess=\"\$sess_lit\""
+	# The daemon attaches this session EXACTLY (`attach-session -t '=$sess'`),
+	# so a name resolved here by tmux's own unique-prefix match must become
+	# the real session name, or the first attach is refused. A session that
+	# doesn't exist yet (OG_REMOTE_RESTORE / OG_REMOTE_NEW_DIR) leaves $sess
+	# as the caller's literal — the create/restore below is what makes it
+	# exist — so those opens skip this step entirely.
+	if [[ -z ${OG_REMOTE_NEW_DIR:-} && -z ${OG_REMOTE_RESTORE:-} ]]; then
+		# Exact first, prefix only as a fallback: `has-session -t "=$sess"`
+		# answers whether the literal name is a live session, and a match there
+		# must win over any prefix resolution — a plain open of a session that
+		# exists verbatim never needs its name rewritten.
+		# shellcheck disable=SC2016
+		probe_script+='
+if env TMUX_TMPDIR="$tmpdir" "$tmux_bin" has-session -t "=$sess" 2>/dev/null; then
+	:
+else
+	sess_canon=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "$sess" -F '"'"'#{session_name}'"'"' 2>/dev/null | head -1)
+	[ -n "$sess_canon" ] && sess="$sess_canon"
+fi'
+	fi
 else
 	# shellcheck disable=SC2016
 	probe_script+='
@@ -291,7 +311,10 @@ while IFS= read -r probe_line; do
 	win=*) probe_win="${probe_line#win=}" ;;
 	esac
 done <<<"$probe_out"
-[[ -z $sess ]] && sess="$probe_sess"
+# Not `[[ -z $sess ]]`: a caller-given $sess rides into the probe above too,
+# and comes back canonicalized (or unchanged, on a session that doesn't exist
+# yet) — probe_sess is always what the daemon must attach to.
+[[ -n $probe_sess ]] && sess="$probe_sess"
 [[ -z $win ]] && win="$probe_win"
 
 # A session already live on the remote (the common case) is named here, by

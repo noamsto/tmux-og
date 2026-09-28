@@ -17,6 +17,22 @@ const bridgeStateParked = "parked"
 // run for as long as the mirror stays parked.
 const parkFocusInterval = time.Second
 
+// parkProbeInterval is how often a parked mirror re-dials on its own, with no
+// key or focus wake. Slow on purpose: it's one dial per interval per parked
+// mirror, and an offline host fails that dial at once while a black-holed one
+// costs a full identity-timeout deadline of one ssh process. Keys and focus
+// still wake immediately regardless of this interval.
+const parkProbeInterval = 2 * time.Minute
+
+// parkVerdict is what woke a parked wait.
+type parkVerdict int
+
+const (
+	parkStop  parkVerdict = iota // Shutdown fired, or the local session is gone: tear down.
+	parkWoken                    // a key or focus edge: run one wake cycle.
+	parkProbe                    // the probe ticker: run one silent single-attempt cycle.
+)
+
 // parkWaker carries a keypress from pumpInput's goroutine to the parked
 // wait's select. It is armed only while parked, so poke costs one atomic load
 // on the live hot path and nothing more.

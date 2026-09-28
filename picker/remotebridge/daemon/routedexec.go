@@ -59,7 +59,7 @@ func routeWhile(lines <-chan controlmode.Line, router *Router, async *asyncQueue
 
 // routing returns a copy of c whose exec-backed hooks (LocalTmux,
 // LocalTmuxOut, LocalArea, Reflow, LocalPanes) each run their call inside
-// run, so Run's flowCfg can route %output around a window-set operation's
+// run, so runMirror's flowCfg can route %output around a window-set operation's
 // execs via routeWhile. A nil hook stays nil. The copy is for main-loop
 // operations on whole mirror windows only — never pane-shaping ones, whose
 // execs must keep output held until the reshape lands. paster() restores the

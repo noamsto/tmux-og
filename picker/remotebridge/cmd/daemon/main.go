@@ -90,7 +90,11 @@ func sshControlArgs(ctlSock, host, tmpdir, term, colorterm, termProgram, session
 	// ssh space-joins the post-host argv into one string run by the remote
 	// login shell, so shell-quote the session name (may contain spaces) to keep
 	// it a single target token.
-	return append(args, "-C", "attach-session", "-t", shellQuote(session))
+	//
+	// "=" makes the target exact: tmux otherwise resolves a name by unique
+	// prefix, and a reattach or re-open meant for "rem" would land on
+	// "rem-sibling". A missing exact name answers as a refused attach instead.
+	return append(args, "-C", "attach-session", "-t", shellQuote("="+session))
 }
 
 // newSSHDialCmd builds one ssh-branch dial's *exec.Cmd. Extracted out of the
@@ -114,6 +118,21 @@ func newSSHDialCmd(sshCmd, host, tmpdir, path, colorterm, termProgram, session s
 // is exactly what these two branches exist to run under.
 func localCtlCmdEnv(view *daemon.Viewing) []string {
 	return append(os.Environ(), "TERM="+view.Desired())
+}
+
+// testLocalDialArgv is the --test-local branch's dial argv, decided fresh on
+// every call (the outage file's presence can change between dials). "false"
+// is a stand-in for a dial that exits immediately with no control output at
+// all — the production shape of a lost network, as opposed to a refused
+// tmux attach, which still answers with a %begin/%error/%exit sequence (#817).
+func testLocalDialArgv(outage, src, session string) []string {
+	if outage != "" {
+		if _, err := os.Stat(outage); err == nil {
+			return []string{"false"}
+		}
+	}
+	// exact, as sshControlArgs.
+	return []string{"tmux", "-L", src, "-C", "attach-session", "-t", "=" + session}
 }
 
 // remoteStoreScript is the paste upload's remote half (#361): it lands the
@@ -198,6 +217,9 @@ func main() {
 	dstSocket := flag.String("dst-socket", "", "test-local: tmux -L socket name standing in for the local server")
 	retryMaxElapsed := flag.Duration("retry-max-elapsed", envDurationDefault("OG_DAEMON_RETRY_MAX_ELAPSED", 0), "test only: bound the reattach retry schedule's MaxElapsed (0 = production schedule)")
 	wakeMaxElapsed := flag.Duration("wake-max-elapsed", envDurationDefault("OG_DAEMON_WAKE_MAX_ELAPSED", 0), "test only: bound the parked-wake retry schedule's MaxElapsed (0 = production schedule)")
+	restoreMaxElapsed := flag.Duration("restore-max-elapsed", envDurationDefault("OG_DAEMON_RESTORE_MAX_ELAPSED", 0), "test only: bound the restore window a refused attach dials in (0 = production schedule)")
+	parkProbe := flag.Duration("park-probe-interval", envDurationDefault("OG_DAEMON_PARK_PROBE_INTERVAL", 0), "test only: how often a parked mirror re-probes on its own (0 = production interval)")
+	testOutage := flag.String("test-outage-file", os.Getenv("OG_DAEMON_TEST_OUTAGE_FILE"), "test-local: while this file exists, a dial yields no control output (an unreachable remote)")
 	flag.Parse()
 
 	if *localSess == "" {
@@ -225,7 +247,8 @@ func main() {
 	var localTmuxArgv []string
 	if *testLocal {
 		newCtlCmd = func() (*exec.Cmd, string) {
-			cmd := exec.Command("tmux", "-L", *srcSocket, "-C", "attach-session", "-t", *session)
+			argv := testLocalDialArgv(*testOutage, *srcSocket, *session)
+			cmd := exec.Command(argv[0], argv[1:]...)
 			cmd.Env = localCtlCmdEnv(view)
 			return cmd, ""
 		}
@@ -236,8 +259,9 @@ func main() {
 		tmuxArgv := strings.Fields(*remoteTmux)
 		if *sshCmd == "" {
 			newCtlCmd = func() (*exec.Cmd, string) {
+				// exact, as sshControlArgs.
 				cmd := exec.Command(tmuxArgv[0], append(append([]string{}, tmuxArgv[1:]...),
-					"-C", "attach-session", "-t", *session)...)
+					"-C", "attach-session", "-t", "="+*session)...)
 				cmd.Env = localCtlCmdEnv(view)
 				return cmd, ""
 			}
@@ -400,6 +424,7 @@ func main() {
 		PasteUpload:    pasteUpload,
 		View:           view,
 		NewGraphics:    newGraphics(ctlSock, tr.currentPath, *host, *cacheDir, *gfxMax, view.Relay, *gfxRelayMaxBytes),
+		ParkProbe:      *parkProbe,
 	}
 	if *retryMaxElapsed > 0 {
 		b := daemon.DefaultBackoff(time.Now)
@@ -410,6 +435,11 @@ func main() {
 		b := daemon.WakeBackoff(time.Now)
 		b.MaxElapsed = *wakeMaxElapsed
 		cfg.WakeRetry = &b
+	}
+	if *restoreMaxElapsed > 0 {
+		b := daemon.RestoreBackoff(time.Now)
+		b.MaxElapsed = *restoreMaxElapsed
+		cfg.RestoreRetry = &b
 	}
 
 	err := daemon.Run(cfg)

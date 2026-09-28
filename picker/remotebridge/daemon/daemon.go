@@ -103,6 +103,19 @@ type Config struct {
 	// routing() stashes the original here so anything handing cfg to another
 	// goroutine can restore them — routeWhile is main-goroutine only.
 	plain *Config
+	// RestoreRetry bounds the window a refused attach keeps dialling in case
+	// the remote session is restored; nil takes RestoreBackoff. Same
+	// pointer-for-"unset" reasoning as Retry.
+	RestoreRetry *Backoff
+	// ParkProbe is how often a parked mirror re-probes on its own; 0 takes
+	// parkProbeInterval.
+	ParkProbe time.Duration
+	// reopened is set by Run on a run that rebuilds the mirror onto a
+	// replaced remote server, so that run shows the fresh-server notice.
+	reopened bool
+	// local is LocalSess as Run pinned it at startup; every path that may
+	// destroy or rebuild the session after it could have gone checks it.
+	local localPin
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -144,6 +157,30 @@ func (c Config) wakeSchedule() Backoff {
 		return *c.WakeRetry
 	}
 	return WakeBackoff(time.Now)
+}
+
+// restoreSchedule is the schedule a refused attach's restore window runs on
+// this Config.
+func (c Config) restoreSchedule() Backoff {
+	if c.RestoreRetry != nil {
+		return *c.RestoreRetry
+	}
+	return RestoreBackoff(time.Now)
+}
+
+// probeSchedule is the one-attempt schedule a parked mirror's periodic probe
+// runs on.
+func (c Config) probeSchedule() Backoff {
+	return probeBackoff(time.Now)
+}
+
+// parkProbeEvery is how often a parked mirror re-probes on its own, for this
+// Config.
+func (c Config) parkProbeEvery() time.Duration {
+	if c.ParkProbe > 0 {
+		return c.ParkProbe
+	}
+	return parkProbeInterval
 }
 
 func (c Config) graphicsFor(paneID string) *graphics.Proxy {
@@ -682,19 +719,9 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 	}
 }
 
-// Run mirrors every window of the bridged remote session, each into its own
-// local window, over a -CC connection, until %exit, an emptied mirror, the
-// local mirror session going away, a stop, or a reconnect onto a different
-// tmux server. A drop the reconnect budget cannot outlast parks the mirror
-// instead of ending it; see reattach.
-//
-// Two lifetimes live here and they only look like one (#482). The session
-// lifetime — listener, pidfile, registry, renderer panes and their sinks, the
-// resize watcher, the agent shipper — is created once and destroyed only by
-// teardown, which runs exactly once per return path. The connection lifetime —
-// transport, pump, stream, round-tripper, and every client-scoped value the
-// remote holds for this control client — is rebuilt on every attach.
-func Run(cfg Config) error {
+// runMirror is one mirror's lifetime, from the first dial to teardown; Run
+// calls it again when a reattach ends on a different tmux server.
+func runMirror(cfg Config) error {
 	router := NewRouter()
 	// Declared here rather than beside the registry below: the client-size send
 	// that follows the first dial is the converger's first user.
@@ -712,6 +739,7 @@ func Run(cfg Config) error {
 	rt := hold.roundTrip
 	cfg.SendCtl = sendCtl
 
+	term := cfg.View.Desired()
 	c, err := dialConn(cfg)
 	if err != nil {
 		return err
@@ -734,6 +762,10 @@ func Run(cfg Config) error {
 		return fmt.Errorf("daemon: identity read for %s timed out", cfg.RemoteSession)
 	}
 	c.bind(router)
+	// A dial publishes the term it dialled (reattach's rule). Seed covered only
+	// a process's first dial; a re-opened run's raise guard would otherwise
+	// compare against the replaced connection's term.
+	cfg.View.setAdvertised(term)
 	hold.set(c)
 	setPhase(cfg, "attached to %s", cfg.RemoteHost)
 
@@ -782,8 +814,24 @@ func Run(cfg Config) error {
 	}
 	// Once per bridge, like the probe above: tmux sets session_path at creation
 	// and nothing a mirror follows changes it afterwards.
-	if p := readSessionPath(rt, cfg.RemoteSession); p != "" {
-		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", p)
+	sessionPath := readSessionPath(rt, cfg.RemoteSession)
+
+	// A rebuild's dial ran with no listener up, so og-remote-open may have read
+	// this daemon as dead and recreated the session under a daemon of its own:
+	// this run must neither remove that daemon's socket nor stamp and respawn
+	// into a session that is no longer the one it was launched into. The check
+	// sits after the two remote reads above — each is a window in which
+	// og-remote-open can recreate the session — and everything below it touches
+	// the local session or its files.
+	if cfg.reopened && !ownsLocalSession(cfg) {
+		hold.close()
+		return errNotOurs
+	}
+	// Stamped after the ownership check: a session og-remote-open recreated in
+	// the reads above must not receive this mirror's session path. The bare name
+	// is safe only because the check just proved it still stands.
+	if sessionPath != "" {
+		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", sessionPath)
 	}
 
 	// Published here for the first attach; repair() (below) re-sends the same
@@ -924,6 +972,8 @@ func Run(cfg Config) error {
 	// belongs to nobody now, and a reopen that recreated it in the gap must not
 	// have the fresh session killed out from under it.
 	var localSessionVanished bool
+	// ending is how the last reattach ended; teardown's final step reads it.
+	var ending reattachEnd
 	// Assigned once the mirror is up; teardown must drop the status files it
 	// wrote, so it is declared ahead of the closure that captures it.
 	var agents *agentShipper
@@ -960,7 +1010,13 @@ func Run(cfg Config) error {
 		}
 		listener.Close()
 		os.Remove(cfg.SockPath)
-		os.Remove(pidFile)
+		// The pidfile names this same live process through the rebuild, so
+		// og-remote-detach and the picker's stopBridgeDaemon SIGTERM it rather
+		// than falling back to a bare kill-session under a half-built mirror;
+		// the next run rewrites it.
+		if ending != endReplaced {
+			os.Remove(pidFile)
+		}
 		for _, mw := range reg.all() {
 			// Unregister closes each pane's output sink, stopping its pump
 			// goroutine (mirrors closeWindow); then drop the renderer conns.
@@ -989,7 +1045,15 @@ func Run(cfg Config) error {
 		// Whichever connection is current, which after a reconnect is no longer
 		// the one cfg.Ctl named.
 		hold.close()
-		if cfg.LocalSess != "" && !localSessionVanished {
+		if cfg.LocalSess == "" || localSessionVanished {
+			return
+		}
+		switch ending {
+		case endReplaced:
+			resetMirrorSession(cfg, "sleep", "2147483647")
+		case endGone:
+			tombstoneMirror(cfg, tombstoneText(cfg.RemoteHost, cfg.RemoteSession))
+		default:
 			cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
 		}
 	}
@@ -1021,13 +1085,13 @@ func Run(cfg Config) error {
 		}
 		if err != nil {
 			teardown()
-			return err
+			return tornDown{err}
 		}
 		stampMirrorWindow(cfg, localWin, rw.name)
 		mw := reg.add(rw.id, localWin)
 		if err := setupWindow(cfg, send, router, waitHellosFn, cst, mw, cv, rt); err != nil {
 			teardown()
-			return err
+			return tornDown{err}
 		}
 	}
 
@@ -1440,50 +1504,70 @@ func Run(cfg Config) error {
 	loopTick = time.NewTicker(mainLoopTickInterval)
 
 	// park holds an unreachable mirror open until the user comes back to it,
-	// reporting true to buy one more reattach cycle and false to tear down. It
-	// blocks this goroutine — nothing else may round-trip while parked anyway,
-	// and every other goroutine (renderers, ctl, the resize watcher) keeps
-	// running off the empty connHolder slot.
+	// answering parkWoken to buy one more reattach cycle and parkStop to tear
+	// down. It blocks this goroutine — nothing else may round-trip while parked
+	// anyway, and every other goroutine (renderers, ctl, the resize watcher)
+	// keeps running off the empty connHolder slot.
 	dimmed := false
-	park := func() bool {
+	afterProbe := false
+	park := func() parkVerdict {
+		// A re-park straight after a failed probe finds the windows still
+		// dimmed and the badge still parked, so it stays quiet. Consumed here,
+		// and cleared by the attach loop when a probe reconnects.
+		quiet := afterProbe
+		afterProbe = false
 		// Armed before the badge goes up: a key pressed the instant it says
 		// "press a key" must not land in a disarmed waker and vanish.
 		waker.arm()
 		defer waker.disarm()
 		setBridgeState(cfg, bridgeStateParked)
-		dimMirror(cfg, reg)
-		dimmed = true
+		if !quiet {
+			dimMirror(cfg, reg)
+			dimmed = true
+		}
 		// waiting/error/denied never fade on their own, so an unbounded park
 		// would otherwise report a remote agent needing input indefinitely.
 		// The repair's re-subscribe re-stamps every row, since clear forgets
 		// what was written.
 		agents.clear()
-		fmt.Fprintf(os.Stderr, "daemon: %s unreachable; parked until the mirror is focused or typed into\n", cfg.RemoteHost)
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "daemon: %s unreachable; parked until the mirror is focused or typed into\n", cfg.RemoteHost)
+		}
 		focus := focusEdge{nudged: nudged, viewing: func() bool { return localViewing(cfg) }}
 		focus.reset()
 		ft := time.NewTicker(parkFocusInterval)
 		defer ft.Stop()
+		probe := time.NewTicker(cfg.parkProbeEvery())
+		defer probe.Stop()
 		for {
 			select {
+			case <-probe.C:
+				fmt.Fprintf(os.Stderr, "daemon: %s: probing\n", cfg.RemoteHost)
+				afterProbe = true
+				return parkProbe
 			case <-waker.C():
 				fmt.Fprintf(os.Stderr, "daemon: %s: waking on input\n", cfg.RemoteHost)
-				return true
+				return parkWoken
 			case <-cfg.Shutdown:
-				return false
+				return parkStop
 			case <-ft.C:
 				if focus.poll() {
 					fmt.Fprintf(os.Stderr, "daemon: %s: waking on focus\n", cfg.RemoteHost)
-					return true
+					return parkWoken
 				}
 			case <-loopTick.C:
 				// runConn's tick is not running while parked, and a park is
 				// unbounded, so the #680 probe has to run here too.
 				if sessionGone.observe(localSessionGone(cfg)) {
 					localSessionVanished = true
-					return false
+					return parkStop
 				}
 			}
 		}
+	}
+
+	if cfg.reopened {
+		go showReopenNotice(cfg, nudged, stopWatch)
 	}
 
 attach:
@@ -1513,7 +1597,14 @@ attach:
 			if !reconnect {
 				break attach
 			}
-			if c = reattach(cfg, router, hold, pin.identity, repair, park); c == nil {
+			if c, ending = reattach(cfg, router, hold, pin.identity, repair, park); c == nil {
+				// A reset or tombstone is for this mirror's own session only;
+				// with it gone there is nothing to rebuild into, so end as for
+				// a vanished session and leave the name alone (#680).
+				if ending != endTeardown && !ownsLocalSession(cfg) {
+					ending = endTeardown
+					localSessionVanished = true
+				}
 				break attach
 			}
 			// The dial that just succeeded read View.Desired, so a raise that
@@ -1524,6 +1615,9 @@ attach:
 				undimMirror(cfg, reg)
 				dimmed = false
 			}
+			// A probe that reconnected never reached park again to consume
+			// this, and the next outage's park must dim what was just undimmed.
+			afterProbe = false
 		default:
 			// connEnd: the remote ended this control client, the local mirror
 			// session is gone, or the mirror was left with no windows — either way
@@ -1532,6 +1626,9 @@ attach:
 		}
 	}
 	teardown()
+	if ending == endReplaced {
+		return errServerReplaced
+	}
 	return nil
 }
 

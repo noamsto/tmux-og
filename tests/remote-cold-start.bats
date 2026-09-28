@@ -70,7 +70,15 @@ setup() {
 			esac
 			sess=""
 			case "$cmd" in
-			*"sess_lit="*) sess=$(printf '%s\n' "$cmd" | sed -n "s/.*sess_lit='\([^']*\)'.*/\1/p") ;;
+			*"sess_lit="*)
+				sess=$(printf '%s\n' "$cmd" | sed -n "s/.*sess_lit='\([^']*\)'.*/\1/p")
+				# The launcher's canonicalization step (sess_canon=…) only ships once
+				# the #817 fix lands; a set FAKE_SESS_CANON simulates the remote's
+				# prefix-matched #{session_name} coming back different from the literal.
+				case "$cmd" in
+				*"sess_canon="*) [ -n "${FAKE_SESS_CANON:-}" ] && sess="$FAKE_SESS_CANON" ;;
+				esac
+				;;
 			*) [ -f "$REMOTE_SERVER" ] && sess="$REMOTE_SESSION" ;;
 			esac
 			win=""
@@ -678,7 +686,11 @@ run_launcher_bg() {
 	run bash "$LAUNCHER" tp-g6 workstation
 	[ "$status" -eq 0 ]
 
-	run grep -cE 'has-session|tmux-remux' "$SSH_LOG"
+	# The combined probe now carries the exact-match has-session that resolves
+	# the caller's own name (#817), so the plain attach's "unaffected" invariant
+	# is the round-trip count: one ssh call, no restore machinery behind it.
+	[ "$(grep -c '===SSH-CALL===' "$SSH_LOG")" -eq 1 ]
+	run grep -c 'tmux-remux' "$SSH_LOG"
 	[ "$status" -ne 0 ]
 	grep -q 'switch-client -t =tp-g6-workstation' "$TMUX_LOG"
 }
@@ -854,6 +866,52 @@ run_launcher_bg() {
 	# never split on the embedded space.
 	grep -q "sess_lit='my session'" "$SSH_LOG"
 	grep -q 'switch-client -t =tp-g6-my_session' "$TMUX_LOG"
+}
+
+@test "a prefix-matched session name is canonicalized before the daemon sees it (#817)" {
+	# The remote holds only 'api-main'; the daemon attaches EXACTLY, so a
+	# prefix name here must become the real one or the first attach refuses.
+	touch "$REMOTE_SERVER"
+	export FAKE_SESS_CANON=api-main
+
+	run bash "$LAUNCHER" h api
+	[ "$status" -eq 0 ]
+
+	grep -q "sess_lit='api'" "$SSH_LOG"
+	grep -qxF 'set-option -t h-api-main @bridge_session api-main' "$TMUX_LOG"
+	grep -qxF 'switch-client -t =h-api-main' "$TMUX_LOG"
+}
+
+@test "new dir: a prefix sibling never stands in for the session to create (#817)" {
+	# The remote holds only 'proj-main'. A create's session does not exist yet
+	# by design, so canonicalizing 'proj' by prefix match would skip the create
+	# and mirror the sibling.
+	touch "$REMOTE_SERVER"
+	export OG_REMOTE_NEW_DIR=/srv/proj
+	export FAKE_SESS_CANON=proj-main
+
+	run bash "$LAUNCHER" tp-g6 proj
+	[ "$status" -eq 0 ]
+
+	grep -q "new-session -d -s 'proj' -c '/srv/proj'" "$SSH_LOG"
+	grep -qxF 'switch-client -t =tp-g6-proj' "$TMUX_LOG"
+	run ! grep -q 'proj-main' "$TMUX_LOG"
+}
+
+@test "restore: a prefix sibling never stands in for the session to restore (#817)" {
+	# The remote has a live 'work-old'; canonicalizing 'work' onto it would
+	# skip the restore and open the sibling.
+	touch "$REMOTE_SERVER"
+	export OG_REMOTE_RESTORE=1
+	export FAKE_SESS_CANON=work-old
+
+	run bash "$LAUNCHER" tp-g6 work
+	[ "$status" -eq 0 ]
+
+	grep -q "has-session -t '=work'" "$SSH_LOG"
+	grep -q 'tmux-remux restore' "$SSH_LOG"
+	grep -qxF 'switch-client -t =tp-g6-work' "$TMUX_LOG"
+	run ! grep -q 'work-old' "$TMUX_LOG"
 }
 
 # --- #783: the local mirror name is sanitized; the raw pair is the identity ---

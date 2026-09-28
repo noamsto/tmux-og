@@ -57,6 +57,37 @@ func WakeBackoff(now func() time.Time) Backoff {
 	}
 }
 
+// RestoreBackoff sizes the window a refused attach keeps dialling in: the
+// re-dial reached the remote, but tmux refused the attach because the pinned
+// session is not on the server — typically a restarted remote tmux.
+// tmux-remux with restoreMode = auto restores sessions moments after a
+// restarted server starts, so a minute of dialling catches that restore; with
+// restoreMode = off nothing brings the session back and the window only
+// delays the mirror's ending. Bounded, because a mirror must never wait on a
+// session that is not coming back.
+func RestoreBackoff(now func() time.Time) Backoff {
+	return Backoff{
+		Base:        1 * time.Second,
+		Ceiling:     5 * time.Second,
+		MaxAttempts: 30,
+		MaxElapsed:  60 * time.Second,
+		Now:         now,
+		Jitter:      rand.Float64,
+	}
+}
+
+// probeBackoff is one immediate dial attempt, no retry — what a parked
+// mirror's periodic self-probe runs.
+func probeBackoff(now func() time.Time) Backoff {
+	return Backoff{
+		Base:        0,
+		Ceiling:     0,
+		MaxAttempts: 1,
+		Now:         now,
+		Jitter:      rand.Float64,
+	}
+}
+
 // Next returns the delay before retry attempt (1-indexed: the delay before
 // the first retry is Next(1, start)) and whether the caller should even try.
 // Once either bound is exhausted it returns false and the delay is

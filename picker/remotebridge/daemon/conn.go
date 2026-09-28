@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 type ctlConn struct {
 	rwc    io.ReadWriteCloser
 	pump   *ctlPump
+	watch  *attachWatch
 	st     *stream
 	async  *asyncQueue
 	rt     roundTrip
@@ -41,8 +43,64 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 		async:  &asyncQueue{},
 		router: router,
 	}
-	c.rt = newRoundTrip(c.pump, router, c.async, c.st)
+	c.watch = &attachWatch{rd: c.pump}
+	c.rt = newRoundTrip(c.watch, router, c.async, c.st)
 	return c
+}
+
+// attachWatch is the lineReader an unverified connection reads through, and
+// records the first reply block to pass it. On a fresh connection that block is
+// always the reply to the attach-session the transport ran — flags 0, since
+// this control client never sent it — and an %error there is tmux refusing the
+// attach: the pinned session is not on the server that answered (#817).
+// readReplyRouting drops it as a block nobody is waiting for, leaving
+// readIdentity only the EOF behind it — a drop in shape — so this record is
+// what tells a refusal from a drop. Only the first block counts: a later
+// unflagged %error is a hook failing on an attach that succeeded.
+//
+// Plain fields, no lock: it is only ever read and written on the goroutine
+// driving the unverified round-trip and then attachRefusal's drain. bind hands
+// every later round-trip the bare pump.
+type attachWatch struct {
+	rd      lineReader
+	seen    bool
+	refused bool
+	refusal string
+}
+
+func (w *attachWatch) Next() (controlmode.Line, bool) {
+	l, ok := w.rd.Next()
+	if !ok || w.seen || (l.Kind != controlmode.End && l.Kind != controlmode.Error) {
+		return l, ok
+	}
+	w.seen = true
+	if l.Kind == controlmode.Error && l.Flags != controlmode.ClientCommandFlag {
+		w.refused = true
+		w.refusal = strings.TrimSpace(string(l.Data))
+	}
+	return l, ok
+}
+
+// refusalDrainTimeout bounds attachRefusal's drain. A refused attach has
+// already said everything it will and exited, so what is left is local
+// buffering; this only matters for a transport that never reaches EOF.
+const refusalDrainTimeout = 5 * time.Second
+
+// attachRefusal drains an unverified connection that failed its identity read
+// with the retry shape, and reports the attach refusal it carried, if any.
+// Draining through the watch covers both shapes a refusal takes: readIdentity
+// walked past it on the way to EOF and it was recorded then, or the client had
+// already exited when readIdentity wrote, stampAll failed with EPIPE, and
+// nothing has read it yet.
+func (c *ctlConn) attachRefusal(d time.Duration) (string, bool) {
+	disarm := armIdentityDeadline(c, d)
+	for {
+		if _, ok := c.watch.Next(); !ok {
+			break
+		}
+	}
+	disarm()
+	return c.watch.refusal, c.watch.refused
 }
 
 // bind re-points this connection's round-tripper at the mirror's real router,
@@ -201,22 +259,47 @@ func armIdentityDeadline(c *ctlConn, d time.Duration) (disarm func() (live bool)
 	}
 }
 
+// reattachEnd is how reattach ended without a connection; it means nothing
+// alongside a non-nil one.
+type reattachEnd int
+
+const (
+	// endTeardown — every ending that existed before #817: a stop, a malformed
+	// identity, a repair that emptied the registry, a declined park.
+	endTeardown reattachEnd = iota
+	// endReplaced — the identity read matched a different tmux server: the
+	// remote's server was replaced, and Run re-opens a fresh mirror onto it
+	// rather than ending the user's view of that session.
+	endReplaced
+	// endGone — the attach stayed refused through the whole restore window: the
+	// session is not on the remote's server and is not coming back.
+	endGone
+)
+
 // reattach re-dials after a drop and returns the connection the mirror is live
-// on again, bound to router and published in hold, or nil once the daemon
-// should tear down. want is the identity recorded at the first attach; repair
-// brings the mirror back to remote ground truth and reports whether it still
-// stands.
+// on again, bound to router and published in hold, or nil and how it ended.
+// want is the identity recorded at the first attach; repair brings the mirror
+// back to remote ground truth and reports whether it still stands.
 //
-// An exhausted schedule is not an ending in itself: park, when non-nil, holds
-// the mirror until the user comes back to it and reports whether to try again,
-// which buys one short wakeSchedule cycle rather than the full retry budget. A
-// nil park, or one that answers false (a stop, the local session gone), tears
-// down.
+// A refused attach — the remote answered, but its tmux has no session by the
+// pinned name — is a verdict one dial is enough for, and it opens one bounded
+// restore window on restoreSchedule: a restarted server has its sessions back
+// moments later when tmux-remux restores them, and not at all when nothing
+// does. The window ends by reconnecting, by replacing when the session came
+// back on a different server, or as endGone while still refused; a host that
+// goes unreachable inside it is an ordinary exhaustion.
+//
+// An exhausted schedule is not an ending in itself either: park, when non-nil,
+// holds the mirror and answers with a verdict. parkWoken — the user came back
+// to it — buys one short wakeSchedule cycle rather than the full retry budget;
+// parkProbe buys one silent attempt that leaves the parked badge up; parkStop
+// (a stop, the local session gone) and a nil park tear down.
 //
 // Package-level rather than a closure over Run's locals so the endings it has
-// to tell apart — a drop that retries, a different server that tears down, a
-// detach raised mid-dial — are reachable from a test without a live mirror.
-func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool, park func() bool) *ctlConn {
+// to tell apart — a drop that retries, a refusal that waits out the restore
+// window, a different server, a detach raised mid-dial — are reachable from a
+// test without a live mirror.
+func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool, park func() parkVerdict) (*ctlConn, reattachEnd) {
 	// Every send fails closed from this instant, rather than from whenever a
 	// write happens to hit EPIPE.
 	hold.close()
@@ -229,21 +312,44 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 	clearBridgeRes(cfg)
 	clearBridgeUsage(cfg)
 	bo := cfg.retrySchedule()
+	restoring := false
 	for {
-		conn, result := attemptCycle(cfg, router, hold, want, repair, bo)
+		conn, result := attemptCycle(cfg, router, hold, want, repair, bo, restoring)
 		switch result {
 		case cycleConnected:
-			return conn
+			return conn, endTeardown
 		case cycleTerminal:
-			return nil
+			return nil, endTeardown
+		case cycleReplaced:
+			return nil, endReplaced
+		case cycleRefused:
+			if restoring {
+				return nil, endGone
+			}
+			restoring = true
+			// A probe's refusal lands here with "parked" still up, and the
+			// restore window is a re-dial pending like any other.
+			setBridgeState(cfg, bridgeStateDisconnected)
+			bo = cfg.restoreSchedule()
+			continue
 		}
-		if park == nil || !park() {
-			return nil
+		restoring = false
+		if park == nil {
+			return nil, endTeardown
 		}
-		// park stamped parked; the wake cycle is a re-dial pending like any
-		// other, so the badge goes back to the one that says so.
-		setBridgeState(cfg, bridgeStateDisconnected)
-		bo = cfg.wakeSchedule()
+		switch park() {
+		case parkWoken:
+			// park stamped parked; the wake cycle is a re-dial pending like any
+			// other, so the badge goes back to the one that says so.
+			setBridgeState(cfg, bridgeStateDisconnected)
+			bo = cfg.wakeSchedule()
+		case parkProbe:
+			// Silent: a probe that fails would otherwise flicker the badge to
+			// disconnected and back every interval.
+			bo = cfg.probeSchedule()
+		default:
+			return nil, endTeardown
+		}
 	}
 }
 
@@ -253,19 +359,29 @@ type cycleResult int
 const (
 	// cycleConnected — a dial matched identity and repair() kept the mirror.
 	cycleConnected cycleResult = iota
-	// cycleTerminal — the daemon tears down: a stop, a different or malformed
-	// identity, or a repair that emptied the registry.
+	// cycleTerminal — the daemon tears down: a stop, a malformed or %error
+	// identity reply, or a repair that emptied the registry.
 	cycleTerminal
-	// cycleExhausted — bo ran out with the remote still unreachable. The only
-	// result a further cycle can change.
+	// cycleExhausted — bo ran out with the remote still unreachable; park
+	// decides whether another cycle runs.
 	cycleExhausted
+	// cycleRefused — the attach was refused: the pinned session is not on the
+	// server that answered. At once on a cycle that is not restoring, and at
+	// the end of one that is, when its last attempt was still refused.
+	cycleRefused
+	// cycleReplaced — the identity read matched a different tmux server.
+	cycleReplaced
 )
 
 // attemptCycle runs reattach's dial/verify/repair attempts on one schedule.
 // start is taken per cycle, so a wake cycle's MaxElapsed is measured from the
-// wake rather than from the original drop.
-func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool, bo Backoff) (*ctlConn, cycleResult) {
+// wake rather than from the original drop. restoring keeps a refusal from
+// ending the cycle, since a restore window is a wait for exactly that to stop.
+func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdentity, repair func() bool, bo Backoff, restoring bool) (*ctlConn, cycleResult) {
 	start := bo.Now()
+	// The last attempt's outcome, so a restore window that runs out on a
+	// refusal reads as one rather than as an unreachable host.
+	refused := false
 	for attempt := 1; ; attempt++ {
 		// SIGTERM works by dropping the transport, so only the stop signal
 		// tells a detach from a link failure (see Config.Shutdown). Consulted
@@ -275,12 +391,16 @@ func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdent
 		}
 		d, ok := bo.Next(attempt, start)
 		if !ok {
+			if refused {
+				return nil, cycleRefused
+			}
 			fmt.Fprintf(os.Stderr, "daemon: %s still unreachable after %d reconnect attempt(s)\n", cfg.RemoteHost, attempt-1)
 			return nil, cycleExhausted
 		}
 		if Wait(d, cfg.Shutdown) {
 			return nil, cycleTerminal
 		}
+		refused = false
 		// Snapshotted per attempt, immediately before the dial whose argv reads
 		// it, so a retry that dials later records what IT dialled. Published
 		// with the connection below, or this path leaves Advertised naming a
@@ -312,16 +432,31 @@ func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdent
 		id, err := readIdentity(next.rt, cfg.RemoteSession)
 		live := disarm()
 		if err != nil {
-			if live {
-				next.close()
-			}
 			var ire *identityReadErr
 			if errors.As(err, &ire) && ire.Retry() {
+				// Drained before the close, which would cut the drain short
+				// of a refusal the pump has not yet delivered. A connection
+				// the deadline closed never reached tmux's answer at all.
+				if live {
+					if refusal, ok := next.attachRefusal(min(refusalDrainTimeout, cfg.identityTimeout())); ok {
+						fmt.Fprintf(os.Stderr, "daemon: %s refused the attach to %s (%s)\n", cfg.RemoteHost, cfg.RemoteSession, printable(refusal))
+						next.close()
+						refused = true
+						if !restoring {
+							return nil, cycleRefused
+						}
+						continue
+					}
+					next.close()
+				}
 				// The new connection died before answering — another drop,
 				// not a verdict on the remote. A deadline that expired lands
 				// here too, by closing the connection out from under the read.
 				fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
 				continue
+			}
+			if live {
+				next.close()
 			}
 			fmt.Fprintf(os.Stderr, "daemon: %v; tearing the mirror down\n", err)
 			return nil, cycleTerminal
@@ -333,10 +468,10 @@ func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdent
 			continue
 		}
 		if !want.matches(id) {
-			fmt.Fprintf(os.Stderr, "daemon: %s now hosts %s on a different tmux server (was pid %d %s, now pid %d %s); tearing the mirror down\n",
+			fmt.Fprintf(os.Stderr, "daemon: %s now hosts %s on a different tmux server (was pid %d %s, now pid %d %s); re-opening onto it\n",
 				cfg.RemoteHost, cfg.RemoteSession, want.pid, want.sessionID, id.pid, id.sessionID)
 			next.close()
-			return nil, cycleTerminal
+			return nil, cycleReplaced
 		}
 		next.bind(router)
 		hold.set(next)

@@ -56,28 +56,39 @@ path, which every caller already handles.
   reconnect.** `reattach` is involuntary: it runs off a connection drop,
   closes the dead one *before* it dials, sets `@bridge_state disconnected`
   for the outage, and — since #729 — parks rather than tearing the mirror
-  down when it cannot re-dial (below); only a stop, a mismatched or malformed
-  identity, or a `repair()` that empties the registry still runs
-  `kill-session`. `replaceConn` (#574) is voluntary: it runs off the
-  `prefix + I` carousel gesture wanting a fresher termname, dials, verifies
-  and primes the new client *before* touching the old one, never sets the
-  disconnected badge (the mirror is never actually down), and — unlike
-  `reattach` — abandons the attempt with the old connection still live and
-  published rather than risk the mirror over a nicety.
+  down when it cannot re-dial (below). Its endings (#817): a stop, a
+  malformed identity, an emptied registry, or a declined park still run plain
+  teardown (`kill-session`); an identity **mismatch** now **re-opens** a
+  fresh mirror onto the new server instead of ending the old one (below); a
+  **refused** attach that is still refused at the end of its restore window
+  ends in a **tombstone** (below). `replaceConn` (#574) is voluntary: it runs
+  off the `prefix + I` carousel gesture wanting a fresher termname, dials,
+  verifies and primes the new client *before* touching the old one, never
+  sets the disconnected badge (the mirror is never actually down), and —
+  unlike `reattach` — abandons the attempt with the old connection still live
+  and published rather than risk the mirror over a nicety; its mismatch
+  handling is unchanged, still abandoning rather than re-opening.
 - **Only a bare EOF is a drop.** `%exit` is the remote deliberately ending the
   client and is terminal, as is an emptied registry and a raised stop.
   Measured: `detach-client` and `kill-server` both make the control client see
   `%exit`; only killing the transport process gives the bare EOF. That is why
   the offline reconnect tests SIGKILL the transport child rather than
   detaching it — a test built on `detach-client` asserts teardown and fails a
-  correct daemon. The park tests (#729, `outage_start`) additionally make the
-  outage itself by moving the SRC session's socket aside rather than killing
-  its server (a dial then fails with ENOENT); moving it back restores the *same* server pid, so the identity
-  check a re-dial runs still matches, and anything the test needs to write to
-  SRC during the outage goes through `tmux -S <moved-path>` rather than the
-  now-absent live path. An exhausted retry budget is no longer terminal on its
-  own (#729): it parks instead (below), and only reaches teardown if the park
-  wait itself answers false — `Shutdown` or the local mirror session gone.
+  correct daemon. The park tests (#729, `outage_start`) additionally move the
+  SRC session's socket aside — **not** because that makes a dial fail: an
+  `attach-session` carries `CMD_STARTSERVER`, so tmux starts a fresh server on
+  the vacated path and answers `no sessions`, which is a *refused* attach, not
+  a drop (#817). The socket move is kept only so a write the test needs to
+  make to SRC during the outage goes through `tmux -S <moved-path>` rather
+  than the now-absent live path, and so moving it back restores the *same*
+  server pid the identity check compares against. To model an actual outage
+  — no control output at all, the production network-loss shape — the park
+  cases also set `OG_DAEMON_TEST_OUTAGE_FILE` (`--test-outage-file`,
+  test-local only): while that file exists the test-local dial runs `false`
+  instead of `tmux -C attach-session`. An exhausted retry budget is no longer
+  terminal on its own (#729): it parks instead (below), and only reaches
+  teardown if the park wait itself answers false — `Shutdown` or the local
+  mirror session gone.
 - **The local mirror session is another ending** (#680). A session that is gone
   is none of the above — the registry's window ids are remote and all still
   there, and the control connection is healthy — so the orphan kept its control
@@ -103,12 +114,88 @@ path, which every caller already handles.
   `newSessionPin`, so there is one authority for "which session are we on").
   `pid` + `session_id` are required and compared always; `start_time` is
   optional both ways, because tmux renders an unknown format as an empty field
-  and the remote may predate it. A reply that arrives and mismatches or is
-  malformed tears the mirror down — reconnecting into a rebooted server would
-  mirror another machine's output into panes the user believes are their
-  shells. A read that *EOFs* is a different thing: another drop, so it retries.
-  The first attach records and never tears down; if it cannot, reconnect is
-  disabled and the daemon stays single-shot.
+  and the remote may predate it. A read that *EOFs* is a different thing:
+  another drop, so it retries. The first attach records and never tears down;
+  if it cannot, reconnect is disabled and the daemon stays single-shot.
+  A **refused** attach is a verdict too (#817): the first reply block on a
+  fresh control connection is the reply to the transport's own
+  `attach-session` (flags 0, since this control client never sent it), and an
+  unflagged `%error` there (`can't find session: X`, `no sessions`) means the
+  remote answered and the pinned session is not on the server that did. Every
+  dial attaches `-t '=<session>'` exactly — `sshControlArgs`,
+  `testLocalDialArgv`, and the no-ssh branch in `cmd/daemon/main.go` all pin it
+  the same way — because tmux otherwise attaches by unique *prefix*, and a
+  re-open silently landing on a sibling session (`nix-config` for `nix`)
+  instead of refusing would be worse than the refusal itself; a missing exact
+  name is what turns a gone session into a refused attach rather than a wrong
+  one. `og-remote-open`'s remote probe canonicalizes a caller-given session
+  name to its real name before that exact attach ever runs (`sess_canon`, a
+  `list-windows -t "$sess" -F '#{session_name}'` on the remote): a prefix the
+  user typed becomes the session's actual name before the daemon,
+  `@bridge_session`, and the local mirror name ever see it; a name that
+  doesn't exist yet (`OG_REMOTE_RESTORE`/`OG_REMOTE_NEW_DIR`) stays the
+  caller's literal, since there is nothing yet to canonicalize against.
+  `attachWatch` records the refusal on the unverified round-trip
+  (`readReplyRouting` would otherwise drop it as a block nobody waits for),
+  and `attachRefusal` drains the rest of the connection through the same
+  recorder under a fresh deadline, because the tmux client has often already
+  exited before `readIdentity` writes to it (EPIPE, nothing ever read). The
+  refusal reaches stderr as `daemon: %s refused the attach to %s (%s)` with
+  the reason run through `printable` first — it is tmux's `%error` text,
+  carried from a server this process does not control. Before #817 this read
+  as just another EOF, so a remote whose tmux server restarted without the
+  pinned session parked forever. A refusal opens one bounded **restore
+  window** (`RestoreBackoff`, 60s): with tmux-remux `restoreMode = auto` a
+  restarted server restores its sessions moments after it starts, so the
+  window catches that; with `restoreMode = off` (the default) nothing brings
+  the session back and the window only delays the ending by a minute.
+  A reply that arrives malformed tears the mirror down; one that arrives and
+  **mismatches** tears the *old* mirror down and `Run` **re-opens** a
+  fresh one onto the new server — `runMirror` again, the same first-open code
+  path, in the same local session (reset to one `sleep` placeholder window;
+  every old window is killed by id before the new connection exists; the
+  pidfile is kept so `og-remote-detach` still SIGTERMs this daemon) — so the
+  new server's output never reaches the old panes, registry or renderers. The
+  second dial is deliberate: reusing the connection that answered the
+  mismatch would hand a verified-foreign stream to a half-built mirror.
+  **The local mirror session is pinned once, at startup**, as (local server
+  `#{pid}`, `$id`) rather than by name (`pinLocalSession`/`localPin`,
+  `ownership.go`) — a bare name is not an identity: tmux prefix-resolves a
+  gone name onto a sibling, a recreated namesake gets a new `$id`, and a
+  restarted server reuses `$0`, hence the pid beside it. Every destructive
+  step this reconnect path takes — the placeholder reset above, the
+  tombstone below, and the rebuild's own kill/pidfile cleanup — targets `$N`,
+  never the name, and runs only when `display-message -t $N
+  '#{pid}|#{session_id}'` (`ownsLocalSession`) echoes the pin exactly;
+  anything else leaves the session alone. A rebuild whose dial finds the
+  session no longer its own — `og-remote-open` read the listener-less daemon
+  as dead during the rebuild's one gap with no listener up, and recreated the
+  session under a daemon of its own — returns `errNotOurs` and ends the loop
+  without touching that session or its socket. A rebuild that fails before
+  its own mirror stands is **not retried**: the bounded restore-window wait
+  already ran inside the *replaced* run, in `reattach`, while it still held
+  its listener, and a retry here would only widen the ownership gap above —
+  instead it is tombstoned with the "could not re-open … on the restarted
+  tmux server" text (`reopenFailedText`). An error `runMirror` returns after
+  its own teardown has already run (`tornDown`) passes through `runLoop`
+  untouched — that session is already reset or killed, so there is nothing
+  left for the loop itself to do to it. (Teardown's plain
+  `kill-session -t cfg.LocalSess`, `unregisterResizeNudge`,
+  `clearBridgeRes`/`clearBridgeUsage` and `setBridgeState` are pre-existing
+  bare-name sites this pin does not reach — unset-only, except `kill-session`
+  — and stay out of scope here; they still prefix-resolve once the session is
+  gone.) The reopened mirror's "fresh server" notice waits for the first viewer (the
+  park's own focus edge, plus a 15s recheck backstop) rather than firing into
+  an empty session. A refusal still standing at the end of the restore window
+  ends in a **tombstone**: `host-sess` is reset to one `sh` window explaining
+  the session is gone, `remain-on-exit off` (so Enter closes it),
+  `@bridge_sock`/`@bridge_state` unset (nothing answers, nothing is dialling)
+  while `@bridge_host`/`@bridge_session` are kept, so `og-remote-open`'s pair
+  lookup still recognises the session and replaces it on the next open; the
+  daemon exits. Both the placeholder and the tombstone window carry no
+  `@bridge_win`, so local scripts treat them as ordinary windows, and a
+  tmux-remux save can resurrect a tombstone after a local restart —
+  `og-remote-open` already discards that as a ghost on the next open.
 - **Repair order is load-bearing and every error in it is silent**: reset the
   converger wholesale (it caches what *this* client told the remote, and
   `watchResize` records before it sends, so a resize during the outage left it
@@ -142,16 +229,20 @@ path, which every caller already handles.
   only stop the handle it can see. The shippers' own rows survive a reattach
   untouched; what does not is the subscription, which is why repair re-sends it.
 - **`@bridge_state`** is a session option the daemon alone writes:
-  `disconnected` while a retry cycle is running — the initial drop or a wake —
-  `parked` once that cycle's schedule is exhausted and the daemon is waiting on
-  the user instead of dialing (#729), unset otherwise. Stamped before the
-  first dial so the badge appears within a status tick, cleared only after the
-  reseed — a stale screen the user knows is stale is a paused mirror; one they
-  don't is a lie. `tmux-statusline` still renders `disconnected` in red beside
-  `@bridge_host`; `parked` renders in the theme's overlay colour as "offline —
-  press a key" so it reads as a waiting state rather than an error in
-  progress, and a wake re-stamps `disconnected` for its own cycle before the
-  next park (or a live connection) overwrites it.
+  `disconnected` while a retry cycle is running — the initial drop, a wake, or
+  the restore window a refusal opens (#817) — `parked` once that cycle's
+  schedule is exhausted and the daemon is waiting on the user instead of
+  dialing (#729), unset otherwise. Stamped before the first dial so the badge
+  appears within a status tick, cleared only after the reseed — a stale
+  screen the user knows is stale is a paused mirror; one they don't is a lie.
+  `tmux-statusline` still renders `disconnected` in red beside `@bridge_host`;
+  `parked` renders in the theme's overlay colour as "offline — press a key" so
+  it reads as a waiting state rather than an error in progress, and a wake
+  re-stamps `disconnected` for its own cycle before the next park (or a live
+  connection) overwrites it. A parked mirror's own probe (#817) is the one
+  exception: it leaves `parked` up rather than round-tripping through
+  `disconnected`, so a background probe that finds nothing does not flicker
+  the badge.
 - **Budget exhaustion parks the mirror instead of tearing it down** (#729).
   `reattach` is a loop of `attemptCycle`s on a shared dial/verify/repair body;
   on `cycleExhausted` it calls `park`, which stamps `@bridge_state parked`,
@@ -178,22 +269,37 @@ path, which every caller already handles.
   the resize-nudge file's mtime the existing session hooks already touch, and
   only the false→true transition on "is any local client's `client_session`
   this mirror" wakes it — a user already looking at it when it parks is not
-  re-woken by reflow's own touches of that file), `cfg.Shutdown`, and the
+  re-woken by reflow's own touches of that file), a probe ticker (#817,
+  `parkProbeInterval`, 2 minutes — see below), `cfg.Shutdown`, and the
   session-lifetime `loopTick`'s `sessionGoneTracker` observation (#680) —
   parked is unbounded and `runConn`'s own tick is not running, so the
-  local-session-gone probe has to run here too. A wake restamps
-  `disconnected` and retries on a short `WakeBackoff` (500ms/5s ceiling/30s
-  budget/10 attempts) rather than the full retry schedule; exhausting that
-  re-parks, uncapped, since each cycle is user-triggered. Only `Shutdown` or
-  the session going away make `park` answer false and fall through to the
-  same teardown exhaustion ran unconditionally before #729 — every other
-  ending (mismatched/malformed identity, a `repair()` that empties the
-  registry) is still reached from inside the next dial, never from parking
-  itself. `cmd/daemon` exposes `--retry-max-elapsed`/`--wake-max-elapsed`
-  (env `OG_DAEMON_RETRY_MAX_ELAPSED`/`OG_DAEMON_WAKE_MAX_ELAPSED`) purely so
-  the bats suite can exhaust either budget in seconds instead of the
-  production 10 minutes / 30s; those tests drive the outage itself by
-  SIGKILLing the transport and moving SRC's socket aside (above).
+  local-session-gone probe has to run here too. `park` returns one of three
+  `parkVerdict`s rather than a bool (#817): `parkWoken` for a keypress or
+  focus edge, which restamps `disconnected` and retries on a short
+  `WakeBackoff` (500ms/5s ceiling/30s budget/10 attempts) rather than the full
+  retry schedule — exhausting that re-parks, uncapped, since each cycle is
+  user-triggered; `parkProbe` for the probe ticker firing, which runs one
+  silent single-attempt cycle on `probeBackoff` (`MaxAttempts 1`, no delay) —
+  an offline host fails that ssh at once, a black-holed one costs at most one
+  ssh process for the identity deadline; keys pressed while that probe's dial
+  is in flight are dropped, since the waker is disarmed for the duration; and
+  `parkStop` for `Shutdown` or the session going away, which is the only
+  verdict that still falls through to the same teardown exhaustion ran
+  unconditionally before #729 — every other ending (a mismatch that re-opens,
+  malformed identity, a `repair()` that empties the registry, a refusal that
+  outlasts the restore window) is still reached from inside the next dial,
+  never from parking itself. A re-park straight after a failed probe skips
+  both the re-dim and the log line — the windows are still dimmed and the
+  badge still `parked` from before the probe — tracked by `afterProbe`, a
+  flag consumed at park entry and cleared by the attach loop once a probe
+  actually reconnects. `cmd/daemon` exposes `--retry-max-elapsed`/
+  `--wake-max-elapsed`/`--restore-max-elapsed`/`--park-probe-interval` (env
+  `OG_DAEMON_RETRY_MAX_ELAPSED`/`OG_DAEMON_WAKE_MAX_ELAPSED`/
+  `OG_DAEMON_RESTORE_MAX_ELAPSED`/`OG_DAEMON_PARK_PROBE_INTERVAL`) purely so
+  the bats suite can exhaust any of those budgets, or the probe cadence, in
+  seconds instead of the production 10 minutes / 30s / 60s / 2 minutes; those
+  tests drive the outage itself by SIGKILLing the transport and moving SRC's
+  socket aside, now alongside `OG_DAEMON_TEST_OUTAGE_FILE` (above).
 - **The `ControlMaster` path is per-dial, not pid-derived-and-fixed** (#574),
   owned by the `child` that dialled it rather than captured in a closure: the
   graphics fetcher and the paste upload both read it through
@@ -246,7 +352,7 @@ is the one requirement that reports itself: the asking side prints
 - **An output frame dropped to a full sink buffer is repaired by a re-seed**, not by the next `%output`. The drop stays deliberate — blocking the control-stream loop on one stalled renderer stalls every pane with it — but terminal output is positional, so a frame lost mid-repaint leaves those cells wrong until something overwrites them, which on an agent pane that just finished a turn can be the rest of the turn (#412). The sink counts drops; `reseedDropped` pushes `capture-pane` ground truth from the main loop (the only place a round-trip may run), and only once that pane has drained — re-seeding a congested pane is a whole extra screen on a queue already behind. A *paused* pane is exempt: its `%continue` already owes it a seed.
 - **A command that runs further commands of its own takes a barrier.** The reply accounting (`stream.claim`) pairs the Nth client-flagged `%begin/%end` block with the Nth command written, but an `if-shell`'s branch runs as more commands of the *same* client and each guards a flagged block of its own — one command in, 1+N blocks out, N not even constant (a failing branch command aborts the rest of its list). The count then ran ahead for the rest of the connection: the `tool` verb's (#679) reconcile read the branch's empty block as its layout (`empty layout reply`), so the remote float never reached the mirror until a reattach reset the counters (#715). `stampAll` therefore writes a `display-message -p og-fanout-<n>` barrier behind **every** command, and `claim` gives no ordinal to the blocks between a command's own reply and its barrier's (recognised by body). The barrier was at first armed only for `if-shell`/`if`, keyed on the leading verb — but that is an enumeration, and the thing being enumerated is tmux's, not ours: measured on next-3.9, one control client, `run-shell -C` answers with **two** client-flagged blocks and matched no verb list this daemon had, while nothing anywhere compares `s.seen` against `s.sent`, so the next such verb would have reproduced #715 with no diagnostic naming the cause (#723). Arming it unconditionally is what removes the list: `claim`'s swallow window is not an N-block assumption — it consumes whatever arrives until the barrier — so an unforeseen fan-out is inert rather than silently poisoning the connection. The cost is one extra `display-message -p` per command, against a stream that carries `%output` in megabytes. A `run-shell -b` verb would need no barrier either way, since its script's own `tmux` calls answer a different client.
 - **Mouse input crosses the bridge as bytes; mouse *mode* crosses it in the seed (#757, #794).** Local tmux forwards a click, wheel or drag to a pane only when that pane's own screen has a mouse mode set (`input_key_mouse`), and the default and better-mouse-mode `WheelUpPane` binds route on `#{mouse_any_flag}` — otherwise the wheel enters local copy-mode. When the mode is set, local tmux encodes the report relative to the renderer pane in the pane's own encoding (X10 1000, SGR 1006, UTF-8 1005), the renderer forwards stdin verbatim, and `pumpInput` writes it to the remote pane with `send-keys -H`: renderer and remote pane have identical dims (a float's layout cell is its inner box), so no coordinate translation or re-encoding exists or is needed. The renderer pane learns modes only from DECSET bytes it is handed, so a live stream is not enough: a program that enabled the mouse before the mirror attached, a `respawn-pane -k` adopted by `rebindRenderer` (`screen_reinit` resets the mode), a heal/`resetWindow` rebuild, and a `%pause` or dropped-frame gap all hand the pane a seed with no live DECSET behind it. So `PaneSeeds` reads `#{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag}` in the same `display-message` as the cursor, and `render.Seed` first clears every mouse mode, then sets the true ones: without the clear, a remote mouse-off lost in a gap would leave the mirror forwarding clicks as garbage into whatever runs next; without the set, the wheel falls through to local copy-mode. The same clear-then-set covers the alt screen (`?1049`) and application cursor keys (`?1`): a mode the remote turned off during a gap would otherwise leave the local pane stuck in an alt screen the remote already exited, so `render.Seed` emits `?1049l`/`?1l` unconditionally and `?1049h`/`?1h` only when the remote reports them on (#803). Both flags are part of the four-field cursor reply every seed is built from, so the clear is unconditional; it runs before the `2J`/captured repaint, since `?1049l` restores the saved main screen. Bracketed paste (`?2004`) and focus reporting (`?1004`) take the same clear-then-set, read from one `#{pane_private_modes}` field in that same `display-message` (#804): tmux has no per-mode focus format, and its bracketed-paste scalar is `#{bracket_paste_flag}` (not the `#{bracketed_paste_flag}` the issue guessed) — the comma-separated private-mode list is the one field carrying both, added in tmux 3.8, and mixing a 3.7-available scalar for one mode with an unreadable other would need a partial-known state, so the pair is read and seeded atomically. A remote that predates the format drops the field (`strings.Fields`), and unknown is not off here either: the seed leaves both modes alone rather than clearing a paste/focus the mirror may still need. Unknown is not off for the mouse: a reply that errors or lacks any of the nine fields (a remote tmux missing a format expands it empty) leaves the local mouse modes alone, while a four-field reply still places the cursor. Every seed path — tiled panes and floats (`seedRenderer`) alike — goes through `PaneSeeds`, so this is the one place the rule lives.
-- **A window-set operation's local execs route `%output`; a pane-shaping one's do not (#808).** The main goroutine is the stream's only reader, and a `cfg.LocalTmux` exec is a fork plus a local-server round-trip (a `new-window` measured 23–51 ms). While one ran, `%output` sat in the pump, so every mirrored window add or remove froze keystroke echo for ~40–65 ms, the length of `addWindow`'s create/stamp and shaping exec runs. `Run` now builds `flowCfg := cfg.routing(…)`, whose exec-backed hooks (`LocalTmux`, `LocalTmuxOut`, `LocalArea`, `Reflow`, `LocalPanes`) run through `routeWhile`: the exec moves to a helper goroutine, and the main goroutine keeps reading the stream with `waitHellos`' semantics — claim every line, route `%output`, queue other notifications for `settle`, drop replies nobody awaits. `flowCfg` goes only to operations on whole mirror windows: startup/`settle`/`repair` `reconcileWindows`, and dispatch of `%window-add`, `%window-close` and `%window-renamed`. None of them reshapes a pane that already has a sink: a new window's panes register only after their capture reply, `closeWindow` unregisters before its `kill-window`, and `setupWindow`'s trailing `reconcileFloats` on a fresh window only adds overlay floats. Everything pane-shaping keeps the plain `cfg` — layout reconcile, `resetWindow`, heals, reseeds: on `reconcileLayoutFrom`'s geometry-only path no output is routed between the `%layout-change` and the local `select-layout`, and routing during that exec would paint post-reshape bytes into a pane still at the old size. The labels/agents flushes stay out too: they run after the pass's `settle`, and the blocking `select` has no arm for a non-empty async queue, so a `%pause` they queued would wait for the next line. `tests/remote-m2-integration.bats` pins it end to end with a `tmux` wrapper that stalls the daemon's local `new-window` for 4s while the mirror must still paint live output. Its scope guard, "a geometry-only layout change still holds live output until the local reshape lands", slows the local `select-layout` instead: output behind the reshape must stay held until it lands.
+- **A window-set operation's local execs route `%output`; a pane-shaping one's do not (#808).** The main goroutine is the stream's only reader, and a `cfg.LocalTmux` exec is a fork plus a local-server round-trip (a `new-window` measured 23–51 ms). While one ran, `%output` sat in the pump, so every mirrored window add or remove froze keystroke echo for ~40–65 ms, the length of `addWindow`'s create/stamp and shaping exec runs. `runMirror` now builds `flowCfg := cfg.routing(…)`, whose exec-backed hooks (`LocalTmux`, `LocalTmuxOut`, `LocalArea`, `Reflow`, `LocalPanes`) run through `routeWhile`: the exec moves to a helper goroutine, and the main goroutine keeps reading the stream with `waitHellos`' semantics — claim every line, route `%output`, queue other notifications for `settle`, drop replies nobody awaits. `flowCfg` goes only to operations on whole mirror windows: startup/`settle`/`repair` `reconcileWindows`, and dispatch of `%window-add`, `%window-close` and `%window-renamed`. None of them reshapes a pane that already has a sink: a new window's panes register only after their capture reply, `closeWindow` unregisters before its `kill-window`, and `setupWindow`'s trailing `reconcileFloats` on a fresh window only adds overlay floats. Everything pane-shaping keeps the plain `cfg` — layout reconcile, `resetWindow`, heals, reseeds: on `reconcileLayoutFrom`'s geometry-only path no output is routed between the `%layout-change` and the local `select-layout`, and routing during that exec would paint post-reshape bytes into a pane still at the old size. The labels/agents flushes stay out too: they run after the pass's `settle`, and the blocking `select` has no arm for a non-empty async queue, so a `%pause` they queued would wait for the next line. `tests/remote-m2-integration.bats` pins it end to end with a `tmux` wrapper that stalls the daemon's local `new-window` for 4s while the mirror must still paint live output. Its scope guard, "a geometry-only layout change still holds live output until the local reshape lands", slows the local `select-layout` instead: output behind the reshape must stay held until it lands.
 - **`routeWhile` stops reading at a reply a round-trip may still read (#808).** This is `stream.parked`, a one-slot reply buffer, unrelated to the reconnect `parked` state above. `newRoundTrip` raises `stream.awaitHigh` to its batch's last ordinal; a reply at or below it (a lazy `PaneSeeds` batch whose `next()` has not run) goes into the one-slot `stream.parked`, and `routeWhile` stops reading for the rest of the exec — output behind that reply must not reach a pane before its seed. `readReplyRouting` checks the slot first (returns it on `want`, drops an earlier ordinal the old walk would have dropped), `routeWhile` reads nothing while it is occupied, and `runConn` clears it at every pass top, where no reader can still want it. A `%layout-change` stops it the same way: the output behind that notice was drawn after the remote reshape, so it waits for `settle`'s local `select-layout`. `routeWhile` queues the notice, stops, and reads nothing while the async queue still holds one (`asyncQueue.holdsLayoutChange`), so a later exec in the same operation cannot read past it either. Round-trips inside the operation still do: that is the read-first transient, unchanged. `routeWhile` is correct on the main goroutine only — a second concurrent reader reorders lines — so `flowCfg` never reaches another goroutine: `paster()` swaps back to `Config.plain` before building the paste handler, the one closure these paths hand off. `settle` pops each notice off the async queue only as its dispatch starts (`asyncQueue.drain`), so an undispatched `%layout-change` behind the notice being dispatched stays visible to that gate. The stop rules are pinned by the `routedexec_test.go` unit tests: `TestRouteWhileParks*`, `TestRouteWhileStopsAtLayoutChange`, `TestRouteWhileSkipsReadingBehindQueuedLayoutChange` and `TestDrainHoldsStreamBehindUndispatchedLayoutChange`.
 - **A batched round-trip must deliver each pane's result before reading the next pane's reply.** Control-mode replies come back in issue order, so `PaneSeeds` writes every command before reading any of them — one round-trip for a whole window instead of two per pane (#430). But `readReplyRouting` routes live `%output` into registered sinks *as it walks past reply blocks*, so reading all the replies and only then enqueueing the seeds would hand a pane its `FrameOutput` before the `FrameSeed` that predates it — a full repaint with stale content, the same defect class as #233/#412/#417. Hence the `replies` iterator rather than a returned slice: a caller cannot reach pane B's reply without an explicit `next()`, so the per-pane `onSeed` delivery is the shape of the code. Nothing inside that callback may issue a round-trip of its own — a nested one takes a later ordinal, and the reply reader discards the batch's remaining blocks hunting for it. A batch is bounded by one session's panes, orders below the transport buffer, so writing it without interleaved reads cannot wedge on backpressure.
 - **Zoom crosses the bridge as a ctl verb, not a local `resize-pane -Z`.** A local zoom does grow the renderer pane, and it sticks — but it does not touch the remote pane, so the remote program keeps rendering at its old size and the rows it gained are dead space. Measured on a 150x40 two-pane mirror: local zoom gives `dst 150x39` against `src 150x19`; the `zoom` verb gives `150x39` on both. `prefix + z` therefore sends the verb, and the mirror learns the state from `#{window_layout}` and the zoom flag (the `Z` in `window_raw_flags`) carried in the `%layout-change` notification itself (`<window-id> <window_layout> <window_visible_layout> <window_raw_flags>`, `control-notify.c:79`), not a fresh `readLayout` round-trip: `reconcileLayoutFrom` gates the notification, and a line that reports nothing the mirror doesn't already reflect — a duplicate, an echo of the daemon's own verb, the trailing line of a push/pop-zoom bracket — returns with zero remote round-trips, while a geometry-only reshape (same panes, same floats, zoom flag off) is applied straight from the notification's layout string with none either — regardless of whether the window holds a mirrored float, since the tiled-only `select-layout` leaves every float where it is. A zoom transition and any pane-set or float change still fall through to `reconcileLayout`'s read-first entry, because `window_push_zoom`/`window_pop_zoom` bracket structural commands with transient unzoomed lines and a stale structural line applied verbatim would do renderer surgery on a pane the remote has already closed. The live dispatch path is left uncoalesced on purpose — the trailing re-read, not a coalesce pass, is what corrects a notification the remote has already moved past (#570). **tmux exposes zoom only as a toggle, so reconcile asserts the remote flag on the mirror with an idempotent `if -F` after `applyLayout` (which may unzoom via `select-layout`) and before FrameResize/reseed — never a bare toggle, and never a per-reconcile `display-message` of local state.** Zoom-on targets the tiled pane rendering `remoteActive` (skipped when that pane is a float, #517); unzoom targets the window. Last successfully asserted flag lives in `mirrorWindow.appliedZoom` for dedup against `readLayout`'s remote flag. The ctl `zoom` verb still owns the remote side. `#{window_layout}` stays the **unzoomed** geometry deliberately: `#{window_visible_layout}` reports a zoomed window as single-pane, and reconcile would read the hidden panes as closed and kill their renderers on every toggle. A zoom made by any other client on the remote follows too: tmux emits `%layout-change` for one, even though `#{window_layout}` itself is unchanged by it — which is why reconcile's trailing re-read compares the zoom flag alongside the layout string (#413).
