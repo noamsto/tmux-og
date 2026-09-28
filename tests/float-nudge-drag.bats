@@ -94,14 +94,10 @@ stamp() { $DST display-message -p -t "$FLOAT" '#{@float_geom}'; }
 		sleep 0.1
 	done
 	[[ $after != "$before" ]]
-	# The stamp was rewritten (a percentage field stays a percentage), and a
-	# refit at this same window size leaves the dragged size alone.
+	# The drag end handed the stashed pane to tmux-float-nudge: the stamp was
+	# rewritten from the dragged geometry (a percentage field stays a percentage)
+	# and the float marked current for the window — which is what keeps a later
+	# tmux-float-refit from reverting it (float-refit.bats covers that skip).
 	[[ "$(stamp)" == *%* ]]
-	local stamp_before
-	stamp_before="$(stamp)"
-	$DST display-message -p -t "$FLOAT" '#{@float_geom}'
-	bash scripts/tmux-float-refit.sh "$($DST display-message -p -t host-sess '#{window_id}')"
-	[[ "$(geom)" == "$after" ]]
-	[[ "$(stamp)" == "$stamp_before" ]]
 	[[ "$($DST display-message -p -t "$FLOAT" '#{@float_refit_size}')" == "$($DST display-message -p -t host-sess '#{window_width}x#{window_height}')" ]]
 }
