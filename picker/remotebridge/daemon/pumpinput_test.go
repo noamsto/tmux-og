@@ -605,7 +605,7 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 			}
 
 			sendCh := make(chan string, 8)
-			go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, mode)
+			go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, func() *mouseModeTracker { return mode })
 
 			peer.SetDeadline(time.Now().Add(5 * time.Second))
 			if err := wire.WriteFrame(peer, wire.FrameInput, []byte(frame)); err != nil {

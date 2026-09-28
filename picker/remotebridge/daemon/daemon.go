@@ -1736,7 +1736,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 
 	for i, remotePane := range paneIDs {
 		if wired[i] {
-			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseMode(router, remotePane))
+			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, remotePane))
 			continue
 		}
 		// A sole pane's failure is fatal: this error is what makes addWindow /
@@ -1748,7 +1748,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
-		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseMode(router, remotePane))
+		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, remotePane))
 	}
 
 	// A window that already holds a float when the bridge opens mirrors it now
@@ -2374,7 +2374,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
 	seedRenderer(rt, router, hc.conn, hc.paneID, rendererDims(mw, hc.paneID), cfg.graphicsFor(hc.paneID))
-	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseMode(router, hc.paneID))
+	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, hc.paneID))
 }
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
@@ -2761,13 +2761,21 @@ var escCarryGrace = 50 * time.Millisecond
 
 // sinkMouseMode returns the mouse-mode tracker of paneID's registered renderer
 // sink, or nil when the pane has no sink. The sink is registered synchronously
-// before its pumpInput starts (wireRenderer, then the pump), so this lookup
-// cannot race a rebind.
+// before its pumpInput starts (wireRenderer, then the pump).
 func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
 	if s := router.sink(paneID); s != nil {
 		return &s.mouse
 	}
 	return nil
+}
+
+// sinkMouseResolver returns a per-frame lookup of paneID's tracker. pumpInput
+// binds the resolver, not a tracker: resetWindow's revival path registers a
+// fresh outputSink on the surviving conn while the pump keeps reading it, so a
+// one-time lookup would leave the classifier on the replaced sink's frozen
+// state.
+func sinkMouseResolver(router *Router, paneID string) func() *mouseModeTracker {
+	return func() *mouseModeTracker { return sinkMouseMode(router, paneID) }
 }
 
 // pumpInput forwards conn's FrameInput frames to the remote pane as
@@ -2789,7 +2797,7 @@ func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
 // seen fires for every input frame, before it is forwarded: it is what wakes a
 // parked mirror (Config.InputSeen). The keystroke itself is not held for the
 // reconnect — send fails closed with no connection, as it does for any outage.
-func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func(), mode *mouseModeTracker) {
+func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func(), mode func() *mouseModeTracker) {
 	// Read the grace once, before the reader goroutine exists, so the mutable
 	// package var is never read concurrently with a test that sets it.
 	grace := escCarryGrace
@@ -2830,8 +2838,14 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		}
 		// isDismissKey is documented for a non-empty slice; paste.handle can
 		// return an empty one when it swallows the payload (paste.go).
-		if len(payload) > 0 && isDismissKey(payload, mode) {
-			send(deadKeyCmd(remotePane))
+		if len(payload) > 0 {
+			var m *mouseModeTracker
+			if mode != nil {
+				m = mode()
+			}
+			if isDismissKey(payload, m) {
+				send(deadKeyCmd(remotePane))
+			}
 		}
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
 			send(strings.Join(args, " "))

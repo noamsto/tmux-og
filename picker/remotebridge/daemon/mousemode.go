@@ -63,6 +63,14 @@ func (t *mouseModeTracker) Feed(p []byte) {
 			return
 		}
 		if b[i+1] != '[' {
+			if b[i+1] == 'c' {
+				// RIS resets the pane's screen, mouse modes included, so the
+				// 1005 flag goes clear. This is output, where ESC c is RIS (not
+				// Alt-c as on the input side).
+				t.state.Store(mouseModeLegacy)
+				i += 2
+				continue
+			}
 			i++ // ESC + one byte (Alt) or ESC ESC
 			continue
 		}
@@ -74,25 +82,36 @@ func (t *mouseModeTracker) Feed(p []byte) {
 			i++ // some other CSI; the byte scan moves past its introducer
 			continue
 		}
+		// A private set/reset is a ';'-separated param list ended by h or l.
+		// tmux applies every param, so a combined ESC[?1000;1005h must be seen
+		// as setting 1005 — not only the single-param form.
 		j := i + 3
-		start := j
-		for j < len(b) && b[j] >= '0' && b[j] <= '9' {
+		set1005 := false
+		for {
+			start := j
+			for j < len(b) && b[j] >= '0' && b[j] <= '9' {
+				j++
+			}
+			if j >= len(b) {
+				t.carryTail(b, i)
+				return
+			}
+			if j > start {
+				if n, err := strconv.Atoi(string(b[start:j])); err == nil && n == 1005 {
+					set1005 = true
+				}
+			}
+			if b[j] != ';' {
+				break
+			}
 			j++
-		}
-		if j >= len(b) {
-			t.carryTail(b, i)
-			return
-		}
-		if j == start {
-			i++ // "?h"/"?l" with no number
-			continue
 		}
 		final := b[j]
 		if final != 'h' && final != 'l' {
-			i++ // parameter bytes we do not track, e.g. "?1000;1006h"
+			i++ // not a set/reset we track, e.g. a query
 			continue
 		}
-		if n, err := strconv.Atoi(string(b[start:j])); err == nil && n == 1005 {
+		if set1005 {
 			if final == 'h' {
 				t.state.Store(mouseModeUTF8)
 			} else {

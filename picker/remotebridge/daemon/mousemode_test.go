@@ -17,6 +17,10 @@ func TestMouseModeTracker(t *testing.T) {
 	}{
 		{"set", [][]byte{[]byte("\x1b[?1005h")}, true, true},
 		{"reset", [][]byte{[]byte("\x1b[?1005l")}, false, true},
+		{"combined set", [][]byte{[]byte("\x1b[?1000;1005h")}, true, true},
+		{"combined reset", [][]byte{[]byte("\x1b[?1005;1000l")}, false, true},
+		{"combined other params stay unknown", [][]byte{[]byte("\x1b[?1000;1006h")}, false, false},
+		{"ris clears a set flag", [][]byte{[]byte("\x1b[?1005h\x1bc")}, false, true},
 		{"split across feeds", [][]byte{[]byte("\x1b[?10"), []byte("05h")}, true, true},
 		{"esc alone at the end", [][]byte{[]byte("\x1b"), []byte("[?1005h")}, true, true},
 		{"unrelated modes stay unknown", [][]byte{[]byte("\x1b[?1006h\x1b[?25l")}, false, false},
