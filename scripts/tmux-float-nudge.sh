@@ -5,11 +5,12 @@
 #   tmux-float-nudge.sh <pane-id> <L|R|U|D> [step]   nudge by step (default 5)
 #   tmux-float-nudge.sh <pane-id> stamp              rewrite @float_geom only
 #
-# Upstream resize-pane on a float only ever GROWS it: -L/-U flip which edge
-# moves, never the sign, and nothing clamps — holding M-Left walks a float off
-# the left of the window. It also keeps no memory of @float_geom, so a float
-# tmux-float-refit refits is always the creation percentages: a hand resize that
-# does not rewrite the stamp is reverted by the next window-resized.
+# Upstream resize-pane on a float only ever GROWS it: -L/-U pick which edge
+# moves, they do not invert the size change, and nothing clamps — holding
+# M-Left walks a float off the left of the window. It also keeps no memory of
+# @float_geom, so a float tmux-float-refit refits is always the creation
+# percentages: a hand resize that does not rewrite the stamp is reverted by
+# the next window-resized.
 #
 # So this script owns both halves. `dir` resizes by step inside the window —
 # grow toward the pressed direction while step cells of room remain, else shrink
