@@ -99,6 +99,10 @@ type Config struct {
 	// re-published on change by watchLocalClient below, and re-asserted on
 	// every reconnect by repair().
 	View *Viewing
+	// plain holds the unwrapped hooks under a routing Config (#808):
+	// routing() stashes the original here so anything handing cfg to another
+	// goroutine can restore them — routeWhile is main-goroutine only.
+	plain *Config
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -470,6 +474,21 @@ type stream struct {
 	// fans is the FIFO of if-shell commands whose branch replies are still
 	// being swallowed; see fanout.
 	fans []fanout
+	// awaitHigh is the highest command ordinal any round-trip batch has asked
+	// to read, raised in newRoundTrip after stampAll. routeWhile parks a reply
+	// at or below it rather than dropping it: it may belong to a batch whose
+	// next() hasn't run yet (PaneSeeds' iterator reads lazily). Fire-and-forget
+	// sends never raise it.
+	awaitHigh uint64
+	// parked is the one reply routeWhile set aside to keep reading; see park.
+	parked *parkedReply
+}
+
+// parkedReply is the reply routeWhile parked instead of routing: seq is the
+// ordinal claimSeq gave it, l the line itself.
+type parkedReply struct {
+	seq uint64
+	l   controlmode.Line
 }
 
 // fanout marks one command written with its own barrier behind it. tmux runs
@@ -578,6 +597,62 @@ func (s *stream) close() {
 	s.mu.Unlock()
 }
 
+// awaitUpTo raises awaitHigh to seq, monotonically: a later batch's floor
+// never retreats one an earlier batch already set.
+func (s *stream) awaitUpTo(seq uint64) {
+	s.mu.Lock()
+	if seq > s.awaitHigh {
+		s.awaitHigh = seq
+	}
+	s.mu.Unlock()
+}
+
+// awaited reports whether seq may still be read by some batch's next(): a
+// nonzero ordinal at or below awaitHigh.
+func (s *stream) awaited(seq uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return seq != 0 && seq <= s.awaitHigh
+}
+
+// park sets aside the one reply routeWhile stopped reading at.
+func (s *stream) park(seq uint64, l controlmode.Line) {
+	s.mu.Lock()
+	s.parked = &parkedReply{seq: seq, l: l}
+	s.mu.Unlock()
+}
+
+// takeParked returns the parked reply and clears the slot, so a stale or
+// matched reply is never handed out twice.
+func (s *stream) takeParked() (parkedReply, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.parked == nil {
+		return parkedReply{}, false
+	}
+	p := *s.parked
+	s.parked = nil
+	return p, true
+}
+
+// parkedSeq reports the parked reply's ordinal, 0 when the slot is empty.
+func (s *stream) parkedSeq() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.parked == nil {
+		return 0
+	}
+	return s.parked.seq
+}
+
+// dropParked discards a parked reply without returning it, for a point where
+// no round-trip is in flight that could still read it.
+func (s *stream) dropParked() {
+	s.mu.Lock()
+	s.parked = nil
+	s.mu.Unlock()
+}
+
 // newRoundTrip builds the roundTrip seam over one control connection: the whole
 // batch is written first, then each next() reads the reply block of the next
 // command in issue order.
@@ -586,6 +661,12 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 		seqs, ok := st.stampAll(cmds...)
 		if !ok {
 			return func() (controlmode.Line, bool) { return controlmode.Line{}, false }
+		}
+		// Raise the floor before any reply is read: routeWhile checks it on
+		// every line off the stream, including one that arrives before this
+		// batch's own next() has run once (PaneSeeds' iterator reads lazily).
+		if len(seqs) > 0 {
+			st.awaitUpTo(seqs[len(seqs)-1])
 		}
 		i := 0
 		return func() (controlmode.Line, bool) {
@@ -759,6 +840,16 @@ func Run(cfg Config) error {
 	// started from a copy of cfg taken after this point.
 	waker := newParkWaker()
 	cfg.InputSeen = waker.poke
+	// Window-set operations (reconcile, add, close, rename) run their local
+	// execs under routeWhile so %output keeps flowing to the renderers;
+	// pane-shaping paths keep cfg. See routeWhile and Config.routing.
+	flowCfg := cfg.routing(func(fn func()) {
+		if c := hold.get(); c != nil {
+			c.routeWhile(fn)
+			return
+		}
+		fn()
+	})
 	// The listener outlives a drop, so a keybind pressed mid-outage reaches
 	// here and gets nacked by the closed stream rather than hanging. The nack
 	// must carry a non-empty error or the keybind claims a gesture landed that
@@ -955,7 +1046,7 @@ func Run(cfg Config) error {
 	// tmux-og host, on every automatic-rename tick) would otherwise keep the
 	// name it happened to have at attach for the life of the mirror. Reconcile
 	// re-asserts each name from ground truth, and ends in a reflow.
-	reconcileWindows(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
+	reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 	if reg.empty() {
 		teardown()
 		return nil
@@ -1035,8 +1126,8 @@ func Run(cfg Config) error {
 		case controlmode.WindowRenamed:
 			if len(l.Args) > 0 {
 				if mw, ok := reg.byRemoteID(l.Args[0]); ok {
-					applyMirrorName(cfg, mw.localWin, string(l.Data))
-					cfg.reflow()
+					applyMirrorName(flowCfg, mw.localWin, string(l.Data))
+					flowCfg.reflow()
 				}
 			}
 		case controlmode.SessionChanged:
@@ -1047,11 +1138,11 @@ func Run(cfg Config) error {
 			}
 		case controlmode.WindowAdd:
 			if len(l.Args) > 0 {
-				addWindow(cfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
+				addWindow(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
 			}
 		case controlmode.WindowClose:
 			if len(l.Args) > 0 {
-				closeWindow(cfg, router, cst, reg, cv, l.Args[0])
+				closeWindow(flowCfg, router, cst, reg, cv, l.Args[0])
 				return reg.empty()
 			}
 		case controlmode.WindowPaneChanged:
@@ -1101,18 +1192,15 @@ func Run(cfg Config) error {
 	// it drains is the one this connection's reply readers fill.
 	settle := func(c *ctlConn) (done bool) {
 		for {
-			queued := c.async.take()
 			wantWindows, layouts, reseeds := cst.takeIntents()
-			if len(queued) == 0 && !wantWindows && len(layouts) == 0 && len(reseeds) == 0 {
+			if len(c.async.lines) == 0 && !wantWindows && len(layouts) == 0 && len(reseeds) == 0 {
 				return false
 			}
-			for _, q := range coalesceLayoutChanges(queued) {
-				if dispatch(q) {
-					return true
-				}
+			if c.async.drain(dispatch) {
+				return true
 			}
 			if wantWindows {
-				reconcileWindows(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
+				reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 				if reg.empty() {
 					return true
 				}
@@ -1147,6 +1235,10 @@ func Run(cfg Config) error {
 			// without a timer: nextLine wakes on any line, and by the time it
 			// returns the intent is already registered, so the next pass through here
 			// drains it. It also picks up whatever window setup queued.
+			//
+			// No operation is in flight at the top of a pass, so a parked
+			// reply's reader has gone.
+			c.st.dropParked()
 			if settle(c) {
 				return connEnd
 			}
@@ -1288,7 +1380,7 @@ func Run(cfg Config) error {
 				}
 			}
 		}
-		reconcileWindows(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
+		reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 		if reg.empty() {
 			return false
 		}
@@ -1668,10 +1760,32 @@ type asyncQueue struct{ lines []controlmode.Line }
 
 func (q *asyncQueue) push(l controlmode.Line) { q.lines = append(q.lines, l) }
 
-func (q *asyncQueue) take() []controlmode.Line {
-	lines := q.lines
-	q.lines = nil
-	return lines
+// drain dispatches the lines queued at entry, in order, stopping on the first
+// dispatch that reports done. Each line leaves the queue only as its own
+// dispatch starts, so a %layout-change behind it is still visible to
+// holdsLayoutChange while that dispatch runs routeWhile. Lines a dispatch
+// queues wait for the next drain.
+func (q *asyncQueue) drain(dispatch func(controlmode.Line) bool) (done bool) {
+	q.lines = coalesceLayoutChanges(q.lines)
+	for n := len(q.lines); n > 0; n-- {
+		l := q.lines[0]
+		q.lines = q.lines[1:]
+		if dispatch(l) {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsLayoutChange reports whether a %layout-change is waiting for settle,
+// which routeWhile must not read past (see its doc).
+func (q *asyncQueue) holdsLayoutChange() bool {
+	for _, l := range q.lines {
+		if l.Kind == controlmode.LayoutChange {
+			return true
+		}
+	}
+	return false
 }
 
 // coalesceLayoutChanges collapses a burst of %layout-change notifications for
@@ -1709,9 +1823,10 @@ type lineReader interface {
 
 // ctlPumpBuf is the depth of the pump's line channel. It is slack for every
 // stretch where the consuming goroutine is busy rather than reading — LocalTmux
-// execs, window shaping, per-pane seeding, the hello wait — which is what keeps
-// the remote's output moving out of the socket and so keeps a pane below tmux's
-// pause-after age. Deliberately looser than the one-line-at-a-time backpressure
+// execs outside the window-set operations (those route via routeWhile), window
+// shaping, per-pane seeding, the hello wait — which is what keeps the remote's
+// output moving out of the socket and so keeps a pane below tmux's pause-after
+// age. Deliberately looser than the one-line-at-a-time backpressure
 // a synchronous reader gave: the slack IS the fix. Once it is full the pump
 // blocks on the send and the remote feels the stall as it always did.
 //
@@ -1798,7 +1913,16 @@ func nextLine(reader lineReader, st *stream) (l controlmode.Line, seq uint64, ok
 
 // readReplyRouting returns the reply block to command number want, passing every
 // other line to handleAsideLine.
+//
+// A parked reply is checked first, before any read: routeWhile may have
+// stopped reading with want's own reply already off the stream and set aside.
+// takeParked always clears the slot, matched or not: an earlier ordinal in it
+// is one this walk would have dropped in passing, and the reply order in the
+// stream means it can never hold an ordinal above want.
 func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *stream, want uint64) (controlmode.Line, bool) {
+	if p, ok := st.takeParked(); ok && p.seq == want {
+		return p.l, true
+	}
 	for {
 		l, seq, ok := nextLine(reader, st)
 		if !ok {

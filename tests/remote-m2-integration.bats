@@ -834,6 +834,131 @@ wait_bridge_disconnected() {
 	return 1
 }
 
+# A window add's local execs must not hold live output for the panes already
+# mirrored (#808): the daemon routes %output while addWindow's `new-window`
+# runs. slowbin/tmux stalls only the daemon's own `new-window` against m2dst;
+# this test's direct SRC/DST calls never carry "m2dst" in argv.
+@test "window add keeps live output flowing while the local new-window is slow" {
+	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	real="$(command -v tmux)"
+	# #!/bin/sh: the nix build sandbox has no /usr/bin/env. A word-by-word
+	# scan, not a `case " $* " in *" m2dst "*" new-window "*)` glob, which can
+	# never match two words one space apart.
+	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
+#!/bin/sh
+has_dst=0
+has_neww=0
+for arg in "\$@"; do
+	[ "\$arg" = m2dst ] && has_dst=1
+	[ "\$arg" = new-window ] && has_neww=1
+done
+if [ "\$has_dst" -eq 1 ] && [ "\$has_neww" -eq 1 ]; then
+	sleep 4
+fi
+exec "$real" "\$@"
+EOF
+	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 1 slowadd
+
+	$SRC new-window -d -t rem
+	sleep 0.3
+	$SRC send-keys -t rem:1 'echo LIVEADD_7K2' Enter
+
+	painted=no
+	for _ in $(seq 1 20); do
+		out="$($DST capture-pane -p -t host-sess:1 2>/dev/null)"
+		[[ $out == *LIVEADD_7K2* ]] && {
+			painted=yes
+			break
+		}
+		sleep 0.1
+	done
+
+	n=0
+	# 4s fixed stall + BRIDGE_UP_BUDGET_SECS of contended headroom for the
+	# reconcile that follows it to land.
+	deadline=$((SECONDS + 4 + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		n="$($DST list-windows -t host-sess -F '#{window_id}' 2>/dev/null | wc -l)"
+		[ "$n" -eq 2 ] && break
+		sleep 0.2
+	done
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$painted" = yes ]
+	[ "$n" -eq 2 ]
+}
+
+# The daemon routes %output during window-set execs while they run (#808), but
+# must NOT during pane-shaping ones: reconcileLayoutFrom's geometry-only path
+# runs its local select-layout under cfg, not flowCfg, so no output may reach
+# the mirror between the %layout-change and that select-layout landing.
+# slowbin/tmux stands in for a slow local select-layout call; the flag file
+# keeps startup's own select-layout calls (mirroring, bridge_up) from tripping
+# it, so only the resize under test is slowed.
+@test "a geometry-only layout change still holds live output until the local reshape lands" {
+	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	real="$(command -v tmux)"
+	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
+#!/bin/sh
+has_dst=0
+has_sl=0
+for arg in "\$@"; do
+	[ "\$arg" = m2dst ] && has_dst=1
+	[ "\$arg" = select-layout ] && has_sl=1
+done
+if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_sl" -eq 1 ]; then
+	sleep 3
+fi
+exec "$real" "\$@"
+EOF
+	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+
+	$SRC new-session -d -s rem -x 200 -y 50
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 200 -y 50
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 2 slowshape
+
+	touch "$BATS_TEST_TMPDIR/slow.on"
+	# A pure geometry change: same pane set, new dimensions only, as in
+	# "daemon rebuilds a mirror holding a pane the remote layout does not name".
+	$SRC resize-pane -t rem.1 -x 60
+	sleep 0.3
+	$SRC send-keys -t rem.1 'echo HELDSHAPE_4Q9' Enter
+
+	# Sample once, well before the stalled select-layout returns: the marker
+	# must not have painted into either mirror pane yet.
+	sleep 1.2
+	held=yes
+	mirror_contains 2 HELDSHAPE_4Q9 && held=no
+
+	arrived=no
+	# 3s fixed stall + BRIDGE_UP_BUDGET_SECS of contended headroom for the
+	# reconcile that follows it to land.
+	deadline=$((SECONDS + 3 + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		if mirror_contains 2 HELDSHAPE_4Q9; then
+			arrived=yes
+			break
+		fi
+		sleep 0.1
+	done
+
+	rm -f "$BATS_TEST_TMPDIR/slow.on"
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$held" = yes ]
+	[ "$arrived" = yes ]
+}
+
 # Regression for the pre-existing reconcile hole M2.3 had to close: layout
 # traversal order means a split of a NON-LAST pane is a mid-list INSERT
 # (measured: %0 %1 %2 split at %0 -> %0 %3 %1 %2), which the old three-case

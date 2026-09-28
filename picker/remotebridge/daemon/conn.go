@@ -17,11 +17,12 @@ import (
 // correspondence at 1 on a fresh attach, so these are only ever replaced as
 // one unit — a half-swapped set desyncs every round-trip (#482).
 type ctlConn struct {
-	rwc   io.ReadWriteCloser
-	pump  *ctlPump
-	st    *stream
-	async *asyncQueue
-	rt    roundTrip
+	rwc    io.ReadWriteCloser
+	pump   *ctlPump
+	st     *stream
+	async  *asyncQueue
+	rt     roundTrip
+	router *Router
 }
 
 // newCtlConn builds a connection whose output goes nowhere. readReplyRouting
@@ -32,13 +33,15 @@ type ctlConn struct {
 // far end could otherwise paint into panes the user believes are their shells.
 // bind opens the connection onto the real router once, after the identity read.
 func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
+	router := NewRouter()
 	c := &ctlConn{
-		rwc:   rwc,
-		pump:  startCtlPump(controlmode.NewReader(rwc)),
-		st:    newStream(rwc),
-		async: &asyncQueue{},
+		rwc:    rwc,
+		pump:   startCtlPump(controlmode.NewReader(rwc)),
+		st:     newStream(rwc),
+		async:  &asyncQueue{},
+		router: router,
 	}
-	c.rt = newRoundTrip(c.pump, NewRouter(), c.async, c.st)
+	c.rt = newRoundTrip(c.pump, router, c.async, c.st)
 	return c
 }
 
@@ -55,6 +58,14 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 // another goroutine can reach it.
 func (c *ctlConn) bind(router *Router) {
 	c.rt = newRoundTrip(c.pump, router, c.async, c.st)
+	c.router = router
+}
+
+// routeWhile runs fn on a helper goroutine while routing this connection's
+// %output into the router it is bound to, so an unverified far end (see
+// newCtlConn) still paints nothing.
+func (c *ctlConn) routeWhile(fn func()) {
+	routeWhile(c.pump.lines, c.router, c.async, c.st, fn)
 }
 
 // close ends this connection. The stream goes first, so every later send fails
