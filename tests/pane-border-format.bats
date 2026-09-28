@@ -1,8 +1,7 @@
 #!/usr/bin/env bats
 # Tests the pane-border-format ternary and pane-{active-,}border-style built by
-# scripts/tmux-apply-theme-colors.sh (#858: full window title on the anchor
-# pane's border), and the -O/-K/-C flags adopted on the ^o remote-picker float
-# (#648).
+# scripts/tmux-apply-theme-colors.sh, and the -O/-K/-C flags adopted on the ^o
+# remote-picker float (#648).
 #
 # Runs against a private, config-less tmux server (like tests/float-refit.bats)
 # so `display-message -p -F` evaluates the REAL script's output, not a
@@ -98,7 +97,7 @@ fake_aeye() {
 	chmod +x "$OG_TMUX_DIR/bin/aeye"
 }
 
-# The border-style option the script now sets, resolved for one pane.
+# A border-style option resolved for one pane.
 style() {
 	case "$2" in
 	active) tmux -u display -p -t "$1" '#{E:pane-active-border-style}' ;;

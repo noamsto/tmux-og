@@ -51,21 +51,17 @@ thm_red=$(tmux show -gv @thm_red 2>/dev/null | tr -d '"')
 # Bail if catppuccin hasn't loaded yet
 [[ -z $thm_mauve || -z $thm_bg ]] && exit 0
 
-# --- Pane borders (#858) ---
+# --- Pane borders ---
 # Nested #{@thm_*} inside #[] don't expand at render time, so we interpolate here.
-# Branch order, first match wins: float label (@pane_label) → aeye carousel →
-# a role pane's own role/state (dispatcher #640, or local @crew_role) → the
-# window's anchor pane (top-left, non-floating), which gets the full window
-# title → plain multi-pane ● / dim bar. A lead pane (@crew_role/@bridge_crew_role
-# "lead") falls through the role branch into the anchor branch, since the word
-# "lead" is never shown — the anchor's codename already names it.
-# No branch here sets an fg on the text itself: the crew/role colour reaches
-# the border through pane-active-border-style/pane-border-style below, as on
-# the remote. Each #[...] block carries at most one style attribute (bg OR
-# fg), never a comma-joined pair: pane-border-format's #{?...} ternary
-# comma-splitter (format_choose/format_skip1) tracks nesting depth for
-# #{...} but not #[...], so a joined #[bg=X,fg=Y] is silently misparsed as an
-# extra branch boundary (#648).
+# Branch order, first match wins: float label → aeye carousel → role pane →
+# the window's anchor (top-left, non-floating) pane, which alone carries the
+# full title → multi-pane ● / dim bar. A "lead" role falls through to the
+# anchor branch; the codename already names it. Text carries no fg of its own:
+# the crew/role colour comes from the border styles below.
+# Each #[...] block carries at most one style attribute (bg OR fg): the #{?...}
+# comma-splitter (format_choose/format_skip1) tracks nesting depth for #{...}
+# but not #[...], so a joined #[bg=X,fg=Y] is misparsed as an extra branch
+# boundary (#648).
 
 # ROLE_NAME/STATE share one bridge-vs-local selector so a bridged pane's role
 # and state always come from the same side. STATE_GLYPH mirrors the
@@ -119,11 +115,9 @@ ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_RAW},},#{!=:${CODENAME},}}}"
 tmux setw -g pane-border-format \
 	"#{?@pane_label,${FLOAT_BRANCH},#{?${AEYE},${AEYE_BRANCH},#{?${ROLE_COND},${ROLE_BRANCH},#{?${ANCHOR_COND},${ANCHOR_BRANCH},${PLAIN_BRANCH}}}}}"
 
-# Border colour (moved in from config/tmux.conf.tmpl so this bats file can
-# evaluate the real shipped strings): aeye forces mauve/overlay_1 regardless
-# of crew colour; everything else falls through role colour (bridged, then
-# local) → window agent colour (bridged, then local when occupied) → the
-# same mauve/overlay_1 default. Mirror behaviour is unchanged.
+# Border colour: aeye never takes a crew colour; everything else falls through
+# role colour (bridged, then local) → window agent colour (bridged, then local
+# while occupied, the status bar's #671 gate) → mauve/overlay_1.
 ROLE_COLOR_CHAIN_MAUVE="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_mauve}},${thm_mauve}}}}}"
 ROLE_COLOR_CHAIN_OVERLAY="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_overlay_1}},${thm_overlay_1}}}}}"
 tmux setw -g pane-active-border-style \
