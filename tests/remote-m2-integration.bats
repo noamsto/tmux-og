@@ -3974,6 +3974,29 @@ wait_daemon_exit() {
 	[ "$closed" = yes ]
 }
 
+# sibling_identity prints one line per pane of the sibling session: everything a
+# kill, recreate or respawn changes, and no process name. macOS reports the nix
+# `sleep` (a symlink to the multicall coreutils binary) as `coreutils` where
+# Linux reads argv[0], and a remain-on-exit corpse still reads its old name.
+sibling_identity() {
+	$DST list-panes -s -t host-sess-x -F '#{session_id}|#{window_id}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{pane_start_command}' 2>/dev/null || true
+}
+
+# sibling_running PID succeeds once PID, or a direct child of it, runs
+# `sleep 86400` by argv, whether the pane's shell exec'd it or forked it.
+sibling_running() {
+	ps -Ao pid,ppid,args 2>/dev/null |
+		awk -v p="$1" '($1 == p || $2 == p) && $3 ~ /(^|\/)sleep$/ && $4 == 86400 { f = 1 } END { exit !f }'
+}
+
+# sibling_diag dumps every pane on DST and this test's sleep and tmux-server
+# rows of the process table to fd 3, for telling a violation from a platform
+# reading.
+sibling_diag() {
+	$DST list-panes -a -F '#{session_name}|#{window_id}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_dead}' >&3 2>&1 || true
+	ps -Ao pid,ppid,args 2>&1 | awk '/PID|sleep 86400|-L m2/' >&3 || true
+}
+
 # #817: the mirror session is closed locally while its refused attach waits out
 # the restore window. When the window ends there is no session of its own left
 # to tombstone — and "host-sess" as a bare tmux target now resolves by unique
@@ -3984,7 +4007,24 @@ wait_daemon_exit() {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
 	$DST new-session -d -s host-sess-x -x 100 -y 30 'sleep 86400'
-	sib_before="$($DST list-panes -s -t host-sess-x -F '#{window_id}|#{pane_id}|#{pane_start_command}')"
+	sib_pid="$($DST list-panes -s -t host-sess-x -F '#{pane_pid}')"
+	sib_up=no
+	sib_deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$sib_deadline" ]; do
+		sibling_running "$sib_pid" && {
+			sib_up=yes
+			break
+		}
+		sleep 0.1
+	done
+	if [ "$sib_up" != yes ]; then
+		printf 'sibling never reached sleep 86400\n' >&3
+		sibling_diag
+	fi
+	[ "$sib_up" = yes ]
+	sib_before="$(sibling_identity)"
+	IFS='|' read -r _ _ _ _ sib_dead _ <<<"$sib_before"
+	[ "$sib_dead" = 0 ]
 	export OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s OG_DAEMON_RESTORE_MAX_ELAPSED=6s
 	bridge_up 1 sib
 
@@ -3999,22 +4039,26 @@ wait_daemon_exit() {
 	exited=no
 	wait_daemon_exit sib "$BATS_TEST_TMPDIR/sib.log" 200 && exited=yes
 
-	sib_after="$($DST list-panes -s -t host-sess-x -F '#{window_id}|#{pane_id}|#{pane_start_command}' 2>/dev/null || true)"
-	sib_cmd="$($DST list-panes -s -t host-sess-x -F '#{pane_current_command}' 2>/dev/null || true)"
+	sib_after="$(sibling_identity)"
+	sib_alive=no
+	kill -0 "$sib_pid" 2>/dev/null && sib_alive=yes
 	bridge_sock="$($DST show-options -qv -t host-sess-x @bridge_sock 2>/dev/null || true)"
 	bridge_session="$($DST show-options -qv -t host-sess-x @bridge_session 2>/dev/null || true)"
 	left_alone=no
 	grep -q "no longer this mirror's" "$BATS_TEST_TMPDIR/sib.log" 2>/dev/null && left_alone=yes
-	if [ "$sib_after" != "$sib_before" ]; then
-		printf 'sibling before=%q after=%q\n--- daemon log ---\n' "$sib_before" "$sib_after" >&3
-		tail -60 "$BATS_TEST_TMPDIR/sib.log" >&3 2>/dev/null || true
+	if [ "$sib_after" != "$sib_before" ] || [ "$sib_alive" != yes ] ||
+		[ -n "$bridge_sock$bridge_session" ] || [ "$refused$exited$left_alone" != yesyesyes ] ||
+		[ -e "$sock" ]; then
+		printf 'sibling before=%q after=%q alive=%s\n--- daemon log ---\n' "$sib_before" "$sib_after" "$sib_alive" >&3
+		tail -60 "$BATS_TEST_TMPDIR/sib.log" >&3 2>&1 || true
+		sibling_diag
 	fi
 
 	[ "$refused" = yes ]
 	[ "$exited" = yes ]
 	[ -n "$sib_before" ]
 	[ "$sib_after" = "$sib_before" ]
-	[ "$sib_cmd" = sleep ]
+	[ "$sib_alive" = yes ]
 	[ -z "$bridge_sock" ]
 	[ -z "$bridge_session" ]
 	[ ! -e "$sock" ]
