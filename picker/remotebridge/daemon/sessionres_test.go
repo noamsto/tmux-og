@@ -251,6 +251,21 @@ func TestSessionResSubscriptionIsSessionScoped(t *testing.T) {
 	// omitting this would have the test destroy another server's agent state.
 	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
 
+	// The tmux-og wrapper injects its config even alongside the -f /dev/null
+	// above, so this server is not bare: the @og-res-tick monitor hook runs
+	// tmux-session-resources --tick, which rewrites @og_session_res every 5s
+	// while a control-mode client is attached — exactly the client this test
+	// opens. Disarm it with the config's own canonical clear (flake.nix
+	// RES_CLEAR_B / RES_CLEAR_OPT); both are no-ops on a bare server.
+	for _, clear := range [][]string{
+		{"set-hook", "-g", "-u", "-B", "@og-res-tick"},
+		{"set", "-gu", "@og-res-tick"},
+	} {
+		if out, err := tmux(clear...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", clear, err, out)
+		}
+	}
+
 	ctl := tmux("-C", "attach-session", "-t", "w")
 	stdin, err := ctl.StdinPipe()
 	if err != nil {
