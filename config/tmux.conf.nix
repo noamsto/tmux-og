@@ -330,6 +330,7 @@
     "og-remote-detach"
     "og-remote-auth"
     "og-remote-theme"
+    "og-open"
     "og-notify"
     "og-notify-center"
     "tmux-agent-usage"
@@ -772,6 +773,7 @@
     "tmux-window-nav"
     "tmux-worktree-match"
     "og-log-event"
+    "og-open"
     "og-remote-loading"
   ];
 

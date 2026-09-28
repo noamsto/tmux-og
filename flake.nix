@@ -248,6 +248,16 @@
               touch $out
             '';
 
+          og-open-tests =
+            pkgs.runCommand "og-open-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.bash];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/og-open.bats
+              touch $out
+            '';
+
           icons-tests =
             pkgs.runCommand "icons-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];

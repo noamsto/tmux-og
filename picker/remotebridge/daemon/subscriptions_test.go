@@ -37,7 +37,7 @@ func TestSubscribeCmdIsOneQuotedToken(t *testing.T) {
 	// The formats are interpolated into a single-quoted argv token, so a quote
 	// inside one would need escaping the subscribe path does not do — and the
 	// control-mode parser rejects an unquoted '#{...}' outright.
-	for _, f := range []string{windowLabelFormat, agentStatusFormat, sessionResFormat, agentUsageFormat} {
+	for _, f := range []string{windowLabelFormat, agentStatusFormat, sessionResFormat, agentUsageFormat, openURLFormat} {
 		if strings.ContainsAny(f, "'\"") {
 			t.Errorf("format must carry no quotes of its own: %q", f)
 		}
