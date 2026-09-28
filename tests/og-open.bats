@@ -60,7 +60,9 @@ assert_rejected() {
 	: >"$OPENED"
 	run bash "$SCRIPT" "$@"
 	[ "$status" -eq 2 ]
-	! grep -q '^set-option' "$TMUX_LOG"
+	if grep -q '^set-option' "$TMUX_LOG"; then
+		return 1
+	fi
 	[ ! -s "$OPENED" ]
 }
 

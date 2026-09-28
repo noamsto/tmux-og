@@ -285,12 +285,6 @@ side is `picker/remotebridge/daemon/openurl.go`.
   own new record (`set-option` without `-a`) instead of appending — the
   daemon's `seen` set is what keeps the reset from replaying anything
   (below).
-- **`og-open`'s own validation, before it ever touches tmux**: exactly one
-  arg, `http://` or `https://` (lowercase) with at least one byte after the
-  scheme, no whitespace or control byte, at most 4096 bytes, and — measured,
-  next-3.9 — no trailing `;`: `tmux set-option -a @x ' n|https://a;'` stores
-  the value **without** the `;`, tmux's own argv command separator, so a URL
-  ending in one is refused rather than silently mangled.
 - **The registered-client check is what "bridged" means.** `og-open` lists
   this pane's session's control-mode clients (`list-clients -t "$TMUX_PANE"`
   — `-t <pane>` resolves to the pane's session, measured) and treats the
@@ -304,6 +298,17 @@ side is `picker/remotebridge/daemon/openurl.go`.
   the URL opens on the remote as it did before this feature. A registered
   client that disconnects stops matching immediately (the check is against
   the *attached* clients, not the stamped name alone).
+- **`og-open`'s own validation applies only to the forwarded (bridged)
+  path** — it runs after the bridged check above decides this call will
+  write a record: `http://` or `https://` (lowercase) with at least one byte
+  after the scheme, no whitespace or control byte, at most 4096 bytes, and —
+  measured, next-3.9 — no trailing `;`: `tmux set-option -a @x
+  ' n|https://a;'` stores the value **without** the `;`, tmux's own argv
+  command separator, so a URL ending in one is refused rather than silently
+  mangled. Off a bridge, `og-open` **is** the platform opener and the
+  argument passes through untouched, so a local `$BROWSER` caller passing a
+  file path or a `file://` URL (`cargo doc --open`, Python's `webbrowser`)
+  keeps working on a host that isn't bridged.
 - **Unbridged, `og-open` `unset`s `BROWSER` before `exec`ing `open`
   (Darwin)/`xdg-open`** — without the unset, `xdg-open`'s own `$BROWSER`
   fallback would call `og-open` again, forever.
@@ -336,10 +341,21 @@ side is `picker/remotebridge/daemon/openurl.go`.
   when a nonempty pinned session doesn't match `$N` — the subscription
   follows the control client's *current* session, so a session-pin excursion
   (#396) can report another session's log, whose records belong to whatever
-  bridge is mirroring that session. Every well-formed record whose nonce is
-  unseen and whose URL passes `validOpenURL` (below) is opened; `seen` is
-  then replaced with exactly this report's nonces — bounded by `og-open`'s
-  own 4096-byte reset, so `seen` never grows past what one log holds.
+  bridge is mirroring that session. The controller does not trust `og-open`'s
+  own 4096-byte reset to bound this value — anything holding the remote's
+  tmux socket can write `@og_open_url` directly — so `handle` bounds the cost
+  to itself: a value over 12288 bytes (3× `og-open`'s own cap) is ignored
+  whole — no opens, `seen` untouched, one notification — on the theory that
+  `og-open`'s own reset, which replaces rather than appends past 4096 bytes,
+  still opens on the report that follows. Otherwise every record's nonce is
+  marked seen regardless of validity, so a malformed or invalid record is
+  never retried; a fresh, `validOpenURL` record opens if fewer than 16 have
+  already opened from this report and a token bucket (30 tokens, refilling
+  one per 2s — 30/min, scoped to this `urlOpener` for its whole run) has one
+  to spend, otherwise it is suppressed without spending a token. One
+  "suppressed N URL opens from `<host>` (rate limit)" notice fires per report
+  when anything was suppressed; an invalid or already-seen record is skipped
+  for free and never counts toward it.
 - **`validOpenURL` is the controller-side security boundary** — the URL is
   remote-derived and becomes a local process's argv, so it is re-checked
   daemon-side regardless of what `og-open` already validated (CLAUDE.md:
@@ -369,12 +385,17 @@ side is `picker/remotebridge/daemon/openurl.go`.
 - **`BROWSER` is exported as `og-open`'s store path, not the bare name**
   (`set-environment -g BROWSER` in `config/tmux.conf.tmpl`) — a resident
   server can predate a rebuild (#407), and a bare name would be unresolvable
-  on such a server's fixed-at-start PATH until it restarts. The bridged tool
-  float keeps it too: `toolResolveScript` (`ctl.go`) restores `BROWSER` from
-  the tmux global environment right after its existing `PATH` restore, for
-  the same reason — `split-window` spawns prdash through the remote's
-  default shell (fish), whose login-profile rebuild could otherwise shadow
-  the tmux-global `BROWSER` with its own.
+  on such a server's fixed-at-start PATH until it restarts. `set-environment
+  -g` only reaches panes spawned **after** the config reload that runs it —
+  a shell (or a plain prdash) already running keeps the environment it
+  started with and still opens on the remote; it needs a respawn or a
+  restart of the caller to pick up the forward. The bridged tool float is
+  exempt: `toolResolveScript` (`ctl.go`) restores `BROWSER` from the tmux
+  global environment right after its existing `PATH` restore, on **every**
+  launch — `split-window` spawns prdash through the remote's default shell
+  (fish), whose login-profile rebuild could otherwise shadow the
+  tmux-global `BROWSER` with its own — so a bridged prdash float always sees
+  the current global value even without a respawn.
 - **Accepted losses** (the design's own list, not bugs to chase): a control
   client that died without tmux noticing yet is still registered, so
   `og-open` still appends to its log — the reattach's seed marks that record
@@ -384,10 +405,14 @@ side is `picker/remotebridge/daemon/openurl.go`.
   concurrent `og-open` calls that each see the log over 4096 bytes each
   replace it, and within one subscription tick only the last survives — a
   bulk open straddling the cap can lose all but its last URL. Two
-  controllers mirroring the same remote session: the last to register
-  `@og_open_client` wins, and if it disconnects first, `og-open` falls back
-  to the remote's own opener until the other reconnects — degraded to
-  pre-feature behaviour, never a silent drop.
+  controllers mirroring the same remote session both subscribe
+  independently, so both receive every report and both open each URL — not
+  guarded, a duplicate open on each controller by design. `@og_open_client`
+  holds only the name of the last to register, and that name is all
+  `og-open`'s bridged check reads; if that controller disconnects first,
+  `og-open` stops seeing a matching registered client and falls back to the
+  remote's own opener until the other reconnects (and re-registers) —
+  degraded to pre-feature behaviour, never a silent drop.
 
 ## Remote Agent Status
 

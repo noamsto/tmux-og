@@ -37,14 +37,10 @@ PATH on every tmux-og host, remotes included). Its body is written to POSIX sh
 unchanged. It is recorded in `ogInternal` (it has no `og` verb: `$BROWSER`
 calls it by path).
 
-1. **Validate** — exactly one argument; it must start with `http://` or
-   `https://` (lowercase), have at least one byte after the scheme, contain no
-   whitespace or control character (`[[:space:][:cntrl:]]`), be at most 4096
-   bytes, and must not end in `;`. Anything else: message on stderr, exit 2.
-   - Whitespace is the record separator below.
-   - A trailing `;` is tmux's argv command separator: `tmux set-option -a @x
-     ' n|https://a;'` stores the value **without** the `;` (measured, next-3.9)
-     — the URL would arrive altered, so it is refused rather than mangled.
+1. **Argument count** — exactly one argument; anything else: message on
+   stderr, exit 2. This is the only check that runs before step 2 — `og-open`
+   *is* the platform opener off a bridge, so the URL/path validation below
+   applies only to the forwarded path, not to every call.
 2. **Bridged?** — when `$TMUX` and `$TMUX_PANE` are both non-empty, one call:
    `tmux list-clients -t "$TMUX_PANE" -F '#{?#{&&:#{client_control_mode},#{==:#{client_name},#{@og_open_client}}},1,0}|#{n:@og_open_url}'`.
    `-t <pane>` resolves to the pane's session (measured), so this lists only
@@ -61,7 +57,17 @@ calls it by path).
      such a session is "not bridged" and the URL opens on the remote as it did
      before this feature. A registered client that disconnects stops matching
      (measured: the name is compared against the *attached* clients).
-3. **Bridged** — nonce `<epoch-seconds>-<pid>` (`date +%s`, `$$`), record
+3. **Bridged — validate, then write.** The argument must start with
+   `http://` or `https://` (lowercase), have at least one byte after the
+   scheme, contain no whitespace or control character
+   (`[[:space:][:cntrl:]]`), be at most 4096 bytes, and must not end in `;`.
+   Anything else: message on stderr, exit 2.
+   - Whitespace is the record separator below.
+   - A trailing `;` is tmux's argv command separator: `tmux set-option -a @x
+     ' n|https://a;'` stores the value **without** the `;` (measured, next-3.9)
+     — the URL would arrive altered, so it is refused rather than mangled.
+
+   Then: nonce `<epoch-seconds>-<pid>` (`date +%s`, `$$`), record
    `" <nonce>|<url>"`. If the length read in step 2 is over 4096,
    `tmux set-option -t "$TMUX_PANE" @og_open_url "<record>"` (replace);
    else `tmux set-option -a -t "$TMUX_PANE" @og_open_url "<record>"`
@@ -71,8 +77,13 @@ calls it by path).
    tmux reports subscription changes on a ~1 s timer and a bulk open would
    otherwise overwrite itself inside one tick.
 4. **Not bridged** — `unset BROWSER`, then `exec open "$url"` on Darwin
-   (`uname -s`), else `exec xdg-open "$url"`. The unset stops `xdg-open`'s
-   own `$BROWSER` fallback from calling `og-open` again forever.
+   (`uname -s`), else `exec xdg-open "$url"`, the argument passed through
+   exactly as given: no scheme, character or length check. This is what keeps
+   a local `$BROWSER` caller that passes a file path or a `file://` URL
+   (`cargo doc --open`, Python's `webbrowser`) working on a host that isn't
+   bridged — those never used to be, and never need to be, URLs. The `unset`
+   stops `xdg-open`'s own `$BROWSER` fallback from calling `og-open` again
+   forever.
 
 ### 2. Config — `BROWSER` for every server-started pane
 
@@ -168,10 +179,14 @@ subscriptions (re)install:
    Registering last means a remote `og-open` can only ever see a registered
    client that already carries the subscription. Each (re)connect re-registers
    under the new client's name; nothing unsets it on teardown, because a
-   departed client's name no longer matches any attached client. With two
-   controllers mirroring one session the last to register wins, and if it
-   leaves first `og-open` falls back to the remote's own opener until the
-   other reconnects — degraded to pre-feature behaviour, never a silent drop.
+   departed client's name no longer matches any attached client. Two
+   controllers mirroring one session both subscribe independently and both
+   open every URL (§"On `%subscription-changed`"); `@og_open_client` only
+   feeds `og-open`'s own bridged check and holds one name, the last to
+   register. If that controller leaves first, `og-open` stops seeing a
+   matching registered client and falls back to the remote's own opener until
+   the other reconnects (and re-registers) — degraded to pre-feature
+   behaviour, never a silent drop.
 4. **Failure** (seed, subscribe or register) — `notifyLocal` once for this
    connection, naming the step: "og-open: URL opens on <host> will not reach
    this machine (<seed|subscribe|register> failed; subscriptions need
@@ -191,19 +206,39 @@ main loop's `SubscriptionChanged` case like its siblings, handled
 immediately — nothing to coalesce, and `handle` issues no round-trip):
 
 1. Ignore if `session != ""` and `$N != session`.
-2. Parse: `strings.Fields(value)`; each token is cut at its **first** `|`
+2. `og-open`'s own 4096-byte reset is not trusted to bound this value —
+   anything holding the remote's tmux socket can write `@og_open_url`
+   directly — so the daemon bounds what one report may cost it: a value over
+   `openValueMaxLen` (12288 bytes, 3× `og-open`'s cap) is ignored whole — no
+   opens, `seen` untouched, one `notifyLocal`: "og-open: ignored an oversized
+   URL log from <host>" — on the theory that `og-open`'s own reset, which
+   replaces rather than appends past 4096 bytes, still opens on the report
+   that follows.
+3. Parse: `strings.Fields(value)`; each token is cut at its **first** `|`
    into nonce and URL. A token with no `|`, or a nonce not matching
    `^[0-9]+-[0-9]+$`, is malformed and skipped.
-3. For each well-formed record whose nonce is not in `seen` and whose URL
-   passes `validOpenURL`: `launch` an open. A launched open that returns an
-   error sends `notifyLocal`: "og-open: could not open <url>: <err>".
-4. `seen` = exactly the nonces of the well-formed records in this value
-   (bounded by `og-open`'s own 4096-byte reset).
+4. Every record's nonce is marked seen, well-formed or not, valid or not —
+   so a malformed or invalid record is never retried. For each well-formed,
+   not-previously-seen record whose URL passes `validOpenURL`: `launch` an
+   open if fewer than `openMaxPerReport` (16) have already opened from this
+   report and a token bucket (`openBurst` = 30 tokens, refilling one every
+   `openRefill` = 2s — 30/min, scoped to this `urlOpener` for its whole run)
+   has one to spend; otherwise the record is suppressed and no token is
+   spent. A launched open that returns an error sends `notifyLocal`:
+   "og-open: could not open <url>: <err>". One `notifyLocal`: "og-open:
+   suppressed <N> URL opens from <host> (rate limit)" fires per report when
+   anything was suppressed.
+5. `seen` = the nonces of every record parsed from this value (step 3),
+   whether opened, suppressed, or invalid — no longer bounded by `og-open`'s
+   own reset alone, since step 2 already bounds the value the daemon will
+   ever parse.
 
 **`validOpenURL`** — the controller-side security boundary. The URL is
 remote-derived and reaches a local process argv, so it is re-validated
 daemon-side regardless of what `og-open` checked (CLAUDE.md: remote-derived
-values are sanitized daemon-side):
+values are sanitized daemon-side). This is a per-record cap (`openURLMaxLen`),
+distinct from the whole-value cap in step 2 above — a value can carry many
+records, each within this bound, and still trip the value-level one:
 
 - length 1–4096 bytes;
 - begins with `http://` or `https://` exactly (so it can never begin with `-`
@@ -266,9 +301,17 @@ prdash (remote) --$BROWSER--> og-open (remote)
 
 **bats — `tests/og-open.bats`** (new, its own flake check), `tmux`,
 `xdg-open`, `open` and `uname` stubbed on PATH:
-- rejects: no arg, two args, `ftp://`, `file:///`, `javascript:`, bare
-  `https://`, a URL with a space / tab / newline, a trailing `;`, >4096 bytes →
-  exit 2, no tmux write, no opener run.
+- rejects, unbridged and bridged alike: no arg, two args → exit 2, no tmux
+  write, no opener run (the argument-count check runs before the bridged
+  test).
+- rejects, bridged only: `ftp://`, `file:///`, `javascript:`, bare
+  `https://`/`http://`, an uppercase scheme, a URL with a space / tab /
+  newline, a trailing `;`, a 4097-byte URL, a multibyte URL over the byte cap
+  but under a character cap (`wc -c`, not `${#url}`, catches it) → exit 2, no
+  tmux write, no opener run; a 4096-byte URL (boundary) is unbridged-accepted.
+- unbridged: a `file://` URL, a plain filesystem path, and an argument
+  containing a space each pass through untouched to `xdg-open`/`open` — no
+  validation off a bridge.
 - the `list-clients` call carries the registered-name format verbatim.
 - bridged (stub `list-clients` prints `1|10`): one `set-option -a -t <pane>
   @og_open_url " <n>|<url>"` with a `<digits>-<digits>` nonce.
@@ -285,6 +328,18 @@ prdash (remote) --$BROWSER--> og-open (remote)
   `-https://…`, `https://` (no host), space/tab/`\x00`/`\x7f`, over-long →
   reject.
 - only unseen nonces open; seen becomes exactly this value's nonces.
+- a report over `openValueMaxLen` opens nothing, leaves `seen` untouched, and
+  notifies once; the next (normal-sized) report still opens the record it
+  carries.
+- a report with more than `openMaxPerReport` fresh valid records opens
+  exactly the cap, suppresses the rest, notifies the suppressed count once,
+  and marks every one of them seen so a suppressed record never opens on a
+  later report.
+- the token bucket: a burst of `openBurst` opens all of them; the next
+  record in the same report is suppressed (bucket empty); after advancing a
+  fake clock past `openRefill` one more record opens.
+- an invalid URL is skipped without spending a token — a burst of invalid
+  records leaves the bucket full for the next valid one.
 - connect: seed-then-subscribe order; nothing opens from the replayed
   subscribe-time value; a record appended between seed and subscribe opens
   once; a reconnect (second connect with the same opener) replays nothing.
