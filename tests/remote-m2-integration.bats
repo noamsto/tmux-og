@@ -2621,7 +2621,7 @@ $pane 1" ]; then
 @test "daemon ships the remote host's agent usage, gated and sanitized, into the mirror's statusline" {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
 	statusline_cache_dir="$BATS_TEST_TMPDIR/statusline-cache"
-	mkdir -p "$statusline_cache_dir"
+	mkdir -m 700 "$statusline_cache_dir"
 
 	$SRC new-session -d -s rem -x 120 -y 34
 	$DST new-session -d -s host-sess -x 120 -y 34
