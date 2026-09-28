@@ -28,7 +28,11 @@ File formats, writers, and the derived states (interrupt, dead-agent, staleness)
   per directory's lifetime, not per tick — the marker itself must be a
   regular file we own, so one dropped by another account into a dir we own
   but never made owner-only (a loose `CLAUDE_STATUS_DIR`) falls through to
-  the `stat` pass instead of being trusted on sight. Go's
+  the `stat` pass instead of being trusted on sight. Known gap: `-O` checks
+  the inode's owner, so on macOS (no `protected_hardlinks`) another account
+  that can write into such a loose override dir can hard-link any file we own
+  in as `.owner-only` and pass the fast path; the default root, always created
+  `0700`, admits no such link. Go's
   `ownerdir.OwnerOnly` instead Lstats on every call, since each read is
   already a discrete call rather than a hot per-tick loop. Fail-closed: when
   the source-time check fails, every derived `CLAUDE_*_DIR` var is pointed at

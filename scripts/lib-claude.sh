@@ -33,7 +33,9 @@ claude_status_dirs() {
 # and only trusted as a marker when it is itself a regular file we own — a
 # marker another account drops (into a dir we own but never made owner-only,
 # e.g. one CLAUDE_STATUS_DIR points at with a loose mode) fails -O and falls
-# through to the stat check, which then refuses the loose mode. A foreign or
+# through to the stat check, which then refuses the loose mode. -O checks the
+# inode's owner, so on macOS (no protected_hardlinks) a hard link to a file we
+# own still passes it — that loose-override case remains open. A foreign or
 # symlinked root is refused without a fork; the stat forks once per dir.
 claude_status_dir_trusted() {
 	local d=$1 uid mode

@@ -79,7 +79,9 @@ process):
   root fails `-L`. The marker must itself be a regular file we own: a dir we
   own but never made owner-only (one `CLAUDE_STATUS_DIR` points at with a
   loose mode) can have a marker dropped into it by another account, which
-  then fails `-O` and falls through to the full stat check.
+  then fails `-O` and falls through to the full stat check — except a hard
+  link to a file we own on macOS (no `protected_hardlinks`), which `-O`
+  cannot tell apart; left open for a loose explicit override.
   When the fast path misses but the dir exists, is not a symlink and `-O`
   holds, run the full check once (`$OG_STAT -c '%u %a'` — GNU stat, already
   substituted as `@stat@` for lib-claude) and on pass write the marker; this
