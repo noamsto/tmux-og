@@ -144,11 +144,14 @@ if [[ "$(read_opt @grid_refit_sig '')" == "$sig" && $lead == "$first" ]]; then
 	exit 0
 fi
 
-ok=1
-[[ $lead == "$first" ]] || tmux swap-pane -d -s "$lead" -t "$first" 2>/dev/null || ok=0
-tmux set-window-option -t "$target" "$opt" "${pct}%" 2>/dev/null || ok=0
-tmux select-layout -t "$target" "$layout" 2>/dev/null || ok=0
-# Cache only a decision that actually landed: a failed run leaves the sig stale
-# so the next refit retries instead of caching the breakage.
-((ok)) && tmux set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null || true
+# One command list, not separate client calls: swap-pane and select-layout fire
+# window-layout-changed, whose hook can fork a peer mid-apply. A peer queues
+# behind this client's remaining list, so bundling the @grid_refit_sig write
+# guarantees the peer reads the settled sig and takes the fast path. Only the
+# fast path stamps @grid_refit_layout, so a peer that read the stale sig would
+# land here too and leave it unset (#827). A failed command aborts the rest of
+# the list, so the sig still only lands on a decision that applied.
+swap=()
+[[ $lead == "$first" ]] || swap=(swap-pane -d -s "$lead" -t "$first" \;)
+tmux "${swap[@]}" set-window-option -t "$target" "$opt" "${pct}%" \; select-layout -t "$target" "$layout" \; set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null
 exit 0

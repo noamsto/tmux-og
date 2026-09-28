@@ -304,5 +304,17 @@ foreground run is deliberate ordering.
   unverified grid or a stale float forks exactly one job; a lock loser, a
   zoomed run never block a later refit, and a left-behind marker never blocks
   a different state (it still blocks its own exact state, above).
+- A #827 test forces the apply branch's own peer-read race deterministically:
+  a `tmux` wrapper placed on the server's `PATH` before it starts delays only
+  a `set-option` call carrying `@grid_refit_sig`, which the pre-#827 apply
+  path issued as a separate command. `make_grid 1` makes
+  `select-layout` the apply's only layout-mutating command, so its hook
+  forks a peer while that delayed write is still pending. Red on the
+  pre-#827 separate-calls apply (the peer reads the stale sig,
+  lands on the apply branch too, and — since only the fast path stamps
+  `@grid_refit_layout` — leaves it unset with nothing left to trigger a
+  later confirming run); green on the branch, where the wrapper's pattern
+  never matches because the sig write is bundled into the same command list
+  as `select-layout`, so no delay is ever injected.
 - A new `window-*` hook that forks per event multiplies under this fan-out
   the same way. Gate it in-process, or measure it with the harness.
