@@ -23,6 +23,15 @@ const (
 	openURLMaxLen = 4096
 )
 
+// The value is written by the remote, and anything with its tmux socket can
+// bypass og-open's own cap, so the controller bounds what a log may cost it.
+const (
+	openValueMaxLen  = 3 * openURLMaxLen
+	openMaxPerReport = 16
+	openBurst        = 30
+	openRefill       = 2 * time.Second
+)
+
 // openerWaitBound is how long a launched opener's exit status still counts.
 // xdg-open in generic mode, or a first browser launch, can block for the
 // browser's whole lifetime, and a crash hours later is not a failed open.
@@ -82,6 +91,11 @@ type urlOpener struct {
 	open    func(string) error
 	notify  func(string)
 	launch  func(func())
+	now     func() time.Time
+	// spent is the token bucket's drain since refilled, so the zero value is
+	// a full bucket.
+	spent    int
+	refilled time.Time
 }
 
 // newURLOpener returns nil when open is nil: the feature is off, and a nil
@@ -102,6 +116,7 @@ func newURLOpener(cfg Config, session string, open func(string) error) *urlOpene
 		open:    open,
 		notify:  func(m string) { notifyLocal(cfg, m) },
 		launch:  func(f func()) { go f() },
+		now:     time.Now,
 	}
 }
 
@@ -150,20 +165,31 @@ func (o *urlOpener) fail(step string) {
 }
 
 // handle opens every unseen valid record in one og_open report from session
-// sess, then forgets every nonce the report no longer carries — og-open's own
-// cap reset is what bounds seen.
+// sess, within the rate limits, then forgets every nonce the report no longer
+// carries — og-open's own cap reset is what bounds seen. An oversized value is
+// dropped whole and seen kept, so the reset value that follows still opens.
 func (o *urlOpener) handle(sess, v string) {
 	if o == nil || (o.session != "" && sess != o.session) {
 		return
 	}
+	if len(v) > openValueMaxLen {
+		o.launch(func() { o.notify("og-open: ignored an oversized URL log from " + o.host) })
+		return
+	}
 	recs := parseOpenRecords(v)
 	seen := make(map[string]bool, len(recs))
+	opened, suppressed := 0, 0
 	for _, r := range recs {
 		fresh := !o.seen[r.nonce] && !seen[r.nonce]
 		seen[r.nonce] = true
 		if !fresh || !validOpenURL(r.url) {
 			continue
 		}
+		if opened == openMaxPerReport || !o.takeToken() {
+			suppressed++
+			continue
+		}
+		opened++
 		o.launch(func() {
 			if err := o.open(r.url); err != nil {
 				o.notify(fmt.Sprintf("og-open: could not open %s: %v", r.url, err))
@@ -171,6 +197,33 @@ func (o *urlOpener) handle(sess, v string) {
 		})
 	}
 	o.seen = seen
+	if suppressed > 0 {
+		o.launch(func() {
+			o.notify(fmt.Sprintf("og-open: suppressed %d URL opens from %s (rate limit)", suppressed, o.host))
+		})
+	}
+}
+
+// takeToken spends one token of a bucket holding openBurst that refills one
+// per openRefill.
+func (o *urlOpener) takeToken() bool {
+	now := o.now()
+	if o.spent > 0 {
+		if n := int(now.Sub(o.refilled) / openRefill); n >= o.spent {
+			o.spent = 0
+		} else if n > 0 {
+			o.spent -= n
+			o.refilled = o.refilled.Add(time.Duration(n) * openRefill)
+		}
+	}
+	if o.spent == openBurst {
+		return false
+	}
+	if o.spent == 0 {
+		o.refilled = now
+	}
+	o.spent++
+	return true
 }
 
 // BrowserOpener is the production Config.OpenURL for goos.

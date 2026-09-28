@@ -1,10 +1,12 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2030,SC2031 # bats @test blocks run in subshells; export is intentional
+bats_require_minimum_version 1.5.0 # run !
 # og-open (#854): the $BROWSER-aware opener every server-started pane gets.
-# Validates the URL, then either appends/replaces a record on the pane's
-# session (bridged — a registered control client is attached) or hands off to
-# the platform opener. tmux, xdg-open, open and uname are fakes on PATH;
-# nothing here touches a real server.
+# Checks whether the pane's session is bridged (a registered control client
+# is attached); bridged, it validates the URL then appends/replaces a record
+# on the session, otherwise it hands the argument off untouched to the
+# platform opener. tmux, xdg-open, open and uname are fakes on PATH; nothing
+# here touches a real server.
 
 setup() {
 	FAKEBIN="$BATS_TEST_TMPDIR/bin"
@@ -58,8 +60,20 @@ assert_rejected() {
 	: >"$OPENED"
 	run bash "$SCRIPT" "$@"
 	[ "$status" -eq 2 ]
-	[ ! -s "$TMUX_LOG" ]
+	! grep -q '^set-option' "$TMUX_LOG"
 	[ ! -s "$OPENED" ]
+}
+
+assert_rejected_unbridged() {
+	unset TMUX TMUX_PANE
+	assert_rejected "$@"
+}
+
+assert_rejected_bridged() {
+	export TMUX="/tmp/s,1,0"
+	export TMUX_PANE="%3"
+	export TMUX_STUB_CLIENTS='1|10'
+	assert_rejected "$@"
 }
 
 assert_not_bridged() {
@@ -70,61 +84,69 @@ assert_not_bridged() {
 }
 
 @test "rejects: no argument" {
-	assert_rejected
+	assert_rejected_unbridged
 }
 
 @test "rejects: two arguments" {
-	assert_rejected https://example.invalid/a https://example.invalid/b
+	assert_rejected_unbridged https://example.invalid/a https://example.invalid/b
 }
 
-@test "rejects: unsupported scheme (ftp)" {
-	assert_rejected ftp://x
+@test "rejects: no argument, bridged" {
+	assert_rejected_bridged
 }
 
-@test "rejects: file scheme" {
-	assert_rejected file:///etc/passwd
+@test "rejects: two arguments, bridged" {
+	assert_rejected_bridged https://example.invalid/a https://example.invalid/b
 }
 
-@test "rejects: javascript scheme" {
-	assert_rejected 'javascript:alert(1)'
+@test "rejects: unsupported scheme (ftp), bridged" {
+	assert_rejected_bridged ftp://x
 }
 
-@test "rejects: bare https scheme" {
-	assert_rejected https://
+@test "rejects: file scheme, bridged" {
+	assert_rejected_bridged file:///etc/passwd
 }
 
-@test "rejects: bare http scheme" {
-	assert_rejected http://
+@test "rejects: javascript scheme, bridged" {
+	assert_rejected_bridged 'javascript:alert(1)'
 }
 
-@test "rejects: uppercase scheme" {
-	assert_rejected HTTPS://x
+@test "rejects: bare https scheme, bridged" {
+	assert_rejected_bridged https://
 }
 
-@test "rejects: embedded space" {
-	assert_rejected 'https://a b'
+@test "rejects: bare http scheme, bridged" {
+	assert_rejected_bridged http://
 }
 
-@test "rejects: embedded tab" {
-	assert_rejected $'https://a\tb'
+@test "rejects: uppercase scheme, bridged" {
+	assert_rejected_bridged HTTPS://x
 }
 
-@test "rejects: embedded newline" {
-	assert_rejected $'https://a\nb'
+@test "rejects: embedded space, bridged" {
+	assert_rejected_bridged 'https://a b'
 }
 
-@test "rejects: trailing semicolon" {
-	assert_rejected 'https://a;'
+@test "rejects: embedded tab, bridged" {
+	assert_rejected_bridged $'https://a\tb'
 }
 
-@test "rejects: 4097-byte URL (over the cap)" {
+@test "rejects: embedded newline, bridged" {
+	assert_rejected_bridged $'https://a\nb'
+}
+
+@test "rejects: trailing semicolon, bridged" {
+	assert_rejected_bridged 'https://a;'
+}
+
+@test "rejects: 4097-byte URL (over the cap), bridged" {
 	local url
 	url="https://$(head -c 4089 /dev/zero | tr '\0' 'a')"
 	[ "$(printf %s "$url" | wc -c)" -eq 4097 ]
-	assert_rejected "$url"
+	assert_rejected_bridged "$url"
 }
 
-@test "rejects: multibyte URL over the byte cap but under the character cap" {
+@test "rejects: multibyte URL over the byte cap but under the character cap, bridged" {
 	# 4000 ASCII bytes (scheme + padding) + 50 two-byte characters: 4100
 	# bytes total, 4050 characters — a wc -c check catches this; a
 	# character-counting check (${#url} under a UTF-8 locale) would not.
@@ -133,7 +155,7 @@ assert_not_bridged() {
 	for _i in $(seq 1 50); do url+="é"; done
 	export LC_ALL=C.UTF-8
 	[ "$(printf %s "$url" | wc -c)" -eq 4100 ]
-	assert_rejected "$url"
+	assert_rejected_bridged "$url"
 }
 
 @test "accepts a 4096-byte URL (boundary), unbridged" {
@@ -143,6 +165,27 @@ assert_not_bridged() {
 	run bash "$SCRIPT" "$url"
 	[ "$status" -eq 0 ]
 	[ "$(cat "$OPENED")" = "xdg-open $url BROWSER=unset" ]
+}
+
+@test "unbridged: file URL passes through untouched" {
+	run bash "$SCRIPT" file:///tmp/x.html
+	[ "$status" -eq 0 ]
+	[ "$(cat "$OPENED")" = "xdg-open file:///tmp/x.html BROWSER=unset" ]
+	run ! grep -q '^set-option' "$TMUX_LOG"
+}
+
+@test "unbridged: plain path passes through untouched" {
+	run bash "$SCRIPT" /tmp/doc/index.html
+	[ "$status" -eq 0 ]
+	[ "$(cat "$OPENED")" = "xdg-open /tmp/doc/index.html BROWSER=unset" ]
+	run ! grep -q '^set-option' "$TMUX_LOG"
+}
+
+@test "unbridged: argument with a space passes through verbatim" {
+	run bash "$SCRIPT" 'https://example.invalid/a b'
+	[ "$status" -eq 0 ]
+	[ "$(cat "$OPENED")" = "xdg-open https://example.invalid/a b BROWSER=unset" ]
+	run ! grep -q '^set-option' "$TMUX_LOG"
 }
 
 @test "bridged: appends a record when the log is under the cap" {

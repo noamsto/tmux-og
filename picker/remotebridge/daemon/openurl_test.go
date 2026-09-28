@@ -42,6 +42,7 @@ type openerProbe struct {
 	opened   []string
 	notified []string
 	openErr  error
+	clock    time.Time
 }
 
 func (p *openerProbe) opener(session string) *urlOpener {
@@ -52,6 +53,102 @@ func (p *openerProbe) opener(session string) *urlOpener {
 		open:    func(u string) error { p.opened = append(p.opened, u); return p.openErr },
 		notify:  func(m string) { p.notified = append(p.notified, m) },
 		launch:  func(f func()) { f() },
+		now:     func() time.Time { return p.clock },
+	}
+}
+
+// openLog builds a log of n fresh records whose nonces start at 1-first.
+func openLog(first, n int) string {
+	var b strings.Builder
+	for i := first; i < first+n; i++ {
+		fmt.Fprintf(&b, " 1-%d|http://a", i)
+	}
+	return b.String()
+}
+
+func TestURLOpenerCapsOpensPerReport(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	// As many records as fit under the value bound; 1000 would exceed it.
+	v := openLog(1000, 700)
+	if len(v) > openValueMaxLen {
+		t.Fatalf("test value is %d bytes, over openValueMaxLen", len(v))
+	}
+	o.handle("$1", v)
+	if len(p.opened) != openMaxPerReport {
+		t.Errorf("opened %d, want %d", len(p.opened), openMaxPerReport)
+	}
+	if want := []string{"og-open: suppressed 684 URL opens from devbox (rate limit)"}; !reflect.DeepEqual(p.notified, want) {
+		t.Errorf("notified %q, want %q", p.notified, want)
+	}
+	if len(o.seen) != 700 {
+		t.Errorf("seen %d nonces, want all 700 so suppressed records never open later", len(o.seen))
+	}
+	p.opened = nil
+	o.handle("$1", v)
+	if len(p.opened) != 0 {
+		t.Errorf("a suppressed record opened on the next report: %v", p.opened)
+	}
+}
+
+func TestURLOpenerTokenBucket(t *testing.T) {
+	p := &openerProbe{clock: time.Unix(1000, 0)}
+	o := p.opener("$1")
+	o.handle("$1", openLog(1, 16))
+	o.handle("$1", openLog(17, 16))
+	if len(p.opened) != openBurst {
+		t.Errorf("opened %d, want the burst of %d", len(p.opened), openBurst)
+	}
+	if want := []string{"og-open: suppressed 2 URL opens from devbox (rate limit)"}; !reflect.DeepEqual(p.notified, want) {
+		t.Errorf("notified %q, want %q", p.notified, want)
+	}
+
+	p.opened, p.notified = nil, nil
+	p.clock = p.clock.Add(20 * time.Second)
+	o.handle("$1", openLog(33, 11))
+	if len(p.opened) != 10 {
+		t.Errorf("20s refilled %d opens, want 10", len(p.opened))
+	}
+	if want := []string{"og-open: suppressed 1 URL opens from devbox (rate limit)"}; !reflect.DeepEqual(p.notified, want) {
+		t.Errorf("notified %q, want %q", p.notified, want)
+	}
+}
+
+func TestURLOpenerInvalidTakesNoToken(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	var b strings.Builder
+	for i := range openBurst {
+		fmt.Fprintf(&b, " 1-%d|file:///x", i)
+	}
+	o.handle("$1", b.String())
+	o.handle("$1", openLog(100, 1))
+	if len(p.opened) != 1 || len(p.notified) != 0 {
+		t.Errorf("opened %v notified %q: invalid URLs must not spend tokens", p.opened, p.notified)
+	}
+}
+
+func TestURLOpenerIgnoresOversizedValue(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	o.seen["1-1"] = true
+	big := " 1-5|https://x" + strings.Repeat(" 1-6|https://y", openValueMaxLen/14)
+	if len(big) <= openValueMaxLen {
+		t.Fatalf("test value is %d bytes, not over openValueMaxLen", len(big))
+	}
+	o.handle("$1", big)
+	if len(p.opened) != 0 {
+		t.Errorf("an oversized value opened %v", p.opened)
+	}
+	if want := map[string]bool{"1-1": true}; !reflect.DeepEqual(o.seen, want) {
+		t.Errorf("seen = %v, want it untouched by an oversized value", o.seen)
+	}
+	if want := []string{"og-open: ignored an oversized URL log from devbox"}; !reflect.DeepEqual(p.notified, want) {
+		t.Errorf("notified %q, want %q", p.notified, want)
+	}
+	o.handle("$1", " 1-5|https://x")
+	if want := []string{"https://x"}; !reflect.DeepEqual(p.opened, want) {
+		t.Errorf("opened %v, want the record the oversized value carried", p.opened)
 	}
 }
 
