@@ -23,20 +23,29 @@ File formats, writers, and the derived states (interrupt, dead-agent, staleness)
   chmod'ed back; only a missing dir is created, `0700`. Shell keeps the
   per-second `#()` path fork-free with a cached verdict: `<root>/.owner-only`
   (an empty marker file, written only after a full `stat` pass) plus
-  fork-free builtins (`[[ -d && ! -L && -O && -e .owner-only ]]`) mean the
-  full `stat` runs at most once per directory's lifetime, not per tick; Go's
+  fork-free builtins (`[[ -d && ! -L && -O && -f .owner-only && ! -L
+  .owner-only && -O .owner-only ]]`) mean the full `stat` runs at most once
+  per directory's lifetime, not per tick — the marker itself must be a
+  regular file we own, so one dropped by another account into a dir we own
+  but never made owner-only (a loose `CLAUDE_STATUS_DIR`) falls through to
+  the `stat` pass instead of being trusted on sight. Go's
   `ownerdir.OwnerOnly` instead Lstats on every call, since each read is
   already a discrete call rather than a hot per-tick loop. Fail-closed: when
   the source-time check fails, every derived `CLAUDE_*_DIR` var is pointed at
   the sentinel `/dev/null/claude-status` (a path component under a character
   device is always `ENOTDIR`, so it can never be created or read) and
   `CLAUDE_STATUS_TRUSTED` is cleared — readers and `rm -f` then find nothing
-  with no per-function guards needed. The handful of shell **writers** check
-  the flag or call `claude_status_dir_ensure` explicitly and exit/return
-  quietly instead: `claude-status-update` (`exit 0` — a hook must never
-  error), `claude_prune_stale_state` (`return 0`, no `.server_start` write),
-  the live-stamp writer in `tmux-update-icons` and the interrupt stamp in
-  `read_pane_state`. Arming agent-detect's `pipe-pane` is refused only when
+  with no per-function guards needed. Two distinct mechanisms enforce this:
+  readers, including the interrupt reclassifier in `read_pane_state`, carry
+  no explicit trust check at all — they're handed a path already derived
+  from the (possibly sentinel) root, so on an untrusted root the pane file
+  they're asked to read can never exist and they return not-found the
+  ordinary way. The handful of shell **writers**, which don't take a
+  pre-derived path, instead check the flag or call
+  `claude_status_dir_ensure` explicitly and exit/return quietly: `claude-status-update`
+  (`exit 0` — a hook must never error), `claude_prune_stale_state`
+  (`return 0`, no `.server_start` write), and the live-stamp writer in
+  `tmux-update-icons`. Arming agent-detect's `pipe-pane` is refused only when
   the root is **present and untrusted**, not merely missing — a missing root
   still arms, so agent-detect's own `Ensure` creates it `0700` on first use.
   Known, documented divergence: once `.owner-only` exists, shell keeps

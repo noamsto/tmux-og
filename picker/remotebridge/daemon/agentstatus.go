@@ -179,6 +179,14 @@ type agentShipper struct {
 	// burst collapses to one row per pane, and applied by flush rather than by
 	// the dispatch that queued them.
 	pending map[string]paneStatus
+
+	// unsynced marks a local pane id whose last-seen row was recorded in
+	// written while the dir was untrusted, so its files were never written.
+	// stamp must not let the unchanged-row skip suppress it once the dir
+	// becomes trusted and the remote row hasn't moved since. Lazily
+	// initialised (nil reads/deletes are no-ops) so test literals built
+	// without it stay valid.
+	unsynced map[string]bool
 }
 
 // queue records the row a %subscription-changed line carried. Pure: it is
@@ -309,7 +317,7 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// mirror window while the remote's stamp still says 1. It also keeps the
 		// stamp below from forking tmux once per pane per second.
 		prev, seen := a.written[id]
-		if seen && prev == r {
+		if seen && prev == r && !a.unsynced[id] {
 			continue
 		}
 		a.written[id] = r
@@ -326,6 +334,10 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// decorated still draws a border when no agent ever reported on it.
 		stampCrew(cfg, localPane, r, prev, seen)
 		if !trusted {
+			if a.unsynced == nil {
+				a.unsynced = map[string]bool{}
+			}
+			a.unsynced[id] = true
 			continue
 		}
 		if r.state == "" {
@@ -365,6 +377,7 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			}
 			writeStatusFile(filepath.Join(a.dir, "screen", id), body)
 		}
+		delete(a.unsynced, id)
 	}
 	return live, true
 }
@@ -427,6 +440,7 @@ func (a *agentShipper) forget(id string) {
 	a.removeFiles(id)
 	a.removeScreenFile(id)
 	delete(a.written, id)
+	delete(a.unsynced, id)
 }
 
 func (a *agentShipper) removeFiles(id string) {

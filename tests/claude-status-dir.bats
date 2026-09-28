@@ -74,6 +74,21 @@ setup() {
 	[ "$CLAUDE_STATUS_TRUSTED" = 1 ]
 }
 
+@test "a 0777 own root with a symlinked .owner-only marker is refused" {
+	# The marker check is -f/-O, not -e: a marker that is a symlink (even to a
+	# file we own) fails -L and falls through to the stat check, which refuses
+	# the loose mode. We cannot chown a marker to a foreign uid without root,
+	# so this exercises the reachable half of the fix; the foreign-owner case
+	# (a marker dropped by another account) is the -O branch, same fallthrough.
+	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	mkdir -m 777 "$CLAUDE_STATUS_DIR"
+	local real="$BATS_TEST_TMPDIR/owned-file"
+	: >"$real"
+	ln -s "$real" "$CLAUDE_STATUS_DIR/.owner-only"
+	setup_lib_claude
+	[ -z "$CLAUDE_STATUS_TRUSTED" ]
+}
+
 @test "marker is written on first trusted source" {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only

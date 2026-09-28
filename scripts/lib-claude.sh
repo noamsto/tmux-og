@@ -29,14 +29,16 @@ claude_status_dirs() {
 # no group/other permission bits — the root sits under world-writable /tmp, so
 # another account could pre-create it and then feed or read every state file.
 # The steady state is fork-free (this runs on the per-second status path):
-# .owner-only is a cached pass, written only after the full stat check below.
-# Another account cannot forge it — a dir it owns fails -O before the marker
-# is looked at, and only our uid or root can loosen a dir we own. A foreign or
+# .owner-only is a cached pass, written only after the full stat check below,
+# and only trusted as a marker when it is itself a regular file we own — a
+# marker another account drops (into a dir we own but never made owner-only,
+# e.g. one CLAUDE_STATUS_DIR points at with a loose mode) fails -O and falls
+# through to the stat check, which then refuses the loose mode. A foreign or
 # symlinked root is refused without a fork; the stat forks once per dir.
 claude_status_dir_trusted() {
 	local d=$1 uid mode
 	[[ -d $d && ! -L $d && -O $d ]] || return 1
-	[[ -e $d/.owner-only ]] && return 0
+	[[ -f $d/.owner-only && ! -L $d/.owner-only && -O $d/.owner-only ]] && return 0
 	read -r uid mode < <("$OG_STAT" -c '%u %a' -- "$d" 2>/dev/null) || return 1
 	[[ $uid == "$UID" && $mode =~ ^[0-7]+$ ]] || return 1
 	(((8#$mode & 8#077) == 0)) || return 1

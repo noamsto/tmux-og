@@ -599,3 +599,40 @@ func TestAgentShipperLooseRootWritesNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentShipperResyncsOnceRootBecomesTrusted covers the #850 follow-up: a
+// row seen while the root is loose must not be marked "written" for good. Once
+// the root is fixed up to 0700, the SAME unchanged row has to be written on the
+// next pass rather than skipped forever by the unchanged-row shortcut.
+func TestAgentShipperResyncsOnceRootBecomesTrusted(t *testing.T) {
+	dir := t.TempDir() // 0755 by default — loose, not owner-only.
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	row := []paneStatus{{
+		pane: "%1", proc: "claude", state: "waiting", ts: 1700000000,
+		task: "ship it", issues: "ENG-7",
+		screenState: "idle", screenTS: 1700000000,
+	}}
+
+	a.apply(cfg, row)
+	for _, sub := range []string{"panes", "tasks", "issues", "screen"} {
+		if _, err := os.Stat(filepath.Join(dir, sub)); !os.IsNotExist(err) {
+			t.Fatalf("%s/ must not be created against a loose root (err=%v)", sub, err)
+		}
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same row, unchanged — must still be written now that the root is trusted.
+	a.apply(cfg, row)
+	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); err != nil {
+		t.Errorf("panes/7 was never written after the root became trusted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "screen", "7")); err != nil {
+		t.Errorf("screen/7 was never written after the root became trusted: %v", err)
+	}
+}

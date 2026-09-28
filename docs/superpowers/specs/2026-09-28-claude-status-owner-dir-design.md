@@ -72,12 +72,14 @@ process):
 
 - `CLAUDE_STATUS_DIR="${CLAUDE_STATUS_DIR:-/tmp/claude-status-$UID}"`.
 - `claude_status_dir_trusted DIR` — fork-free fast path:
-  `[[ -d $d && ! -L $d && -O $d && -e $d/.owner-only ]]`. The `.owner-only`
-  marker is a cached positive verdict: it is written only after a full check
-  (below) passed. It cannot be forged by another account: a dir owned by us
-  (`-O`) that passed `mode&077==0` when the marker was written can only have its
-  mode or contents changed by our uid or root; a dir owned by anyone else fails
-  `-O` before the marker is looked at; a symlink fails `-L`.
+  `[[ -d $d && ! -L $d && -O $d && -f $d/.owner-only && ! -L $d/.owner-only &&
+  -O $d/.owner-only ]]`. The `.owner-only` marker is a cached positive
+  verdict: it is written only after a full check (below) passed. A dir owned
+  by anyone else fails `-O` before the marker is looked at, and a symlinked
+  root fails `-L`. The marker must itself be a regular file we own: a dir we
+  own but never made owner-only (one `CLAUDE_STATUS_DIR` points at with a
+  loose mode) can have a marker dropped into it by another account, which
+  then fails `-O` and falls through to the full stat check.
   When the fast path misses but the dir exists, is not a symlink and `-O`
   holds, run the full check once (`$OG_STAT -c '%u %a'` — GNU stat, already
   substituted as `@stat@` for lib-claude) and on pass write the marker; this

@@ -298,3 +298,23 @@ func TestSessionLiveIDsSkipsTmuxWithoutScreenFiles(t *testing.T) {
 		t.Fatalf("empty screen/: ok=%v len=%d, want ok empty", ok, len(ids))
 	}
 }
+
+// TestGatedLiveIDsSkipsTmuxWhenUntrusted is the #850 follow-up: an untrusted
+// dir must not even read screen/, let alone fork tmux off what it finds
+// there. dir carries a planted screen file and session names no real tmux
+// session, so a call that reaches listSessionPaneIDs anyway comes back
+// ok=false — the tell that the trust gate was skipped.
+func TestGatedLiveIDsSkipsTmuxWhenUntrusted(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/screen", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/screen/1", []byte("state=idle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ids, ok := gatedLiveIDs(dir, false, "definitely-not-a-real-tmux-session-850")
+	if !ok || len(ids) != 0 {
+		t.Fatalf("untrusted dir: ok=%v len=%d, want ok empty (screen/ must not be consulted)", ok, len(ids))
+	}
+}
