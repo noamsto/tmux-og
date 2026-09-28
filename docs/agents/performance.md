@@ -107,6 +107,12 @@ evaluated in-process with no fork:
   signature. The hook writes the marker right before it forks; the script
   clears it in its first tmux call (below).
 
+`prefix + M-arrows` is gated the same way at the bind: a tiled pane runs the
+stock `resize-pane` in-process, and only `#{pane_floating_flag}` takes its
+`if -F` branch into `tmux-float-nudge` (#864) — the shape of the mirror
+branch's own per-press `run-shell`, but backgrounded (`-b`), so ordinary
+typing and every tiled resize still fork nothing.
+
 Each script stamps the state it last verified. Crew grids needed their own
 gate because they are the busy windows: every dispatched worker window is
 one. `scripts.md` has the stamp rules. The signature is not

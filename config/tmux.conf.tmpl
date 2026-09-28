@@ -125,11 +125,15 @@ bind -N 'Open scratchpad session' S run-shell '{{index .Paths.Scripts "tmux-scra
 bind -N 'Copy pane path to clipboard' Y run-shell 'tmux display-message -p #{qs:pane_current_path} | wl-copy'
 
 # Resize panes. In a mirror window the resize lands on the remote pane and the
-# mirror re-fits from the remote's new layout; -r still repeats.
-bind -N 'Resize pane up' -r -T prefix M-Up    if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} U 5" } { resize-pane -U 5 }
-bind -N 'Resize pane down' -r -T prefix M-Down  if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} D 5" } { resize-pane -D 5 }
-bind -N 'Resize pane left' -r -T prefix M-Left  if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} L 5" } { resize-pane -L 5 }
-bind -N 'Resize pane right' -r -T prefix M-Right if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} R 5" } { resize-pane -R 5 }
+# mirror re-fits from the remote's new layout; -r still repeats. A local float
+# takes the nudge script instead: upstream resize-pane on a float only grows it
+# (no shrink flag) and never clamps, and @float_geom must be rewritten or the
+# next tmux-float-refit reverts the user's size (#864). The tiled path keeps the
+# stock command verbatim, so ordinary resizes still fork nothing.
+bind -N 'Resize pane up' -r -T prefix M-Up    if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} U 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "{{index .Paths.Scripts "tmux-float-nudge"}} #{q:pane_id} U 5" } { resize-pane -U 5 } }
+bind -N 'Resize pane down' -r -T prefix M-Down  if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} D 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "{{index .Paths.Scripts "tmux-float-nudge"}} #{q:pane_id} D 5" } { resize-pane -D 5 } }
+bind -N 'Resize pane left' -r -T prefix M-Left  if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} L 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "{{index .Paths.Scripts "tmux-float-nudge"}} #{q:pane_id} L 5" } { resize-pane -L 5 } }
+bind -N 'Resize pane right' -r -T prefix M-Right if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} resize #{q:@bridge_pane} R 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "{{index .Paths.Scripts "tmux-float-nudge"}} #{q:pane_id} R 5" } { resize-pane -R 5 } }
 
 # === Remote bridge: keys this config did NOT previously bind ===
 # Gating them means the config now owns them, so each else-branch reproduces

@@ -46,6 +46,7 @@ var RequiredScripts = []string{
 	"tmux-client-theme",
 	"tmux-default-size",
 	"tmux-float-refit",
+	"tmux-float-nudge",
 	"tmux-grid-refit",
 	"tmux-issue-stamp",
 	"tmux-kill-pane-guard",

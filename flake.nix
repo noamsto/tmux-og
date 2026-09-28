@@ -2021,6 +2021,41 @@
               touch $out
             '';
 
+          float-nudge-tests =
+            pkgs.runCommand "float-nudge-tests" {
+              # mkTmux for the same reason as float-refit-tests above: the
+              # script only exists to re-derive percentages a real floating
+              # pane carried.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR
+              bats tests/float-nudge.bats
+              touch $out
+            '';
+
+          float-nudge-drag-tests =
+            pkgs.runCommand "float-nudge-drag-tests" {
+              # A real attached client fed SGR mouse reports from a pty host
+              # (same shape as float-drag-integration-tests, no daemon): the
+              # wrapper's emitted conf arms the og-float-drag table, and the
+              # drag end must restamp @float_geom. mkTmux for the wrapper and
+              # the raw observer alike.
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/float-nudge-drag.bats
+              touch $out
+            '';
+
           grid-refit-tests =
             pkgs.runCommand "grid-refit-tests" {
               # mkTmux, not pkgs.tmux: the hook-coexistence case creates a real
