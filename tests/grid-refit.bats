@@ -186,22 +186,13 @@ storm() {
 }
 
 # settle — lets any backgrounded refit job start and log before the next
-# count read. Keeps the original flat 1s quiet window unconditionally — some
-# callers rely on it to prove a *second* quiet interval forks nothing after a
-# stamp write, and there is no observable that distinguishes "nothing forked"
-# from "nothing forked yet" the way there is for a job that did start, so
-# that part of the wait cannot be shortened into a poll.
+# count read. The flat 1s quiet window stays: callers use it to prove a second
+# quiet interval forks nothing, which no observable can shorten into a poll.
 #
-# Under a -v logged server (start_logged_server), also extends the wait
-# (bounded) until every forked job has actually finished: job.c logs "run job
-# %p: <cmd>, pid N" exactly once per job, from the parent, right after it
-# forks (not "job_run: cmd=...", which fires twice per job — once from the
-# parent and once from the child — both at fork time, so it cannot tell
-# "started" from "finished"), and "job died %p: <cmd>, pid N" exactly once,
-# only when the child actually exits and is reaped. Waiting for the two
-# counts to match is a real "every job that started has also finished"
-# barrier, and — unlike scripts/tmux-grid-refit.sh's own lock — it also
-# covers the in-process fast path, which never takes that lock.
+# Under a -v logged server it then waits (bounded) until every forked job has
+# finished, by matching job.c's once-per-job "run job" and "job died" log lines
+# ("job_run: cmd=" fires twice at fork time and cannot mark completion). Unlike
+# the script's lock, this also covers the in-process fast path.
 settle() {
 	sleep 1
 	[ -d "$BATS_TEST_TMPDIR/vlog" ] || return 0
@@ -323,27 +314,13 @@ layout_bug_reproduces() {
 }
 
 @test "a peer's stale @grid_refit_sig read cannot outrun this run's own write (#827)" {
-	# make_grid 1 puts the lead already first, so swap-pane is skipped and
-	# select-layout is the only layout-mutating command — exactly the shape
-	# that exposed the race: select-layout's own window-layout-changed hook
-	# forks a peer *while this invocation is still running*, and nothing
-	# serializes that peer's read of @grid_refit_sig against this
-	# invocation's own later write of it (two separate client connections).
-	# Before the fix, a peer that read the pre-write (stale) value landed on
-	# the same full-apply branch instead of the fast path, and only the fast
-	# path stamps @grid_refit_layout — so a peer that lost this race left it
-	# unset, with nothing left to trigger a later confirming run.
-	#
-	# Forcing that race by luck needs CPU contention (see the PR's CPU
-	# contention runs), so make it deterministic instead: a `tmux` wrapper
-	# ahead of the real one on PATH sleeps only when it sees the exact
-	# standalone `set-option ... @grid_refit_sig` call the old (three
-	# separate tmux calls) apply path issued — origin/main hits that call and
-	# stalls behind it, guaranteeing a peer's read lands first every time.
-	# The fix bundles that write into the same command list as select-layout
-	# (`select-layout ... \; set-option ... @grid_refit_sig ...`), so the
-	# wrapper's pattern never matches on the branch and no delay is ever
-	# injected — closing the race by construction, not by timing luck.
+	# make_grid 1 puts the lead first, so select-layout is the only
+	# layout-mutating command and its window-layout-changed hook forks a peer
+	# while this run is still applying. The tmux wrapper below stalls any
+	# standalone @grid_refit_sig write (the pre-fix apply issued one), so the
+	# peer's stale read lands first every time; the fixed apply bundles the
+	# write with select-layout and is never stalled. Without the fix the peer
+	# takes the apply branch, which never stamps @grid_refit_layout.
 	arm_grid_hooks || skip "TMUX_OG_CONF unset (run via the grid-refit-tests derivation)"
 	# That call already armed setup()'s server, but the server below is a
 	# fresh one (started under the delaying wrapper) that needs its own.

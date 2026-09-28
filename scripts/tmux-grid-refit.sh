@@ -144,19 +144,13 @@ if [[ "$(read_opt @grid_refit_sig '')" == "$sig" && $lead == "$first" ]]; then
 	exit 0
 fi
 
-# One command list, not three separate client calls: swap-pane and
-# select-layout each fire the window-layout-changed hook, which can fork a
-# peer (a background run, or the dispatcher's own direct call racing this
-# one) before this invocation's next command runs. A peer that connects as a
-# new client is queued behind whatever this client's own list still has
-# left, so bundling the trailing @grid_refit_sig write into the same list
-# guarantees it lands before any such peer's read — closing a race where a
-# peer read the pre-write (stale) sig, landed on this same full-apply branch
-# instead of the fast path above, and exited without ever stamping
-# @grid_refit_layout (only the fast path does), leaving nothing to trigger a
-# later confirming run (#827). A failed command aborts the rest of the list
-# (verified: an unknown command drops a trailing set-option too), so the sig
-# still only lands on a decision that actually applied.
+# One command list, not separate client calls: swap-pane and select-layout fire
+# window-layout-changed, whose hook can fork a peer mid-apply. A peer queues
+# behind this client's remaining list, so bundling the @grid_refit_sig write
+# guarantees the peer reads the settled sig and takes the fast path. Only the
+# fast path stamps @grid_refit_layout, so a peer that read the stale sig would
+# land here too and leave it unset (#827). A failed command aborts the rest of
+# the list, so the sig still only lands on a decision that applied.
 swap=()
 [[ $lead == "$first" ]] || swap=(swap-pane -d -s "$lead" -t "$first" \;)
 tmux "${swap[@]}" set-window-option -t "$target" "$opt" "${pct}%" \; select-layout -t "$target" "$layout" \; set-option -w -t "$target" @grid_refit_sig "$sig" 2>/dev/null
