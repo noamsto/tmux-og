@@ -3975,9 +3975,10 @@ wait_daemon_exit() {
 }
 
 # sibling_identity prints one line per pane of the sibling session: everything a
-# kill, recreate or respawn changes, and no process name. macOS reports the nix
-# `sleep` (a symlink to the multicall coreutils binary) as `coreutils` where
-# Linux reads argv[0], and a remain-on-exit corpse still reads its old name.
+# kill, recreate or respawn changes, and no process name: pane_current_command
+# is the kernel name on macOS but argv[0] on Linux (a symlinked multicall binary
+# such as the nix `sleep` may read as its target there), and a remain-on-exit
+# corpse keeps its old name.
 sibling_identity() {
 	$DST list-panes -s -t host-sess-x -F '#{session_id}|#{window_id}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{pane_start_command}' 2>/dev/null || true
 }
