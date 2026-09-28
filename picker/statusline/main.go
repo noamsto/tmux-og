@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/noamsto/themestate"
+	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
 
 // gitOutput runs git with a short timeout so a stalled repo (NFS, held
@@ -91,7 +92,9 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 
 // statuslineCacheDir is the per-session last-good frame store. It is
 // uid-qualified so two accounts on one host cannot collide, and
-// OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers.
+// OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers. The dir
+// must be caller-owned and private (ownerdir.OwnerOnly); readLastGood and
+// writeLastGood both refuse it otherwise.
 func statuslineCacheDir() string {
 	if dir := os.Getenv("OG_STATUSLINE_CACHE_DIR"); dir != "" {
 		return dir
@@ -119,6 +122,9 @@ func cacheFileName(session string) string {
 }
 
 func readLastGood(dir, session string) (string, bool) {
+	if !ownerdir.OwnerOnly(dir) {
+		return "", false
+	}
 	out, err := os.ReadFile(filepath.Join(dir, cacheFileName(session)))
 	if err != nil {
 		return "", false
@@ -127,12 +133,12 @@ func readLastGood(dir, session string) (string, bool) {
 }
 
 func writeLastGood(dir, session, line string) {
-	if os.MkdirAll(dir, 0o755) != nil {
+	if os.MkdirAll(dir, 0o700) != nil || !ownerdir.OwnerOnly(dir) {
 		return
 	}
 	path := filepath.Join(dir, cacheFileName(session))
 	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
-	if os.WriteFile(tmp, []byte(line), 0o644) != nil {
+	if os.WriteFile(tmp, []byte(line), 0o600) != nil {
 		return
 	}
 	os.Rename(tmp, path)
