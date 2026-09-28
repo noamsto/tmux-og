@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,6 +182,38 @@ func TestSessionSegmentBridgeIdlessRest(t *testing.T) {
 		"#[fg=#89b,bold]B feat/x"
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestStatuslineCacheDirHonorsOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OG_STATUSLINE_CACHE_DIR", dir)
+	if got := statuslineCacheDir(); got != dir {
+		t.Fatalf("override ignored: got %q want %q", got, dir)
+	}
+}
+
+func TestStatuslineCacheDirPerUserDefault(t *testing.T) {
+	t.Setenv("OG_STATUSLINE_CACHE_DIR", "")
+	name := fmt.Sprintf("og-statusline-%d", os.Getuid())
+	xdg := filepath.Join(t.TempDir(), "xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", xdg)
+	if got, want := statuslineCacheDir(), filepath.Join(xdg, name); got != want {
+		t.Fatalf("runtime-dir default = %q, want %q", got, want)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	if got, want := statuslineCacheDir(), filepath.Join(tmp, name); got != want {
+		t.Fatalf("TMPDIR default = %q, want %q", got, want)
+	}
+	// Both unset: os.TempDir() -> /tmp; must still be per-user, never the literal.
+	t.Setenv("TMPDIR", "")
+	if got, want := statuslineCacheDir(), filepath.Join("/tmp", name); got != want {
+		t.Fatalf("both-unset default = %q, want %q", got, want)
 	}
 }
 

@@ -2620,6 +2620,8 @@ $pane 1" ]; then
 # host's, and a hostile label never survives the sanitizer.
 @test "daemon ships the remote host's agent usage, gated and sanitized, into the mirror's statusline" {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	statusline_cache_dir="$BATS_TEST_TMPDIR/statusline-cache"
+	mkdir -p "$statusline_cache_dir"
 
 	$SRC new-session -d -s rem -x 120 -y 34
 	$DST new-session -d -s host-sess -x 120 -y 34
@@ -2670,11 +2672,13 @@ $pane 1" ]; then
 	jq -e 'keys == ["claude"]' <<<"$bridge_usage" >/dev/null
 	[[ $bridge_usage != *'#('* ]]
 
-	# The statusline's last-good cache is a fixed path shared across runs.
-	rm -f /tmp/og-statusline/host-sess
+	# This test's last-good frame lives in its own cache dir (per-test via the
+	# override), never a machine-global path another account could own.
+	rm -f "$statusline_cache_dir/host-sess"
 
 	dst_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2dst"
 	out="$(TMUX="$dst_sock,0,0" OG_AGENT_USAGE_DIR="$local_usage_dir" CLAUDE_STATUS_DIR="$CLAUDE_STATUS_DIR" \
+		OG_STATUSLINE_CACHE_DIR="$statusline_cache_dir" \
 		"$STATUSLINE" --session host-sess \
 		--agent-usage-monthly-threshold 50 \
 		--icon-usage-claude C --icon-usage-codex X --icon-usage-cursor U --icon-usage-pi P \
@@ -2682,9 +2686,9 @@ $pane 1" ]; then
 		--thm-text '#cdd6f4' --thm-subtext0 '#a6adc8' --thm-overlay1 '#7f849c' \
 		--thm-peach '#fab387' --thm-green '#a6e3a1' --flavor mocha)"
 	last_line="$(tail -n1 <<<"$out")"
-	# The cache is host-wide (keyed on session name, not this test), so a
-	# later test reusing "host-sess" must not see this run's seeded figure.
-	rm -f /tmp/og-statusline/host-sess
+	# The cache dir is per-test, so a later test cannot see this run's seeded
+	# figure; clear it anyway for symmetry.
+	rm -f "$statusline_cache_dir/host-sess"
 
 	# Closing the remote claude pane removes the stamp -- checked while the
 	# daemon is still alive, since it is the subscription that clears it.

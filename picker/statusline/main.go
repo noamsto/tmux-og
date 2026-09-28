@@ -89,9 +89,20 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	return f[0] == "1", true
 }
 
-// statuslineCacheDir holds the per-session last-good rendered line so a failed
-// fetchVolatile re-paints the previous frame rather than a degraded one.
-const statuslineCacheDir = "/tmp/og-statusline"
+// statuslineCacheDir returns the per-session last-good rendered line store so a
+// failed fetchVolatile re-paints the previous frame rather than a degraded one.
+// It is uid-qualified so two accounts on one host never collide, and
+// OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers.
+func statuslineCacheDir() string {
+	if dir := os.Getenv("OG_STATUSLINE_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if !filepath.IsAbs(base) {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, fmt.Sprintf("og-statusline-%d", os.Getuid()))
+}
 
 // cacheFileName maps a session name to a filesystem-safe file name; distinct
 // names stay distinct (any non-safe byte becomes its 2-hex escape).
@@ -423,7 +434,7 @@ func main() {
 	// tickers but cannot be used here: publishing an empty line every tick
 	// would blank line 0. The cached frame keeps the previous content painted,
 	// and tmux keeps only the LAST complete line, so the render below wins.
-	lastGood, hadLastGood := readLastGood(statuslineCacheDir, a.session)
+	lastGood, hadLastGood := readLastGood(statuslineCacheDir(), a.session)
 	if hadLastGood {
 		os.Stdout.WriteString(lastGood + "\n")
 	} else {
@@ -471,7 +482,7 @@ func main() {
 	line := strings.ReplaceAll(
 		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, liveIDs), "\n", " ")
 	if ok && panesOK {
-		writeLastGood(statuslineCacheDir, a.session, line)
+		writeLastGood(statuslineCacheDir(), a.session, line)
 	}
 	os.Stdout.WriteString(line + "\n")
 }
