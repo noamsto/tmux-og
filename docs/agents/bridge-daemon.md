@@ -355,7 +355,7 @@ is the one requirement that reports itself: the asking side prints
 
   `readLayout` is the one reader using the session-qualified form (`remoteWinTarget`), so it reads `#{window_id}` first and rejects a reply for any other window. Without that check, a window killed between `addWindow`'s `list-windows` and its `readLayout` mirrored `@0`'s layout. `wireRenderer` then replaced `%0`'s sink, and the dead window's `%window-close` → `closeWindow` unregistered `%0` for good. The rejection takes the path every other `readLayout` failure already takes:
   - `addWindow` and `mirrorNewWindow` drop the half-built mirror.
-  - A startup `setupWindow` failure fails the open, like any other startup setup error.
+  - Startup (`mirrorStartupWindows`) skips the window and keeps opening the rest (#837). The rejection wraps `errWindowGone`, which is the only `setupWindow` error startup survives; any other one still fails the open. The skip drops the registry entry, the converger record, and the local window. The exception is the launcher's initial window (the placeholder): it is never killed during the loop, because it may be the session's last window, so the next remote window takes it over. If every startup window vanished, the placeholder is left unclaimed, still stamped with the last vanished window's name. After `reconcileWindows`, an empty registry ends the run through the usual teardown. If reconcile mirrored windows that appeared in the meantime, `dropUnclaimedPlaceholder` kills the placeholder.
   - `reconcileLayout` logs and applies nothing.
   - `reconcileSnapshot`'s trailing re-read stops at the window's own previous read.
 

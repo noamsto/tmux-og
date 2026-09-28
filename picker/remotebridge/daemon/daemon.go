@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -719,6 +720,71 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 	}
 }
 
+// errWindowGone marks a readLayout reply that answered for a window other than
+// the one asked about: the target window is gone (#826).
+var errWindowGone = errors.New("window is gone")
+
+// mirrorStartupWindows mirrors each remote window into its own local window.
+// The launcher's initial window is a placeholder the first surviving remote
+// window claims; the rest are appended. It returns the placeholder when no
+// remote window claimed it.
+//
+// A remote window that closed before its readLayout (errWindowGone) is dropped
+// and the rest are still mirrored (#837). Its placeholder, if it held one, is
+// kept for the next window rather than killed, since it may be the session's
+// last window.
+func mirrorStartupWindows(cfg Config, remoteWins []remoteWindow, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, reg *registry, cv *converger, rt roundTrip) (placeholder string, err error) {
+	placeholder, err = firstMirrorWindow(cfg)
+	if err != nil {
+		return "", err
+	}
+	// Only captions up to the window that claims the placeholder are seen: its
+	// setupWindow's respawn-pane replaces the loading pane with that window's
+	// renderer. The rest are written anyway so a bridge whose first window
+	// stalls says which one.
+	for i, rw := range remoteWins {
+		setPhase(cfg, "mirroring window %d/%d", i+1, len(remoteWins))
+		localWin := placeholder
+		if localWin == "" {
+			localWin, err = createMirrorWindow(cfg)
+			if err != nil {
+				return "", err
+			}
+		}
+		stampMirrorWindow(cfg, localWin, rw.name)
+		mw := reg.add(rw.id, localWin)
+		if err := setupWindow(cfg, send, router, waitHellos, cst, mw, cv, rt); err != nil {
+			if !errors.Is(err, errWindowGone) {
+				return "", err
+			}
+			fmt.Fprintf(os.Stderr, "daemon: mirror %s: %v\n", rw.id, err)
+			reg.remove(rw.id)
+			cv.forget(rw.id)
+			cst.forgetWindow(rw.id)
+			if localWin != placeholder {
+				cfg.LocalTmux("kill-window", "-t", localWin)
+			}
+			continue
+		}
+		if localWin == placeholder {
+			placeholder = ""
+		}
+	}
+	return placeholder, nil
+}
+
+// dropUnclaimedPlaceholder kills a startup placeholder no remote window
+// claimed, once the caller knows the session is not about to go empty — an
+// empty registry is already headed for teardown, which takes the whole
+// session (placeholder included) with it.
+func dropUnclaimedPlaceholder(cfg Config, reg *registry, placeholder string) {
+	if placeholder == "" || reg.empty() {
+		return
+	}
+	cfg.LocalTmux("kill-window", "-t", placeholder)
+	cfg.reflow()
+}
+
 // runMirror is one mirror's lifetime, from the first dial to teardown; Run
 // calls it again when a reattach ends on a different tmux server.
 func runMirror(cfg Config) error {
@@ -1068,31 +1134,10 @@ func runMirror(cfg Config) error {
 
 	// Mirror each remote window into its own local window. The first reuses the
 	// launcher's initial window; the rest are appended.
-	//
-	// Only the first caption is ever seen: setupWindow's respawn-pane replaces
-	// the loading pane with that window's renderer. The rest are written anyway
-	// so a bridge whose first window stalls says which one.
-	for i, rw := range remoteWins {
-		setPhase(cfg, "mirroring window %d/%d", i+1, len(remoteWins))
-		var (
-			localWin string
-			err      error
-		)
-		if i == 0 {
-			localWin, err = firstMirrorWindow(cfg)
-		} else {
-			localWin, err = createMirrorWindow(cfg)
-		}
-		if err != nil {
-			teardown()
-			return tornDown{err}
-		}
-		stampMirrorWindow(cfg, localWin, rw.name)
-		mw := reg.add(rw.id, localWin)
-		if err := setupWindow(cfg, send, router, waitHellosFn, cst, mw, cv, rt); err != nil {
-			teardown()
-			return tornDown{err}
-		}
+	placeholder, err := mirrorStartupWindows(cfg, remoteWins, send, router, waitHellosFn, cst, reg, cv, rt)
+	if err != nil {
+		teardown()
+		return tornDown{err}
 	}
 
 	// Select the initially-requested window. RemoteWindow is a window INDEX
@@ -1115,6 +1160,7 @@ func runMirror(cfg Config) error {
 		teardown()
 		return nil
 	}
+	dropUnclaimedPlaceholder(cfg, reg, placeholder)
 
 	// Re-converge the remote whenever the local client resizes. A local resize
 	// emits no control-stream event, so poll (cheaply — see watchLocalClient);
@@ -2190,7 +2236,7 @@ func readLayout(rt roundTrip, cfg Config, remoteID string) (l0 controlmode.Layou
 		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: empty layout reply for %s", target)
 	}
 	if fields[0] != remoteID {
-		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: layout read for %s answered window %s: window is gone", target, fields[0])
+		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: layout read for %s answered window %s: %w", target, fields[0], errWindowGone)
 	}
 	if len(fields) > 2 {
 		active = fields[2]
