@@ -635,3 +635,62 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 		})
 	}
 }
+
+// TestPumpInputTracksSinkReplacementWhileRunning pins the round-2 fix: the
+// tracker is resolved off the router per frame, so a sink registered over a
+// live pumpInput — resetWindow's revival on the surviving conn — is picked up
+// rather than the tracker the pump bound at start.
+func TestPumpInputTracksSinkReplacementWhileRunning(t *testing.T) {
+	router := NewRouter()
+	first := &outputSink{}
+	first.mouse.Feed([]byte("\x1b[?1005l"))
+	router.Register("%7", first)
+
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+
+	sendCh := make(chan string, 8)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, sinkMouseResolver(router, "%7"))
+
+	// Known legacy: the ambiguous frame is a report plus a key -> guard.
+	assertAmbiguousFrame(t, peer, sendCh, true)
+
+	// Replace the sink under the live pump; now 1005 is set.
+	second := &outputSink{}
+	second.mouse.Feed([]byte("\x1b[?1005h"))
+	router.Register("%7", second)
+
+	// The same bytes are now a mouse report -> no guard.
+	assertAmbiguousFrame(t, peer, sendCh, false)
+}
+
+// assertAmbiguousFrame writes the #814 ambiguous frame and reads sends until its
+// send-keys lands, asserting whether the dead-key guard preceded it.
+func assertAmbiguousFrame(t *testing.T, peer net.Conn, sendCh <-chan string, wantGuard bool) {
+	t.Helper()
+	const framingSend = "send-keys -H -t %7 1b 5b 4d 20 c3 a9 71"
+	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("\x1b[M \xc3\xa9q")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	guard := deadKeyCmd("%7")
+	var got []string
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case s := <-sendCh:
+			if s == framingSend {
+				if wantGuard && !slices.Contains(got, guard) {
+					t.Fatalf("no dead-key guard sent; got %q", got)
+				}
+				if !wantGuard && slices.Contains(got, guard) {
+					t.Fatalf("dead-key guard sent for a 1005 mouse report; got %q", got)
+				}
+				return
+			}
+			got = append(got, s)
+		case <-deadline:
+			t.Fatalf("the frame's send-keys never arrived; got %q", got)
+		}
+	}
+}
