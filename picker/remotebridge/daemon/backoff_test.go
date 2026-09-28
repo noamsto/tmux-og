@@ -82,8 +82,8 @@ func TestBackoffNextNeverWaitsPastMaxElapsed(t *testing.T) {
 	if !ok {
 		t.Fatal("Next(6) with 100ms of budget left should still be allowed")
 	}
-	if d > 100*time.Millisecond {
-		t.Errorf("Next(6) = %s, want <= 100ms (the budget remaining before MaxElapsed)", d)
+	if d != 100*time.Millisecond {
+		t.Errorf("Next(6) = %s, want 100ms (the budget remaining before MaxElapsed)", d)
 	}
 }
 
