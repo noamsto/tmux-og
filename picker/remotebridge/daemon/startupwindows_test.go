@@ -121,6 +121,37 @@ func TestStartupSkipsAWindowThatVanishes(t *testing.T) {
 	}
 }
 
+// TestStartupSkipsAVanishedWindowWhoseCapErrored covers the stream a real
+// remote sends for a vanished window: its ConvergeCmd draws %error, not an
+// empty reply. Startup continues past it, so the next window's replies must
+// still line up with its own commands.
+func TestStartupSkipsAVanishedWindowWhoseCapErrored(t *testing.T) {
+	_, cfg := newStartupFake()
+	reg := newRegistry()
+	cv := newConverger()
+	remoteWins := []remoteWindow{{id: "@1"}, {id: "@2"}, {id: "@3"}}
+
+	script := strings.Replace(startupScript("@1", "@1", "@3"),
+		"%begin 1 3 1\n%end 1 3 1\n", "%begin 1 3 1\nno such window: @2\n%error 1 3 1\n", 1)
+	if !strings.Contains(script, "%error 1 3 1") {
+		t.Fatal("fixture did not inject the error reply")
+	}
+	rt := setupWindowRT(script)
+
+	if _, err := mirrorStartupWindows(cfg, remoteWins, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, cv, rt); err != nil {
+		t.Fatalf("mirrorStartupWindows: %v", err)
+	}
+	if _, ok := reg.byRemoteID("@2"); ok {
+		t.Error("registry has @2: it vanished and must not survive setup")
+	}
+	if mw, ok := reg.byRemoteID("@3"); !ok || mw.localWin != "@102" {
+		t.Errorf("reg @3 = %+v, ok=%v, want localWin @102", mw, ok)
+	}
+	if _, ok := cv.last["@2"]; ok {
+		t.Error("cv still records a cap for @2: forget was skipped")
+	}
+}
+
 // TestStartupVanishedFirstWindowKeepsThePlaceholder pins the placeholder rule:
 // the first remote window takes the launcher's initial window, and when IT
 // vanishes the placeholder is not killed — it is left for the next remote

@@ -738,9 +738,10 @@ func mirrorStartupWindows(cfg Config, remoteWins []remoteWindow, send func(strin
 	if err != nil {
 		return "", err
 	}
-	// Only the first caption is ever seen: setupWindow's respawn-pane replaces
-	// the loading pane with that window's renderer. The rest are written anyway
-	// so a bridge whose first window stalls says which one.
+	// Only captions up to the window that claims the placeholder are seen: its
+	// setupWindow's respawn-pane replaces the loading pane with that window's
+	// renderer. The rest are written anyway so a bridge whose first window
+	// stalls says which one.
 	for i, rw := range remoteWins {
 		setPhase(cfg, "mirroring window %d/%d", i+1, len(remoteWins))
 		localWin := placeholder
