@@ -1665,7 +1665,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 		}
 	}
 
-	L, remoteActive, zoomed, err := readLayout(rt, remoteWinTarget(cfg, mw.remoteID))
+	L, remoteActive, zoomed, err := readLayout(rt, cfg, mw.remoteID)
 	if err != nil {
 		return err
 	}
@@ -2162,7 +2162,7 @@ func tmuxQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// readLayout reads target's layout string and, in the same round-trip, the
+// readLayout reads remoteID's layout string and, in the same round-trip, the
 // remote window's active pane id — #{pane_id} in window scope — and whether it
 // is zoomed. Layout strings contain no spaces, so one space-separated reply
 // carries all three, and every reconcile gets the remote's focus and zoom from
@@ -2172,8 +2172,16 @@ func tmuxQuote(s string) string {
 // would report a zoomed window as single-pane, and reconcile would read the
 // hidden panes as closed and kill their renderers on every zoom toggle; the
 // flag rides alongside instead, and zoom is applied locally as zoom (#413).
-func readLayout(rt roundTrip, target string) (l0 controlmode.Layout, active string, zoomed bool, err error) {
-	l, ok := one(rt, fmt.Sprintf("display-message -p -t %s -F '#{window_layout} #{pane_id} #{window_zoomed_flag}'", target))
+//
+// The reply leads with #{window_id}, which readLayout verifies against
+// remoteID: display-message's target is CMD_FIND_CANFAIL, so from the
+// daemon's control client a dead session-qualified @N target silently
+// resolves to the session's *current* window instead of erroring — without
+// the check, a dead window's layout read would come back describing a live
+// window as if it were the one asked for.
+func readLayout(rt roundTrip, cfg Config, remoteID string) (l0 controlmode.Layout, active string, zoomed bool, err error) {
+	target := remoteWinTarget(cfg, remoteID)
+	l, ok := one(rt, fmt.Sprintf("display-message -p -t %s -F '#{window_id} #{window_layout} #{pane_id} #{window_zoomed_flag}'", target))
 	if !ok {
 		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: control connection closed reading layout for %s", target)
 	}
@@ -2181,14 +2189,17 @@ func readLayout(rt roundTrip, target string) (l0 controlmode.Layout, active stri
 		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: display-message window_layout -t %s: %s", target, l.Data)
 	}
 	fields := strings.Fields(string(l.Data))
-	if len(fields) == 0 {
+	if len(fields) < 2 {
 		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: empty layout reply for %s", target)
 	}
-	if len(fields) > 1 {
-		active = fields[1]
+	if fields[0] != remoteID {
+		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: layout read for %s answered window %s: window is gone", target, fields[0])
 	}
-	zoomed = len(fields) > 2 && fields[2] == "1"
-	L, err := controlmode.ParseLayout(fields[0])
+	if len(fields) > 2 {
+		active = fields[2]
+	}
+	zoomed = len(fields) > 3 && fields[3] == "1"
+	L, err := controlmode.ParseLayout(fields[1])
 	return L, active, zoomed, err
 }
 

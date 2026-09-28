@@ -31,10 +31,10 @@ func TestStructuralReconcileReseedsTheSurvivor(t *testing.T) {
 	// A one-pane layout: %4 is gone, %3 survives and fills the window.
 	const onePane = "bd67,190x45,0,0,3"
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", onePane + " %3 0", "%end 1 1 1", // readLayout
+		"%begin 1 1 1", "@1 " + onePane + " %3 0", "%end 1 1 1", // readLayout
 		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed: cursor
 		"%begin 1 3 1", "SURVIVOR-REPAINT", "%end 1 3 1", // PaneSeed: capture
-		"%begin 1 4 1", onePane + " %3 0", "%end 1 4 1", // trailing re-read: unchanged, stop
+		"%begin 1 4 1", "@1 " + onePane + " %3 0", "%end 1 4 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n")
 
 	// %l4 is killed with its remote pane, leaving the survivor alone. The
@@ -107,10 +107,10 @@ func TestStructuralReconcileReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 
 	const onePane = "bd67,190x45,0,0,3"
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", onePane + " %3 0", "%end 1 1 1",
+		"%begin 1 1 1", "@1 " + onePane + " %3 0", "%end 1 1 1",
 		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1",
 		"%begin 1 3 1", "SURVIVOR-REPAINT", "%end 1 3 1",
-		"%begin 1 4 1", onePane + " %3 0", "%end 1 4 1",
+		"%begin 1 4 1", "@1 " + onePane + " %3 0", "%end 1 4 1",
 	}, "\n") + "\n")
 
 	var killed bool

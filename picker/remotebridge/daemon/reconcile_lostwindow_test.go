@@ -70,7 +70,7 @@ func TestReconcileLayoutReportsRetireWhenTheWindowIsGone(t *testing.T) {
 	}
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", layout + " %3 0", "%end 1 1 1", // readLayout
+		"%begin 1 1 1", "@1 " + layout + " %3 0", "%end 1 1 1", // readLayout
 	}, "\n") + "\n")
 
 	cfg := Config{

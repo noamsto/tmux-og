@@ -146,8 +146,8 @@ func TestNoticeZoomOnReads(t *testing.T) {
 		layout:      noticeUnchangedLayout,
 	}
 	script := strings.Join([]string{
-		"%begin 1 1 1", noticeUnchangedLayout + " %3 1", "%end 1 1 1", // readLayout
-		"%begin 1 2 1", noticeUnchangedLayout + " %3 1", "%end 1 2 1", // trailing re-read: converged
+		"%begin 1 1 1", "@1 " + noticeUnchangedLayout + " %3 1", "%end 1 1 1", // readLayout
+		"%begin 1 2 1", "@1 " + noticeUnchangedLayout + " %3 1", "%end 1 2 1", // trailing re-read: converged
 	}, "\n") + "\n"
 	rt, sent := scriptedRT(script)
 	// Gate 3 sees the notification's zoom flag disagree with appliedZoom and
@@ -186,7 +186,7 @@ func TestNoticeUnzoomTransientReads(t *testing.T) {
 		appliedZoom: true,
 	}
 	script := strings.Join([]string{
-		"%begin 1 1 1", noticeUnchangedLayout + " %3 1", "%end 1 1 1", // readLayout: still zoomed
+		"%begin 1 1 1", "@1 " + noticeUnchangedLayout + " %3 1", "%end 1 1 1", // readLayout: still zoomed
 	}, "\n") + "\n"
 	rt, sent := scriptedRT(script)
 	// Gate 3 sees the notification's zoom flag disagree with appliedZoom and
@@ -276,7 +276,7 @@ func TestNoticePaneSetChangeReads(t *testing.T) {
 		layout:      noticeUnchangedLayout,
 	}
 	script := strings.Join([]string{
-		"%begin 1 1 1", noticeUnchangedLayout + " %3 0", "%end 1 1 1", // readLayout: remote already back
+		"%begin 1 1 1", "@1 " + noticeUnchangedLayout + " %3 0", "%end 1 1 1", // readLayout: remote already back
 	}, "\n") + "\n"
 	rt, sent := scriptedRT(script)
 	fake := &noticeFake{t: t, sent: sent, local: "0\n"}
@@ -301,7 +301,7 @@ func TestNoticePaneSetChangeReads(t *testing.T) {
 func TestNoticeFloatChangeReads(t *testing.T) {
 	w := shapedMirror(t)
 	script := strings.Join([]string{
-		"%begin 1 1 1", tiledLayout + " %0 0", "%end 1 1 1", // readLayout: floats unchanged
+		"%begin 1 1 1", "@1 " + tiledLayout + " %0 0", "%end 1 1 1", // readLayout: floats unchanged
 	}, "\n") + "\n"
 	rt, sent := scriptedRT(script)
 	fake := &noticeFake{t: t, sent: sent, local: "0\n"}
@@ -354,7 +354,7 @@ func TestNoticeZoomedReshapeReads(t *testing.T) {
 // presence in the stream trace is what pins "a read happened", and counting
 // it distinguishes gate 5's dropped leading read from the trailing re-read
 // that stays.
-const readLayoutFmt = "#{window_layout} #{pane_id} #{window_zoomed_flag}"
+const readLayoutFmt = "#{window_id} #{window_layout} #{pane_id} #{window_zoomed_flag}"
 
 // geometryOrderingFake is the Config seam for the geometry-only tests.
 // LocalTmux argv lands in log, the trace the control stream also writes into,
@@ -394,7 +394,7 @@ func TestNoticeGeometryOnlyAppliesFromNotification(t *testing.T) {
 		"%begin 1 2 1", "SEED0", "%end 1 2 1", // PaneSeed(%0): capture
 		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeed(%1): cursor
 		"%begin 1 4 1", "SEED1", "%end 1 4 1", // PaneSeed(%1): capture
-		"%begin 1 5 1", noticeReshapedLayout + " %0 0", "%end 1 5 1", // trailing re-read: converged
+		"%begin 1 5 1", "@1 " + noticeReshapedLayout + " %0 0", "%end 1 5 1", // trailing re-read: converged
 	}, "\n") + "\n"
 
 	log := &orderedLog{}
@@ -455,7 +455,7 @@ func TestNoticeGeometryOnlyBehindAMirroredFloatAppliesFromNotification(t *testin
 		"%begin 1 2 1", "SEED0", "%end 1 2 1", // PaneSeed(%0): capture
 		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeed(%1): cursor
 		"%begin 1 4 1", "SEED1", "%end 1 4 1", // PaneSeed(%1): capture
-		"%begin 1 5 1", noticeReshapedFloatLayout + " %0 0", "%end 1 5 1", // trailing re-read: converged
+		"%begin 1 5 1", "@1 " + noticeReshapedFloatLayout + " %0 0", "%end 1 5 1", // trailing re-read: converged
 	}, "\n") + "\n"
 
 	log := &orderedLog{}
@@ -508,12 +508,12 @@ func TestNoticeStaleGeometryHeals(t *testing.T) {
 		"%begin 1 2 1", "SEED0", "%end 1 2 1", // pass 1 PaneSeed(%0): capture
 		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // pass 1 PaneSeed(%1): cursor
 		"%begin 1 4 1", "SEED1", "%end 1 4 1", // pass 1 PaneSeed(%1): capture
-		"%begin 1 5 1", noticeReshapedLayoutC + " %0 0", "%end 1 5 1", // trailing re-read: remote moved on to C
+		"%begin 1 5 1", "@1 " + noticeReshapedLayoutC + " %0 0", "%end 1 5 1", // trailing re-read: remote moved on to C
 		"%begin 1 6 1", "0 0 0 0 0 0 0 0 0", "%end 1 6 1", // pass 2 PaneSeed(%0): cursor
 		"%begin 1 7 1", "SEED0", "%end 1 7 1", // pass 2 PaneSeed(%0): capture
 		"%begin 1 8 1", "0 0 0 0 0 0 0 0 0", "%end 1 8 1", // pass 2 PaneSeed(%1): cursor
 		"%begin 1 9 1", "SEED1", "%end 1 9 1", // pass 2 PaneSeed(%1): capture
-		"%begin 1 10 1", noticeReshapedLayoutC + " %0 0", "%end 1 10 1", // trailing re-read: converged on C
+		"%begin 1 10 1", "@1 " + noticeReshapedLayoutC + " %0 0", "%end 1 10 1", // trailing re-read: converged on C
 	}, "\n") + "\n"
 
 	log := &orderedLog{}

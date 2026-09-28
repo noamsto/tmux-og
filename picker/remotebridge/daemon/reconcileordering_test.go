@@ -113,10 +113,10 @@ func TestReconcileZoomsBeforeReseeding(t *testing.T) {
 			// round-trip: readLayout, PaneSeed(%3) cursor, PaneSeed(%3) capture,
 			// trailing readLayout.
 			script := strings.Join([]string{
-				"%begin 1 1 1", layout + " %3 " + tc.remoteZoom, "%end 1 1 1", // readLayout
+				"%begin 1 1 1", "@1 " + layout + " %3 " + tc.remoteZoom, "%end 1 1 1", // readLayout
 				"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%3): cursor
 				"%begin 1 3 1", "SEED", "%end 1 3 1", // PaneSeed(%3): capture
-				"%begin 1 4 1", layout + " %3 " + tc.remoteZoom, "%end 1 4 1", // trailing re-read: unchanged, stop
+				"%begin 1 4 1", "@1 " + layout + " %3 " + tc.remoteZoom, "%end 1 4 1", // trailing re-read: unchanged, stop
 			}, "\n") + "\n"
 
 			log := &orderedLog{}
@@ -201,13 +201,13 @@ func TestReconcileSeedsPaneBeforeItsLaterOutputArrives(t *testing.T) {
 	}
 
 	script := strings.Join([]string{
-		"%begin 1 1 1", layout + " %0 0", "%end 1 1 1", // readLayout
+		"%begin 1 1 1", "@1 " + layout + " %0 0", "%end 1 1 1", // readLayout
 		"%begin 1 2 1", "0 0 0 0 0 0 0 0 0", "%end 1 2 1", // PaneSeed(%0): cursor
 		"%begin 1 3 1", "SEED-A", "%end 1 3 1", // PaneSeed(%0): capture
 		"%output %0 LIVE-AFTER-A-SEED",                    // must land after FrameSeed(%0), never before
 		"%begin 1 4 1", "0 0 0 0 0 0 0 0 0", "%end 1 4 1", // PaneSeed(%1): cursor
 		"%begin 1 5 1", "SEED-B", "%end 1 5 1", // PaneSeed(%1): capture
-		"%begin 1 6 1", layout + " %0 0", "%end 1 6 1", // trailing re-read: unchanged, stop
+		"%begin 1 6 1", "@1 " + layout + " %0 0", "%end 1 6 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n"
 
 	rt := scriptedRTRouter(script, router)

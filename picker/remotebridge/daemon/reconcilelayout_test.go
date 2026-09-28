@@ -277,8 +277,8 @@ func TestReconcileLayoutShapeFailureBehindAMirroredFloatSkipsTheBroadcast(t *tes
 
 	var issued []string
 	rt := recordingRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout
-		"%begin 1 2 1", tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout
+		"%begin 1 2 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
 	}, "\n")+"\n", &issued)
 
 	if retire := reconcileLayout(f.config(), w, func(string) {}, router, noHellos,
@@ -323,8 +323,8 @@ func TestReconcileLayoutSuppressesTheBroadcastWhenTheShapeFails(t *testing.T) {
 
 	var issued []string
 	rt := recordingRT(strings.Join([]string{
-		"%begin 1 1 1", tiledLayout + " %0 0", "%end 1 1 1", // readLayout
-		"%begin 1 2 1", tiledLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
+		"%begin 1 1 1", "@1 " + tiledLayout + " %0 0", "%end 1 1 1", // readLayout
+		"%begin 1 2 1", "@1 " + tiledLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
 	}, "\n")+"\n", &issued)
 
 	reconcileLayout(f.config(), w, func(string) {}, router, noHellos, newCtlState(), newConverger(), rt)
@@ -358,9 +358,9 @@ func TestReconcileLayoutRerunsWhenOnlyTheFloatSetMoved(t *testing.T) {
 
 	var issued []string
 	rt := recordingRT(strings.Join([]string{
-		"%begin 1 1 1", tiledLayout + " %0 0", "%end 1 1 1", // readLayout: no float yet
-		"%begin 1 2 1", tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing: same Raw, one float
-		"%begin 1 3 1", tiledFloatLayout + " %0 0", "%end 1 3 1", // second pass's trailing: converged
+		"%begin 1 1 1", "@1 " + tiledLayout + " %0 0", "%end 1 1 1", // readLayout: no float yet
+		"%begin 1 2 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing: same Raw, one float
+		"%begin 1 3 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 3 1", // second pass's trailing: converged
 	}, "\n")+"\n", &issued)
 
 	reconcileLayout(f.config(), w, func(string) {}, NewRouter(), noHellos, newCtlState(), newConverger(), rt)
@@ -414,9 +414,9 @@ func TestReconcileLayoutResetPathSkipsTheTail(t *testing.T) {
 	}
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
 		"%begin 1 2 1", "", "%end 1 2 1", // setupWindow's ConvergeCmd
-		"%begin 1 3 1", onePaneFloatLayout + " %0 0", "%end 1 3 1", // setupWindow's readLayout
+		"%begin 1 3 1", "@1 " + onePaneFloatLayout + " %0 0", "%end 1 3 1", // setupWindow's readLayout
 		"%begin 1 4 1", "0 0 0 0 0 0 0 0 0", "%end 1 4 1", // PaneSeed(%0): cursor
 		"%begin 1 5 1", "RESEEDED", "%end 1 5 1", // PaneSeed(%0): capture
 	}, "\n") + "\n")
@@ -442,8 +442,8 @@ func TestReconcileLayoutDoesNotSkipAFloatOnlyChange(t *testing.T) {
 	w.layout = mustLayout(t, tiledLayout).Raw // already shaped: only the float is new
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout
-		"%begin 1 2 1", tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout
+		"%begin 1 2 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 2 1", // trailing re-read: converged
 	}, "\n") + "\n")
 
 	reconcileLayout(f.config(), w, func(string) {}, NewRouter(), noHellos, newCtlState(), newConverger(), rt)
@@ -474,7 +474,7 @@ func TestReconcileLayoutFloatOnlyChangeLeavesTheTiledPanesAlone(t *testing.T) {
 
 	var issued []string
 	rt := recordingRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout: only the float is new
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout: only the float is new
 	}, "\n")+"\n"+floatSeedScript(2, "FLOAT-SEED"), &issued)
 
 	reconcileLayout(f.config(), w, func(string) {}, router,
@@ -510,7 +510,7 @@ func TestReconcileLayoutFocusFollowsANewlyAddedFloat(t *testing.T) {
 	w := shapedMirror(t)
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %9 0", "%end 1 1 1", // the float is the remote's active pane
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %9 0", "%end 1 1 1", // the float is the remote's active pane
 	}, "\n") + "\n" + floatSeedScript(2, "FLOAT-SEED"))
 
 	reconcileLayout(f.config(), w, func(string) {}, NewRouter(),
@@ -533,7 +533,7 @@ func TestReconcileLayoutDoesNotRefocusAnAlreadyMirroredFloat(t *testing.T) {
 	w.floatGeom["%9"] = float9
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", twoFloatLayout + " %9 0", "%end 1 1 1", // %9 is still active, %8 is the new one
+		"%begin 1 1 1", "@1 " + twoFloatLayout + " %9 0", "%end 1 1 1", // %9 is still active, %8 is the new one
 	}, "\n") + "\n" + floatSeedScript(2, "FLOAT-SEED"))
 
 	reconcileLayout(f.config(), w, func(string) {}, NewRouter(),
@@ -582,7 +582,7 @@ func TestReconcileLayoutKeepsFloatsThroughAFailedPaneOp(t *testing.T) {
 	w.floatGeom["%9"] = float9
 	w.layout = "stale"
 
-	rt, _ := scriptedRT("%begin 1 1 1\n" + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
+	rt, _ := scriptedRT("%begin 1 1 1\n@1 " + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
 
 	// The appended pane's renderer never connects, which is what fails
 	// applyPaneOps.
@@ -616,7 +616,7 @@ func TestReconcileLayoutRetiresAFailedPaneOpInALostWindow(t *testing.T) {
 	w.floatGeom["%9"] = float9
 	w.layout = "stale"
 
-	rt, _ := scriptedRT("%begin 1 1 1\n" + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
+	rt, _ := scriptedRT("%begin 1 1 1\n@1 " + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
 
 	if retire := reconcileLayout(f.config(), w, func(string) {}, NewRouter(),
 		func([]string) (map[string]net.Conn, error) { return nil, errors.New("renderer never connected") },
@@ -646,7 +646,7 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedReset(t *testing.T) {
 	w.layout = "stale"
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
 		"%begin 1 2 1", "", "%end 1 2 1", // setupWindow's ConvergeCmd
 		"%begin 1 3 1", "%error 1 3 1", // setupWindow's readLayout fails: the rebuild never reaches its floats
 	}, "\n") + "\n" + floatSeedScript(4, "FLOAT-SEED"))
@@ -679,7 +679,7 @@ func TestReconcileLayoutDoesNotReAddFloatsAfterAResetIntoALostWindow(t *testing.
 	w.layout = "stale"
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1",
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1",
 		"%begin 1 2 1", "", "%end 1 2 1",
 		"%begin 1 3 1", "%error 1 3 1",
 	}, "\n") + "\n")
@@ -713,7 +713,7 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedDesyncReset(t *testing.T) {
 	w.layout = "stale"
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
+		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // reconcileLayout's readLayout
 		"%begin 1 2 1", "", "%end 1 2 1", // setupWindow's ConvergeCmd
 		"%begin 1 3 1", "%error 1 3 1", // setupWindow's readLayout fails
 	}, "\n") + "\n" + floatSeedScript(4, "FLOAT-SEED"))

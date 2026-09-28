@@ -20,7 +20,7 @@ func TestReconcileLayoutDedupsUnchangedLayout(t *testing.T) {
 	}
 
 	rt, sent := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", layout + " %3 0", "%end 1 1 1", // readLayout
+		"%begin 1 1 1", "@1 " + layout + " %3 0", "%end 1 1 1", // readLayout
 	}, "\n") + "\n")
 
 	cfg := Config{
@@ -60,8 +60,8 @@ func TestReconcileLayoutFallsThroughOnZoomChange(t *testing.T) {
 	}
 
 	rt, _ := scriptedRT(strings.Join([]string{
-		"%begin 1 1 1", layout + " %3 1", "%end 1 1 1", // readLayout (dedup check + pass 0)
-		"%begin 1 2 1", layout + " %3 1", "%end 1 2 1", // trailing re-read: unchanged, stop
+		"%begin 1 1 1", "@1 " + layout + " %3 1", "%end 1 1 1", // readLayout (dedup check + pass 0)
+		"%begin 1 2 1", "@1 " + layout + " %3 1", "%end 1 2 1", // trailing re-read: unchanged, stop
 	}, "\n") + "\n")
 
 	var calls []string

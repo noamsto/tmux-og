@@ -25,9 +25,7 @@ var errLocalPanesDesynced = errors.New("local panes desynced from the remote ord
 // reconcileLayout reads ground truth for window w's remote layout and zoom
 // state, then delegates to reconcileSnapshot to apply it.
 func reconcileLayout(cfg Config, w *mirrorWindow, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, cv *converger, rt roundTrip) (retire bool) {
-	target := remoteWinTarget(cfg, w.remoteID)
-
-	L, remoteActive, zoomed, err := readLayout(rt, target)
+	L, remoteActive, zoomed, err := readLayout(rt, cfg, w.remoteID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: layout-change: %v\n", err)
 		return false
@@ -105,8 +103,6 @@ func reconcileLayoutFrom(cfg Config, w *mirrorWindow, l controlmode.Line, send f
 // holds the registry, and the rebuild goes back through reconcileWindows so the
 // replacement is built by the one path that stamps and names a mirror window.
 func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remoteActive string, zoomed bool, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, cv *converger, rt roundTrip) (retire bool) {
-	target := remoteWinTarget(cfg, w.remoteID)
-
 	// Same tiled shape, same zoom state: no tiled pane moved, so the pass loop
 	// below has nothing to do for one. A resize burst or a spurious/duplicate
 	// %layout-change reaching this entry — the read-first one directly, or
@@ -305,7 +301,7 @@ passes:
 		// L.Floats. Compared against L.Floats — the previous REMOTE read — never
 		// against w.floatGeom, which only the post-loop reconcileFloats updates
 		// and which would then never converge.
-		fresh, freshActive, freshZoom, err := readLayout(rt, target)
+		fresh, freshActive, freshZoom, err := readLayout(rt, cfg, w.remoteID)
 		if err != nil || (fresh.Raw == L.Raw && freshZoom == zoomed && floatCellsEqual(fresh.Floats, L.Floats)) {
 			converged = true
 			break passes
