@@ -360,7 +360,7 @@ is the one requirement that reports itself: the asking side prints
   - **By session name**:
     - `readSessionPath` comes back empty.
     - `readIdentity` still gets the server-scoped `#{pid}|#{start_time}` for a missing session. Its guard is the required `session_id` in `parseIdentity`, not an empty reply.
-  - **`if -F -t %N` guards**: the float move and tool guards in `ctl.go`, and `modalClearCmd`/`deadKeyCmd` in `daemon.go`. Each condition may be evaluated against the fallback pane, but every command in the branches names `%N` explicitly and fails on it. The tool focus branch's `run-shell` is skipped because the `set -wF -t %N` before it in the same `;` group errors and aborts the group.
+  - **`if -F -t %N` guards**: the float move and tool guards in `ctl.go`, and `modalClearCmd`/`deadKeyCmd` in `daemon.go`. Each condition may be evaluated against the fallback pane, but every branch leads with a command that names `%N` explicitly and fails on it, and a failing command aborts the rest of its `;` group. That abort, not its own target, is what keeps the tool create branch's `set -p -t @N` and the focus branch's `run-shell` from running.
   - **`run-shell -b -t %N` verbs** (carousel, theme, enrich-refresh in `ctl.go`): their scripts carry no `#{}` and name the pane or window as data. They target the pane the user just pressed on.
   - **The theme probe**: its result is not tied to any window or pane.
 
