@@ -129,26 +129,28 @@ func TestURLOpenerInvalidTakesNoToken(t *testing.T) {
 }
 
 func TestURLOpenerIgnoresOversizedValue(t *testing.T) {
-	p := &openerProbe{}
-	o := p.opener("$1")
-	o.seen["1-1"] = true
 	big := " 1-5|https://x" + strings.Repeat(" 1-6|https://y", openValueMaxLen/14)
 	if len(big) <= openValueMaxLen {
 		t.Fatalf("test value is %d bytes, not over openValueMaxLen", len(big))
 	}
-	o.handle("$1", big)
-	if len(p.opened) != 0 {
-		t.Errorf("an oversized value opened %v", p.opened)
-	}
-	if want := map[string]bool{"1-1": true}; !reflect.DeepEqual(o.seen, want) {
-		t.Errorf("seen = %v, want it untouched by an oversized value", o.seen)
-	}
-	if want := []string{"og-open: ignored an oversized URL log from devbox"}; !reflect.DeepEqual(p.notified, want) {
-		t.Errorf("notified %q, want %q", p.notified, want)
-	}
-	o.handle("$1", " 1-5|https://x")
-	if want := []string{"https://x"}; !reflect.DeepEqual(p.opened, want) {
-		t.Errorf("opened %v, want the record the oversized value carried", p.opened)
+	for _, v := range []string{big, openOversized} {
+		p := &openerProbe{}
+		o := p.opener("$1")
+		o.seen["1-1"] = true
+		o.handle("$1", v)
+		if len(p.opened) != 0 {
+			t.Errorf("%.20q: an oversized value opened %v", v, p.opened)
+		}
+		if want := map[string]bool{"1-1": true}; !reflect.DeepEqual(o.seen, want) {
+			t.Errorf("%.20q: seen = %v, want it untouched by an oversized value", v, o.seen)
+		}
+		if want := []string{"og-open: ignored an oversized URL log from devbox"}; !reflect.DeepEqual(p.notified, want) {
+			t.Errorf("%.20q: notified %q, want %q", v, p.notified, want)
+		}
+		o.handle("$1", " 1-5|https://x")
+		if want := []string{"https://x"}; !reflect.DeepEqual(p.opened, want) {
+			t.Errorf("%.20q: opened %v, want the record the oversized value carried", v, p.opened)
+		}
 	}
 }
 
@@ -263,8 +265,8 @@ func TestURLOpenerIgnoresForeignSession(t *testing.T) {
 
 func connectCmds(target string) []string {
 	return []string{
-		"show-options -qv" + target + " @og_open_url",
-		"refresh-client -B 'og_open::#{@og_open_url}'",
+		"display-message -p" + target + " '#{?#{e|<=:#{n:@og_open_url},12288},#{@og_open_url},!oversized}'",
+		"refresh-client -B 'og_open::#{?#{e|<=:#{n:@og_open_url},12288},#{@og_open_url},!oversized}'",
 		"set-option -F" + target + " @og_open_client '#{client_name}'",
 	}
 }
@@ -301,6 +303,93 @@ func TestURLOpenerReconnectReplaysNothing(t *testing.T) {
 	o.handle("$1", " 1-1|https://old 1-2|https://new")
 	if len(p.opened) != 0 {
 		t.Errorf("a reconnect replayed %v", p.opened)
+	}
+}
+
+// connectWith runs a clean connect whose seed reply is seed.
+func connectWith(o *urlOpener, seed string) []string {
+	var issued []string
+	o.connect(scriptRT(&issued, okReply(body(seed)), okReply(body("")), okReply(body(""))))
+	return issued
+}
+
+func TestURLOpenerSeedReplacesSeen(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	o.seen["9-9"] = true
+	connectWith(o, " 1-1|https://a")
+	if want := map[string]bool{"1-1": true}; !reflect.DeepEqual(o.seen, want) {
+		t.Errorf("seen = %v, want %v", o.seen, want)
+	}
+}
+
+// A remote that forces reconnects, each seeded with a fresh log, must not
+// grow seen past one log's worth.
+func TestURLOpenerReconnectSeenStaysBounded(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	for i := range 5 {
+		connectWith(o, openLog(i*1000+1, 700))
+		if len(o.seen) != 700 {
+			t.Fatalf("reconnect %d: seen %d, want 700 (replace, not merge)", i, len(o.seen))
+		}
+	}
+	connectWith(o, openOversized)
+	if len(o.seen) != 700 {
+		t.Errorf("an oversized seed changed seen to %d", len(o.seen))
+	}
+}
+
+func TestURLOpenerOversizedSeedKeepsSeen(t *testing.T) {
+	big := strings.Repeat(" 1-7|https://y", openValueMaxLen/14+1)
+	if len(big) <= openValueMaxLen {
+		t.Fatalf("test value is %d bytes, not over openValueMaxLen", len(big))
+	}
+	for _, seed := range []string{openOversized, big} {
+		p := &openerProbe{}
+		o := p.opener("$1")
+		o.seen["1-1"] = true
+		if issued := connectWith(o, seed); len(issued) != 3 {
+			t.Errorf("%.20q: issued %q, an oversized seed must still subscribe and register", seed, issued)
+		}
+		if want := map[string]bool{"1-1": true}; !reflect.DeepEqual(o.seen, want) {
+			t.Errorf("%.20q: seen = %v, want it untouched", seed, o.seen)
+		}
+		if len(p.notified) != 0 {
+			t.Errorf("%.20q: an oversized seed notified %q", seed, p.notified)
+		}
+		o.handle("$1", openOversized)
+		o.handle("$1", " 1-1|https://old 1-2|https://new")
+		if want := []string{"https://new"}; !reflect.DeepEqual(p.opened, want) {
+			t.Errorf("%.20q: opened %v, want %v", seed, p.opened, want)
+		}
+	}
+}
+
+func TestURLOpenerNoticesAreGated(t *testing.T) {
+	p := &openerProbe{clock: time.Unix(1000, 0)}
+	o := p.opener("$1")
+	for range 100 {
+		o.handle("$1", openOversized)
+		var issued []string
+		o.connect(scriptRT(&issued, errReply))
+	}
+	if len(p.notified) != 1 {
+		t.Fatalf("notified %d times within openNoticeEvery, want 1", len(p.notified))
+	}
+	p.clock = p.clock.Add(openNoticeEvery)
+	o.handle("$1", openOversized)
+	if len(p.notified) != 2 {
+		t.Fatalf("notified %d times, want a second notice once openNoticeEvery passed", len(p.notified))
+	}
+	var held []func()
+	o.launch = func(f func()) { held = append(held, f) }
+	p.clock = p.clock.Add(time.Hour)
+	o.handle("$1", openOversized)
+	p.clock = p.clock.Add(time.Hour)
+	o.handle("$1", openOversized)
+	if len(held) != 1 {
+		t.Errorf("launched %d notices while one was in flight, want 1", len(held))
 	}
 }
 
@@ -559,5 +648,56 @@ func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(string(clientOpt)), strings.TrimSpace(string(clientName)); got != want {
 		t.Errorf("%s = %q, want the control client's name %q", openClientOpt, got, want)
+	}
+}
+
+// TestOpenURLBoundAgainstLiveTmux proves openURLFormat's bound is what the
+// remote enforces: in bytes, not display width, exact at openValueMaxLen, and
+// with the value's own %-escapes, commas and braces passed through verbatim.
+func TestOpenURLBoundAgainstLiveTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := tmux(args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %q: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	sessID := strings.TrimSpace(run("display-message", "-p", "-t", "w", "#{session_id}"))
+	seed := func() string {
+		t.Helper()
+		return strings.TrimSuffix(run("display-message", "-p", "-t", sessID, openURLFormat), "\n")
+	}
+
+	verbatim := " 1-1|https://a/%41%2F%Y%%,#{session_id}}"
+	run("set-option", "-t", "w", openURLOpt, verbatim)
+	if got := seed(); got != verbatim {
+		t.Errorf("seed = %q, want %q verbatim", got, verbatim)
+	}
+
+	// One display column, 30001 bytes: a width-based bound would pass it.
+	run("set-option", "-t", "w", openURLOpt, "a")
+	for range 5 {
+		run("set-option", "-a", "-t", "w", openURLOpt, strings.Repeat("\u0301", 3000))
+	}
+	if got := seed(); got != openOversized {
+		t.Errorf("a 1-column 30001-byte value: seed = %.40q, want %q", got, openOversized)
+	}
+
+	exact := strings.Repeat("x", openValueMaxLen)
+	run("set-option", "-t", "w", openURLOpt, exact)
+	if got := seed(); got != exact {
+		t.Errorf("a value of exactly openValueMaxLen bytes must pass, got %d bytes", len(got))
+	}
+	run("set-option", "-a", "-t", "w", openURLOpt, "x")
+	if got := seed(); got != openOversized {
+		t.Errorf("openValueMaxLen+1 bytes: seed = %d bytes, want %q", len(got), openOversized)
 	}
 }

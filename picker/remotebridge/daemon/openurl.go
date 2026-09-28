@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -18,7 +20,6 @@ import (
 // opens each record it has not seen yet.
 const (
 	openURLOpt    = "@og_open_url"
-	openURLFormat = "#{" + openURLOpt + "}"
 	openClientOpt = "@og_open_client"
 	openURLMaxLen = 4096
 )
@@ -30,7 +31,16 @@ const (
 	openMaxPerReport = 16
 	openBurst        = 30
 	openRefill       = 2 * time.Second
+	openNoticeEvery  = 10 * time.Second
+	openOversized    = "!oversized"
 )
+
+// openURLFormat is the log bounded remote-side: tmux sends option values raw,
+// so the controller's reader would buffer an unbounded value whole before any
+// Go-side check. The test is "fits", not "too big", so a tmux that cannot
+// evaluate e|<= reads every value as oversized — the feature off, never
+// unbounded.
+var openURLFormat = "#{?#{e|<=:#{n:" + openURLOpt + "}," + strconv.Itoa(openValueMaxLen) + "},#{" + openURLOpt + "}," + openOversized + "}"
 
 // openerWaitBound is how long a launched opener's exit status still counts.
 // xdg-open in generic mode, or a first browser launch, can block for the
@@ -96,6 +106,12 @@ type urlOpener struct {
 	// a full bucket.
 	spent    int
 	refilled time.Time
+	// Every notice forks local tmux, and the remote decides how often one is
+	// due, so at most one is in flight and one is sent per openNoticeEvery.
+	// Locked because open errors notice from launched goroutines.
+	noticeMu   sync.Mutex
+	noticeBusy bool
+	noticeNext time.Time
 }
 
 // newURLOpener returns nil when open is nil: the feature is off, and a nil
@@ -132,19 +148,27 @@ func (o *urlOpener) target() string {
 // subscribe, so seeding first is what keeps an attach or reconnect from
 // replaying old records while still opening one appended in between; and
 // registering last means og-open never sees a registered client that lacks
-// the subscription. show-options -v rather than display-message -p, whose
-// strftime pass would rewrite a %-escape inside a URL.
+// the subscription. The seed reads the subscription's own bounded format;
+// display-message's strftime pass touches only that template, never the
+// substituted value, so a %-escape in a URL survives.
+//
+// A seed that fits replaces seen rather than merging into it: a nonce the log
+// no longer carries cannot be replayed from it, and merging would let forced
+// reconnects grow seen without bound.
 func (o *urlOpener) connect(rt roundTrip) {
 	if o == nil {
 		return
 	}
-	l, ok := one(rt, "show-options -qv"+o.target()+" "+openURLOpt)
+	l, ok := one(rt, "display-message -p"+o.target()+" "+tmuxQuote(openURLFormat))
 	if !ok || l.Kind == controlmode.Error {
 		o.fail("seed")
 		return
 	}
-	for _, r := range parseOpenRecords(string(l.Data)) {
-		o.seen[r.nonce] = true
+	if recs, fits := boundedOpenRecords(string(l.Data)); fits {
+		o.seen = make(map[string]bool, len(recs))
+		for _, r := range recs {
+			o.seen[r.nonce] = true
+		}
 	}
 	if !sendSubscription(rt, openSubName, "", openURLFormat) {
 		o.fail("subscribe")
@@ -159,9 +183,32 @@ func (o *urlOpener) connect(rt roundTrip) {
 }
 
 func (o *urlOpener) fail(step string) {
+	o.notice(fmt.Sprintf("og-open: URL opens on %s will not reach this machine (%s failed; subscriptions need tmux ≥ 3.2)", o.host, step))
+}
+
+func (o *urlOpener) notice(msg string) {
+	now := o.now()
+	o.noticeMu.Lock()
+	if o.noticeBusy || now.Before(o.noticeNext) {
+		o.noticeMu.Unlock()
+		return
+	}
+	o.noticeBusy, o.noticeNext = true, now.Add(openNoticeEvery)
+	o.noticeMu.Unlock()
 	o.launch(func() {
-		o.notify(fmt.Sprintf("og-open: URL opens on %s will not reach this machine (%s failed; subscriptions need tmux ≥ 3.2)", o.host, step))
+		o.notify(msg)
+		o.noticeMu.Lock()
+		o.noticeBusy = false
+		o.noticeMu.Unlock()
 	})
+}
+
+// boundedOpenRecords parses a log value, or reports that it does not fit.
+func boundedOpenRecords(v string) ([]openRecord, bool) {
+	if v == openOversized || len(v) > openValueMaxLen {
+		return nil, false
+	}
+	return parseOpenRecords(v), true
 }
 
 // handle opens every unseen valid record in one og_open report from session
@@ -172,11 +219,11 @@ func (o *urlOpener) handle(sess, v string) {
 	if o == nil || (o.session != "" && sess != o.session) {
 		return
 	}
-	if len(v) > openValueMaxLen {
-		o.launch(func() { o.notify("og-open: ignored an oversized URL log from " + o.host) })
+	recs, fits := boundedOpenRecords(v)
+	if !fits {
+		o.notice("og-open: ignored an oversized URL log from " + o.host)
 		return
 	}
-	recs := parseOpenRecords(v)
 	seen := make(map[string]bool, len(recs))
 	opened, suppressed := 0, 0
 	for _, r := range recs {
@@ -192,15 +239,13 @@ func (o *urlOpener) handle(sess, v string) {
 		opened++
 		o.launch(func() {
 			if err := o.open(r.url); err != nil {
-				o.notify(fmt.Sprintf("og-open: could not open %s: %v", r.url, err))
+				o.notice(fmt.Sprintf("og-open: could not open %s: %v", r.url, err))
 			}
 		})
 	}
 	o.seen = seen
 	if suppressed > 0 {
-		o.launch(func() {
-			o.notify(fmt.Sprintf("og-open: suppressed %d URL opens from %s (rate limit)", suppressed, o.host))
-		})
+		o.notice(fmt.Sprintf("og-open: suppressed %d URL opens from %s (rate limit)", suppressed, o.host))
 	}
 }
 
