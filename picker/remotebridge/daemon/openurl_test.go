@@ -566,7 +566,7 @@ func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
 		}
 		t.Skip("tmux is not available")
 	}
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 
 	if out, err := tmux("set-option", "-t", "w", openURLOpt, " 1-1|https://old").CombinedOutput(); err != nil {
 		t.Fatalf("seed %s: %v\n%s", openURLOpt, err, out)
@@ -659,7 +659,7 @@ func TestOpenURLBoundAgainstLiveTmux(t *testing.T) {
 		}
 		t.Skip("tmux is not available")
 	}
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 	run := func(args ...string) string {
 		t.Helper()
 		out, err := tmux(args...).CombinedOutput()
