@@ -206,7 +206,12 @@ path, which every caller already handles.
   per survivor → one full reseed through the shared `reseedPanes` → re-subscribe
   both shippers (#566: subscriptions are per control client, so the fresh one
   carries none — and re-subscribing re-reports every window and pane, which is
-  the label/agent-state half of the repair for free). `pause-after`
+  the label/agent-state half of the repair for free). The same call
+  re-runs `urlOpener.connect` (#854): it re-seeds `@og_open_url`'s current
+  records into `seen` before re-subscribing, then re-registers
+  `@og_open_client` under the fresh control client's name — so nothing a
+  remote `og-open` appended before the drop replays once the mirror is back.
+  `pause-after`
   deliberately stays where it is, re-armed by the main loop after the first
   `settle()`: a reattach *is* a setup pass, and arming it earlier re-opens the
   very window that leaves a pane paused with no `%continue`.
@@ -339,6 +344,7 @@ they are all satisfied the same way — a remote rebuilt from this revision, who
 | `[r]` in the enrich card across a mirror (`prefix + i`) | tmux-og's own `tmux-pr-enrich` — the `enrich-refresh` ctl verb runs its single-target `--force` mode on the remote, where the checkout is. Also `gh`, which that poller already needs. The verb resolves the remote window's `@branch` and `@worktree`/`@git_root` itself and exits silently unless **both** are set: an empty branch would fall through the poller's single-target guard into a whole-server pass, and an empty dir would run `gh` in the tmux server's cwd and write another repo's PR onto the remote window (#598). |
 | Image paste into a mirror (`ctrl+v`) | nothing beyond POSIX `sh`/`mktemp`/`find` — the requirement is on the *local* host: `xclip` or `wl-paste` (without one the byte is forwarded, i.e. pre-#361 behaviour). |
 | Popups on the remote (`display-popup` from a remote shell, older `fzf`, `fzf-tmux -p`, atuin, any popup bind of your own) | a remote rebuilt from this revision, for `patches/tmux-display-popup-control-client.patch` (#738). No capability probe: an unrebuilt remote opens nothing at all, silently — the same degradation shape as remote session resources. `new-pane`-based floats (fzf ≥ 0.74) are unaffected and work on any remote whose tmux has `new-pane`. |
+| URL forwarding (`o` in a mirrored prdash, any `$BROWSER`-aware tool) opening on the controller instead of the remote | `og-open` (#854) ships with the wrapper and needs nothing extra on PATH; `BROWSER` comes from the remote's own `set-environment -g` in its config, so the remote needs both a rebuild and a config reload to pick up the store path. No capability probe: an older or not-reloaded remote has no `og-open` on `$BROWSER`, and prdash (and every other caller) opens on the remote exactly as before this feature — see `bridge-shipped-state.md`. |
 
 `og-remote-picker` doubles as the picker's capability probe, so its absence
 is the one requirement that reports itself: the asking side prints

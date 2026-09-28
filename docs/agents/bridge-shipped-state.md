@@ -269,6 +269,126 @@ The remote publishes its own caches and the daemon ships them across (#743).
   orphaned mirror (daemon killed without teardown) keeps its last
   `@bridge_usage` until the session itself dies.
 
+## URL Opens (remote → controller)
+
+`o` on a PR/issue/check in a mirrored prdash, and any other `$BROWSER`-aware
+tool on the remote, opens in the controller's browser instead of the remote's
+(#854). `scripts/og-open.sh` is `$BROWSER` on every tmux-og host; the daemon
+side is `picker/remotebridge/daemon/openurl.go`.
+
+- **Record format.** `og-open` appends `" <epoch>-<pid>|<url>"` to the
+  **session** option `@og_open_url` on the remote (a pane target on
+  `set-option` with no `-w`/`-p` writes the pane's session option, measured) —
+  an append-only log, not a single slot, because tmux reports a subscription
+  change on a ~1s timer and a bulk open would otherwise overwrite itself
+  inside one tick. Past 4096 bytes `og-open` replaces the value with just its
+  own new record (`set-option` without `-a`) instead of appending — the
+  daemon's `seen` set is what keeps the reset from replaying anything
+  (below).
+- **`og-open`'s own validation, before it ever touches tmux**: exactly one
+  arg, `http://` or `https://` (lowercase) with at least one byte after the
+  scheme, no whitespace or control byte, at most 4096 bytes, and — measured,
+  next-3.9 — no trailing `;`: `tmux set-option -a @x ' n|https://a;'` stores
+  the value **without** the `;`, tmux's own argv command separator, so a URL
+  ending in one is refused rather than silently mangled.
+- **The registered-client check is what "bridged" means.** `og-open` lists
+  this pane's session's control-mode clients (`list-clients -t "$TMUX_PANE"`
+  — `-t <pane>` resolves to the pane's session, measured) and treats the
+  session as bridged only when one of them is control-mode **and** named in
+  the session option `@og_open_client` (the daemon's registration, below).
+  Not "any control client": a control client that is not a live `og_open`
+  subscriber — a daemon predating this feature, a daemon whose subscribe
+  failed, iTerm2's `-CC` — would otherwise make `og-open` append to a log
+  nobody reads, and the URL would vanish silently while prdash still reports
+  "Opened". With the name check, such a session reads as "not bridged" and
+  the URL opens on the remote as it did before this feature. A registered
+  client that disconnects stops matching immediately (the check is against
+  the *attached* clients, not the stamped name alone).
+- **Unbridged, `og-open` `unset`s `BROWSER` before `exec`ing `open`
+  (Darwin)/`xdg-open`** — without the unset, `xdg-open`'s own `$BROWSER`
+  fallback would call `og-open` again, forever.
+- **The daemon's connect sequence, in order, each step gated on the last
+  succeeding** (`urlOpener.connect`, run from the same `subscribe` closure in
+  `daemon.go` that installs the label/agent subscriptions):
+  1. **Seed** — `show-options -qv -t '<pin.id>' @og_open_url` as a
+     round-trip, never `display-message -p`: its strftime pass would rewrite
+     a `%`-escape inside a URL. Every nonce found is added to `seen`.
+  2. **Subscribe** — only after a successful seed:
+     `refresh-client -B 'og_open::#{@og_open_url}'`, session-scoped (empty
+     `what`, same posture as `og_res`/`og_usage`).
+  3. **Register** — only after a successful subscribe:
+     `set-option -F -t '<pin.id>' @og_open_client '#{client_name}'`. `-F`
+     expands against the *issuing* client, which over the control stream is
+     this control client itself (measured, next-3.9) — so this stores the
+     daemon's own `client-<pid>`, not a literal.
+
+  Seeding before subscribing is what keeps both edges right: tmux re-reports
+  the current value the moment a subscribe lands, and those nonces are
+  already in `seen`, so neither a first attach nor a reconnect replays an old
+  URL — while a record appended between seed and subscribe is not yet in
+  `seen`, so the subscribe-time report opens it once. Registering last means
+  `og-open` can never see a client that is registered but not yet
+  subscribed. A failed step notifies once for that connection, naming the
+  step (`"og-open: URL opens on <host> will not reach this machine (<step>
+  failed; subscriptions need tmux ≥ 3.2)"`), and a failed seed never
+  subscribes, a failed subscribe never registers.
+- **`handle` (on `%subscription-changed og_open $N`)** ignores the report
+  when a nonempty pinned session doesn't match `$N` — the subscription
+  follows the control client's *current* session, so a session-pin excursion
+  (#396) can report another session's log, whose records belong to whatever
+  bridge is mirroring that session. Every well-formed record whose nonce is
+  unseen and whose URL passes `validOpenURL` (below) is opened; `seen` is
+  then replaced with exactly this report's nonces — bounded by `og-open`'s
+  own 4096-byte reset, so `seen` never grows past what one log holds.
+- **`validOpenURL` is the controller-side security boundary** — the URL is
+  remote-derived and becomes a local process's argv, so it is re-checked
+  daemon-side regardless of what `og-open` already validated (CLAUDE.md:
+  "remote-derived values are sanitized daemon-side"): length 1–4096 bytes,
+  begins with `http://` or `https://` exactly (so it can never begin with
+  `-` and read as an opener flag), no byte `<= 0x20` or `0x7f`, and
+  `net/url.Parse` succeeds with `Scheme` `http`/`https` and a non-empty
+  `Host`. Non-ASCII bytes pass (IRIs) — they can form neither a flag nor a
+  separator.
+- **The opener runs off the main loop** (`launch`, production `go f()`) with
+  a 5s bound on how long its exit status still counts: `xdg-open` in generic
+  mode, or a first browser launch, can block for the browser's whole
+  lifetime, and a crash hours later must not surface as a stale "could not
+  open" — past the bound the call returns `nil` and a goroutine keeps
+  reaping the child. `BROWSER` is stripped from the opener's own child
+  environment (`runBounded`/`envWithout`): the controller's own tmux server
+  exports `BROWSER=og-open`, and without stripping it a generic-mode
+  `xdg-open` would bounce the URL back through `og-open` — a second hop on a
+  controller that is itself mirrored elsewhere. The child's stdout/stderr go
+  to the daemon's own log, never a pipe a lingering browser process would
+  hold open.
+- **The controller env assumption**: the opener reaches a browser only
+  through `DISPLAY`/`WAYLAND_DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` inherited
+  from the *local* tmux server's environment — the same environment every
+  local pane already gets. Missing them fails the open, surfaced through
+  `notifyLocal`.
+- **`BROWSER` is exported as `og-open`'s store path, not the bare name**
+  (`set-environment -g BROWSER` in `config/tmux.conf.tmpl`) — a resident
+  server can predate a rebuild (#407), and a bare name would be unresolvable
+  on such a server's fixed-at-start PATH until it restarts. The bridged tool
+  float keeps it too: `toolResolveScript` (`ctl.go`) restores `BROWSER` from
+  the tmux global environment right after its existing `PATH` restore, for
+  the same reason — `split-window` spawns prdash through the remote's
+  default shell (fish), whose login-profile rebuild could otherwise shadow
+  the tmux-global `BROWSER` with its own.
+- **Accepted losses** (the design's own list, not bugs to chase): a control
+  client that died without tmux noticing yet is still registered, so
+  `og-open` still appends to its log — the reattach's seed marks that record
+  seen and it never opens. A stale `@og_open_client` name could match a
+  later control client that reuses the same pid and isn't a subscriber — the
+  same silent drop, at negligible odds. The cap reset is check-then-act:
+  concurrent `og-open` calls that each see the log over 4096 bytes each
+  replace it, and within one subscription tick only the last survives — a
+  bulk open straddling the cap can lose all but its last URL. Two
+  controllers mirroring the same remote session: the last to register
+  `@og_open_client` wins, and if it disconnects first, `og-open` falls back
+  to the remote's own opener until the other reconnects — degraded to
+  pre-feature behaviour, never a silent drop.
+
 ## Remote Agent Status
 
 A mirror window's local panes run renderers, so nothing writes
