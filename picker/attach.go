@@ -44,6 +44,11 @@ var (
 	attachKillGrace = 5 * time.Second
 )
 
+// attachPostKillDrain bounds the post-Wait drain once the group has been
+// signalled, so a descendant that survived the kill cannot add a second grace to
+// the done message.
+const attachPostKillDrain = 250 * time.Millisecond
+
 func attachPhaseLabel(p attachPhase) string {
 	switch p {
 	case phaseConnect:
@@ -248,7 +253,7 @@ func (r *attachRun) run() {
 			graceC = nil
 			syscall.Kill(-pgid, syscall.SIGKILL) //nolint:errcheck
 		case err := <-waited:
-			r.drainLines(lines, pr)
+			r.drainLines(lines, pr, timedOut || cancelled)
 			r.finish(classifyAttach(err, cmd, cur, timedOut, cancelled, budget, stderr.String()))
 			return
 		}
@@ -257,12 +262,18 @@ func (r *attachRun) run() {
 
 // drainLines forwards the phase lines still in the pipe after the launcher
 // exited: a fast launcher's last lines otherwise lose the race to Wait. A
-// descendant still holding the write end bounds this by the grace, not EOF.
-func (r *attachRun) drainLines(lines <-chan attachPhase, pr *os.File) {
+// descendant still holding the write end bounds this by the grace, not EOF;
+// after a cancel or timeout already signalled the group it uses
+// attachPostKillDrain instead.
+func (r *attachRun) drainLines(lines <-chan attachPhase, pr *os.File, killed bool) {
 	if lines == nil {
 		return
 	}
-	deadline := time.After(r.grace)
+	wait := r.grace
+	if killed {
+		wait = attachPostKillDrain
+	}
+	deadline := time.After(wait)
 	for {
 		select {
 		case p, ok := <-lines:

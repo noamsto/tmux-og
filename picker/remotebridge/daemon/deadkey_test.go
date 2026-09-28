@@ -82,7 +82,7 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 			peer.Close()
 		})
 		peers[id] = peer
-		go pumpInput(conn, id, send, nil, nil, nil)
+		go pumpInput(conn, id, send, nil, nil, nil, nil)
 	}
 
 	for _, id := range []string{live, deadKeyTiled, deadKeyFloat, deadOn} {

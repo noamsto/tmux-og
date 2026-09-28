@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -719,6 +720,71 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 	}
 }
 
+// errWindowGone marks a readLayout reply that answered for a window other than
+// the one asked about: the target window is gone (#826).
+var errWindowGone = errors.New("window is gone")
+
+// mirrorStartupWindows mirrors each remote window into its own local window.
+// The launcher's initial window is a placeholder the first surviving remote
+// window claims; the rest are appended. It returns the placeholder when no
+// remote window claimed it.
+//
+// A remote window that closed before its readLayout (errWindowGone) is dropped
+// and the rest are still mirrored (#837). Its placeholder, if it held one, is
+// kept for the next window rather than killed, since it may be the session's
+// last window.
+func mirrorStartupWindows(cfg Config, remoteWins []remoteWindow, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, reg *registry, cv *converger, rt roundTrip) (placeholder string, err error) {
+	placeholder, err = firstMirrorWindow(cfg)
+	if err != nil {
+		return "", err
+	}
+	// Only captions up to the window that claims the placeholder are seen: its
+	// setupWindow's respawn-pane replaces the loading pane with that window's
+	// renderer. The rest are written anyway so a bridge whose first window
+	// stalls says which one.
+	for i, rw := range remoteWins {
+		setPhase(cfg, "mirroring window %d/%d", i+1, len(remoteWins))
+		localWin := placeholder
+		if localWin == "" {
+			localWin, err = createMirrorWindow(cfg)
+			if err != nil {
+				return "", err
+			}
+		}
+		stampMirrorWindow(cfg, localWin, rw.name)
+		mw := reg.add(rw.id, localWin)
+		if err := setupWindow(cfg, send, router, waitHellos, cst, mw, cv, rt); err != nil {
+			if !errors.Is(err, errWindowGone) {
+				return "", err
+			}
+			fmt.Fprintf(os.Stderr, "daemon: mirror %s: %v\n", rw.id, err)
+			reg.remove(rw.id)
+			cv.forget(rw.id)
+			cst.forgetWindow(rw.id)
+			if localWin != placeholder {
+				cfg.LocalTmux("kill-window", "-t", localWin)
+			}
+			continue
+		}
+		if localWin == placeholder {
+			placeholder = ""
+		}
+	}
+	return placeholder, nil
+}
+
+// dropUnclaimedPlaceholder kills a startup placeholder no remote window
+// claimed, once the caller knows the session is not about to go empty — an
+// empty registry is already headed for teardown, which takes the whole
+// session (placeholder included) with it.
+func dropUnclaimedPlaceholder(cfg Config, reg *registry, placeholder string) {
+	if placeholder == "" || reg.empty() {
+		return
+	}
+	cfg.LocalTmux("kill-window", "-t", placeholder)
+	cfg.reflow()
+}
+
 // runMirror is one mirror's lifetime, from the first dial to teardown; Run
 // calls it again when a reattach ends on a different tmux server.
 func runMirror(cfg Config) error {
@@ -1068,31 +1134,10 @@ func runMirror(cfg Config) error {
 
 	// Mirror each remote window into its own local window. The first reuses the
 	// launcher's initial window; the rest are appended.
-	//
-	// Only the first caption is ever seen: setupWindow's respawn-pane replaces
-	// the loading pane with that window's renderer. The rest are written anyway
-	// so a bridge whose first window stalls says which one.
-	for i, rw := range remoteWins {
-		setPhase(cfg, "mirroring window %d/%d", i+1, len(remoteWins))
-		var (
-			localWin string
-			err      error
-		)
-		if i == 0 {
-			localWin, err = firstMirrorWindow(cfg)
-		} else {
-			localWin, err = createMirrorWindow(cfg)
-		}
-		if err != nil {
-			teardown()
-			return tornDown{err}
-		}
-		stampMirrorWindow(cfg, localWin, rw.name)
-		mw := reg.add(rw.id, localWin)
-		if err := setupWindow(cfg, send, router, waitHellosFn, cst, mw, cv, rt); err != nil {
-			teardown()
-			return tornDown{err}
-		}
+	placeholder, err := mirrorStartupWindows(cfg, remoteWins, send, router, waitHellosFn, cst, reg, cv, rt)
+	if err != nil {
+		teardown()
+		return tornDown{err}
 	}
 
 	// Select the initially-requested window. RemoteWindow is a window INDEX
@@ -1115,6 +1160,7 @@ func runMirror(cfg Config) error {
 		teardown()
 		return nil
 	}
+	dropUnclaimedPlaceholder(cfg, reg, placeholder)
 
 	// Re-converge the remote whenever the local client resizes. A local resize
 	// emits no control-stream event, so poll (cheaply — see watchLocalClient);
@@ -1737,7 +1783,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 
 	for i, remotePane := range paneIDs {
 		if wired[i] {
-			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
+			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, remotePane))
 			continue
 		}
 		// A sole pane's failure is fatal: this error is what makes addWindow /
@@ -1749,7 +1795,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
-		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
+		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, remotePane))
 	}
 
 	// A window that already holds a float when the bridge opens mirrors it now
@@ -2191,7 +2237,7 @@ func readLayout(rt roundTrip, cfg Config, remoteID string) (l0 controlmode.Layou
 		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: empty layout reply for %s", target)
 	}
 	if fields[0] != remoteID {
-		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: layout read for %s answered window %s: window is gone", target, fields[0])
+		return controlmode.Layout{}, "", false, fmt.Errorf("daemon: layout read for %s answered window %s: %w", target, fields[0], errWindowGone)
 	}
 	if len(fields) > 2 {
 		active = fields[2]
@@ -2375,7 +2421,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
 	seedRenderer(rt, router, hc.conn, hc.paneID, rendererDims(mw, hc.paneID), cfg.graphicsFor(hc.paneID))
-	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
+	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, hc.paneID))
 }
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
@@ -2470,6 +2516,10 @@ type outputSink struct {
 	// gfx.Filter call; the main loop's reveal pass reads it to decide whether
 	// a revealed pane is worth re-seeding.
 	hasImages atomic.Bool
+	// mouse reconstructs the pane's negotiated mouse encoding from the bytes
+	// this sink writes to the renderer, so pumpInput can disambiguate an
+	// ESC[M report the bytes alone cannot (#814).
+	mouse mouseModeTracker
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2540,6 +2590,7 @@ func (s *outputSink) start(conn net.Conn) {
 						tail = append(gfx.Filter(tail), gfx.Close()...)
 					}
 					if len(tail) > 0 {
+						s.mouse.Feed(tail)
 						wire.WriteStream(conn, wire.FrameOutput, tail)
 					}
 					return
@@ -2569,6 +2620,9 @@ func (s *outputSink) start(conn net.Conn) {
 						return
 					}
 				}
+			}
+			if f.typ == wire.FrameOutput || f.typ == wire.FrameSeed {
+				s.mouse.Feed(f.payload)
 			}
 			write := wire.WriteFrame
 			if f.typ == wire.FrameOutput || f.typ == wire.FrameSeed {
@@ -2752,6 +2806,22 @@ func (s *outputSink) Close() {
 // stall input forever; tmux uses a similar escape-time window.
 var escCarryGrace = 50 * time.Millisecond
 
+// sinkMouseMode returns the mouse-mode tracker of paneID's registered renderer
+// sink, or nil when the pane has no sink.
+func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
+	if s := router.sink(paneID); s != nil {
+		return &s.mouse
+	}
+	return nil
+}
+
+// sinkMouseResolver returns a per-frame lookup of paneID's tracker. A resolver
+// rather than a tracker because resetWindow can register a fresh sink on the
+// surviving conn while its pumpInput keeps reading it.
+func sinkMouseResolver(router *Router, paneID string) func() *mouseModeTracker {
+	return func() *mouseModeTracker { return sinkMouseMode(router, paneID) }
+}
+
 // pumpInput forwards conn's FrameInput frames to the remote pane as
 // send-keys commands, until conn closes. A non-nil paste handler intercepts
 // ctrl+v image pastes first (see paste.go); nil forwards input verbatim.
@@ -2771,7 +2841,7 @@ var escCarryGrace = 50 * time.Millisecond
 // seen fires for every input frame, before it is forwarded: it is what wakes a
 // parked mirror (Config.InputSeen). The keystroke itself is not held for the
 // reconnect — send fails closed with no connection, as it does for any outage.
-func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func()) {
+func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func(), mode func() *mouseModeTracker) {
 	// Read the grace once, before the reader goroutine exists, so the mutable
 	// package var is never read concurrently with a test that sets it.
 	grace := escCarryGrace
@@ -2812,8 +2882,14 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		}
 		// isDismissKey is documented for a non-empty slice; paste.handle can
 		// return an empty one when it swallows the payload (paste.go).
-		if len(payload) > 0 && isDismissKey(payload) {
-			send(deadKeyCmd(remotePane))
+		if len(payload) > 0 {
+			var m *mouseModeTracker
+			if mode != nil {
+				m = mode()
+			}
+			if isDismissKey(payload, m) {
+				send(deadKeyCmd(remotePane))
+			}
 		}
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
 			send(strings.Join(args, " "))
@@ -2899,8 +2975,11 @@ func modalClearCmd(pane string) string {
 // paste body counts: tmux checks for a dead pane before its bracket-paste
 // diversion. Focus reports are skipped too, a bridge-only choice: a dead pane
 // never gets one locally, so one here is local tmux's pane-focus notification.
-// Callers never pass it an empty slice.
-func isDismissKey(b []byte) bool {
+// Callers never pass it an empty slice. mode carries the pane's negotiated
+// mouse encoding; nil means unknown, and the mode-blind heuristic in
+// skipX10Mouse applies.
+func isDismissKey(b []byte, mode *mouseModeTracker) bool {
+	utf8, known := mode.MouseUTF8()
 	for len(b) > 0 {
 		switch {
 		case bytes.HasPrefix(b, []byte("\x1b[I")), bytes.HasPrefix(b, []byte("\x1b[O")):
@@ -2910,7 +2989,7 @@ func isDismissKey(b []byte) bool {
 		case bytes.HasPrefix(b, []byte("\x1b[<")):
 			b = skipSGRMouse(b)
 		case bytes.HasPrefix(b, []byte("\x1b[M")):
-			b = skipX10Mouse(b)
+			b = skipX10Mouse(b, utf8, known)
 		default:
 			return true
 		}
@@ -3071,12 +3150,14 @@ func csiEnd(b []byte) (int, bool) {
 // skipX10Mouse consumes a "\x1b[M" report and its three parameters, returning
 // the frame after it. tmux writes this report in one of two encodings: the
 // legacy X10 form, three raw bytes (button, x, y, each offset by 32), and the
-// UTF-8 (1005) form, the same three values written as UTF-8 runes. The two
-// readings disagree whenever a legacy parameter byte also begins a valid
-// multi-byte UTF-8 rune: the common two-byte case is an x byte in 0xc2-0xdf
-// followed by a y byte in 0x80-0xbf (column 162+, row 96+), and a 0xe0-0xef
-// byte followed by two continuations is the rarer three-byte one. Resolve them
-// from where the legacy reading cannot be right:
+// UTF-8 (1005) form, the same three values written as UTF-8 runes. The pane's
+// negotiated mode (utf8, known) resolves the two when the bytes alone cannot.
+//
+// With the mode known the encoding is exact: a pane in 1005 mode produced the
+// UTF-8 reading, one not in it produced the legacy reading.
+//
+// With the mode unknown (no seed processed yet, or a caller with no tracker) it
+// falls back to where the legacy reading cannot be right:
 //
 //   - a UTF-8 lead byte at the button position cannot be a legacy button (a
 //     small value), so the report is 1005; and
@@ -3087,12 +3168,18 @@ func csiEnd(b []byte) (int, bool) {
 // reads the three parameters as raw bytes. Fewer than three params left in b
 // consumes to the end. The UTF-8 length comes from x10UTF8End, the same rule
 // splitIncompleteEscape uses.
-func skipX10Mouse(b []byte) []byte {
+func skipX10Mouse(b []byte, utf8, known bool) []byte {
 	raw := 3 + 3
 	if raw > len(b) {
 		raw = len(b)
 	}
 	utf8End, _, _ := x10UTF8End(b)
+	if known {
+		if utf8 {
+			return b[utf8End:]
+		}
+		return b[raw:]
+	}
 	if utf8End != raw && (b[3] >= 0xc2 || (raw < len(b) && b[raw]&0xc0 == 0x80)) {
 		return b[utf8End:]
 	}
