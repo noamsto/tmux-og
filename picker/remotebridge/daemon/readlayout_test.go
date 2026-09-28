@@ -6,13 +6,10 @@ import (
 	"testing"
 )
 
-// TestReadLayoutRejectsAnotherWindowsReply pins the fallback guard: a
-// session-qualified window target (remoteWinTarget) is CMD_FIND_CANFAIL, so a
-// dead @5 silently resolves to the session's current window (@0 here) instead
-// of erroring. readLayout must catch that from the leading #{window_id} field
-// rather than trust a reply that describes a different window.
+// A dead @5 target falls back to the session's current window (@0) from a
+// control client; the reply's leading #{window_id} is the only tell.
 func TestReadLayoutRejectsAnotherWindowsReply(t *testing.T) {
-	const layout = "bd67,190x45,0,0,0" // pane id 0: matches TestAddWindowGoneMidAddLeavesOtherMirrorsFeed's live mirror pane
+	const layout = "bd67,190x45,0,0,0"
 	cfg := Config{RemoteSession: "sess"}
 
 	rt, _ := scriptedRT("%begin 1 1 1\n@0 " + layout + " %0 0\n%end 1 1 1\n")
@@ -23,8 +20,6 @@ func TestReadLayoutRejectsAnotherWindowsReply(t *testing.T) {
 	}
 }
 
-// TestReadLayoutAcceptsAMatchingReply is the positive case: a reply whose
-// leading id matches the target parses normally.
 func TestReadLayoutAcceptsAMatchingReply(t *testing.T) {
 	const layout = "bd67,190x45,0,0,3"
 	cfg := Config{RemoteSession: "sess"}
@@ -45,21 +40,11 @@ func TestReadLayoutAcceptsAMatchingReply(t *testing.T) {
 	}
 }
 
-// TestAddWindowGoneMidAddLeavesOtherMirrorsFeed is the regression this issue
-// exists for: a window closes between the daemon deciding to add it and
-// setupWindow reading its layout. Before the id check, readLayout's
-// display-message fell back to the session's current window (@0 here, whose
-// mirror is already live and feeding %0) and setupWindow happily mirrored
-// @0's layout onto the new window's entry — wireRenderer then re-registered
-// %0 to the NEW window's renderer, stealing the live mirror's feed. The
-// dead window's later %window-close found the stolen registration and
-// unregistered %0, cutting the live mirror dead.
-//
-// With the id check, readLayout errors before any of that happens: %0's sink
-// must never move, @5 must never make it into the registry, and a later
-// closeWindow for @5 must stay a no-op.
+// @5 closes between addWindow's list-windows and its readLayout, which then
+// answers for @0, whose mirror already feeds %0. Mirroring that reply would
+// re-register %0 to @5's renderer, and @5's %window-close would unregister it.
 func TestAddWindowGoneMidAddLeavesOtherMirrorsFeed(t *testing.T) {
-	const layout = "bd67,190x45,0,0,0" // pane id 0: RemotePaneOrder derives "%0" from the trailing index, colliding with the live mirror's already-registered pane
+	const layout = "bd67,190x45,0,0,0" // its one pane is %0, the live mirror's
 
 	router := NewRouter()
 	sentinel := newOutputSink(drainedPipe(t), nil)
@@ -85,12 +70,8 @@ func TestAddWindowGoneMidAddLeavesOtherMirrorsFeed(t *testing.T) {
 		},
 	}
 
-	// list-windows (addWindow's B2-confirm) sees @5 present; readLayout's
-	// reply is the CANFAIL fallback: it answers @0 (the live mirror's
-	// window) rather than @5. On unfixed code this would run the whole setup
-	// pipeline — PaneSeeds(%0) cursor+capture, then wireRenderer stealing
-	// %0's sink — so the script below carries those replies too, even though
-	// the fix intercepts before they are ever consumed.
+	// The seed replies are never consumed with the id check in place; they let
+	// the setup reach wireRenderer when it is missing.
 	rt, _ := scriptedRT(strings.Join([]string{
 		"%begin 1 1 1", "1 @5 0 five", "%end 1 1 1", // list-windows
 		"%begin 1 2 1", "@0 " + layout + " %0 0", "%end 1 2 1", // readLayout: fallback answers @0
@@ -114,10 +95,7 @@ func TestAddWindowGoneMidAddLeavesOtherMirrorsFeed(t *testing.T) {
 	}
 }
 
-// TestReconcileLayoutIgnoresAnotherWindowsReply drives the id check through
-// reconcileLayout, not just readLayout directly: a %layout-change for @1
-// whose readLayout reply is the CANFAIL fallback (answers @0, a different
-// layout) must leave w untouched and never reach applyLayout.
+// A reconcile whose read answers for another window applies nothing to w.
 func TestReconcileLayoutIgnoresAnotherWindowsReply(t *testing.T) {
 	const layout = "bd67,190x45,0,0,3"
 	const otherLayout = "bd67,190x45,0,0,7"

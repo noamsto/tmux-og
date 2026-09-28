@@ -2165,7 +2165,7 @@ func tmuxQuote(s string) string {
 // readLayout reads remoteID's layout string and, in the same round-trip, the
 // remote window's active pane id — #{pane_id} in window scope — and whether it
 // is zoomed. Layout strings contain no spaces, so one space-separated reply
-// carries all three, and every reconcile gets the remote's focus and zoom from
+// carries them all, and every reconcile gets the remote's focus and zoom from
 // ground truth instead of a belief.
 //
 // #{window_layout} is deliberately the UNZOOMED geometry. #{window_visible_layout}
@@ -2173,12 +2173,9 @@ func tmuxQuote(s string) string {
 // hidden panes as closed and kill their renderers on every zoom toggle; the
 // flag rides alongside instead, and zoom is applied locally as zoom (#413).
 //
-// The reply leads with #{window_id}, which readLayout verifies against
-// remoteID: display-message's target is CMD_FIND_CANFAIL, so from the
-// daemon's control client a dead session-qualified @N target silently
-// resolves to the session's *current* window instead of erroring — without
-// the check, a dead window's layout read would come back describing a live
-// window as if it were the one asked for.
+// The reply leads with #{window_id} because display-message's target is
+// CMD_FIND_CANFAIL: from the control client a dead session-qualified @N
+// resolves to the session's current window instead of erroring (#826).
 func readLayout(rt roundTrip, cfg Config, remoteID string) (l0 controlmode.Layout, active string, zoomed bool, err error) {
 	target := remoteWinTarget(cfg, remoteID)
 	l, ok := one(rt, fmt.Sprintf("display-message -p -t %s -F '#{window_id} #{window_layout} #{pane_id} #{window_zoomed_flag}'", target))
