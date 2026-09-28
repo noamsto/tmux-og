@@ -218,9 +218,7 @@ func TestStatuslineCacheDirPerUserDefault(t *testing.T) {
 }
 
 func TestLastGoodRoundTrip(t *testing.T) {
-	// t.TempDir() is created 0777&^umask, not owner-only, so make it private
-	// before exercising the trusted-cache path (untrusted dirs are covered by
-	// the TestLastGoodRefuses* tests below).
+	// t.TempDir() is created 0777&^umask, not owner-only.
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)

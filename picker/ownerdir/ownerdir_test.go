@@ -47,8 +47,7 @@ func TestOwnedPrivate(t *testing.T) {
 }
 
 func TestOwnerOnly(t *testing.T) {
-	// t.TempDir() is created 0777&^umask, not owner-only, so make it private
-	// before asserting the trusted case.
+	// t.TempDir() is created 0777&^umask, not owner-only.
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)

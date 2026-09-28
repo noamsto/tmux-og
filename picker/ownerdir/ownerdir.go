@@ -19,9 +19,7 @@ func OwnerOnly(dir string) bool {
 	return ownedPrivate(info, os.Getuid())
 }
 
-// ownedPrivate is the pure check behind OwnerOnly, split out so the
-// foreign-owner case (unreachable without root against a real filesystem) has
-// a unit test with a fake FileInfo.
+// ownedPrivate is split from OwnerOnly so a foreign owner is testable without root.
 func ownedPrivate(info fs.FileInfo, uid int) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != uint32(uid) {
