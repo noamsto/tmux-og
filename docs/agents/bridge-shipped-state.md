@@ -369,6 +369,11 @@ ships the remote window's own label state across instead.
   `tmux-reflow-windows` stamps `@window_label_*` on every window of the mirror
   session, mirrors included, so a same-name write is a two-writer race the daemon
   loses on every reflow pass.
+- **An empty remote name clears the carried name.** `applyMirrorName` unsets
+  `@window_bridge_name` and renames the mirror window to tmux's directory-derived
+  default, so reflow's `bname:-$wname` fallback sees the daemon's own replacement
+  instead of a vanished window's stale name (#845). The option is unset, not empty:
+  unset already defers the fallback to `window_name`.
 - **Every render site reads `@bridge_*` directly** rather than reflow's stamped
   copies — the three (reflow's grid, `picker/main.go`, `picker/statusline`) stay
   symmetric and independent, and reflow only runs for a session with a client.

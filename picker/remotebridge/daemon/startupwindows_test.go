@@ -63,6 +63,24 @@ func (f *startupFake) newWindowCount() int {
 	return n
 }
 
+// nameState replays the recorded calls and returns the last @window_bridge_name
+// write for localWin (its value, or unset) and the last rename-window name. The
+// fake's LocalTmux never runs real tmux, so this is the tmux-name oracle the
+// #845 tests assert on.
+func (f *startupFake) nameState(localWin string) (bridge string, bridgeSet bool, windowName string) {
+	for _, c := range f.log.snapshot() {
+		switch {
+		case len(c) >= 6 && c[0] == "set-option" && c[3] == localWin && c[4] == "-u" && c[5] == "@window_bridge_name":
+			bridge, bridgeSet = "", false
+		case len(c) >= 6 && c[0] == "set-option" && c[3] == localWin && c[4] == "@window_bridge_name":
+			bridge, bridgeSet = c[5], true
+		case len(c) >= 4 && c[0] == "rename-window" && c[2] == localWin:
+			windowName = c[3]
+		}
+	}
+	return bridge, bridgeSet, windowName
+}
+
 // startupScript builds a setupWindowRT script for a run of windows, one
 // ConvergeCmd block (always empty — the fake succeeds with no data) followed
 // by a readLayout block per window, numbered sequentially from seq across the
@@ -240,6 +258,45 @@ func TestStartupOtherSetupErrorsStayFatal(t *testing.T) {
 	}
 	if errors.Is(err, errWindowGone) {
 		t.Errorf("err = %q, want a failure other than errWindowGone", err)
+	}
+}
+
+// TestStartupTakenOverPlaceholderDropsTheDeadName pins #845: the first remote
+// window vanishes and the successor that claims the placeholder has an empty
+// name, so the surviving mirror must drop the vanished window's name from both
+// @window_bridge_name and the tmux window name.
+func TestStartupTakenOverPlaceholderDropsTheDeadName(t *testing.T) {
+	f, cfg := newStartupFake()
+	reg := newRegistry()
+	cv := newConverger()
+	cst := newCtlState()
+	remoteWins := []remoteWindow{{id: "@1", name: "dead"}, {id: "@2"}}
+
+	rt := setupWindowRT(startupScript("@2", "@2"))
+
+	placeholder, err := mirrorStartupWindows(cfg, remoteWins, func(string) {}, NewRouter(), noHellos, cst, reg, cv, rt)
+	if err != nil {
+		t.Fatalf("mirrorStartupWindows: %v", err)
+	}
+	if placeholder != "" {
+		t.Errorf("placeholder = %q, want \"\": @2 claimed it", placeholder)
+	}
+	mw, ok := reg.byRemoteID("@2")
+	if !ok || mw.localWin != "@100" {
+		t.Fatalf("reg @2 = %+v, ok=%v, want localWin @100 (the reused placeholder)", mw, ok)
+	}
+	if _, ok := reg.byRemoteID("@1"); ok {
+		t.Error("registry has @1: it vanished and must not survive setup")
+	}
+	if kills := f.killWindows(); len(kills) != 0 {
+		t.Errorf("kill-window calls = %v, want none: the placeholder was claimed", kills)
+	}
+	bridge, bridgeSet, windowName := f.nameState("@100")
+	if bridgeSet {
+		t.Errorf("@window_bridge_name still set to %q on the surviving mirror, want unset", bridge)
+	}
+	if windowName != "#{b:pane_current_path}" {
+		t.Errorf("surviving mirror window name = %q, want #{b:pane_current_path} (not the dead name)", windowName)
 	}
 }
 
