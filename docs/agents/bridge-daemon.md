@@ -180,7 +180,7 @@ path, which every caller already handles.
   its own teardown has already run (`tornDown`) passes through `runLoop`
   untouched — that session is already reset or killed, so there is nothing
   left for the loop itself to do to it. (Teardown's plain
-  `kill-session -t cfg.LocalSess`, `unregisterResizeHook`,
+  `kill-session -t cfg.LocalSess`, `unregisterResizeNudge`,
   `clearBridgeRes`/`clearBridgeUsage` and `setBridgeState` are pre-existing
   bare-name sites this pin does not reach — unset-only, except `kill-session`
   — and stay out of scope here; they still prefix-resolve once the session is
