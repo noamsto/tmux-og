@@ -55,7 +55,7 @@ The status bar clips a window's label to its column; the full title lives on a p
 4. **Anchor pane** — the top-left, non-floating pane (`pane_at_top && pane_at_left`; the lead in a dispatcher grid, and the zoomed pane while zoomed). It does not follow focus: `━━ <codename> · <glyph> <state>[ (watchdog)][ · <detail>] · <title> ━━`, each segment only when non-empty and the word `lead` never printed. Title = `@window_label_id` + `@window_label_rest_long` (reflow writes both for mirrors too, from the daemon-sanitized `@bridge_label_*`). Codename = `@bridge_crew_name` in a mirror, else `@crew_name` only while `@window_has_agent` (the status bar's #671 gate). `@crew_detail`/`@crew_source` are local only — the bridge does not ship them.
 5. **Plain split** — the active pane of an unzoomed multi-pane window keeps the green `●`; everything else is a plain `━━━━━`. A mirror window's codename no longer repeats on every non-role pane: it rides the anchor only.
 
-If the anchor is itself a float, aeye or role pane, the window shows no title — it never moves to another pane.
+If the anchor is itself an aeye or role pane, the window shows no title — it never moves to another pane. A float is never the anchor: the tiled top-left pane under it keeps the title.
 
 **Clipping.** tmux draws a border label in `pane_width − 2` cells starting at x=2 (measured on the pinned tmux with an attached client). The title is clipped with `#{=/W/…:…}`, where `W = pane_width − 9 − (each prefix segment's #{w:} + 3)`: 7 cells go to `━━ `, ` ━━` and the `…` that tmux appends *beyond* W. W is floored at 1, because a 0 limit means "no clip" and a negative one keeps the tail. Widths use `#{w:}` (display cells), never `#{n:}` (bytes).
 

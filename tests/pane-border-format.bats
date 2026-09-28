@@ -202,6 +202,17 @@ style() {
 	[ "$out" = "━━━━━" ]
 }
 
+@test "a #(...) carried in a codename or title renders as text, never runs" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_crew_name "#(touch $OG_TMUX_DIR/ran-name)"
+	tmux setw -t "$WIN" @window_label_rest_long "#(touch $OG_TMUX_DIR/ran-title)"
+	out="$(render "$WIN")"
+	[[ $out == *"#(touch"* ]]
+	sleep 0.2
+	[ ! -e "$OG_TMUX_DIR/ran-name" ]
+	[ ! -e "$OG_TMUX_DIR/ran-title" ]
+}
+
 @test "mirror crew name only renders codename + title" {
 	tmux setw -t "$WIN" @bridge_win 1
 	tmux setw -t "$WIN" @bridge_crew_name coral

@@ -315,7 +315,7 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   `pane-border-format`/`pane-border-style` prefer those (a pane's state is read
   from whichever side its role came from). The daemon never writes the real
   `@crew_*` names; the format falls back to them only for a local dispatcher grid
-  (#858, `status-bar.md` "Pane border labels"). They are stamped **before**
+  (#858, `status-bar.md` "Pane border labels"). The `@bridge_crew_*` trio is stamped **before**
   the agent-less return: a parked role pane reports no agent state and still has
   to draw its border. Colour falls back through `@bridge_crew_color` (the
   window's agent tint, already carried for the label) to the theme, which is the
