@@ -187,6 +187,38 @@ func TestAttachCancelKillsWholeGroup(t *testing.T) {
 	assertNoFile(t, mark)
 }
 
+// orphanPipeBody leaves a background descendant that ignores TERM and holds the
+// phase pipe's write end (fd 3). Its stderr is /dev/null, so cmd.Wait returns
+// promptly once the launcher itself dies; only the pipe stays open.
+func orphanPipeBody(ready string) string {
+	return `printf 'connect\n' >&3; ` +
+		`sh -c 'trap "" TERM; touch "` + ready + `"; sleep 5' 2>/dev/null & ` +
+		`sleep 30`
+}
+
+// A descendant holding the phase pipe must not add a full grace to the done
+// message, so a cancel stays bounded by the kill itself.
+func TestAttachCancelBoundedByOrphanHoldingPipe(t *testing.T) {
+	shrinkAttachTimings(t, nil)
+	attachKillGrace = 2 * time.Second
+	ready := filepath.Join(t.TempDir(), "READY")
+	r := fakeAttachRun(t, orphanPipeBody(ready))
+	go r.run()
+	if p := awaitProgress(t, r); p != phaseConnect {
+		t.Fatalf("first phase = %q, want connect", p)
+	}
+	waitForFile(t, ready, 5*time.Second)
+	start := time.Now()
+	r.cancel()
+	res := awaitDone(t, r, 2*attachKillGrace)
+	if got := time.Since(start); got >= attachKillGrace {
+		t.Fatalf("cancel took %v; an orphan holding the pipe must not add a full grace", got)
+	}
+	if res.outcome != attachCancelled {
+		t.Errorf("result = %+v, want attachCancelled", res)
+	}
+}
+
 func TestAttachCancelEscalatesToKill(t *testing.T) {
 	shrinkAttachTimings(t, nil)
 	r := fakeAttachRun(t, `trap '' TERM; printf 'connect\n' >&3; while :; do sleep 0.1; done`)
