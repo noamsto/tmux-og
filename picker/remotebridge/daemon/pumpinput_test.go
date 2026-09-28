@@ -636,10 +636,10 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 	}
 }
 
-// TestPumpInputTracksSinkReplacementWhileRunning pins the round-2 fix: the
-// tracker is resolved off the router per frame, so a sink registered over a
-// live pumpInput — resetWindow's revival on the surviving conn — is picked up
-// rather than the tracker the pump bound at start.
+// TestPumpInputTracksSinkReplacementWhileRunning pins that the tracker is
+// resolved off the router per frame: a sink registered over a live pumpInput —
+// resetWindow's revival on the surviving conn — is picked up rather than the
+// tracker the pump resolved first.
 func TestPumpInputTracksSinkReplacementWhileRunning(t *testing.T) {
 	router := NewRouter()
 	first := &outputSink{}

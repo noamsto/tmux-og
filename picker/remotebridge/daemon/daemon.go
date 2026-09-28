@@ -2760,8 +2760,7 @@ func (s *outputSink) Close() {
 var escCarryGrace = 50 * time.Millisecond
 
 // sinkMouseMode returns the mouse-mode tracker of paneID's registered renderer
-// sink, or nil when the pane has no sink. The sink is registered synchronously
-// before its pumpInput starts (wireRenderer, then the pump).
+// sink, or nil when the pane has no sink.
 func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
 	if s := router.sink(paneID); s != nil {
 		return &s.mouse
@@ -2769,11 +2768,9 @@ func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
 	return nil
 }
 
-// sinkMouseResolver returns a per-frame lookup of paneID's tracker. pumpInput
-// binds the resolver, not a tracker: resetWindow's revival path registers a
-// fresh outputSink on the surviving conn while the pump keeps reading it, so a
-// one-time lookup would leave the classifier on the replaced sink's frozen
-// state.
+// sinkMouseResolver returns a per-frame lookup of paneID's tracker. A resolver
+// rather than a tracker because resetWindow can register a fresh sink on the
+// surviving conn while its pumpInput keeps reading it.
 func sinkMouseResolver(router *Router, paneID string) func() *mouseModeTracker {
 	return func() *mouseModeTracker { return sinkMouseMode(router, paneID) }
 }
@@ -3110,10 +3107,7 @@ func csiEnd(b []byte) (int, bool) {
 // negotiated mode (utf8, known) resolves the two when the bytes alone cannot.
 //
 // With the mode known the encoding is exact: a pane in 1005 mode produced the
-// UTF-8 reading, one not in it produced the legacy reading. That settles the
-// ambiguous frame a legacy click at column 195/row 169 followed by "q" shares
-// with a 1005 report (button 0, x 200, y 80) — the legacy reading leaves a
-// "key" the 1005 reading does not.
+// UTF-8 reading, one not in it produced the legacy reading.
 //
 // With the mode unknown (no seed processed yet, or a caller with no tracker) it
 // falls back to where the legacy reading cannot be right:

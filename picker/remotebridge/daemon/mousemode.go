@@ -19,14 +19,14 @@ const (
 )
 
 // mouseModeTracker reconstructs a pane's mouse encoding from the byte stream the
-// daemon writes toward that pane's renderer. The renderer writes those bytes
-// verbatim into the mirror pane's pty (render.Run), so the stream is exactly the
-// sequence local tmux parses to decide how to encode an outgoing click — the
-// seed's own #{mouse_utf8_flag} (render.Seed's clear-then-set ?1005l/?1005h) is
-// its first bytes, and a live DECSET in %output keeps it current after the seed.
+// daemon writes toward that pane's renderer — the sequence local tmux parses to
+// decide how to encode an outgoing click (the renderer writes those bytes
+// verbatim into the mirror pane's pty). The seed's clear-then-set
+// ?1005l/?1005h is the authoritative start; a live DECSET in %output keeps it
+// current after the seed.
 //
-// Feed is called only from a sink's pump goroutine; MouseUTF8 is read from the
-// pane's pumpInput goroutine, which is why the state is atomic and carry is not.
+// Feed runs only on a sink's pump goroutine; MouseUTF8 is read from the pane's
+// pumpInput goroutine, so the state is atomic and carry is not.
 type mouseModeTracker struct {
 	state atomic.Int32
 	carry []byte
@@ -44,9 +44,8 @@ func (t *mouseModeTracker) MouseUTF8() (utf8, known bool) {
 }
 
 // Feed consumes p, updating the tracked mode from any CSI private-mode
-// set/reset it contains. It scans for ESC [ ? <digits> h|l and records mode
-// 1005; every other sequence is skipped. A partial sequence at the end of p is
-// carried into the next Feed so a DECSET split across two frames still lands.
+// set/reset it contains. A partial sequence at the end of p is carried into the
+// next Feed so a DECSET split across two frames still lands.
 func (t *mouseModeTracker) Feed(p []byte) {
 	b := p
 	if len(t.carry) > 0 {
