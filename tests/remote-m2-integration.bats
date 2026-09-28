@@ -3240,16 +3240,13 @@ wake_parked_mirror() {
 	# Replace the remote server. A tmux server tears down asynchronously:
 	# kill-server returns while its process is still alive, and a new-session
 	# on the same socket then reaches the DYING server and dies with "server
-	# exited unexpectedly" (#832). Wait for the old pid to exit first — the
-	# daemon's backoff dial during that gap gets ECONNREFUSED (a retryable
-	# drop), and its retry then reaches the new server, which is exactly the
-	# identity-mismatch path below. A same-named session on a freshly started
-	# server (a different tmux server pid, even though $0 is reused) is the
-	# case a session-id-only identity check would wave through. The fresh
-	# server also renumbers panes from %0, so its pane ids collide with the
-	# ones this mirror's registry still holds. That leak window (attach to
-	# identity reply) is not assertable here — teardown kills the mirror
-	# session milliseconds later — so
+	# exited unexpectedly" (#832) — so wait for the old pid to exit first. A
+	# same-named session on a fresh server (a different tmux server pid, even
+	# though $0 is reused) is the case a session-id-only identity check would
+	# wave through; a fresh server also renumbers panes from %0, colliding
+	# with the ids this mirror's registry still holds. That leak window
+	# (attach to identity reply) is not assertable here — teardown kills the
+	# mirror milliseconds later — so
 	# TestReattachDropsOutputFromAnUnverifiedConnection pins it instead.
 	old_src_pid="$($SRC display-message -p '#{pid}' 2>/dev/null || true)"
 	$SRC kill-server 2>/dev/null || true
