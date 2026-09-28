@@ -511,6 +511,26 @@
               touch $out
             '';
 
+          # Keep every directional bind's float-presence probe and geometry
+          # inputs wired together. Otherwise floats silently disappear from
+          # Ctrl-h/j/k/l while native select-pane continues to look plausible.
+          smart-nav-conf-assertions =
+            pkgs.runCommand "smart-nav-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              for direction in \
+                'L left pane_at_left' \
+                'D down pane_at_bottom' \
+                'U up pane_at_top' \
+                'R right pane_at_right'; do
+                set -- $direction
+                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:#{?#{P:#{?pane_floating_flag,1,}},1,0}} #{q:pane_id} #{q:window_id}" "$CONF"
+              done
+              [ "$(grep -c 'tmux-smart-nav .*#{q:pane_id} #{q:window_id}' "$CONF")" -eq 4 ]
+              touch $out
+            '';
+
           # The float-refit WIRING (#371). tmux bakes a float's percentage
           # geometry into cells at creation and never revisits it, so every
           # float bind must hand its percentages to @float_geom for the
