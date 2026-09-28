@@ -1332,10 +1332,11 @@ relay_env() {
 
 	# Switch the viewer to a sixel-capable terminal. Kill the old pty host's
 	# SESSION, not its server, and reuse the same m2obs server for the new
-	# one: killing the server and immediately re-creating it on the same
-	# socket races its teardown, which surfaces as `new-session` failing with
-	# "server exited unexpectedly" (measured — the isolated command works
-	# fine with a wait in between, so the flag order is not the problem).
+	# one — but obsA is m2obs's only session, so killing it would also end
+	# the server (tmux's exit-empty default), and a new-session on the same
+	# socket then races the dying server, surfacing as `new-session` failing
+	# with "server exited unexpectedly". Turning exit-empty off keeps the
+	# server up across the swap (teardown's kill-server still stops it).
 	#
 	# The old client must be GONE before the new one's capability can win:
 	# the gate is the AND across every attached client, so an overlap would
@@ -1344,6 +1345,7 @@ relay_env() {
 	# Close the old pipe first — pipe-pane -o TOGGLES an already-open pipe off
 	# rather than replacing its target (measured), so re-using -o without
 	# closing would silently keep writing to $f1.
+	$OBS set -g exit-empty off
 	$OBS kill-session -t obsA 2>/dev/null || true
 	$DST pipe-pane -t host-sess:1.0
 	f2="$BATS_TEST_TMPDIR/gxv2.pipe"
@@ -3256,9 +3258,10 @@ server_restart() {
 PARK_DIM_STYLE='fg=#{@thm_overlay_0},bg=#{@thm_mantle}'
 
 # The park cases below run with OG_DAEMON_RETRY_MAX_ELAPSED/OG_DAEMON_WAKE_MAX_ELAPSED
-# set to 2s, so a full exhaust-then-park (or wake-then-reexhaust) cycle is
-# bounded near 2s of dials plus scheduling — this budget is generous CI
-# headroom on top of that, not a stall detector tuned tight like bridge_up's.
+# set to 2s. The daemon clamps each retry wait to the schedule's remaining
+# MaxElapsed, so a full exhaust-then-park (or wake-then-reexhaust) cycle ends
+# at about 2s plus one dial — this budget is generous CI headroom on top of
+# that, not a stall detector tuned tight like bridge_up's.
 PARK_WAIT_BUDGET_SECS=15
 
 # wait_bridge_state polls @bridge_state for an exact value ("" means unset,
@@ -3945,7 +3948,14 @@ wait_daemon_exit() {
 
 	win_count="$($DST list-windows -t host-sess 2>/dev/null | wc -l)"
 	tomb_pane="$($DST list-panes -t host-sess -F '#{pane_id}' 2>/dev/null | head -1)"
-	tomb_text="$($DST capture-pane -p -t "$tomb_pane" 2>/dev/null || true)"
+	# The tombstone pane is repainted by the daemon's respawn after it exits,
+	# so a one-shot capture can race it: poll instead.
+	tomb_text=""
+	for _ in $(seq 1 50); do
+		tomb_text="$($DST capture-pane -p -t "$tomb_pane" 2>/dev/null || true)"
+		[[ $tomb_text == *"no longer exists"* ]] && break
+		sleep 0.1
+	done
 	bridge_sock="$($DST show-options -v -t host-sess -q @bridge_sock 2>/dev/null || true)"
 	bridge_session="$($DST show-options -v -t host-sess -q @bridge_session 2>/dev/null || true)"
 
