@@ -11,9 +11,15 @@ flag=$1 dir=$2 zoomed=$3 edge=$4 origin_floating=$5 has_floats=$6 origin_id=$7 w
 [ "$zoomed" = 1 ] && exit 0
 
 candidate=
+geometry_ok=1
 if [ "$has_floats" = 1 ]; then
 	# One snapshot keeps the origin and candidates on the same layout revision.
-	geometry=$(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_floating_flag}|#{pane_modal_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}' 2>/dev/null) || geometry=
+	if geometry=$(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_floating_flag}|#{pane_modal_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}' 2>/dev/null); then
+		:
+	else
+		geometry_ok=0
+		geometry=
+	fi
 	origin=
 	while IFS='|' read -r pane_id pane_floating pane_modal pane_left pane_top pane_width pane_height; do
 		[ "$pane_id" = "$origin_id" ] && {
@@ -107,7 +113,7 @@ fi
 	tmux select-pane -t "$candidate"
 	exit 0
 }
-if [ "$edge" = 1 ] && [ -n "${KITTY_LISTEN_ON:-}" ] && command -v kitty >/dev/null 2>&1; then
+if [ "$geometry_ok" = 1 ] && [ "$edge" = 1 ] && [ -n "${KITTY_LISTEN_ON:-}" ] && command -v kitty >/dev/null 2>&1; then
 	# timeout so a stalled kitty remote-control socket can't hang the C-hjkl bind.
 	timeout 1 kitty @ action neighboring_window "$dir" 2>/dev/null && exit 0
 fi

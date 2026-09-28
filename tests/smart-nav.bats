@@ -9,7 +9,7 @@ setup() {
 	export TMUX_LOG="$BATS_TEST_TMPDIR/tmux.log"
 	: >"$TMUX_LOG"
 	printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$KITTY_LOG" >"$STUB/kitty"
-	printf '%s\n' '#!/usr/bin/env bash' 'if [ "$1" = list-panes ]; then' '  printf "%b" "${TMUX_PANES:-}"' '  exit 0' 'fi' >"$STUB/tmux"
+	printf '%s\n' '#!/usr/bin/env bash' 'if [ "$1" = list-panes ]; then' '  [ "${TMUX_LIST_PANES_FAIL:-0}" = 1 ] && exit 1' '  printf "%b" "${TMUX_PANES:-}"' '  exit 0' 'fi' >"$STUB/tmux"
 	printf 'echo "$*" >>"%s"\n' "$TMUX_LOG" >>"$STUB/tmux"
 	chmod +x "$STUB/kitty" "$STUB/tmux"
 	export PATH="$STUB:$PATH"
@@ -42,6 +42,14 @@ setup() {
 	run bash "$SCRIPT" R right 0 1 0 0 %0 @0
 	grep -q '@ action neighboring_window right' "$KITTY_LOG"
 	[ ! -s "$TMUX_LOG" ]
+}
+
+@test "failed geometry query falls back to native navigation without kitty" {
+	export KITTY_LISTEN_ON=unix:/tmp/k
+	export TMUX_LIST_PANES_FAIL=1
+	run bash "$SCRIPT" R right 0 1 0 1 %0 @0
+	grep -q 'select-pane -R' "$TMUX_LOG"
+	[ ! -s "$KITTY_LOG" ]
 }
 
 @test "edge with kitty failing (no neighbor): falls back to select-pane" {
