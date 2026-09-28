@@ -45,24 +45,85 @@ thm_green=$(tmux show -gv @thm_green 2>/dev/null | tr -d '"')
 thm_teal=$(tmux show -gv @thm_teal 2>/dev/null | tr -d '"')
 thm_yellow=$(tmux show -gv @thm_yellow 2>/dev/null | tr -d '"')
 thm_surface_1=$(tmux show -gv @thm_surface_1 2>/dev/null | tr -d '"')
+thm_peach=$(tmux show -gv @thm_peach 2>/dev/null | tr -d '"')
+thm_red=$(tmux show -gv @thm_red 2>/dev/null | tr -d '"')
 
 # Bail if catppuccin hasn't loaded yet
 [[ -z $thm_mauve || -z $thm_bg ]] && exit 0
 
 # --- Pane borders ---
 # Nested #{@thm_*} inside #[] don't expand at render time, so we interpolate here.
-# @pane_label (floating utility panes) → mauve titled border; then the bridged
-# dispatcher decorations (#640) — a role pane's own role/state, else the mirror
-# window's crew codename; else multi-pane ● / plain. Neither bridge branch sets
-# an fg: the crew colour reaches them through pane-border-style, as on the remote.
-# Each #[...] block carries at most one style attribute (bg OR fg), never a
-# comma-joined pair: pane-border-format's #{?...} ternary comma-splitter
-# (format_choose/format_skip1) tracks nesting depth for #{...} but not #[...],
-# so a joined #[bg=X,fg=Y] is silently misparsed as an extra branch boundary —
-# both the @pane_label-inactive branch and the true-default branch below were
-# rendering empty because of this before the split (#648).
+# Branch order, first match wins: float label → aeye carousel → role pane →
+# the window's anchor (top-left, non-floating) pane, which alone carries the
+# full title → multi-pane ● / dim bar. A "lead" role falls through to the
+# anchor branch; the codename already names it. Text carries no fg of its own:
+# the crew/role colour comes from the border styles below.
+# Each #[...] block carries at most one style attribute (bg OR fg): the #{?...}
+# comma-splitter (format_choose/format_skip1) tracks nesting depth for #{...}
+# but not #[...], so a joined #[bg=X,fg=Y] is misparsed as an extra branch
+# boundary (#648).
+
+# ROLE_NAME/STATE share one bridge-vs-local selector so a bridged pane's role
+# and state always come from the same side. STATE_GLYPH mirrors the
+# dispatcher's state_glyph vocabulary/colours; STATE_GLYPH_PLAIN is the same
+# glyph with no #[...] directive, so its width measures correctly below.
+ROLE_NAME='#{?@bridge_crew_role,#{@bridge_crew_role},#{@crew_role}}'
+STATE='#{?@bridge_crew_role,#{@bridge_crew_state},#{@crew_state}}'
+STATE_GLYPH="#{?#{==:${STATE},working},#[fg=${thm_green}]●#[default],#{?#{==:${STATE},idle},#[fg=${thm_overlay_1}]○#[default],#{?#{==:${STATE},blocked},#[fg=${thm_peach}]⚠#[default],#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},#[fg=${thm_green}]✓#[default],#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},#[fg=${thm_red}]✗#[default],#{?${STATE},#[fg=${thm_overlay_1}]○#[default],}}}}}}"
+STATE_GLYPH_PLAIN="#{?#{==:${STATE},working},●,#{?#{==:${STATE},idle},○,#{?#{==:${STATE},blocked},⚠,#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},✓,#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},✗,#{?${STATE},○,}}}}}}"
+
+# aeye's own image-carousel pane option, or (a remux-relaunched viewer) its
+# start command — the carousel restore command isn't bin/aeye.
+AEYE='#{||:#{@claude_img_src},#{m:*/bin/aeye *,#{pane_start_command}}}'
+
+# Anchor: the top-left, non-floating pane. A zoomed pane is at-top/at-left too,
+# so it still shows the title; hidden panes in a grid are simply never drawn.
+ANCHOR='#{&&:#{&&:#{pane_at_top},#{pane_at_left}},#{!:#{pane_floating_flag}}}'
+TITLE_RAW='#{@window_label_id}#{@window_label_rest_long}'
+CODENAME='#{?@bridge_win,#{@bridge_crew_name},#{?@window_has_agent,#{@crew_name},}}'
+
+WATCHDOG="#{?#{==:#{@crew_source},watchdog}, (watchdog),}"
+DETAIL="#{?@crew_detail, · #{@crew_detail},}"
+LEAD_STATE="#{?${STATE},${STATE_GLYPH} ${STATE}${WATCHDOG}${DETAIL},}"
+LEAD_STATE_PLAIN="#{?${STATE},${STATE_GLYPH_PLAIN} ${STATE}${WATCHDOG}${DETAIL},}"
+
+# W: how many cells the title gets. The drawn label area is pane_width-2; 7
+# more cells go to the "━━ "/" ━━" wrapping and the "…" tmux appends beyond
+# the truncation limit, so pane_width-9 — minus the codename/state segments
+# (each + 3 for their " · " separator) when present. Floored at 1 so
+# #{=/N/…:} never sees N=0 (no clip) or negative (keeps the tail) once the
+# other segments alone fill the border.
+CN_W="#{?${CODENAME},#{e|+|:#{w:${CODENAME}},3},0}"
+ST_W="#{?${LEAD_STATE_PLAIN},#{e|+|:#{w:${LEAD_STATE_PLAIN}},3},0}"
+W_RAW="#{e|-|:#{e|-|:#{e|-|:#{pane_width},9},${CN_W}},${ST_W}}"
+W="#{?#{e|<|:${W_RAW},1},1,${W_RAW}}"
+
+# Segments join with " · ", each present only when non-empty.
+NAME_SEG="#{?${CODENAME},#[bold]${CODENAME}#[nobold],}"
+STATE_SEG="#{?${LEAD_STATE},#{?${CODENAME}, · ,}${LEAD_STATE},}"
+TITLE_SEG="#{?${TITLE_RAW},#{?#{||:${CODENAME},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_RAW}},}"
+
+FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ #{@pane_label} ━━}"
+AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ aeye ━━}"
+ROLE_BRANCH="━━ #[bold]${ROLE_NAME}#[nobold]#{?${STATE}, ${STATE_GLYPH} ${STATE},} ━━"
+ANCHOR_BRANCH="━━ ${NAME_SEG}${STATE_SEG}${TITLE_SEG} ━━"
+PLAIN_BRANCH="#{?#{&&:#{pane_active},#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}"
+
+ROLE_COND="#{&&:#{!=:${ROLE_NAME},},#{!=:${ROLE_NAME},lead}}"
+ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_RAW},},#{!=:${CODENAME},}}}"
+
 tmux setw -g pane-border-format \
-	"#{?@pane_label,#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ #{@pane_label} ━━},#{?@bridge_crew_role,━━ #[bold]#{@bridge_crew_role}#[nobold] #{@bridge_crew_state} ━━,#{?@bridge_crew_name,━━ #[bold]#{@bridge_crew_name}#[nobold] ━━,#{?#{&&:#{pane_active},#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}}}}"
+	"#{?@pane_label,${FLOAT_BRANCH},#{?${AEYE},${AEYE_BRANCH},#{?${ROLE_COND},${ROLE_BRANCH},#{?${ANCHOR_COND},${ANCHOR_BRANCH},${PLAIN_BRANCH}}}}}"
+
+# Border colour: aeye never takes a crew colour; everything else falls through
+# role colour (bridged, then local) → window agent colour (bridged, then local
+# while occupied, the status bar's #671 gate) → mauve/overlay_1.
+ROLE_COLOR_CHAIN_MAUVE="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_mauve}},${thm_mauve}}}}}"
+ROLE_COLOR_CHAIN_OVERLAY="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_overlay_1}},${thm_overlay_1}}}}}"
+tmux setw -g pane-active-border-style \
+	"bg=${thm_bg},fg=#{?${AEYE},${thm_mauve},${ROLE_COLOR_CHAIN_MAUVE}}"
+tmux setw -g pane-border-style \
+	"bg=${thm_bg},fg=#{?${AEYE},${thm_overlay_1},${ROLE_COLOR_CHAIN_OVERLAY}}"
 
 # --- tmux-fingers hints (requires colourN format, not hex) ---
 tmux set -g @fingers-hint-style "fg=colour$(hex_to_256 "$thm_crust"),bg=colour$(hex_to_256 "$thm_mauve"),bold"

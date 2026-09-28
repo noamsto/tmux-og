@@ -44,3 +44,21 @@ session-scoped hook because a session hook array replaces the session's view
 of the global one (#647) — the shadowing that left a mirror's window bar stale
 until an unrelated event (#820).
 
+
+## Pane border labels
+
+The status bar clips a window's label to its column; the full title lives on a pane border instead (#858). `tmux-apply-theme-colors` owns `pane-border-format` **and** both border styles (`pane-border-style` / `pane-active-border-style`), rebuilt on every theme switch. The format picks the first matching branch per pane:
+
+1. **Float label** — `@pane_label` (yazi, prdash, …): `━━ <label> ━━`, mauve when active.
+2. **aeye carousel split** — `@claude_img_src` (aeye's own pane option; survives a remux relaunch, whose start command is `tmux-carousel-restore`) or a start command matching `*/bin/aeye *` (tmux quotes it, and the glob needs the trailing argument): `━━ aeye ━━`, and the border styles drop the crew colour for it. A **mirrored** aeye is not detected — the remote viewer's `pane_current_command` is its shell, so `@bridge_proc` cannot name it, and `@claude_img_src` is not shipped.
+3. **Role pane** — `@bridge_crew_role`, else `@crew_role`, other than `lead`: `━━ <role> <glyph> <state> ━━`, never the title. State follows the same selector as the role (`@bridge_crew_state` beside a bridged role, else `@crew_state`); the glyph vocabulary matches the dispatcher's `state_glyph` (working ●, idle ○, blocked ⚠, done/pr_open ✓, failed/exited ✗).
+4. **Anchor pane** — the top-left, non-floating pane (`pane_at_top && pane_at_left`; the lead in a dispatcher grid, and the zoomed pane while zoomed). It does not follow focus: `━━ <codename> · <glyph> <state>[ (watchdog)][ · <detail>] · <title> ━━`, each segment only when non-empty and the word `lead` never printed. Title = `@window_label_id` + `@window_label_rest_long` (reflow writes both for mirrors too, from the daemon-sanitized `@bridge_label_*`). Codename = `@bridge_crew_name` in a mirror, else `@crew_name` only while `@window_has_agent` (the status bar's #671 gate). `@crew_detail`/`@crew_source` are local only — the bridge does not ship them.
+5. **Plain split** — the active pane of an unzoomed multi-pane window keeps the green `●`; everything else is a plain `━━━━━`. A mirror window's codename no longer repeats on every non-role pane: it rides the anchor only.
+
+If the anchor is itself an aeye or role pane, the window shows no title — it never moves to another pane. A float is never the anchor: the tiled top-left pane under it keeps the title.
+
+**Clipping.** tmux draws a border label in `pane_width − 2` cells starting at x=2 (measured on the pinned tmux with an attached client). The title is clipped with `#{=/W/…:…}`, where `W = pane_width − 9 − (each prefix segment's #{w:} + 3)`: 7 cells go to `━━ `, ` ━━` and the `…` that tmux appends *beyond* W. W is floored at 1, because a 0 limit means "no clip" and a negative one keeps the tail. Widths use `#{w:}` (display cells), never `#{n:}` (bytes).
+
+**Border colour.** fg = aeye → mauve/overlay_1; else `@bridge_crew_role_color` → `@crew_role_color` → `@bridge_crew_color` → `@crew_color` (while `@window_has_agent`) → mauve/overlay_1. Moving the styles out of `tmux.conf` also means `tmux-client-theme`'s recovery replay (catppuccin, then this script) no longer leaves catppuccin's border style in place.
+
+**Dispatcher overrides.** A window- or pane-level `pane-border-format`/`-style` beats these globals. The dispatcher still sets them on local grid windows (`publish_grid_lead`, `decorate_pane`), so local dispatcher grids keep its border until it stops doing so and only stamps the options above. `tests/pane-border-format.bats` pins that precedence.
