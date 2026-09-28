@@ -2771,6 +2771,114 @@ $pane 1" ]; then
 	[ "$bridge_usage2" = "$bridge_usage" ]
 }
 
+# og-open runs on the REMOTE and reaches the CONTROLLER's opener via
+# @og_open_url / @og_open_client (#854): registered_client mirrors the
+# script's own bridged check so a wrong registration fails loud instead of a
+# silent unbridged fallback. openbin stubs stand in for xdg-open/open.
+@test "og-open in a remote pane opens on the controller once, in bulk, and never again after a reattach" {
+	OG_OPEN="${OG_OPEN:-$BATS_TEST_DIRNAME/../scripts/og-open.sh}"
+
+	mkdir -p "$BATS_TEST_TMPDIR/openbin"
+	opened="$BATS_TEST_TMPDIR/opened"
+	# #!/bin/sh: the nix build sandbox has no /usr/bin/env.
+	cat >"$BATS_TEST_TMPDIR/openbin/xdg-open" <<-EOF
+		#!/bin/sh
+		echo "\$1" >>"$opened"
+	EOF
+	cp "$BATS_TEST_TMPDIR/openbin/xdg-open" "$BATS_TEST_TMPDIR/openbin/open"
+	chmod +x "$BATS_TEST_TMPDIR/openbin/xdg-open" "$BATS_TEST_TMPDIR/openbin/open"
+	# The daemon (and its opener child) must inherit this PATH, so it is set
+	# before bridge_up spawns it, not just before send-keys below.
+	export PATH="$BATS_TEST_TMPDIR/openbin:$PATH"
+
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 ogo
+
+	# registered_client is the attached control client's name; @og_open_client
+	# must match it once connect()'s register round-trip lands.
+	registered=""
+	for _ in $(seq 1 80); do
+		control_client="$($SRC list-clients -t rem -F '#{?client_control_mode,#{client_name},}' 2>/dev/null | grep .)"
+		registered="$($SRC show-options -qv -t rem @og_open_client 2>/dev/null || true)"
+		[ -n "$control_client" ] && [ "$registered" = "$control_client" ] && break
+		sleep 0.1
+	done
+	[ -n "$control_client" ]
+	[ "$registered" = "$control_client" ]
+
+	$SRC send-keys -t rem "bash '$OG_OPEN' https://example.invalid/x" Enter
+	n_opened=0
+	for _ in $(seq 1 80); do
+		n_opened="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+		[ "$n_opened" -ge 1 ] && break
+		sleep 0.1
+	done
+	sleep 2.5
+	single="$(cat "$opened" 2>/dev/null || true)"
+
+	$SRC send-keys -t rem "for i in 1 2 3; do bash '$OG_OPEN' https://example.invalid/b\$i; done" Enter
+	n_opened=0
+	for _ in $(seq 1 80); do
+		n_opened="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+		[ "$n_opened" -ge 4 ] && break
+		sleep 0.1
+	done
+	bulk="$(sed -n '2,4p' "$opened" | sort)"
+
+	old_transport="$(transport_child)"
+	[ -n "$old_transport" ]
+	kill -9 "$old_transport"
+	wait_bridge_disconnected ogo "$BATS_TEST_TMPDIR/ogo.log"
+
+	new_transport=""
+	for _ in $(seq 1 80); do
+		candidate="$(transport_child)"
+		[ -n "$candidate" ] && [ "$candidate" != "$old_transport" ] && {
+			new_transport="$candidate"
+			break
+		}
+		sleep 0.1
+	done
+	[ -n "$new_transport" ]
+
+	wait_bridge_state "" ogo "$BATS_TEST_TMPDIR/ogo.log"
+
+	# Re-register proof after the reattach's repair, mirroring the check above.
+	reregistered=""
+	for _ in $(seq 1 80); do
+		new_control_client="$($SRC list-clients -t rem -F '#{?client_control_mode,#{client_name},}' 2>/dev/null | grep .)"
+		reregistered="$($SRC show-options -qv -t rem @og_open_client 2>/dev/null || true)"
+		[ -n "$new_control_client" ] && [ "$reregistered" = "$new_control_client" ] && break
+		sleep 0.1
+	done
+	[ -n "$new_control_client" ]
+	[ "$reregistered" = "$new_control_client" ]
+	sleep 2.5
+	lines_after_reattach="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+
+	$SRC send-keys -t rem "bash '$OG_OPEN' https://example.invalid/after" Enter
+	n_opened=0
+	for _ in $(seq 1 80); do
+		n_opened="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+		[ "$n_opened" -ge 5 ] && break
+		sleep 0.1
+	done
+	sleep 2.5
+	final_lines="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+	last="$(tail -1 "$opened" 2>/dev/null || true)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$single" = "https://example.invalid/x" ]
+	[ "$bulk" = "$(printf 'https://example.invalid/b1\nhttps://example.invalid/b2\nhttps://example.invalid/b3')" ]
+	[ "$lines_after_reattach" -eq 4 ]
+	[ "$final_lines" -eq 5 ]
+	[ "$last" = "https://example.invalid/after" ]
+}
+
 # Screen-scraped agents (pi, codex, cursor) have no hook, so agent-detect's
 # statefile.Writer stamps @agent_screen instead of @claude_status (#635). The
 # daemon must carry it to screen/<local_pane_id>, independently of panes/ —

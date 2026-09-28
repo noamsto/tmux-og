@@ -2274,6 +2274,9 @@
               # The raw source file is what ships: this script carries no
               # build-time placeholder substitution.
               DETACH = ./scripts/og-remote-detach.sh;
+              # Same "raw source ships" reasoning as DETACH: og-open needs no
+              # build-time placeholder substitution either.
+              OG_OPEN = ./scripts/og-open.sh;
             } ''
               cp -r ${./tests} tests
               export HOME=$TMPDIR
