@@ -113,3 +113,47 @@ func TestAddWindowGoneMidAddLeavesOtherMirrorsFeed(t *testing.T) {
 		t.Error("%0's sink changed after closeWindow(@5): a notification for a window never registered must be a no-op")
 	}
 }
+
+// TestReconcileLayoutIgnoresAnotherWindowsReply drives the id check through
+// reconcileLayout, not just readLayout directly: a %layout-change for @1
+// whose readLayout reply is the CANFAIL fallback (answers @0, a different
+// layout) must leave w untouched and never reach applyLayout.
+func TestReconcileLayoutIgnoresAnotherWindowsReply(t *testing.T) {
+	const layout = "bd67,190x45,0,0,3"
+	const otherLayout = "bd67,190x45,0,0,7"
+	w := &mirrorWindow{
+		remoteID:    "@1",
+		localWin:    "@101",
+		remotePanes: []string{"%3"},
+		localPanes:  []string{"%l3"},
+		layout:      layout,
+	}
+
+	rt, sent := scriptedRT(strings.Join([]string{
+		"%begin 1 1 1", "@0 " + otherLayout + " %0 0", "%end 1 1 1", // readLayout: fallback answers @0
+	}, "\n") + "\n")
+
+	cfg := Config{
+		LocalTmux: func(...string) error {
+			t.Fatal("unexpected LocalTmux call: readLayout must reject the reply before any reshape")
+			return nil
+		},
+	}
+
+	retire := reconcileLayout(cfg, w, func(string) {}, NewRouter(), noHellos, newCtlState(), newConverger(), rt)
+
+	if retire {
+		t.Error("retire = true, want false: a rejected reply is not a gone-window signal")
+	}
+	if w.layout != layout {
+		t.Errorf("w.layout = %q, want unchanged %q", w.layout, layout)
+	}
+	if got := strings.Join(w.remotePanes, ","); got != "%3" {
+		t.Errorf("w.remotePanes = %v, want unchanged [%%3]", w.remotePanes)
+	}
+	for _, want := range []string{"select-layout", "split-window", "kill-pane", "respawn-pane"} {
+		if got := sent.String(); strings.Contains(got, want) {
+			t.Errorf("sent %q, want no %s (readLayout rejected the reply before any reshape)", got, want)
+		}
+	}
+}

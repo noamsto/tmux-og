@@ -33,8 +33,11 @@ fallback rule.
 | `refresh-client -C @99:50x20` | no-op, @0 unchanged |
 | `capture-pane -e -p -t %99` | `%error can't find pane` |
 | `set-environment -t 'nosuch' …` | `%error no such session` |
+| `run-shell -t @99 'echo #{window_id}'` / `-t %99` (bare) | `@0` / `%0` (FALLBACK, added after review) |
+| `if-shell -t @99 -F '#{window_id}' A B` (bare) | runs A (FALLBACK, added after review) |
+| `display-message -p -t 'nosess' '#{pid}|#{start_time}|#{session_id}'` | `<pid>|<start>|` — server-scoped fields still answer |
 
-So the only fallback that retargets a live object is a **session-qualified window target**
+So among the value-reading commands the fallback that retargets a live object is a **session-qualified window target**; `if-shell`/`run-shell` fall back even for a bare dead id, so their branches must name objects explicitly
 (`'sess':@N`). `remoteWinTarget` (daemon.go:2155) builds exactly that form, and its only
 consumer is `readLayout` (callers: daemon.go:1668 setupWindow, reconcile.go:30
 reconcileLayout, reconcile.go:308 reconcileSnapshot's trailing re-read).
