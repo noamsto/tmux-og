@@ -91,15 +91,22 @@ func probeBackoff(now func() time.Time) Backoff {
 // Next returns the delay before retry attempt (1-indexed: the delay before
 // the first retry is Next(1, start)) and whether the caller should even try.
 // Once either bound is exhausted it returns false and the delay is
-// meaningless — the caller's schedule is over, not merely long.
+// meaningless — the caller's schedule is over, not merely long. The delay is
+// clamped to the budget left, so a schedule never sleeps past MaxElapsed and
+// ends at MaxElapsed plus one attempt.
 func (b Backoff) Next(attempt int, start time.Time) (time.Duration, bool) {
 	if b.MaxAttempts > 0 && attempt > b.MaxAttempts {
 		return 0, false
 	}
-	if b.MaxElapsed > 0 && b.Now().Sub(start) >= b.MaxElapsed {
+	elapsed := b.Now().Sub(start)
+	if b.MaxElapsed > 0 && elapsed >= b.MaxElapsed {
 		return 0, false
 	}
-	return b.delay(attempt), true
+	d := b.delay(attempt)
+	if b.MaxElapsed > 0 && d > b.MaxElapsed-elapsed {
+		d = b.MaxElapsed - elapsed
+	}
+	return d, true
 }
 
 // delay computes the jittered exponential wait for attempt, doubling from

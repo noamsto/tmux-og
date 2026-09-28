@@ -1330,12 +1330,11 @@ relay_env() {
 	[ "$relay_env" = "OG_RELAY_GRAPHICS=" ]
 	run ! grep -F -- $'\033Pq' "$f1"
 
-	# Switch the viewer to a sixel-capable terminal. Kill the old pty host's
-	# SESSION, not its server, and reuse the same m2obs server for the new
-	# one: killing the server and immediately re-creating it on the same
-	# socket races its teardown, which surfaces as `new-session` failing with
-	# "server exited unexpectedly" (measured — the isolated command works
-	# fine with a wait in between, so the flag order is not the problem).
+	# Switch the viewer to a sixel-capable terminal on the same m2obs server.
+	# obsA is that server's only session, so under tmux's default exit-empty
+	# killing it ends the server too, and the next new-session on the socket
+	# reaches the dying server ("server exited unexpectedly"). exit-empty off
+	# keeps it up across the swap; teardown's kill-server still stops it.
 	#
 	# The old client must be GONE before the new one's capability can win:
 	# the gate is the AND across every attached client, so an overlap would
@@ -1344,6 +1343,7 @@ relay_env() {
 	# Close the old pipe first — pipe-pane -o TOGGLES an already-open pipe off
 	# rather than replacing its target (measured), so re-using -o without
 	# closing would silently keep writing to $f1.
+	$OBS set -g exit-empty off
 	$OBS kill-session -t obsA 2>/dev/null || true
 	$DST pipe-pane -t host-sess:1.0
 	f2="$BATS_TEST_TMPDIR/gxv2.pipe"
@@ -3256,9 +3256,10 @@ server_restart() {
 PARK_DIM_STYLE='fg=#{@thm_overlay_0},bg=#{@thm_mantle}'
 
 # The park cases below run with OG_DAEMON_RETRY_MAX_ELAPSED/OG_DAEMON_WAKE_MAX_ELAPSED
-# set to 2s, so a full exhaust-then-park (or wake-then-reexhaust) cycle is
-# bounded near 2s of dials plus scheduling — this budget is generous CI
-# headroom on top of that, not a stall detector tuned tight like bridge_up's.
+# set to 2s. The daemon clamps each retry wait to the schedule's remaining
+# MaxElapsed, so a full exhaust-then-park (or wake-then-reexhaust) cycle ends
+# at about 2s plus one dial — this budget is generous CI headroom on top of
+# that, not a stall detector tuned tight like bridge_up's.
 PARK_WAIT_BUDGET_SECS=15
 
 # wait_bridge_state polls @bridge_state for an exact value ("" means unset,
@@ -3945,7 +3946,14 @@ wait_daemon_exit() {
 
 	win_count="$($DST list-windows -t host-sess 2>/dev/null | wc -l)"
 	tomb_pane="$($DST list-panes -t host-sess -F '#{pane_id}' 2>/dev/null | head -1)"
-	tomb_text="$($DST capture-pane -p -t "$tomb_pane" 2>/dev/null || true)"
+	# The tombstone pane's own shell prints the text, which can land after
+	# the daemon has exited.
+	tomb_text=""
+	for _ in $(seq 1 50); do
+		tomb_text="$($DST capture-pane -p -t "$tomb_pane" 2>/dev/null || true)"
+		[[ $tomb_text == *"no longer exists"* ]] && break
+		sleep 0.1
+	done
 	bridge_sock="$($DST show-options -v -t host-sess -q @bridge_sock 2>/dev/null || true)"
 	bridge_session="$($DST show-options -v -t host-sess -q @bridge_session 2>/dev/null || true)"
 
@@ -5547,17 +5555,9 @@ mirror_of_remote() {
 	$SRC split-window -h -t rem
 	$DST new-session -d -s host-sess -x 200 -y 50
 
-	"$DAEMON" --test-local \
-		--src-socket m2src --dst-socket m2dst \
-		--session rem --window 1 --local-sess host-sess \
-		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/d9.sock" \
-		>"$BATS_TEST_TMPDIR/d9.log" 2>&1 &
-	daemon_pid=$!
-
-	for _ in $(seq 1 40); do
-		[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 2 ] && break
-		sleep 0.1
-	done
+	# The split below must land on a fully wired mirror, or the daemon's own
+	# setup sees 3 local panes for 2 remote and exits.
+	bridge_up 2 d9
 
 	# The extra pane carries no @bridge_pane, so healDeadRenderers is blind to
 	# it whether it lives or dies — this is the count desync on its own, not
@@ -5569,14 +5569,16 @@ mirror_of_remote() {
 	# which is the path that had no recovery.
 	$SRC resize-pane -t rem.1 -x 60
 
-	for _ in $(seq 1 60); do
-		[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 2 ] && break
+	# The rebuild passes through a 2-pane count before it reshapes (3 -> 1 ->
+	# 2), so wait for the shape itself, not just the transient count.
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		src_dims="$(sorted_tiled_dims "$SRC" rem)"
+		dst_dims="$(sorted_tiled_dims "$DST" host-sess:1)"
+		dst_panes="$($DST list-panes -t host-sess:1 -F '#{pane_id}' 2>/dev/null | wc -l)"
+		[ "$dst_panes" -eq 2 ] && [ -n "$dst_dims" ] && [ "$src_dims" = "$dst_dims" ] && break
 		sleep 0.1
 	done
-
-	src_dims="$(sorted_tiled_dims "$SRC" rem)"
-	dst_dims="$(sorted_tiled_dims "$DST" host-sess:1)"
-	dst_panes="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true

@@ -299,7 +299,11 @@ path, which every caller already handles.
   the bats suite can exhaust any of those budgets, or the probe cadence, in
   seconds instead of the production 10 minutes / 30s / 60s / 2 minutes; those
   tests drive the outage itself by SIGKILLing the transport and moving SRC's
-  socket aside, now alongside `OG_DAEMON_TEST_OUTAGE_FILE` (above).
+  socket aside, now alongside `OG_DAEMON_TEST_OUTAGE_FILE` (above). Those 2s
+  budgets hold only because `Backoff.Next` clamps each delay to the budget
+  left: a cycle ends at MaxElapsed plus one dial, never a full Ceiling past it
+  (unclamped, a late attempt's 8-16s sleep outlasted the suite's 15s park
+  wait — #801).
 - **The `ControlMaster` path is per-dial, not pid-derived-and-fixed** (#574),
   owned by the `child` that dialled it rather than captured in a closure: the
   graphics fetcher and the paste upload both read it through

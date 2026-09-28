@@ -58,6 +58,34 @@ func TestBackoffElapsedBoundEndsScheduleWithAttemptsRemaining(t *testing.T) {
 	}
 }
 
+// A late attempt's delay is clamped to the budget left, so the schedule ends
+// at MaxElapsed plus one attempt instead of one oversized sleep past it.
+func TestBackoffNextNeverWaitsPastMaxElapsed(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := start
+	b := Backoff{
+		Base:        500 * time.Millisecond,
+		Ceiling:     30 * time.Second,
+		MaxAttempts: 40,
+		MaxElapsed:  2 * time.Second,
+		Now:         func() time.Time { return now },
+		Jitter:      noJitter,
+	}
+
+	if d, ok := b.Next(1, start); !ok || d != 500*time.Millisecond {
+		t.Fatalf("Next(1, start) = %s, %v, want 500ms, true", d, ok)
+	}
+
+	now = start.Add(1900 * time.Millisecond)
+	d, ok := b.Next(6, start) // unclamped delay(6) is 16s
+	if !ok {
+		t.Fatal("Next(6) with 100ms of budget left should still be allowed")
+	}
+	if d != 100*time.Millisecond {
+		t.Errorf("Next(6) = %s, want 100ms (the budget remaining before MaxElapsed)", d)
+	}
+}
+
 func TestBackoffAttemptBoundEndsScheduleWithElapsedRemaining(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	b := Backoff{
