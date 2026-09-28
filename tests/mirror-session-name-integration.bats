@@ -195,13 +195,27 @@ wait_for_screen() { # expected text
 }
 
 # A `#(...)`/injected command is asynchronous, so "it never ran" is only a
-# claim once the whole window has elapsed with nothing there.
-wait_for_sentinel() { # path
-	local deadline=$((SECONDS + 5))
+# claim once the whole window has elapsed with nothing there. The positive
+# budget is sized for CI CPU contention: the click → display-menu → run-shell
+# chain exceeds the old 5s there, so a payload that DID fire read as a miss
+# (#832). 30s is ~6x the quiet-box need and in line with wait_for_screen (10s)
+# and remote-m2's 12–20s. Negative `run !` callers pass the smaller window:
+# they already waited for the menu to render (wait_for_screen), so the injected
+# command has been dispatched and 10s still requires the full window with
+# nothing there. A timeout dumps the client screen, so a real regression (menu
+# never opened / payload never fired) is diagnosable from the CI log alone.
+SENTINEL_BUDGET_SECS=30
+SENTINEL_NEGATIVE_SECS=10
+
+wait_for_sentinel() { # path [budget_secs]
+	local budget="${2:-$SENTINEL_BUDGET_SECS}"
+	local deadline=$((SECONDS + budget))
 	while ((SECONDS < deadline)); do
 		[[ -e $1 ]] && return 0
 		sleep 0.1
 	done
+	printf 'wait_for_sentinel("%s") timed out after %ss; screen was:\n' "$1" "$budget" >&2
+	screen >&2
 	return 1
 }
 
@@ -332,16 +346,16 @@ open_remote() { # remote-sess-name [no_switch]
 	click 3 1
 	wait_for_screen "$qsess"
 	wait_for_screen "Switch To $ssess"
-	run ! wait_for_sentinel "$S_A"
-	run ! wait_for_sentinel "$S_B"
+	run ! wait_for_sentinel "$S_A" "$SENTINEL_NEGATIVE_SECS"
+	run ! wait_for_sentinel "$S_B" "$SENTINEL_NEGATIVE_SECS"
 
 	dismiss_menu
 	switch_client_to "=$ssess"
 	click 3 1
 	wait_for_screen "$ssess"
 	wait_for_screen "Switch To $qsess"
-	run ! wait_for_sentinel "$S_A"
-	run ! wait_for_sentinel "$S_B"
+	run ! wait_for_sentinel "$S_A" "$SENTINEL_NEGATIVE_SECS"
+	run ! wait_for_sentinel "$S_B" "$SENTINEL_NEGATIVE_SECS"
 
 	dismiss_menu
 	gate_mirror "=$lsess"
@@ -349,9 +363,9 @@ open_remote() { # remote-sess-name [no_switch]
 	click 3 1
 	wait_for_screen "$lsess"
 	wait_for_screen "Switch To $qsess"
-	run ! wait_for_sentinel "$S_C"
-	run ! wait_for_sentinel "$S_A"
-	run ! wait_for_sentinel "$S_B"
+	run ! wait_for_sentinel "$S_C" "$SENTINEL_NEGATIVE_SECS"
+	run ! wait_for_sentinel "$S_A" "$SENTINEL_NEGATIVE_SECS"
+	run ! wait_for_sentinel "$S_B" "$SENTINEL_NEGATIVE_SECS"
 }
 
 # --- identity: the raw pair, not the name, is what's found again ------------

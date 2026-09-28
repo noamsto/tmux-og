@@ -176,13 +176,23 @@ clear_frames() { rm -rf "${REC_DIR:?}"/frame.*; }
 
 # A `#(...)` job is asynchronous — format_job_get substitutes the previous
 # (empty) value and the job lands later — so "it never ran" is only a claim once
-# the whole window has elapsed with nothing there.
-wait_for_sentinel() { # path
-	local deadline=$((SECONDS + 5))
+# the whole window has elapsed with nothing there. The positive budget is sized
+# for CI CPU contention, where the click → display-menu → run-shell chain
+# exceeds the old 5s and a payload that DID fire read as a miss (#832);
+# negative `run !` callers pass the smaller window (they waited for the menu to
+# render already). A timeout dumps the client screen for diagnosis.
+SENTINEL_BUDGET_SECS=30
+SENTINEL_NEGATIVE_SECS=10
+
+wait_for_sentinel() { # path [budget_secs]
+	local budget="${2:-$SENTINEL_BUDGET_SECS}"
+	local deadline=$((SECONDS + budget))
 	while ((SECONDS < deadline)); do
 		[[ -e $1 ]] && return 0
 		sleep 0.1
 	done
+	printf 'wait_for_sentinel("%s") timed out after %ss; screen was:\n' "$1" "$budget" >&2
+	screen >&2
 	return 1
 }
 
@@ -275,7 +285,7 @@ assert_wire_argv() { # payload_file name
 	send Enter
 	wait_for_frame
 
-	run ! wait_for_sentinel "$sentinel"
+	run ! wait_for_sentinel "$sentinel" "$SENTINEL_NEGATIVE_SECS"
 
 	# ...and the name still travelled, verbatim, as data.
 	assert_wire_argv "$(sole_payload)" "probe#(touch $sentinel)"
