@@ -275,9 +275,21 @@ func stampMirrorWindow(cfg Config, localWin, remoteName string) {
 // window name itself. Both, every time — with automatic-rename off nothing else
 // re-derives the name, so a path that wrote only the option would leave the
 // window name frozen at whatever the previous write left behind.
+//
+// An empty remote name clears instead of returning. Otherwise a mirror keeps
+// whatever name it had — a taken-over startup placeholder keeps the vanished
+// window's, and a steady-state rename-to-empty keeps the old one — for its whole
+// life. Unsetting @window_bridge_name lets reflow fall back to the window name;
+// the rename replaces the stale name with tmux's directory-derived default, the
+// branch of automatic-rename-format a fresh mirror window shows.
+// automatic-rename cannot be re-enabled in its place: automatic-rename-format
+// reads reflow's @window_label_short first, and on a mirror that is the remote
+// name it just went stale on.
 func applyMirrorName(cfg Config, localWin, remoteName string) {
 	name := sanitizeWindowName(remoteName)
 	if name == "" {
+		cfg.LocalTmux("set-option", "-w", "-t", localWin, "-u", "@window_bridge_name")
+		cfg.LocalTmux("rename-window", "-t", localWin, "#{b:pane_current_path}")
 		return
 	}
 	cfg.LocalTmux("set-option", "-w", "-t", localWin, "@window_bridge_name", name)

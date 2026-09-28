@@ -40,7 +40,8 @@ func TestTranslateWindowNotification(t *testing.T) {
 
 // applyMirrorName must write BOTH the option reflow labels from and the window
 // name itself: with automatic-rename off on a mirror window, a path that wrote
-// only the option would leave the tab frozen at the previous name.
+// only the option would leave the tab frozen at the previous name. An empty
+// remote name must clear both instead of no-opping (#845).
 func TestApplyMirrorName(t *testing.T) {
 	var got [][]string
 	cfg := Config{LocalTmux: func(args ...string) error {
@@ -59,7 +60,11 @@ func TestApplyMirrorName(t *testing.T) {
 
 	got = nil
 	applyMirrorName(cfg, "h-s:2", "")
-	if got != nil {
-		t.Fatalf("empty remote name should write nothing, got %v", got)
+	want = [][]string{
+		{"set-option", "-w", "-t", "h-s:2", "-u", "@window_bridge_name"},
+		{"rename-window", "-t", "h-s:2", "#{b:pane_current_path}"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("applyMirrorName(empty) = %v, want %v", got, want)
 	}
 }
