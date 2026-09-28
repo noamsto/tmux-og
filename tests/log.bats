@@ -114,10 +114,28 @@ setup() {
 	[ "$REPLY" = 0 ]
 }
 
-@test "owner_only_dir accepts a 0700 dir under a gettext-localized locale" {
-	local dir="$BATS_TEST_TMPDIR/localized"
+@test "owner_only_dir never relies on stat's localized %F type string" {
+	local real_stat stub
+	real_stat=$(command -v stat)
+	stub="$BATS_TEST_TMPDIR/stat-no-percentF"
+	cat >"$stub" <<-EOF
+		#!/usr/bin/env bash
+		# Test double for a localized-coreutils stat: refuses to run with any
+		# %F in its format args, standing in for gettext turning it into
+		# "Verzeichnis" instead of "directory".
+		for a in "\$@"; do
+			case "\$a" in
+			*%F*) exit 1 ;;
+			esac
+		done
+		exec "$real_stat" "\$@"
+	EOF
+	chmod +x "$stub"
+	# shellcheck disable=SC2034  # read by owner_only_dir, sourced from lib-log.sh
+	OG_STAT="$stub"
+
+	local dir="$BATS_TEST_TMPDIR/no-percentF"
 	mkdir -m 700 "$dir"
-	export LC_ALL=de_DE.UTF-8 LANG=de_DE.UTF-8
 	run owner_only_dir "$dir"
 	[ "$status" -eq 0 ]
 }
