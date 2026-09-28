@@ -51,10 +51,8 @@ type ctlState struct {
 
 	// Intents coalesce, so a burst of gestures in one window is one reconcile.
 	wantWindows bool
-	// wantLayout maps a remote window id with a pending layout reconcile to
-	// the tiled layout a tile-layout drag already sent it, or "" for any
-	// other layout-touching verb. See ctlRequest.sentLayout and submit for
-	// how a value here is chosen.
+	// wantLayout maps a window to the tiled layout a drag already sent it, or
+	// "" for any other layout verb.
 	wantLayout map[string]string
 	// wantReseed names remote WINDOWS whose mirror needs a fresh screen —
 	// respawn-pane/-window clear the remote screen, and control mode never
@@ -116,9 +114,7 @@ func (c *ctlState) takeIntents() (windows bool, layouts map[string]string, resee
 	defer c.mu.Unlock()
 	windows = c.wantWindows
 	c.wantWindows = false
-	// Only swap when non-empty: settle calls takeIntents per control-mode
-	// line, including every %output line, so an unconditional swap would
-	// allocate a map on that hot path. A nil map ranges and len()s fine.
+	// settle drains per stream line, %output included: no allocation when idle.
 	if len(c.wantLayout) > 0 {
 		layouts = c.wantLayout
 		c.wantLayout = map[string]string{}
@@ -299,11 +295,8 @@ func floatGeomCommand(pane string, c controlmode.PaneCell) string {
 	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote("#{pane_floating_flag}"), tmuxQuote(inner))
 }
 
-// tiledArg parses a tile-layout argument: a tiled layout string already
-// carrying remote pane ids (the ctl client maps its local window's layout to
-// remote ids before sending). TiledLayout's identity map validates each leaf
-// is "%"+digits and re-serializes Raw from the parsed tree, so neither a
-// hostile checksum prefix nor any other raw wire text can survive into it.
+// tiledArg parses a tile-layout argument, a tiled layout already in remote
+// pane ids. TiledLayout rebuilds Raw, so no wire text reaches the remote.
 func tiledArg(s string) (controlmode.Layout, error) {
 	return controlmode.TiledLayout(s, func(id string) (string, bool) { return id, true })
 }
@@ -321,10 +314,6 @@ func tiledArg(s string) (controlmode.Layout, error) {
 // window to the string's own size, and the mirror window is fitted to the
 // remote's rather than the other way round; the zoom guard because
 // select-layout unzooms. A remote that fails any of these is left alone.
-//
-// Verified by hand on the pinned tmux: this exact quoting shape applies a
-// matching layout and is a no-op against a swapped pane order, floats
-// untouched either way.
 func tileLayoutCommand(pane string, L controlmode.Layout) string {
 	var order strings.Builder
 	for _, id := range RemotePaneOrder(L) {

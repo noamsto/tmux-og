@@ -211,10 +211,6 @@ func TestActiveFirst(t *testing.T) {
 	}
 }
 
-// A local drag reshapes the window behind the reconcile's back, so the dedup
-// key must go stale unless it already equals what the drag sent (the
-// %layout-change for it already applied this settle round, or nothing
-// actually moved).
 func TestNoteLocalLayout(t *testing.T) {
 	tests := []struct {
 		layout, sent, want string

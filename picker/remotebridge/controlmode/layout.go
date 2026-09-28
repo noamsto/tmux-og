@@ -77,18 +77,11 @@ func ParseLayout(s string) (Layout, error) {
 	return out, nil
 }
 
-// TiledLayout parses s in either layout format, prunes float leaves the same
-// way ParseLayout does, and replaces every surviving leaf's id with id(leaf)
-// — erroring unless id reports ok and the mapped value has the "%"+digits
-// shape a v1 leaf id always has. Raw is always rebuilt from the remapped
-// tree, never s echoed, so neither a hostile checksum prefix nor any other
-// raw input text can survive into the result. W and H come from the
-// UNPRUNED root (the window size, matching ParseLayout); Floats is always
-// nil, since floats are pruned and never appear in the output.
-//
-// Used both to translate a local window's layout into remote pane ids for
-// forwarding, and — with an identity map — to re-validate and re-serialize a
-// layout string received over the wire before it is trusted.
+// TiledLayout parses s like ParseLayout and returns its tiled-only layout
+// with every pane id replaced by id(pane), an error unless id reports ok and
+// the result is "%"+digits. Raw is always rebuilt from the tree, never s
+// echoed, so no input text (a hostile checksum prefix included) survives into
+// it. W and H are the unpruned root's (the window size); Floats is nil.
 func TiledLayout(s string, id func(string) (string, bool)) (Layout, error) {
 	root, floats, err := parseTree(s)
 	if err != nil {
@@ -137,9 +130,7 @@ func remapIDs(n *node, id func(string) (string, bool)) error {
 }
 
 // parseTree parses a tmux layout string in either format (see ParseLayout)
-// into its cell tree and the float leaves found along the way, without
-// pruning or rebuilding anything — the shared grammar behind both
-// ParseLayout and TiledLayout.
+// into its unpruned cell tree and its float leaves.
 func parseTree(s string) (*node, []PaneCell, error) {
 	if strings.HasPrefix(s, "{") {
 		return parseTreeV2(s)

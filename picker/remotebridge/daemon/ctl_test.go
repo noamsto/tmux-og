@@ -523,11 +523,6 @@ func TestParseCtlTileLayoutRejectsHostileChecksum(t *testing.T) {
 	}
 }
 
-// TestTileLayoutIntentCoalescing pins wantLayout's per-window sentLayout
-// bookkeeping: a drag's sentLayout wins over a plain layout verb coalescing
-// into the same window regardless of order, a later drag replaces an earlier
-// one, a plain layout verb alone leaves no sentLayout, and forgetWindow drops
-// a pending drag.
 func TestTileLayoutIntentCoalescing(t *testing.T) {
 	const raw1 = "csum,50x30,0,0,2"
 	const raw2 = "csum,50x30,0,0,3"
@@ -1872,10 +1867,8 @@ func TestHandleCtlSendsNothingWhenALocalCommandFails(t *testing.T) {
 	}
 }
 
-// TestTileLayoutCommandGuardsOnLiveTmux exercises tileLayoutCommand's
-// if-shell guard against a real tmux server instead of pinning its string:
-// only tmux's own -F evaluation of #{P/i:} vs pane-list order, window size,
-// and the zoom flag can catch a guard mistake a string-pinning test cannot.
+// Only tmux's own -F evaluation can show the guard's order, size and zoom
+// clauses actually refuse.
 func TestTileLayoutCommandGuardsOnLiveTmux(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		// OG_REQUIRE_TMUX is set by pickerChecked's checkPhase in flake.nix,

@@ -449,11 +449,7 @@ rel() {
 	wait_agree "$before"
 }
 
-# A mouse drag on the divider between two TILED mirror panes reaches the
-# REMOTE panes (#823): dragging it locally resized only the local panes while
-# the remote kept its old sizes. Routed through ctl `drag` -> the daemon's
-# `tile-layout` verb, guarded by a pane-order/size/zoom match so a stale or
-# reordered request is refused and the mirror reconciles back to the remote.
+# --- tiled divider drags (#823) ---
 
 @test "a divider drag between two tiled mirror panes resizes the REMOTE panes" {
 	mirror_tiled_up

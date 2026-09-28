@@ -76,14 +76,10 @@ func (w *mirrorWindow) allRemotePanes() []string {
 	return append(out, floats...)
 }
 
-// noteLocalLayout tells w that a local drag already reshaped it to sent
-// (mirrorWindow.layout's last-applied-locally sense) behind the reconcile.
-// The dedup key applyLayout compares against is then stale unless it already
-// equals sent — a %layout-change for the drag already applied this settle
-// round, or a drag that moved nothing — so clearing it is the same "reshaped
-// outside the reconcile" signal applyPaneOps uses: the pass that follows
-// re-applies the remote's truth, the new shape on success or a snap-back to
-// the old one when the remote refused.
+// noteLocalLayout records that a local drag reshaped w to sent behind the
+// reconcile. Unless layout already equals sent, it is a stale dedup key, so it
+// is cleared the way applyPaneOps clears it: the next pass re-applies the
+// remote's shape, which snaps the window back if the remote refused the drag.
 func (w *mirrorWindow) noteLocalLayout(sent string) {
 	if sent != "" && w.layout != sent {
 		w.layout = ""

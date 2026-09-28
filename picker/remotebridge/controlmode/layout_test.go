@@ -358,11 +358,8 @@ func depthBombLayout(depth int) string {
 	return `{"V":2,"L":` + body + `}`
 }
 
-// TestTiledLayout checks that TiledLayout parses either format, prunes
-// floats the same way ParseLayout does, and rewrites every surviving leaf id
-// through the given map. wantBody is the Raw body after the checksum prefix
-// (the prefix itself is only checked for shape/round-trip, never a literal,
-// since it's a fresh checksum TiledLayout computes).
+// wantBody is Raw after the checksum prefix; the prefix is checked by the
+// round trip through ParseLayout.
 func TestTiledLayout(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -532,10 +529,6 @@ func TestTiledLayoutHostileChecksumPrefix(t *testing.T) {
 	}
 }
 
-// TestTiledLayoutErrors checks the id-mapping and parse-grammar failure
-// modes: an id the map doesn't know, a mapped value that isn't "%"+digits,
-// malformed input in either format, and a layout whose only pane leaf is a
-// float.
 func TestTiledLayoutErrors(t *testing.T) {
 	onlyFloats := `{"V":2,"L":{"t":"h","w":10,"h":10,"x":0,"y":0,"c":[` +
 		`{"t":"p","w":5,"h":5,"x":0,"y":0,"I":"%0","z":0},` +

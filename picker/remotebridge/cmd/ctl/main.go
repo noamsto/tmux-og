@@ -49,22 +49,13 @@ var panePattern = regexp.MustCompile(`^%[0-9]+$`)
 
 const dragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}|#{P:#{pane_id}=#{@bridge_pane} }|#{window_layout}"
 
-// resolveDrag turns the local pane id a drag-end bind stashed into a request
-// for the daemon. The bind cannot resolve this itself: its format context is
-// wherever the button was released, and a `-t '#{…}'` target is never
-// format-expanded — so ctl re-reads the stashed pane directly.
-//
-// A single display-message call reads the pane's own geometry, every local
-// pane's `@bridge_pane` mapping (as P: pairs) and the local window's layout
-// together, so the map and the layout describe the same instant — no risk of
-// a mapping read here and a layout read a moment later racing a reflow.
-//
-// A floating pane returns today's float-geom request unchanged. A tiled pane
-// instead maps the window's layout onto remote pane ids via @bridge_pane and
-// returns a tile-layout request: the daemon reshapes the remote mirror to
-// match. Routing the remap through @bridge_pane rather than assuming local
-// and remote ids line up means a desynced mirror errors out here instead of
-// reshaping the wrong remote panes.
+// resolveDrag turns the local pane id a drag-end bind stashed into a daemon
+// request: float-geom for a float, tile-layout for a tiled pane. The bind
+// cannot expand the pane itself: its format context is wherever the button
+// was released, and a `-t '#{…}'` target is never format-expanded. One
+// display-message reads the id map and the layout, so both describe the same
+// instant; mapping through @bridge_pane makes a desynced mirror an error
+// rather than a reshape of the wrong remote panes.
 func resolveDrag(localPane string) ([]string, error) {
 	if !panePattern.MatchString(localPane) {
 		return nil, fmt.Errorf("drag: bad local pane %q", localPane)
