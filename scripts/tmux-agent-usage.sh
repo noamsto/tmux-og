@@ -95,9 +95,8 @@ if [[ $mode == "tick" ]]; then
 	scan_open_agents
 	((${#OPEN[@]})) || exit 0
 	# Mark fresh BEFORE daemonizing (same best-effort trade as tmux-pr-enrich):
-	# a crashed pass waits one cycle. mkdir -m only sets the mode on create —
-	# an existing dir is never chmod'd (fail closed), so the owner check after
-	# it can still refuse.
+	# a crashed pass waits one cycle. An existing dir keeps its mode, so the
+	# owner check can still refuse it.
 	# shellcheck disable=SC2174  # only the leaf (og-agent-usage-<uid>) needs 700; its parent (XDG_RUNTIME_DIR/TMPDIR) already exists
 	mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null
 	owner_only_dir "$CACHE_DIR" || exit 0

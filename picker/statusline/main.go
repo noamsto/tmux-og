@@ -90,11 +90,8 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	return f[0] == "1", true
 }
 
-// perUserDir resolves a uid-qualified cache dir shared by two callers:
-// statuslineCacheDir and usageCacheDir. env, when set, overrides the default
-// outright; otherwise the default is XDG_RUNTIME_DIR/<name>-<uid> when
-// XDG_RUNTIME_DIR is absolute, else os.TempDir()/<name>-<uid> (TMPDIR or
-// /tmp). The uid qualifier keeps two accounts on one host from colliding.
+// perUserDir is $env, else <XDG_RUNTIME_DIR or TMPDIR>/<name>-<uid>, uid-qualified
+// so two accounts on one host cannot collide.
 func perUserDir(env, name string) string {
 	if dir := os.Getenv(env); dir != "" {
 		return dir

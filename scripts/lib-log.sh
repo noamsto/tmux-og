@@ -29,18 +29,13 @@ file_size() { "$OG_STAT" -c %s "$1" 2>/dev/null || echo 0; }
 file_mtime() { "$OG_STAT" -c %Y "$1" 2>/dev/null || echo 0; }
 
 # owner_only_dir DIR [FILE] -> REPLY=FILE's mtime (0 if absent). True iff DIR
-# is a real directory (not a symlink — GNU stat's default is lstat, so a
-# symlink's own mode carries S_IFLNK, not S_IFDIR), owned by $UID, with no
-# group/other permission bits. FILE, when given, must live inside DIR. Type
-# and permissions both come from the raw mode bits (%f, hex), never a
-# formatted type string: %F is gettext-localized (e.g. "Verzeichnis" under
-# de_DE), so a string compare would silently fail closed under a non-C locale.
-# Shell twin of picker/ownerdir.OwnerOnly.
+# is a real directory (stat lstat's, so a symlink fails), owned by $UID, with
+# no group/other bits; FILE must live inside DIR. Shell twin of
+# picker/ownerdir.OwnerOnly. Type comes from the raw mode (%f): %F is
+# gettext-localized.
 owner_only_dir() {
 	local out uid raw mtime
-	# A missing FILE makes stat exit nonzero while still printing DIR's line;
-	# parse $out regardless. `|| :` on both this and the read group below keeps
-	# that expected nonzero from tripping a caller's `set -e`.
+	# A missing FILE makes stat exit nonzero after printing DIR's line.
 	out=$("$OG_STAT" -c '%u %f %Y' -- "$@" 2>/dev/null) || :
 	{
 		read -r uid raw _

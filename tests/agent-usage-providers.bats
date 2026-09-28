@@ -281,10 +281,7 @@ default_pi() {
 	[ -e "$(pi_cache)" ]
 }
 
-# --- OG_AGENT_USAGE_DIR resolution ---
-# The dispatcher (tmux-agent-usage.sh) resolves and owner-checks the cache
-# dir and exports it; a provider run standalone with it unset has nowhere
-# trusted to write, and must not fall back to a machine-wide /tmp path.
+# The dispatcher exports the owner-checked dir; providers have no fallback.
 
 @test "provider: OG_AGENT_USAGE_DIR unset writes nothing, never touches the real default" {
 	unset OG_AGENT_USAGE_DIR

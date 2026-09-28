@@ -68,12 +68,10 @@ func usageCacheDir() string {
 // usageAgentOrder fixes the left-to-right agent order in the segment.
 var usageAgentOrder = []string{"claude", "codex", "cursor", "pi"}
 
-// loadUsageCaches reads whatever provider caches exist, but only from a dir
-// that is caller-owned and private (ownerdir.OwnerOnly) — another local
-// account could otherwise plant the dir first and feed the statusline its own
-// figures, so an untrusted dir fails closed to no data rather than reading it.
-// Missing or malformed files are skipped — the poller rewrites them atomically
-// on the next pass.
+// loadUsageCaches reads whatever provider caches exist. A dir another account
+// could have planted (not ownerdir.OwnerOnly) yields nothing. Missing or
+// malformed files are skipped — the poller rewrites them atomically on the
+// next pass.
 func loadUsageCaches(dir string) map[string]usageCache {
 	if !ownerdir.OwnerOnly(dir) {
 		return map[string]usageCache{}
