@@ -3114,6 +3114,25 @@ wait_bridge_state() {
 	return 1
 }
 
+# wait_server_exited <pid> — wait, bounded, for a tmux server process to
+# actually exit. kill-server returns before the server's process is gone, and
+# its socket file lingers long past the exit; starting a replacement on the
+# same -L socket while the old pid still lives lets the new client reach the
+# dying server and die with "server exited unexpectedly" (#832). A tmux server
+# daemonizes (not our child), so liveness is kill -0; the socket file survives
+# the process, so it is not the condition.
+wait_server_exited() { # pid
+	local pid="$1" i
+	[ -n "$pid" ] || return 0
+	# 200 * 0.05s = 10s, ~10x the measured exit
+	for i in $(seq 1 200); do
+		kill -0 "$pid" 2>/dev/null || return 0
+		sleep 0.05
+	done
+	printf 'wait_server_exited(%s): still alive after 10s\n' "$pid" >&3
+	return 1
+}
+
 # wake_parked_mirror presses a key into the mirror pane until the mirror
 # reconnects (empty @bridge_state) or the budget runs out, retrying the press
 # rather than asserting the first one always lands: a wake cycle runs on the
@@ -3205,7 +3224,7 @@ wake_parked_mirror() {
 }
 
 @test "a control-connection drop into a different tmux server tears the mirror down" {
-	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-session -d -s rem -x 100 -y 30 3>&-
 	$DST new-session -d -s host-sess -x 100 -y 30
 	bridge_up 1 dds
 
@@ -3218,19 +3237,24 @@ wake_parked_mirror() {
 	# for. Only killing the TRANSPORT produces the bare-EOF drop that the
 	# reconnect loop retries — the identity check runs on that retry's dial.
 	kill -9 "$old_transport"
-	# Recreate immediately, minimizing the window in which the daemon's own
-	# backoff (jittered, up to 500ms) could dial the OLD, still-live server
-	# first — which would reattach, legitimately match, and leave the
-	# identity-mismatch path unreached. A same-named session on a freshly
-	# started server (a different tmux server pid, even though $0 is reused) is
-	# exactly the case a session-id-only identity check would wave through.
-	# The fresh server also renumbers panes from %0, so its pane ids collide
-	# with the ones this mirror's registry still holds. That leak window
-	# (attach to identity reply) is not assertable here — teardown kills the
-	# mirror session milliseconds later — so
+	# Replace the remote server. A tmux server tears down asynchronously:
+	# kill-server returns while its process is still alive, and a new-session
+	# on the same socket then reaches the DYING server and dies with "server
+	# exited unexpectedly" (#832). Wait for the old pid to exit first — the
+	# daemon's backoff dial during that gap gets ECONNREFUSED (a retryable
+	# drop), and its retry then reaches the new server, which is exactly the
+	# identity-mismatch path below. A same-named session on a freshly started
+	# server (a different tmux server pid, even though $0 is reused) is the
+	# case a session-id-only identity check would wave through. The fresh
+	# server also renumbers panes from %0, so its pane ids collide with the
+	# ones this mirror's registry still holds. That leak window (attach to
+	# identity reply) is not assertable here — teardown kills the mirror
+	# session milliseconds later — so
 	# TestReattachDropsOutputFromAnUnverifiedConnection pins it instead.
+	old_src_pid="$($SRC display-message -p '#{pid}' 2>/dev/null || true)"
 	$SRC kill-server 2>/dev/null || true
-	$SRC new-session -d -s rem -x 100 -y 30
+	wait_server_exited "$old_src_pid"
+	$SRC new-session -d -s rem -x 100 -y 30 3>&-
 
 	# Positive evidence of the mismatch — the daemon's own stderr line — not
 	# "the mirror is gone" alone: if the race above went the other way the
