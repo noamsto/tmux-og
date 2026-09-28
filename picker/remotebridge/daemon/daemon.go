@@ -1736,7 +1736,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 
 	for i, remotePane := range paneIDs {
 		if wired[i] {
-			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
+			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseMode(router, remotePane))
 			continue
 		}
 		// A sole pane's failure is fatal: this error is what makes addWindow /
@@ -1748,7 +1748,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
-		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
+		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseMode(router, remotePane))
 	}
 
 	// A window that already holds a float when the bridge opens mirrors it now
@@ -2374,7 +2374,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
 	seedRenderer(rt, router, hc.conn, hc.paneID, rendererDims(mw, hc.paneID), cfg.graphicsFor(hc.paneID))
-	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen)
+	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseMode(router, hc.paneID))
 }
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
@@ -2469,6 +2469,10 @@ type outputSink struct {
 	// gfx.Filter call; the main loop's reveal pass reads it to decide whether
 	// a revealed pane is worth re-seeding.
 	hasImages atomic.Bool
+	// mouse reconstructs the pane's negotiated mouse encoding from the bytes
+	// this sink writes to the renderer, so pumpInput can disambiguate an
+	// ESC[M report the bytes alone cannot (#814).
+	mouse mouseModeTracker
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2539,6 +2543,7 @@ func (s *outputSink) start(conn net.Conn) {
 						tail = append(gfx.Filter(tail), gfx.Close()...)
 					}
 					if len(tail) > 0 {
+						s.mouse.Feed(tail)
 						wire.WriteStream(conn, wire.FrameOutput, tail)
 					}
 					return
@@ -2568,6 +2573,9 @@ func (s *outputSink) start(conn net.Conn) {
 						return
 					}
 				}
+			}
+			if f.typ == wire.FrameOutput || f.typ == wire.FrameSeed {
+				s.mouse.Feed(f.payload)
 			}
 			write := wire.WriteFrame
 			if f.typ == wire.FrameOutput || f.typ == wire.FrameSeed {
@@ -2751,6 +2759,17 @@ func (s *outputSink) Close() {
 // stall input forever; tmux uses a similar escape-time window.
 var escCarryGrace = 50 * time.Millisecond
 
+// sinkMouseMode returns the mouse-mode tracker of paneID's registered renderer
+// sink, or nil when the pane has no sink. The sink is registered synchronously
+// before its pumpInput starts (wireRenderer, then the pump), so this lookup
+// cannot race a rebind.
+func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
+	if s := router.sink(paneID); s != nil {
+		return &s.mouse
+	}
+	return nil
+}
+
 // pumpInput forwards conn's FrameInput frames to the remote pane as
 // send-keys commands, until conn closes. A non-nil paste handler intercepts
 // ctrl+v image pastes first (see paste.go); nil forwards input verbatim.
@@ -2770,7 +2789,7 @@ var escCarryGrace = 50 * time.Millisecond
 // seen fires for every input frame, before it is forwarded: it is what wakes a
 // parked mirror (Config.InputSeen). The keystroke itself is not held for the
 // reconnect — send fails closed with no connection, as it does for any outage.
-func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func()) {
+func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func(), mode *mouseModeTracker) {
 	// Read the grace once, before the reader goroutine exists, so the mutable
 	// package var is never read concurrently with a test that sets it.
 	grace := escCarryGrace
@@ -2811,7 +2830,7 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		}
 		// isDismissKey is documented for a non-empty slice; paste.handle can
 		// return an empty one when it swallows the payload (paste.go).
-		if len(payload) > 0 && isDismissKey(payload) {
+		if len(payload) > 0 && isDismissKey(payload, mode) {
 			send(deadKeyCmd(remotePane))
 		}
 		for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
@@ -2898,8 +2917,11 @@ func modalClearCmd(pane string) string {
 // paste body counts: tmux checks for a dead pane before its bracket-paste
 // diversion. Focus reports are skipped too, a bridge-only choice: a dead pane
 // never gets one locally, so one here is local tmux's pane-focus notification.
-// Callers never pass it an empty slice.
-func isDismissKey(b []byte) bool {
+// Callers never pass it an empty slice. mode carries the pane's negotiated
+// mouse encoding; nil means unknown, and the mode-blind heuristic in
+// skipX10Mouse applies.
+func isDismissKey(b []byte, mode *mouseModeTracker) bool {
+	utf8, known := mode.MouseUTF8()
 	for len(b) > 0 {
 		switch {
 		case bytes.HasPrefix(b, []byte("\x1b[I")), bytes.HasPrefix(b, []byte("\x1b[O")):
@@ -2909,7 +2931,7 @@ func isDismissKey(b []byte) bool {
 		case bytes.HasPrefix(b, []byte("\x1b[<")):
 			b = skipSGRMouse(b)
 		case bytes.HasPrefix(b, []byte("\x1b[M")):
-			b = skipX10Mouse(b)
+			b = skipX10Mouse(b, utf8, known)
 		default:
 			return true
 		}
@@ -3070,12 +3092,17 @@ func csiEnd(b []byte) (int, bool) {
 // skipX10Mouse consumes a "\x1b[M" report and its three parameters, returning
 // the frame after it. tmux writes this report in one of two encodings: the
 // legacy X10 form, three raw bytes (button, x, y, each offset by 32), and the
-// UTF-8 (1005) form, the same three values written as UTF-8 runes. The two
-// readings disagree whenever a legacy parameter byte also begins a valid
-// multi-byte UTF-8 rune: the common two-byte case is an x byte in 0xc2-0xdf
-// followed by a y byte in 0x80-0xbf (column 162+, row 96+), and a 0xe0-0xef
-// byte followed by two continuations is the rarer three-byte one. Resolve them
-// from where the legacy reading cannot be right:
+// UTF-8 (1005) form, the same three values written as UTF-8 runes. The pane's
+// negotiated mode (utf8, known) resolves the two when the bytes alone cannot.
+//
+// With the mode known the encoding is exact: a pane in 1005 mode produced the
+// UTF-8 reading, one not in it produced the legacy reading. That settles the
+// ambiguous frame a legacy click at column 195/row 169 followed by "q" shares
+// with a 1005 report (button 0, x 200, y 80) — the legacy reading leaves a
+// "key" the 1005 reading does not.
+//
+// With the mode unknown (no seed processed yet, or a caller with no tracker) it
+// falls back to where the legacy reading cannot be right:
 //
 //   - a UTF-8 lead byte at the button position cannot be a legacy button (a
 //     small value), so the report is 1005; and
@@ -3086,12 +3113,18 @@ func csiEnd(b []byte) (int, bool) {
 // reads the three parameters as raw bytes. Fewer than three params left in b
 // consumes to the end. The UTF-8 length comes from x10UTF8End, the same rule
 // splitIncompleteEscape uses.
-func skipX10Mouse(b []byte) []byte {
+func skipX10Mouse(b []byte, utf8, known bool) []byte {
 	raw := 3 + 3
 	if raw > len(b) {
 		raw = len(b)
 	}
 	utf8End, _, _ := x10UTF8End(b)
+	if known {
+		if utf8 {
+			return b[utf8End:]
+		}
+		return b[raw:]
+	}
 	if utf8End != raw && (b[3] >= 0xc2 || (raw < len(b) && b[raw]&0xc0 == 0x80)) {
 		return b[utf8End:]
 	}

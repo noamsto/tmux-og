@@ -27,7 +27,7 @@ func TestPumpInputCallsDiedOnceOnReadError(t *testing.T) {
 	var diedCount int32
 	done := make(chan struct{})
 	go func() {
-		pumpInput(conn, "%7", func(string) {}, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil)
+		pumpInput(conn, "%7", func(string) {}, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil, nil)
 		close(done)
 	}()
 
@@ -54,7 +54,7 @@ func TestPumpInputDoesNotCallDiedOnACleanFrameRead(t *testing.T) {
 
 	var diedCount int32
 	sendCh := make(chan string, 1)
-	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil, nil)
 
 	peer.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
@@ -80,7 +80,7 @@ func TestPumpInputToleratesANilDiedCallback(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pumpInput(conn, "%7", func(string) {}, nil, nil, nil)
+		pumpInput(conn, "%7", func(string) {}, nil, nil, nil, nil)
 		close(done)
 	}()
 
@@ -102,7 +102,7 @@ func TestPumpInputCallsSeenBeforeForwarding(t *testing.T) {
 
 	var seen int32
 	sendCh := make(chan int32, 1)
-	go pumpInput(conn, "%7", func(string) { sendCh <- atomic.LoadInt32(&seen) }, nil, nil, func() { atomic.AddInt32(&seen, 1) })
+	go pumpInput(conn, "%7", func(string) { sendCh <- atomic.LoadInt32(&seen) }, nil, nil, func() { atomic.AddInt32(&seen, 1) }, nil)
 
 	peer.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
@@ -169,7 +169,7 @@ func TestPumpInputCarriesSplitMouseReport(t *testing.T) {
 				defer conn.Close()
 				defer peer.Close()
 				sendCh := make(chan string, 16)
-				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
 				for _, p := range [][]byte{reportB[:i], reportB[i:], sent} {
 					if err := wire.WriteFrame(peer, wire.FrameInput, p); err != nil {
@@ -216,7 +216,7 @@ func TestPumpInputRealKeySplitStillDismisses(t *testing.T) {
 				defer conn.Close()
 				defer peer.Close()
 				sendCh := make(chan string, 16)
-				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
 				for _, p := range [][]byte{keyB[:i], keyB[i:]} {
 					if err := wire.WriteFrame(peer, wire.FrameInput, p); err != nil {
@@ -341,7 +341,7 @@ func TestSkipX10Mouse(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := string(skipX10Mouse([]byte(tt.in))); got != tt.want {
+			if got := string(skipX10Mouse([]byte(tt.in), false, false)); got != tt.want {
 				t.Errorf("skipX10Mouse(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
@@ -359,7 +359,7 @@ func TestPumpInputLoneEscDeliveredAfterGrace(t *testing.T) {
 	defer conn.Close()
 	defer peer.Close()
 	sendCh := make(chan string, 8)
-	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte{0x1b}); err != nil {
 		t.Fatalf("write: %v", err)
@@ -432,7 +432,42 @@ func TestIsDismissKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isDismissKey(tt.frame); got != tt.want {
+			if got := isDismissKey(tt.frame, nil); got != tt.want {
+				t.Errorf("isDismissKey(%q) = %v, want %v", tt.frame, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsDismissKeyMouseMode pins the disambiguation #814 adds: the same bytes
+// are a mouse report under 1005 and a legacy report plus a key without it.
+func TestIsDismissKeyMouseMode(t *testing.T) {
+	// legacy click col 195/row 169 + "q", or 1005 button 0/x 200/y 80
+	const ambiguous = "\x1b[M \xc3\xa9q"
+	tracker := func(set bool) *mouseModeTracker {
+		m := &mouseModeTracker{}
+		if set {
+			m.Feed([]byte("\x1b[?1005h"))
+		} else {
+			m.Feed([]byte("\x1b[?1005l"))
+		}
+		return m
+	}
+
+	tests := []struct {
+		name  string
+		frame []byte
+		mode  *mouseModeTracker
+		want  bool
+	}{
+		{"ambiguous frame under 1005 is a mouse report", []byte(ambiguous), tracker(true), false},
+		{"ambiguous frame without 1005 is legacy + key", []byte(ambiguous), tracker(false), true},
+		{"unambiguous 1005 two-byte x under 1005", []byte("\x1b[M\xc3\xa9!!"), tracker(true), false},
+		{"ambiguous legacy without 1005", []byte("\x1b[M \xc3\xa9"), tracker(false), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDismissKey(tt.frame, tt.mode); got != tt.want {
 				t.Errorf("isDismissKey(%q) = %v, want %v", tt.frame, got, tt.want)
 			}
 		})
@@ -506,7 +541,7 @@ func TestPumpInputSendOrder(t *testing.T) {
 	defer peer.Close()
 
 	sendCh := make(chan string, 8)
-	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -534,6 +569,67 @@ func TestPumpInputSendOrder(t *testing.T) {
 					got = append(got, s)
 				case <-time.After(5 * time.Second):
 					t.Fatalf("sentinel send-keys never arrived; got %q so far", got)
+				}
+			}
+		})
+	}
+}
+
+// TestPumpInput1005ClickDoesNotDismiss is the #814 regression through the
+// production entry point: an ambiguous ESC[M frame is a mouse report while the
+// pane's 1005 flag is set, so a click at column 96+ on a dead pane must not
+// emit the dead-key guard; with 1005 clear the same bytes are legacy + a key
+// and the guard is owed.
+func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
+	const frame = "\x1b[M \xc3\xa9q"
+	const framingSend = "send-keys -H -t %7 1b 5b 4d 20 c3 a9 71"
+	tests := []struct {
+		name string
+		utf8 bool
+		want bool // dead-key guard expected
+	}{
+		{"1005 mode: mouse report, no guard", true, false},
+		{"legacy: report + key, guard", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, peer := net.Pipe()
+			defer conn.Close()
+			defer peer.Close()
+
+			mode := &mouseModeTracker{}
+			if tt.utf8 {
+				mode.Feed([]byte("\x1b[?1005h"))
+			} else {
+				mode.Feed([]byte("\x1b[?1005l"))
+			}
+
+			sendCh := make(chan string, 8)
+			go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, mode)
+
+			peer.SetDeadline(time.Now().Add(5 * time.Second))
+			if err := wire.WriteFrame(peer, wire.FrameInput, []byte(frame)); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+
+			guard := deadKeyCmd("%7")
+			var got []string
+			deadline := time.After(5 * time.Second)
+			for {
+				select {
+				case s := <-sendCh:
+					if s == framingSend {
+						if tt.want && !slices.Contains(got, guard) {
+							t.Fatalf("no dead-key guard sent for the legacy reading; got %q", got)
+						}
+						if !tt.want && slices.Contains(got, guard) {
+							t.Fatalf("dead-key guard sent for a 1005 mouse report; got %q", got)
+						}
+						return
+					}
+					got = append(got, s)
+				case <-deadline:
+					t.Fatalf("the frame's send-keys never arrived; got %q", got)
 				}
 			}
 		})
