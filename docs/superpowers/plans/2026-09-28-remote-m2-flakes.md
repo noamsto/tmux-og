@@ -126,3 +126,19 @@
   `sh -c printf …; read` pane, so the text paints asynchronously after the daemon exits;
   the test captured it once. Fix: poll `capture-pane` for the text, bounded (5s), in the
   same case. Only site; the other tombstone check (≈4133) already polls.
+
+## Amendment (execute): fourth flake — found by the fix load run
+
+- Fix batch (36 full runs): 35 ok, 1 `not ok 93 daemon rebuilds a mirror holding a pane the
+  remote layout does not name` (`[ "$dst_panes" -eq 2 ]`). Targeted on main vs fix
+  (`cbatch … 'pane the remote layout does not name'`, two scopes at once): 14/120 vs 13/120
+  failures — pre-existing, independent of the backoff change.
+- Instrumented (pre-kill dump of panes + daemon log) shows two harness races:
+  A. The test's first loop waits, unasserted, only for 2 local panes, then `split-window`s the
+     mirror before the daemon finished wiring: the daemon logs
+     `mirror for @0: 3 local panes for 2 remote` and exits, taking the session (DST server gone).
+  B. After the remote reshape, the loop breaks on a transient 2-pane count mid-rebuild and
+     samples dims before the reshape lands (`dst=[200x49]` while the final layout is 60/139).
+- Fix (test only): start the daemon with `bridge_up 2 d9` (stamps + painted marker, same
+  daemon flags) instead of the hand-rolled launch; after the reshape poll until the pane count
+  is 2 AND `sorted_tiled_dims` agree, bounded by `RESIZE_CONVERGE_BUDGET_SECS`.

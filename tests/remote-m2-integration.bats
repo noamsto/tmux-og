@@ -5555,17 +5555,9 @@ mirror_of_remote() {
 	$SRC split-window -h -t rem
 	$DST new-session -d -s host-sess -x 200 -y 50
 
-	"$DAEMON" --test-local \
-		--src-socket m2src --dst-socket m2dst \
-		--session rem --window 1 --local-sess host-sess \
-		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/d9.sock" \
-		>"$BATS_TEST_TMPDIR/d9.log" 2>&1 &
-	daemon_pid=$!
-
-	for _ in $(seq 1 40); do
-		[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 2 ] && break
-		sleep 0.1
-	done
+	# The split below must land on a fully wired mirror, or the daemon's own
+	# setup sees 3 local panes for 2 remote and exits.
+	bridge_up 2 d9
 
 	# The extra pane carries no @bridge_pane, so healDeadRenderers is blind to
 	# it whether it lives or dies — this is the count desync on its own, not
@@ -5577,14 +5569,16 @@ mirror_of_remote() {
 	# which is the path that had no recovery.
 	$SRC resize-pane -t rem.1 -x 60
 
-	for _ in $(seq 1 60); do
-		[ "$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)" -eq 2 ] && break
+	# The rebuild passes through a 2-pane count before it reshapes (3 -> 1 ->
+	# 2), so wait for the shape itself, not just the transient count.
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		src_dims="$(sorted_tiled_dims "$SRC" rem)"
+		dst_dims="$(sorted_tiled_dims "$DST" host-sess:1)"
+		dst_panes="$($DST list-panes -t host-sess:1 -F '#{pane_id}' 2>/dev/null | wc -l)"
+		[ "$dst_panes" -eq 2 ] && [ -n "$dst_dims" ] && [ "$src_dims" = "$dst_dims" ] && break
 		sleep 0.1
 	done
-
-	src_dims="$(sorted_tiled_dims "$SRC" rem)"
-	dst_dims="$(sorted_tiled_dims "$DST" host-sess:1)"
-	dst_panes="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l)"
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
