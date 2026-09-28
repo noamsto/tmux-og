@@ -3991,8 +3991,7 @@ sibling_running() {
 }
 
 # sibling_diag dumps every pane on DST and this test's sleep and tmux-server
-# rows of the process table to fd 3, for telling a violation from a platform
-# reading.
+# rows of the process table to fd 3.
 sibling_diag() {
 	$DST list-panes -a -F '#{session_name}|#{window_id}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_dead}' >&3 2>&1 || true
 	ps -Ao pid,ppid,args 2>&1 | awk '/PID|sleep 86400|-L m2/' >&3 || true
