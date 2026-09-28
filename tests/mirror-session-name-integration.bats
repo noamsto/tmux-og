@@ -137,9 +137,12 @@ setup() {
 	# text lands there instead of at the title.
 	QUOTE="x' '' '' ; run-shell 'touch \$S_A' #"
 	SUBST='x##(touch $S_B)'
-	# Same substitution injection, a different sentinel: the loop case below
-	# gets its own `#()` command so it is never collided with the title case
-	# in tmux's per-(client, command) job cache (see the click-3 comment).
+	# Same substitution injection, a different sentinel. tmux caches a `#()` job
+	# by (client, command) and starts an identical command at most once per
+	# wall-clock second (format.c: only when the expanded command changed, or
+	# `fj->job == NULL && fj->last != t`), so reusing SUBST's sentinel for both
+	# click 2 (title) and click 3 (loop) lets the loop click hit that cache and
+	# silently skip its `touch` (#862). The loop case gets its own command.
 	SUBST_LOOP='x##(touch $S_D)'
 	# The issue's literal quote payload, verbatim. It fires on a mirror
 	# window, whose session menu (#769) has no Rename item for it to break.
@@ -229,7 +232,8 @@ wait_for_sentinel() { # path [budget_secs]
 # it while the client's tty output is pending — server-client.c
 # server_client_check_redraw). A click sent in that gap is resolved against the
 # old status line and opens no menu (#862). Wait for the client to report the
-# target session, then give the deferred status redraw a short bounded settle.
+# target session, then give the deferred status redraw a short bounded settle
+# (it re-arms on a 1ms timer, so 0.2s is ample margin).
 # The status pill is not a usable name signal here: status-format[0] re-expands
 # its `#()` job's output with FORMAT_EXPAND_NOJOBS, so the `#(...)` in
 # `h-x#(touch $S_B)` collapses to `h-x` (dropped, never run), and `s` is a
@@ -319,14 +323,7 @@ open_remote() { # remote-sess-name [no_switch]
 	rm -f "$S_A" "$S_B"
 	dismiss_menu
 
-	# A fresh substitution session for click 3's loop case, created only now so
-	# click 2's loop cannot fire its `#()` first. tmux caches a `#()` job by
-	# (client, command) and starts an identical command at most once per
-	# wall-clock second (format.c: a job starts only when the expanded command
-	# changed, or `fj->job == NULL && fj->last != t`), so reusing $SUBST's
-	# sentinel for both click 2 (title) and click 3 (loop) lets the loop click
-	# hit that cache — its `touch` is silently skipped and $S_B never appears
-	# (#862). The loop case gets its own payload and sentinel.
+	# Created only now so click 2's loop cannot fire this payload first.
 	local did
 	did="$(inner new-session -d -P -F '#{session_id}' -s "h-$SUBST_LOOP")"
 	inner set-option -t "$did" @bridge_host h
