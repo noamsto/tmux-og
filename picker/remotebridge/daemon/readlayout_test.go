@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -17,6 +18,8 @@ func TestReadLayoutRejectsAnotherWindowsReply(t *testing.T) {
 		t.Fatal("readLayout err = nil, want an error: the reply answered @0, not the @5 asked for")
 	} else if !strings.Contains(err.Error(), "@0") || !strings.Contains(err.Error(), "gone") {
 		t.Errorf("readLayout err = %q, want it to name the answering window @0 and say the window is gone", err)
+	} else if !errors.Is(err, errWindowGone) {
+		t.Errorf("readLayout err = %q, want errors.Is(err, errWindowGone)", err)
 	}
 }
 

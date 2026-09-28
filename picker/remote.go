@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/mirrorname"
+	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
 
 // remoteProbeTimeout bounds each per-host ssh list-sessions probe so a down
@@ -316,23 +317,9 @@ func remoteSessionCacheDir() string {
 	return filepath.Join(base, "tmux-og", "remote")
 }
 
-// ownerOnlyDir rejects a cache dir another user could have planted or can
-// write into: the rows it holds become Enter targets.
-func ownerOnlyDir(dir string) bool {
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Getuid()) {
-		return false
-	}
-	return info.Mode().Perm()&0o077 == 0
-}
-
 func writeRemoteSessionCache(host string, sessions []string, now time.Time) {
 	dir := remoteSessionCacheDir()
-	if dir == "" || os.MkdirAll(dir, 0o700) != nil || !ownerOnlyDir(dir) {
+	if dir == "" || os.MkdirAll(dir, 0o700) != nil || !ownerdir.OwnerOnly(dir) {
 		return
 	}
 	data, err := json.Marshal(remoteSessionCache{Host: host, SavedAt: now.UnixMilli(), Sessions: sessions})
@@ -373,7 +360,7 @@ func forgetRemoteSessionCache(host, sess string) {
 
 func readRemoteSessionCache(host string) (remoteSessionCache, bool) {
 	dir := remoteSessionCacheDir()
-	if dir == "" || !ownerOnlyDir(dir) {
+	if dir == "" || !ownerdir.OwnerOnly(dir) {
 		return remoteSessionCache{}, false
 	}
 	path := filepath.Join(dir, hostFileName(host)+".json")
