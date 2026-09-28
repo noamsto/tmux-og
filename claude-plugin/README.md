@@ -86,7 +86,7 @@ What to expect:
   status writer (only meaningful inside a tmux-og tmux pane):
 
   ```bash
-  command -v claude-status-update && cat /tmp/claude-status/panes/* 2>/dev/null
+  command -v claude-status-update && cat "${CLAUDE_STATUS_DIR:-/tmp/claude-status-$(id -u)}"/panes/* 2>/dev/null
   ```
 
   A `state=…` line for the current pane means the hook chain works end to end.
@@ -107,7 +107,7 @@ plugin installed.
 |---------|-------------|
 | Skills don't appear | Run `/reload-plugins`; confirm `claude plugin list` shows tmux-og enabled. Check each `skills/*/SKILL.md` has valid frontmatter (`name`, `description`). |
 | Status bar shows nothing | Expected unless Claude runs inside tmux-og's wrapped tmux. Check `command -v claude-status-update` — if absent, the hooks are no-opping by design. Install/run tmux-og's tmux (see [top README](../README.md)). |
-| Hooks seem dead even in tmux | `cat /tmp/claude-status/panes/*` after a tool call — empty means the writer isn't on `PATH`. The tmux server may predate the tmux-og deploy; restart it so panes inherit the new `PATH`. |
+| Hooks seem dead even in tmux | `cat "${CLAUDE_STATUS_DIR:-/tmp/claude-status-$(id -u)}"/panes/*` after a tool call — empty means the writer isn't on `PATH`. The tmux server may predate the tmux-og deploy; restart it so panes inherit the new `PATH`. |
 | Skills loaded twice | The plugin and `programs.tmux-og.skills.enable` are both active. Pick one (see [Install §C](#c-skills-only-plugin-already-wired-another-way)). |
 
 ## Quick reference
@@ -118,5 +118,5 @@ claude plugin marketplace add noamsto/tmux-og
 claude plugin install tmux-og@tmux-og
 claude plugin list --enabled
 # (inside a tmux-og tmux pane, after one tool call:)
-cat /tmp/claude-status/panes/*
+cat "${CLAUDE_STATUS_DIR:-/tmp/claude-status-$(id -u)}"/panes/*
 ```

@@ -6,6 +6,8 @@ CSU="scripts/claude-status-update.sh"
 
 setup() {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	# Hermetic: ignore the tmux session the developer runs bats from
 	unset TMUX TMUX_PANE
 }

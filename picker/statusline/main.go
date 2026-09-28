@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/noamsto/themestate"
+	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
 
@@ -391,7 +392,7 @@ func themeFromFlavor(flavor string) string {
 	}
 }
 
-func renderLine(a args, claudeDir, theme string, prefixActive bool, now int64, usage string, liveIDs map[string]bool) string {
+func renderLine(a args, claudeDir string, claudeTrusted bool, theme string, prefixActive bool, now int64, usage string, liveIDs map[string]bool) string {
 	var b strings.Builder
 	b.WriteString("#[align=left,bg=" + a.thmBg + "]")
 	b.WriteString(sessionSegment(a, prefixActive))
@@ -400,7 +401,11 @@ func renderLine(a args, claudeDir, theme string, prefixActive bool, now int64, u
 	if a.bridgeWin != "1" {
 		b.WriteString("  #[fg=" + a.thmSubtext0 + ",nobold]" + a.iconDir + " " + dirDisplay(a.panePath, a.gitRoot))
 	}
-	b.WriteString("  #[fg=" + a.thmOverlay1 + "]" + claudeSegment(claudeDir, a.session, theme, now, liveIDs))
+	segment := ""
+	if claudeTrusted {
+		segment = claudeSegment(claudeDir, a.session, theme, now, liveIDs)
+	}
+	b.WriteString("  #[fg=" + a.thmOverlay1 + "]" + segment)
 	b.WriteString(" #[align=right]") // literal space mirrors `#(claude) #[align=right]` in the old format
 	b.WriteString(usage)
 	b.WriteString("#[fg=" + a.thmSubtext0 + "]" + paneSlot(a.paneIcon, paneCmdDisplay(a.paneCmd, a.bridgeProc), usage != "") + " ")
@@ -453,10 +458,12 @@ func main() {
 
 	prefixActive, ok := a.fetchVolatile()
 
-	claudeDir := os.Getenv("CLAUDE_STATUS_DIR")
-	if claudeDir == "" {
-		claudeDir = "/tmp/claude-status"
-	}
+	claudeDir := claudestatus.Dir()
+	// A loose or planted dir must not feed the agent segment (its files would
+	// render as trusted state), but list-panes still needs a live-pane map —
+	// so gate the segment at render time rather than blanking claudeDir here,
+	// which would make its readers join off a relative "" path instead.
+	claudeTrusted := claudestatus.Trusted(claudeDir)
 
 	// On a failed fetch the volatile fields are empty; the last-good frame
 	// already on stdout stands, so a transient timeout (common under load)
@@ -486,7 +493,7 @@ func main() {
 	// would leave just the fragment after it on line 0. Collapse before this
 	// escapes to stdout or the cache.
 	line := strings.ReplaceAll(
-		renderLine(a, claudeDir, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, liveIDs), "\n", " ")
+		renderLine(a, claudeDir, claudeTrusted, themeFromFlavor(a.flavor), prefixActive, time.Now().Unix(), usage, liveIDs), "\n", " ")
 	if ok && panesOK {
 		writeLastGood(statuslineCacheDir(), a.session, line)
 	}

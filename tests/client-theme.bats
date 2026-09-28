@@ -30,6 +30,8 @@ setup() {
 	export OG_ENRICH_CACHE_DIR="$BATS_TEST_TMPDIR/og-pr"
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/og-enrich-lock"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$CLAUDE_STATUS_DIR"/{panes,screen,interrupt,tasks,issues,watchers}
 
 	export OG_CLIENT_THEME_LOCK="$BATS_TEST_TMPDIR/client-theme.lock"

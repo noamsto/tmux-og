@@ -3,15 +3,70 @@
 # Sourced (not executed) — provides constants and functions.
 
 # shellcheck disable=SC2034  # used by scripts that source this library
-CLAUDE_STATUS_DIR="${CLAUDE_STATUS_DIR:-/tmp/claude-status}"
-CLAUDE_PANES_DIR="$CLAUDE_STATUS_DIR/panes"
-CLAUDE_SCREEN_DIR="$CLAUDE_STATUS_DIR/screen"
-CLAUDE_ISSUES_DIR="$CLAUDE_STATUS_DIR/issues"
-CLAUDE_TASKS_DIR="$CLAUDE_STATUS_DIR/tasks"
-CLAUDE_NAMES_DIR="$CLAUDE_STATUS_DIR/names"
-CLAUDE_INTERRUPT_DIR="$CLAUDE_STATUS_DIR/interrupt"
-CLAUDE_WATCHERS_DIR="$CLAUDE_STATUS_DIR/watchers"
-CLAUDE_LIVE_DIR="$CLAUDE_STATUS_DIR/live"
+CLAUDE_STATUS_DIR="${CLAUDE_STATUS_DIR:-/tmp/claude-status-$UID}"
+
+# GNU stat pinned by Nix, same rationale as lib-log.sh's OG_STAT.
+OG_STAT="@stat@"
+if [[ $OG_STAT == @* ]]; then
+	OG_STAT=stat
+fi
+
+# claude_status_dirs ROOT
+# Points every derived state dir under ROOT.
+claude_status_dirs() {
+	CLAUDE_PANES_DIR="$1/panes"
+	CLAUDE_SCREEN_DIR="$1/screen"
+	CLAUDE_ISSUES_DIR="$1/issues"
+	CLAUDE_TASKS_DIR="$1/tasks"
+	CLAUDE_NAMES_DIR="$1/names"
+	CLAUDE_INTERRUPT_DIR="$1/interrupt"
+	CLAUDE_WATCHERS_DIR="$1/watchers"
+	CLAUDE_LIVE_DIR="$1/live"
+}
+
+# claude_status_dir_trusted DIR
+# Succeeds when DIR is a real directory (not a symlink) owned by this uid with
+# no group/other permission bits — the root sits under world-writable /tmp, so
+# another account could pre-create it and then feed or read every state file.
+# The steady state is fork-free (this runs on the per-second status path):
+# .owner-only is a cached pass, written only after the full stat check below.
+# Another account cannot forge it — a dir it owns fails -O before the marker
+# is looked at, and only our uid or root can loosen a dir we own. A foreign or
+# symlinked root is refused without a fork; the stat forks once per dir.
+claude_status_dir_trusted() {
+	local d=$1 uid mode
+	[[ -d $d && ! -L $d && -O $d ]] || return 1
+	[[ -e $d/.owner-only ]] && return 0
+	read -r uid mode < <("$OG_STAT" -c '%u %a' -- "$d" 2>/dev/null) || return 1
+	[[ $uid == "$UID" && $mode =~ ^[0-7]+$ ]] || return 1
+	(((8#$mode & 8#077) == 0)) || return 1
+	{ : >"$d/.owner-only"; } 2>/dev/null || true
+}
+
+# claude_status_dir_ensure
+# For writers: creates a missing root 0700 (an existing one is never chmod'ed —
+# a loose or foreign dir is refused, not repaired), then re-derives the state
+# dirs from the real root on success. Non-zero when the root is untrusted.
+claude_status_dir_ensure() {
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	[[ -e $CLAUDE_STATUS_DIR || -L $CLAUDE_STATUS_DIR ]] ||
+		mkdir -p -m 700 "$CLAUDE_STATUS_DIR" 2>/dev/null
+	claude_status_dir_trusted "$CLAUDE_STATUS_DIR" || return 1
+	CLAUDE_STATUS_TRUSTED=1
+	claude_status_dirs "$CLAUDE_STATUS_DIR"
+}
+
+# Fail closed: an untrusted root points every derived dir under a path that can
+# never exist (a component under a character device is ENOTDIR), so readers see
+# nothing and rm -f is silent without per-function guards.
+if claude_status_dir_trusted "$CLAUDE_STATUS_DIR"; then
+	CLAUDE_STATUS_TRUSTED=1
+	claude_status_dirs "$CLAUDE_STATUS_DIR"
+else
+	CLAUDE_STATUS_TRUSTED=
+	claude_status_dirs /dev/null/claude-status
+fi
+
 CLAUDE_SPINNER_FRAMES=("󰪞" "󰪟" "󰪠" "󰪡" "󰪢" "󰪣" "󰪤" "󰪥")
 CLAUDE_ICON_WAITING="󰔟"
 CLAUDE_ICON_COMPACTING="󰡍"
@@ -103,7 +158,7 @@ claude_pid_is_tmux() {
 # claude_pane_owned_elsewhere ID [OWN_PID]
 # Succeeds when a state file for pane ID (bare digits) names, in its server=
 # field, a different tmux server that is still alive: pane ids are per-server
-# %N counters under a CLAUDE_STATUS_DIR shared by every server on the machine,
+# %N counters under a CLAUDE_STATUS_DIR shared by every server of this uid,
 # so an id this server has never heard of may be a live neighbour's pane. Reads
 # panes/, screen/ and watchers/ — the same writers claude_prune_stale_state
 # trusts. A dead owner does not protect (its leftovers are ours to reap), and a
@@ -176,14 +231,10 @@ claude_pane_owned_elsewhere() {
 #       shared .server_start is still written after every sweep, and is the
 #       only gate when SERVER_PID is empty. A sweep also removes
 #       .server_start.<pid> markers whose pid is no longer alive.
-# GNU stat pinned by Nix, same rationale as lib-log.sh's OG_STAT.
-OG_STAT="@stat@"
-if [[ $OG_STAT == @* ]]; then
-	OG_STAT=stat
-fi
 claude_prune_stale_state() {
 	local server_start=$1 server_pid=${2:-}
 	[[ -z $server_start ]] && return 0
+	claude_status_dir_ensure || return 0
 	local marker="$CLAUDE_STATUS_DIR/.server_start"
 	local gate="$marker"
 	[[ -n $server_pid ]] && gate="$marker.$server_pid"
@@ -227,7 +278,6 @@ claude_prune_stale_state() {
 			((mt < server_start)) && rm -f "$f"
 		done
 	done
-	mkdir -p "$CLAUDE_STATUS_DIR"
 	if [[ -n $server_pid ]]; then
 		printf '%s\n' "$server_start" >"$gate"
 		local m mpid
@@ -262,8 +312,8 @@ claude_progress_emit() {
 }
 
 # claude_reap_pane PANE_ID
-# Single-id unlink for pane-exited/pane-died. CLAUDE_STATUS_DIR is a bare /tmp
-# path shared by every tmux server on the machine, and pane ids are per-server
+# Single-id unlink for pane-exited/pane-died. CLAUDE_STATUS_DIR is a per-user
+# dir shared by every tmux server of this uid, and pane ids are per-server
 # %N counters, so this never iterates a directory: the files' session= and
 # server= fields are the only ownership evidence once the pane is gone. A file
 # stamped with another live tmux server's pid is kept (claude_pane_owned_elsewhere,
@@ -355,8 +405,8 @@ claude_clear_agent_state() {
 
 # claude_clear_window_display WINDOW_TARGET MANUAL_NAME
 # The option half of the #671 reset, safe on a client-independent timer: no
-# file deletions. CLAUDE_STATUS_DIR is a bare /tmp path shared by every tmux
-# server on the machine, and both callers — tmux-update-icons.sh's sweep
+# file deletions. CLAUDE_STATUS_DIR is a per-user dir shared by every tmux
+# server of this uid, and both callers — tmux-update-icons.sh's sweep
 # (arm_agent_detect, #692) and tmux-shell-prompt.sh's OSC-133 prompt hook — run
 # with no client guarantee, so a deletion there would let a scratch server wipe
 # the real server's live naming state. Always clears @window_has_agent; clears
@@ -376,15 +426,16 @@ claude_clear_window_display() {
 # caller left is tmux-update-icons.sh's client-gated per-tick backstop under the
 # @window_naming_dirty mark — the OSC-133 event hook and the #692 sweep both
 # clear the options and stamp that mark instead (they have no client guarantee,
-# and CLAUDE_STATUS_DIR is machine-global). Always removes issues/<pane> for
-# every PANE_ID — issue self-reports "die with the pane or CC session" per the
-# CLAUDE.md "Issue self-report" bullet, and losing the window's last agent is
-# exactly that death, independent of naming/display mode. When MANUAL_NAME != 1
-# (the window has never had @window_manual_name stamped by the user's own
-# prefix + , rename), also removes names/<pane>/tasks/<pane>. Delegates the
-# option writes to claude_clear_window_display, and consumes the
-# @window_naming_dirty mark last, after the files are gone, so a failed delete
-# leaves the deletion still owed.
+# and CLAUDE_STATUS_DIR is shared by every server of this uid). Always removes
+# issues/<pane> for every PANE_ID — issue self-reports "die with the pane or CC
+# session" per the CLAUDE.md "Issue self-report" bullet, and losing the
+# window's last agent is exactly that death, independent of naming/display
+# mode. When MANUAL_NAME != 1 (the window has never had @window_manual_name
+# stamped by the user's own prefix + , rename), also removes
+# names/<pane>/tasks/<pane>. Delegates the option writes to
+# claude_clear_window_display, and consumes the @window_naming_dirty mark
+# last, after the files are gone, so a failed delete leaves the deletion
+# still owed.
 claude_clear_window_naming() {
 	local target="$1" manual="$2"
 	shift 2
@@ -417,7 +468,7 @@ claude_clear_window_naming() {
 # under-reap, not wipe.
 #
 # "Absent from ROWS" only proves the id is not on THIS server, and the state
-# dirs are shared by every tmux server on the machine, so an id whose panes/,
+# dirs are shared by every tmux server of this uid, so an id whose panes/,
 # screen/ or watchers/ file names another live tmux server in server= is skipped
 # in every dir (claude_pane_owned_elsewhere, #711); OWN_PID overrides the live
 # server's #{pid}. Id-scoped, so a live foreign owner of the same id also

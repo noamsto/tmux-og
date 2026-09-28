@@ -6,6 +6,8 @@ CSU="scripts/claude-status-update.sh"
 
 setup() {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$CLAUDE_STATUS_DIR/panes"
 	FAKEBIN="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$FAKEBIN"

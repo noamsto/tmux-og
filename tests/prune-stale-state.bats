@@ -5,6 +5,8 @@ load helper
 setup() {
 	# Export before sourcing: lib-claude derives CLAUDE_*_DIR from this at source time.
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	unset TMUX TMUX_PANE
 	setup_lib_claude
 	mkdir -p "$CLAUDE_NAMES_DIR" "$CLAUDE_TASKS_DIR" "$CLAUDE_ISSUES_DIR" "$CLAUDE_PANES_DIR" \

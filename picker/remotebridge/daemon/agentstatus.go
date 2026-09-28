@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
@@ -216,10 +217,7 @@ func (a *agentShipper) flush(cfg Config, rt roundTrip, gen uint64, drained bool)
 }
 
 func newAgentShipper(localSess string, skew int64) *agentShipper {
-	dir := os.Getenv("CLAUDE_STATUS_DIR")
-	if dir == "" {
-		dir = "/tmp/claude-status"
-	}
+	dir := claudestatus.Dir()
 	return &agentShipper{
 		dir:     dir,
 		sess:    localSess,
@@ -268,6 +266,10 @@ func (a *agentShipper) apply(cfg Config, rows []paneStatus) {
 	if !ok {
 		return
 	}
+	// Reaping removes files; gate it the same way stamp gates writing them.
+	if !claudestatus.Ensure(a.dir) {
+		return
+	}
 	for id := range a.written {
 		if live[id] {
 			continue
@@ -289,6 +291,11 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 	// that one fork per row instead of one per pass (#712). Cached once it
 	// succeeds, so the steady state is unchanged.
 	localPID := a.localServerPID(cfg)
+	// Checked once per batch, not per row: a loose or planted dir must not
+	// receive remote-sourced content, but reaping bookkeeping (live, written,
+	// the tmux-option stamps below) is unaffected — only the file writes and
+	// removes are the injectable surface.
+	trusted := claudestatus.Ensure(a.dir)
 
 	for _, r := range rows {
 		localPane, ok := local[r.pane]
@@ -318,6 +325,9 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// Before the agent-less return below: a role pane the dispatcher
 		// decorated still draws a border when no agent ever reported on it.
 		stampCrew(cfg, localPane, r, prev, seen)
+		if !trusted {
+			continue
+		}
 		if r.state == "" {
 			// The pane is mirrored but has no hook-driven agent — nothing to
 			// render but the icon, and a leftover file would keep one lit.
@@ -405,6 +415,9 @@ func stampCrew(cfg Config, localPane string, r, prev paneStatus, seen bool) {
 // clear drops every file this bridge wrote. The shell-side prune collects by
 // server-start mtime, so nothing else would ever reap them.
 func (a *agentShipper) clear() {
+	if !claudestatus.Ensure(a.dir) {
+		return
+	}
 	for id := range a.written {
 		a.forget(id)
 	}

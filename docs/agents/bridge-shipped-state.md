@@ -471,7 +471,7 @@ side is `picker/remotebridge/daemon/openurl.go`.
 ## Remote Agent Status
 
 A mirror window's local panes run renderers, so nothing writes
-`/tmp/claude-status/panes/<local_pane_id>` and every local consumer would read a
+`$CLAUDE_STATUS_DIR/panes/<local_pane_id>` and every local consumer would read a
 bridged window as agent-free. The bridge ships the remote's state instead:
 
 - **A control-mode client renders no status line**, so the remote's 1s `#()`

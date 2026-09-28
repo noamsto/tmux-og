@@ -8,7 +8,18 @@
 
 set -euo pipefail
 
-STATE_DIR="${CLAUDE_STATUS_DIR:-/tmp/claude-status}"
+# State-dir resolution, trust check and progress OSC helper. The RAW script
+# under bats has @lib_claude@ unsubstituted, so it sources the sibling file and
+# stubs the progress helper, which would otherwise reach for tmux.
+# shellcheck source=/dev/null
+if [[ -f "@lib_claude@" ]]; then
+	source "@lib_claude@"
+else
+	source "${BASH_SOURCE[0]%/*}/lib-claude.sh"
+	claude_progress_emit() { :; }
+fi
+
+STATE_DIR="$CLAUDE_STATUS_DIR"
 PANES_DIR="$STATE_DIR/panes"
 ISSUES_DIR="$STATE_DIR/issues"
 TASKS_DIR="$STATE_DIR/tasks"
@@ -16,7 +27,8 @@ NAMES_DIR="$STATE_DIR/names"
 IMAGES_DIR="$STATE_DIR/images"
 SCREEN_DIR="$STATE_DIR/screen"
 
-# Ensure directories exist
+# A hook must never error: an untrusted root means no state is written at all.
+claude_status_dir_ensure || exit 0
 mkdir -p "$PANES_DIR"
 
 # Event logging (no-op unless debug armed). Guarded so the RAW script still runs
@@ -34,15 +46,6 @@ else
 	# producer's own tests green against a capture fake never invoked. Body
 	# copied from lib-log.sh.
 	detach() { (nohup "$@" >/dev/null 2>&1 &) }
-fi
-
-# Progress OSC helper. Guarded like lib-log so the RAW script still runs under
-# bats, where @lib_claude@ is not substituted.
-# shellcheck source=/dev/null
-if [[ -f "@lib_claude@" ]]; then
-	source "@lib_claude@"
-else
-	claude_progress_emit() { :; }
 fi
 
 # Notification seam. A value still starting with '@' means the placeholder was

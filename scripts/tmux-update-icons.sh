@@ -74,6 +74,11 @@ arm_agent_detect() {
 	[[ $AGENT_DETECT_BIN == @* ]] && arm=0
 	[[ -n ${CLAUDE_LIVE_DIR:-} && ${CLAUDE_ASSUME_DEAD_AFTER:-0} =~ ^[0-9]+$ ]] &&
 		((CLAUDE_ASSUME_DEAD_AFTER > 0)) && stamp=1
+	[[ -n $CLAUDE_STATUS_TRUSTED ]] || stamp=0
+	# A present but untrusted root makes agent-detect exit before registering,
+	# so arming would respawn a pipe-pane every 5th tick per agent pane. A
+	# missing root still arms: agent-detect creates it owner-only.
+	[[ -n $CLAUDE_STATUS_TRUSTED || ! (-e $CLAUDE_STATUS_DIR || -L $CLAUDE_STATUS_DIR) ]] || arm=0
 	# The sweep is a full-server list-panes — a second tmux roundtrip per tick,
 	# multiplied by attached sessions. Arming (new pane, dead pipe) only needs
 	# seconds-level latency, so run every 5th tick (CLAUDE_NOW = this tick's
@@ -104,8 +109,8 @@ arm_agent_detect() {
 	# because it may contain '|'.
 	local rows
 	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}|#{window_id}|#{@bridge_win}|#{@window_has_agent}|#{@window_manual_name}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@window_task}|#{session_name}' 2>/dev/null) || return 0
-	# claude_reap_dead_panes deletes under CLAUDE_STATUS_DIR -- a bare /tmp path
-	# shared by every tmux server on the machine, which TMUX_TMPDIR/-L isolation
+	# claude_reap_dead_panes deletes under CLAUDE_STATUS_DIR -- a per-user dir
+	# shared by every tmux server of this uid, which TMUX_TMPDIR/-L isolation
 	# does not touch -- by checking each pane id against THIS CALLER's own
 	# list-panes -a, so it cannot tell whose state it is deleting. The per-tick
 	# caller ($1 empty) runs only while this server has a real client drawing a
@@ -166,7 +171,7 @@ arm_agent_detect() {
 	# and is left alone, matching claude_clear_window_display. The per-tick caller
 	# ($1 empty) does the same with claude_clear_window_naming, which also deletes
 	# names/tasks/issues; here only the option half is safe (CLAUDE_STATUS_DIR is
-	# a bare /tmp path shared by every tmux server on the machine), so the
+	# a per-user dir shared by every tmux server of this uid), so the
 	# deletion is owed via the @window_naming_dirty mark — stamped BEFORE the
 	# clear so a crash between the two writes still leaves the deletion owed.
 	# Mirrors are daemon-owned and skipped, matching the per-tick loop.

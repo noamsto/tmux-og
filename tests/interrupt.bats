@@ -6,6 +6,8 @@ setup() {
 	# Export before sourcing: lib-claude derives CLAUDE_*_DIR (including the
 	# interrupt verdict cache these tests write) from this at source time.
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	setup_lib_claude
 	PROGRESS_LOG="$BATS_TEST_TMPDIR/progress.log"
 	: >"$PROGRESS_LOG"

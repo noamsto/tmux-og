@@ -96,7 +96,9 @@ failed=0
 for trial in $(seq 1 "$TRIALS"); do
 	# Short path: tmux's socket lives under TMUX_TMPDIR, capped near 108 bytes.
 	root=$(mktemp -d /tmp/og614.XXXXXX)
-	mkdir -p "$root"/{tmux,status,state,tmp,cwd,data,cache}
+	mkdir -p "$root"/{tmux,state,tmp,cwd,data,cache}
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$root/status"
 	export TMUX_TMPDIR="$root/tmux" CLAUDE_STATUS_DIR="$root/status" XDG_STATE_HOME="$root/state"
 	export TMPDIR="$root/tmp" XDG_DATA_HOME="$root/data" XDG_CACHE_HOME="$root/cache"
 	T=("$TMUX_BIN" -L reflowrace)

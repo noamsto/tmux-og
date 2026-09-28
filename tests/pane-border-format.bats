@@ -22,7 +22,8 @@ setup() {
 	# defaults to a bare /tmp path shared by every tmux server on the
 	# machine) — isolate it anyway, matching every other scratch-server test.
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
-	mkdir -p "$CLAUDE_STATUS_DIR"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 
 	tmux -f /dev/null new-session -d -s S -x 80 -y 24
 	WIN="$(tmux -u display-message -p -t S '#{window_id}')"

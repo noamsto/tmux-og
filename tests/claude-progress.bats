@@ -9,9 +9,13 @@ setup() {
 	: >"$PROGRESS_LOG"
 
 	local stub="$BATS_TEST_TMPDIR/lib-claude.sh"
-	cat >"$stub" <<'EOF'
+	# Source the real lib first -- claude_status_dir_ensure et al. live there,
+	# and claude-status-update.sh now calls it before writing any state -- then
+	# override just the progress emitter.
+	cat >"$stub" <<EOF
+source "$PWD/scripts/lib-claude.sh"
 claude_progress_emit() {
-	printf '%s %s\n' "$1" "$2" >>"$PROGRESS_LOG"
+	printf '%s %s\n' "\$1" "\$2" >>"\$PROGRESS_LOG"
 }
 EOF
 	CSU="$BATS_TEST_TMPDIR/claude-status-update.sh"

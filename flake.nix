@@ -282,6 +282,17 @@
               touch $out
             '';
 
+          claude-status-dir-tests =
+            pkgs.runCommand "claude-status-dir-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              CLAUDE_STATUS_DIR_VECTOR = ./picker/claudestatus/testdata/default-dir.txt;
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/claude-status-dir.bats
+              touch $out
+            '';
+
           claude-progress-tests =
             pkgs.runCommand "claude-progress-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils];
@@ -1547,11 +1558,12 @@
           # started from tmuxConfig.tmux-wrapped and reach functions that delete
           # files under CLAUDE_STATUS_DIR, OG_ENRICH_CACHE_DIR,
           # OG_AGENT_USAGE_DIR and OG_ENRICH_LOCK_DIR — whose defaults are the
-          # developer's real /tmp trees. A bats suite that sets TMUX_BIN loads
-          # that config, so it must export all four in its own setup() or a
-          # future one added without isolation is destructive the moment it runs
-          # locally, while nix flake check stays green (the sandbox's
-          # /tmp/claude-status is empty).
+          # developer's real /tmp trees (CLAUDE_STATUS_DIR: /tmp/claude-status-<uid>,
+          # #850). A bats suite that sets TMUX_BIN loads that config, so it must
+          # export all four in its own setup() or a future one added without
+          # isolation is destructive the moment it runs locally, while nix flake
+          # check stays green (the sandbox's own per-uid dir is empty, and the
+          # build user's uid there is never the developer's).
           wrapped-tmux-suite-isolation-assertions =
             pkgs.runCommand "wrapped-tmux-suite-isolation-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];

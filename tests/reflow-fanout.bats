@@ -24,7 +24,8 @@ setup() {
 	unset TMUX
 	# Isolated Claude state root so update-icons' pane/task/name scans find nothing.
 	export CLAUDE_STATUS_DIR="$TDIR/claude-status"
-	mkdir -p "$CLAUDE_STATUS_DIR"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	# Pin TMPDIR so the reflow lock lands where the test can find it.
 	export TMPDIR="$TDIR"
 
