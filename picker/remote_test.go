@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -831,9 +832,7 @@ func TestCollectRemoteItemsDropsSelfHost(t *testing.T) {
 		}
 	})
 
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+	useRemoteCache(t)
 
 	opts := map[string]string{"@remote_bridge_hosts": "localhost lab"}
 	probe := func(host string) (remoteProbeResult, error) {
@@ -871,9 +870,7 @@ func TestCollectRemoteItemsKeepsSameMachineDifferentUser(t *testing.T) {
 		}
 	})
 
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+	useRemoteCache(t)
 
 	opts := map[string]string{"@remote_bridge_hosts": "root-local"}
 	probe := func(string) (remoteProbeResult, error) {
@@ -899,9 +896,7 @@ func TestCollectRemoteItemsDropsSelfOnNoServer(t *testing.T) {
 		}
 	})
 
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+	useRemoteCache(t)
 
 	opts := map[string]string{"@remote_bridge_hosts": "localhost"}
 	probe := func(string) (remoteProbeResult, error) {
@@ -915,9 +910,7 @@ func TestCollectRemoteItemsDropsSelfOnNoServer(t *testing.T) {
 }
 
 func TestPendingRemoteItemsSkipsCachedSelfAlias(t *testing.T) {
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+	useRemoteCache(t)
 
 	markCachedRemoteSelfAlias("localhost")
 	opts := map[string]string{"@remote_bridge_hosts": "localhost lab"}
@@ -932,9 +925,7 @@ func TestPendingRemoteItemsSkipsCachedSelfAlias(t *testing.T) {
 }
 
 func TestCollectRemoteItemsRevalidatesCachedSelfAlias(t *testing.T) {
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+	useRemoteCache(t)
 
 	markCachedRemoteSelfAlias("localhost")
 	if !isCachedRemoteSelfAlias("localhost") {
@@ -988,9 +979,7 @@ func TestCollectRemoteItemsRevalidatesCachedSelfAlias(t *testing.T) {
 }
 
 func TestCollectRemoteItemsKeepsCachedSelfAliasWhenProbeFails(t *testing.T) {
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+	useRemoteCache(t)
 
 	markCachedRemoteSelfAlias("localhost")
 
@@ -1008,23 +997,91 @@ func TestCollectRemoteItemsKeepsCachedSelfAliasWhenProbeFails(t *testing.T) {
 	}
 }
 
-func TestIsCachedRemoteSelfAliasRejectsUntrustedMarker(t *testing.T) {
-	cacheDir := t.TempDir()
-	remoteSelfCacheDir = cacheDir
-	t.Cleanup(func() { remoteSelfCacheDir = "/tmp/og-remote-self" })
+func TestIsCachedRemoteSelfAliasRejectsGroupWritableDir(t *testing.T) {
+	useRemoteCache(t)
 
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		t.Fatal(err)
+	markCachedRemoteSelfAlias("localhost")
+	if !isCachedRemoteSelfAlias("localhost") {
+		t.Fatal("setup: localhost should be cached")
 	}
-	if err := os.Chmod(cacheDir, 0o777); err != nil {
-		t.Fatal(err)
-	}
-	path := remoteSelfCachePath("localhost")
-	if err := os.WriteFile(path, []byte("1\n"), 0o644); err != nil {
+	if err := os.Chmod(remoteSelfCacheDir(), 0o770); err != nil {
 		t.Fatal(err)
 	}
 	if isCachedRemoteSelfAlias("localhost") {
-		t.Fatal("world-writable cache dir must not count as cached")
+		t.Fatal("group-writable cache dir must not count as cached")
+	}
+}
+
+func TestIsCachedRemoteSelfAliasRejectsSymlinkedDir(t *testing.T) {
+	useRemoteCache(t)
+
+	real := filepath.Join(t.TempDir(), "real")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "localhost"), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(remoteSelfCacheDir()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, remoteSelfCacheDir()); err != nil {
+		t.Fatal(err)
+	}
+	if isCachedRemoteSelfAlias("localhost") {
+		t.Fatal("symlinked cache dir must not count as cached")
+	}
+}
+
+func TestIsCachedRemoteSelfAliasDoesNotFollowSymlinkedMarker(t *testing.T) {
+	useRemoteCache(t)
+
+	// Mark some other host so the cache dir exists, owned, 0700.
+	markCachedRemoteSelfAlias("other")
+
+	elsewhere := filepath.Join(t.TempDir(), "marker")
+	if err := os.WriteFile(elsewhere, []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, remoteSelfCachePath("localhost")); err != nil {
+		t.Fatal(err)
+	}
+	if isCachedRemoteSelfAlias("localhost") {
+		t.Fatal("symlinked marker must not be followed")
+	}
+}
+
+func TestMarkCachedRemoteSelfAliasCreatesPrivateDir(t *testing.T) {
+	useRemoteCache(t)
+
+	markCachedRemoteSelfAlias("localhost")
+
+	info, err := os.Lstat(remoteSelfCacheDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("cache dir perm = %o, want 0700", perm)
+	}
+	if !isCachedRemoteSelfAlias("localhost") {
+		t.Fatal("freshly marked host should be cached")
+	}
+}
+
+func TestMarkCachedRemoteSelfAliasSkipsUntrustedDir(t *testing.T) {
+	useRemoteCache(t)
+
+	if err := os.MkdirAll(remoteSelfCacheDir(), 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(remoteSelfCacheDir(), 0o770); err != nil {
+		t.Fatal(err)
+	}
+
+	markCachedRemoteSelfAlias("localhost")
+
+	if _, err := os.Lstat(remoteSelfCachePath("localhost")); !os.IsNotExist(err) {
+		t.Fatalf("marker should not be written into an untrusted dir, Lstat err = %v", err)
 	}
 }
 
