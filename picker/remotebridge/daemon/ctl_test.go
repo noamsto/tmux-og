@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
@@ -1869,4 +1870,146 @@ func TestHandleCtlSendsNothingWhenALocalCommandFails(t *testing.T) {
 	if windows, layouts, reseeds := cst.takeIntents(); windows || len(layouts) != 0 || len(reseeds) != 0 {
 		t.Errorf("intents = (%v, %v, %v), want none", windows, layouts, reseeds)
 	}
+}
+
+// TestTileLayoutCommandGuardsOnLiveTmux exercises tileLayoutCommand's
+// if-shell guard against a real tmux server instead of pinning its string:
+// only tmux's own -F evaluation of #{P/i:} vs pane-list order, window size,
+// and the zoom flag can catch a guard mistake a string-pinning test cannot.
+func TestTileLayoutCommandGuardsOnLiveTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		// OG_REQUIRE_TMUX is set by pickerChecked's checkPhase in flake.nix,
+		// which also puts tmux in nativeBuildInputs — so a missing tmux there
+		// means that input was pruned, not that this is a dev machine.
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+
+	if out, err := tmux("split-window", "-d", "-h", "-t", "w").CombinedOutput(); err != nil {
+		t.Fatalf("split-window: %v\n%s", err, out)
+	}
+	idsOut, err := tmux("list-panes", "-t", "w", "-F", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatalf("list-panes: %v", err)
+	}
+	ids := strings.Fields(string(idsOut))
+	if len(ids) != 2 {
+		t.Fatalf("pane ids = %v, want 2", ids)
+	}
+	id0, id1 := ids[0], ids[1]
+	digits0, digits1 := strings.TrimPrefix(id0, "%"), strings.TrimPrefix(id1, "%")
+
+	confDir := t.TempDir()
+	// apply writes tileLayoutCommand's production output to a file and
+	// sources it, the same way the control connection's command line would
+	// reach tmux's own parser.
+	apply := func(t *testing.T, L controlmode.Layout) {
+		t.Helper()
+		conf := filepath.Join(confDir, "cmd.conf")
+		if err := os.WriteFile(conf, []byte(tileLayoutCommand(id0, L)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+			t.Fatalf("source-file: %v\n%s", err, out)
+		}
+	}
+	paneWidths := func(t *testing.T) map[string]string {
+		t.Helper()
+		out, err := tmux("list-panes", "-t", "w", "-F", "#{pane_id}|#{pane_width}").Output()
+		if err != nil {
+			t.Fatalf("list-panes: %v", err)
+		}
+		widths := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			id, w, ok := strings.Cut(line, "|")
+			if !ok {
+				t.Fatalf("list-panes line %q missing '|'", line)
+			}
+			widths[id] = w
+		}
+		return widths
+	}
+	// reset re-splits evenly before each subtest and returns the resulting
+	// widths, so a "no-op" assertion compares against tmux's own numbers
+	// rather than a hardcoded guess.
+	reset := func(t *testing.T) map[string]string {
+		t.Helper()
+		if out, err := tmux("select-layout", "-t", "w", "even-horizontal").CombinedOutput(); err != nil {
+			t.Fatalf("select-layout even-horizontal: %v\n%s", err, out)
+		}
+		return paneWidths(t)
+	}
+	windowSize := func(t *testing.T) string {
+		t.Helper()
+		out, err := tmux("display-message", "-p", "-t", "w", "#{window_width}x#{window_height}").Output()
+		if err != nil {
+			t.Fatalf("display-message: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	zoomedFlag := func(t *testing.T) string {
+		t.Helper()
+		out, err := tmux("display-message", "-p", "-t", "w", "#{window_zoomed_flag}").Output()
+		if err != nil {
+			t.Fatalf("display-message: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	t.Run("matching order, size, unzoomed applies", func(t *testing.T) {
+		reset(t)
+		L, err := tiledArg(fmt.Sprintf("0000,80x24,0,0{30x24,0,0,%s,49x24,31,0,%s}", digits0, digits1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := paneWidths(t)[id0]; got != "30" {
+			t.Errorf("pane %s width = %s, want 30", id0, got)
+		}
+	})
+
+	t.Run("swapped order is a no-op", func(t *testing.T) {
+		before := reset(t)
+		L, err := tiledArg(fmt.Sprintf("0000,80x24,0,0{30x24,0,0,%s,49x24,31,0,%s}", digits1, digits0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := paneWidths(t); got[id0] != before[id0] || got[id1] != before[id1] {
+			t.Errorf("widths = %v, want unchanged from %v", got, before)
+		}
+	})
+
+	t.Run("size mismatch is a no-op", func(t *testing.T) {
+		before := reset(t)
+		L, err := tiledArg(fmt.Sprintf("0000,90x24,0,0{40x24,0,0,%s,49x24,41,0,%s}", digits0, digits1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := paneWidths(t); got[id0] != before[id0] || got[id1] != before[id1] {
+			t.Errorf("widths = %v, want unchanged from %v", got, before)
+		}
+		if got := windowSize(t); got != "80x24" {
+			t.Errorf("window size = %s, want unchanged 80x24", got)
+		}
+	})
+
+	t.Run("zoomed is a no-op", func(t *testing.T) {
+		reset(t)
+		if out, err := tmux("resize-pane", "-Z", "-t", id0).CombinedOutput(); err != nil {
+			t.Fatalf("resize-pane -Z: %v\n%s", err, out)
+		}
+		L, err := tiledArg(fmt.Sprintf("0000,80x24,0,0{30x24,0,0,%s,49x24,31,0,%s}", digits0, digits1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := zoomedFlag(t); got != "1" {
+			t.Errorf("window_zoomed_flag = %s, want still 1", got)
+		}
+	})
 }

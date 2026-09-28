@@ -116,8 +116,13 @@ func (c *ctlState) takeIntents() (windows bool, layouts map[string]string, resee
 	defer c.mu.Unlock()
 	windows = c.wantWindows
 	c.wantWindows = false
-	layouts = c.wantLayout
-	c.wantLayout = map[string]string{}
+	// Only swap when non-empty: settle calls takeIntents per control-mode
+	// line, including every %output line, so an unconditional swap would
+	// allocate a map on that hot path. A nil map ranges and len()s fine.
+	if len(c.wantLayout) > 0 {
+		layouts = c.wantLayout
+		c.wantLayout = map[string]string{}
+	}
 	for w := range c.wantReseed {
 		reseeds = append(reseeds, w)
 		delete(c.wantReseed, w)

@@ -8,7 +8,7 @@ import (
 )
 
 // dragStockText is the pinned tmux's own `list-keys -T root <key>` line for
-// each stock float-drag binding, verbatim. Not in stockmenus.txt: menuBinds
+// each stock drag binding this file re-binds, verbatim. Not in stockmenus.txt: menuBinds
 // panics on an entry with no mirror menu.
 //
 //go:embed stockdrags.txt
