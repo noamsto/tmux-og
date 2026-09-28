@@ -58,9 +58,8 @@ func TestBackoffElapsedBoundEndsScheduleWithAttemptsRemaining(t *testing.T) {
 	}
 }
 
-// TestBackoffNextNeverWaitsPastMaxElapsed asserts the invariant that a delay
-// never carries a wait past MaxElapsed, so a schedule ends at MaxElapsed plus
-// one attempt rather than overshooting it with one last, oversized sleep.
+// A late attempt's delay is clamped to the budget left, so the schedule ends
+// at MaxElapsed plus one attempt instead of one oversized sleep past it.
 func TestBackoffNextNeverWaitsPastMaxElapsed(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	now := start

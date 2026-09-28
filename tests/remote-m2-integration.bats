@@ -1330,13 +1330,11 @@ relay_env() {
 	[ "$relay_env" = "OG_RELAY_GRAPHICS=" ]
 	run ! grep -F -- $'\033Pq' "$f1"
 
-	# Switch the viewer to a sixel-capable terminal. Kill the old pty host's
-	# SESSION, not its server, and reuse the same m2obs server for the new
-	# one — but obsA is m2obs's only session, so killing it would also end
-	# the server (tmux's exit-empty default), and a new-session on the same
-	# socket then races the dying server, surfacing as `new-session` failing
-	# with "server exited unexpectedly". Turning exit-empty off keeps the
-	# server up across the swap (teardown's kill-server still stops it).
+	# Switch the viewer to a sixel-capable terminal on the same m2obs server.
+	# obsA is that server's only session, so under tmux's default exit-empty
+	# killing it ends the server too, and the next new-session on the socket
+	# reaches the dying server ("server exited unexpectedly"). exit-empty off
+	# keeps it up across the swap; teardown's kill-server still stops it.
 	#
 	# The old client must be GONE before the new one's capability can win:
 	# the gate is the AND across every attached client, so an overlap would
@@ -3948,8 +3946,8 @@ wait_daemon_exit() {
 
 	win_count="$($DST list-windows -t host-sess 2>/dev/null | wc -l)"
 	tomb_pane="$($DST list-panes -t host-sess -F '#{pane_id}' 2>/dev/null | head -1)"
-	# The tombstone pane is repainted by the daemon's respawn after it exits,
-	# so a one-shot capture can race it: poll instead.
+	# The tombstone pane's own shell prints the text, which can land after
+	# the daemon has exited.
 	tomb_text=""
 	for _ in $(seq 1 50); do
 		tomb_text="$($DST capture-pane -p -t "$tomb_pane" 2>/dev/null || true)"
