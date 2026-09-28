@@ -1085,6 +1085,27 @@ func TestMarkCachedRemoteSelfAliasSkipsUntrustedDir(t *testing.T) {
 	}
 }
 
+func TestClearCachedRemoteSelfAliasSkipsUntrustedDir(t *testing.T) {
+	useRemoteCache(t)
+
+	dir := remoteSelfCacheDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(remoteSelfCachePath("localhost"), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+
+	clearCachedRemoteSelfAlias("localhost")
+
+	if _, err := os.Lstat(remoteSelfCachePath("localhost")); err != nil {
+		t.Fatalf("marker should not be removed through an untrusted dir, Lstat err = %v", err)
+	}
+}
+
 func TestSessionDisplayName(t *testing.T) {
 	cases := []struct {
 		name, host, want string

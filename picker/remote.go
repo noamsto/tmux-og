@@ -249,7 +249,8 @@ func markCachedRemoteSelfAlias(host string) {
 }
 
 func clearCachedRemoteSelfAlias(host string) {
-	if remoteSelfCacheDir() == "" {
+	dir := remoteSelfCacheDir()
+	if dir == "" || !ownerdir.OwnerOnly(dir) {
 		return
 	}
 	_ = os.Remove(remoteSelfCachePath(host))
