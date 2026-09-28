@@ -224,24 +224,32 @@ wait_for_sentinel() { # path [budget_secs]
 	return 1
 }
 
+# switch_client returns once the server has taken the switch, but the
+# status-line redraw that rebuilds the click ranges happens later (tmux defers
+# it while the client's tty output is pending — server-client.c
+# server_client_check_redraw). A click sent in that gap is resolved against the
+# old status line and opens no menu (#862). Wait for the client to report the
+# target session, then give the deferred status redraw a short bounded settle.
+# The status pill cannot be matched by name here: the status line truncates
+# `h-x#(touch $S_B)` and `h-x' …` alike to `h-x`, so it does not distinguish
+# sessions. Target the SESSION field explicitly: -t '=name' resolves as a pane
+# target and prints nothing, so append ':'.
+STATUS_SETTLE_SECS=0.2
 switch_client_to() { # target (session id or exact name)
-	# switch-client returns before the server has actually moved the attached
-	# client, and a click sent in that window resolves its mouse target against
-	# the session's OLD status line — no menu opens and the payload never fires
-	# (#862). Wait for the client to report the target session instead of a
-	# fixed sleep. Target the SESSION field explicitly: -t '=name' resolves as a
-	# pane target and prints nothing, so append ':'.
 	local want deadline
 	want="$(inner display-message -p -t "$1:" '#{session_name}')"
 	inner switch-client -c "$(inner list-clients -F '#{client_name}')" -t "$1"
 	deadline=$((SECONDS + 10))
 	while ((SECONDS < deadline)); do
-		[[ "$(inner list-clients -F '#{client_session}')" == "$want" ]] && return 0
+		[[ "$(inner list-clients -F '#{client_session}')" == "$want" ]] && break
 		sleep 0.05
 	done
-	printf 'switch-client to %s never applied; client still on %s\n' \
-		"$want" "$(inner list-clients -F '#{client_session}')" >&2
-	return 1
+	if [[ "$(inner list-clients -F '#{client_session}')" != "$want" ]]; then
+		printf 'switch-client to %s never applied; client still on %s\n' \
+			"$want" "$(inner list-clients -F '#{client_session}')" >&2
+		return 1
+	fi
+	sleep "$STATUS_SETTLE_SECS"
 }
 
 # Flips the #769 mirror gate the session menu branches on, the way the daemon
