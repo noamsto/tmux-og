@@ -230,10 +230,12 @@ wait_for_sentinel() { # path [budget_secs]
 # server_client_check_redraw). A click sent in that gap is resolved against the
 # old status line and opens no menu (#862). Wait for the client to report the
 # target session, then give the deferred status redraw a short bounded settle.
-# The status pill cannot be matched by name here: the status line truncates
-# `h-x#(touch $S_B)` and `h-x' …` alike to `h-x`, so it does not distinguish
-# sessions. Target the SESSION field explicitly: -t '=name' resolves as a pane
-# target and prints nothing, so append ':'.
+# The status pill is not a usable name signal here: status-format[0] re-expands
+# its `#()` job's output with FORMAT_EXPAND_NOJOBS, so the `#(...)` in
+# `h-x#(touch $S_B)` collapses to `h-x` (dropped, never run), and `s` is a
+# substring of almost everything — only the QUOTE pill stays distinctive.
+# Target the SESSION field explicitly: -t '=name' resolves as a pane target and
+# prints nothing, so append ':'.
 STATUS_SETTLE_SECS=0.2
 switch_client_to() { # target (session id or exact name)
 	local want deadline
