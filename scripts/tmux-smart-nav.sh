@@ -3,23 +3,30 @@
 # neighbouring kitty window; otherwise move within tmux. When the window has
 # floats, resolve the nearest geometrically directional pane ourselves: tmux's
 # select-pane only understands the tiled layout.
-# args: <flag> <kitty-dir> <zoomed> <at-edge> <origin-floating> <has-floats> <pane-id> <window-id>
+# args: <flag> <kitty-dir> <zoomed> <at-edge> <origin-floating> <pane-id> <window-id>
 # no set -e: a failed query or kitty command falls through to select-pane.
 set -u
-flag=$1 dir=$2 zoomed=$3 edge=$4 origin_floating=$5 has_floats=$6 origin_id=$7 window_id=$8
+flag=$1 dir=$2 zoomed=$3 edge=$4 origin_floating=$5 origin_id=$6 window_id=$7
 
 [ "$zoomed" = 1 ] && exit 0
 
 candidate=
 geometry_ok=1
+# One snapshot keeps the origin and candidates on the same layout revision.
+if geometry=$(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_floating_flag}|#{pane_modal_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}' 2>/dev/null); then
+	:
+else
+	geometry_ok=0
+	geometry=
+fi
+has_floats=0
+while IFS='|' read -r _ pane_floating _rest; do
+	[ "$pane_floating" = 1 ] && {
+		has_floats=1
+		break
+	}
+done <<<"$geometry"
 if [ "$has_floats" = 1 ]; then
-	# One snapshot keeps the origin and candidates on the same layout revision.
-	if geometry=$(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_floating_flag}|#{pane_modal_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}' 2>/dev/null); then
-		:
-	else
-		geometry_ok=0
-		geometry=
-	fi
 	origin=
 	while IFS='|' read -r pane_id pane_floating pane_modal pane_left pane_top pane_width pane_height; do
 		[ "$pane_id" = "$origin_id" ] && {

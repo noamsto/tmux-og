@@ -882,10 +882,10 @@
     # like every other such site. The conf-shell-quoting guard cannot see this one:
     # it scans the emitted text, where the binds below read only "$is_vim".
     is_vim="ps -o state= -o comm= -t #{q:pane_tty} | grep -iqE '^[^TXZ ]+ +(\\S+\\/)?g?(view|l?n?vim?x?|fzf)(diff)?$'"
-    bind-key -N 'Navigate left' -n C-h if-shell "$is_vim" "send-keys C-h" "run-shell 'tmux-smart-nav L left #{q:window_zoomed_flag} #{q:pane_at_left} #{q:pane_floating_flag} #{q:#{?#{P:#{?pane_floating_flag,1,}},1,0}} #{q:pane_id} #{q:window_id}'"
-    bind-key -N 'Navigate down' -n C-j if-shell "$is_vim" "send-keys C-j" "run-shell 'tmux-smart-nav D down #{q:window_zoomed_flag} #{q:pane_at_bottom} #{q:pane_floating_flag} #{q:#{?#{P:#{?pane_floating_flag,1,}},1,0}} #{q:pane_id} #{q:window_id}'"
-    bind-key -N 'Navigate up' -n C-k if-shell "$is_vim" "send-keys C-k" "run-shell 'tmux-smart-nav U up #{q:window_zoomed_flag} #{q:pane_at_top} #{q:pane_floating_flag} #{q:#{?#{P:#{?pane_floating_flag,1,}},1,0}} #{q:pane_id} #{q:window_id}'"
-    bind-key -N 'Navigate right' -n C-l if-shell "$is_vim" "send-keys C-l" "run-shell 'tmux-smart-nav R right #{q:window_zoomed_flag} #{q:pane_at_right} #{q:pane_floating_flag} #{q:#{?#{P:#{?pane_floating_flag,1,}},1,0}} #{q:pane_id} #{q:window_id}'"
+    bind-key -N 'Navigate left' -n C-h if-shell "$is_vim" "send-keys C-h" "run-shell 'tmux-smart-nav L left #{q:window_zoomed_flag} #{q:pane_at_left} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
+    bind-key -N 'Navigate down' -n C-j if-shell "$is_vim" "send-keys C-j" "run-shell 'tmux-smart-nav D down #{q:window_zoomed_flag} #{q:pane_at_bottom} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
+    bind-key -N 'Navigate up' -n C-k if-shell "$is_vim" "send-keys C-k" "run-shell 'tmux-smart-nav U up #{q:window_zoomed_flag} #{q:pane_at_top} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
+    bind-key -N 'Navigate right' -n C-l if-shell "$is_vim" "send-keys C-l" "run-shell 'tmux-smart-nav R right #{q:window_zoomed_flag} #{q:pane_at_right} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
 
   '';
 

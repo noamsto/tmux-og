@@ -525,7 +525,7 @@
                 'U up pane_at_top' \
                 'R right pane_at_right'; do
                 set -- $direction
-                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:#{?#{P:#{?pane_floating_flag,1,}},1,0}} #{q:pane_id} #{q:window_id}" "$CONF"
+                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}" "$CONF"
               done
               [ "$(grep -c 'tmux-smart-nav .*#{q:pane_id} #{q:window_id}' "$CONF")" -eq 4 ]
               touch $out
