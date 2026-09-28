@@ -159,17 +159,50 @@ set survives reconnects, which re-run `subscribe` via `repair`):
 - `open func(string) error`, `notify func(string)`, and `launch func(func())`
   (production: `go f()`; tests run it synchronously).
 
+**The bound is enforced remote-side, in the format itself.** tmux sends
+option values raw, so a control client's reader would have to buffer an
+unbounded value whole before any Go-side check could run — the bound has to
+live where the value does. `openURLFormat` is
+`#{?#{e|<=:#{n:@og_open_url},12288},#{@og_open_url},!oversized}`: "does
+`@og_open_url` fit in `openValueMaxLen` (12288) bytes, and if so, its value,
+else the literal sentinel `!oversized`". `n:` counts *bytes*, not display
+columns — `=N:` would trim to N display cells and could still pass a
+zero-width combining mark through under the byte bound; `n:` is exact and the
+comparison (`e|<=`) is byte-for-byte. This is the *same* format the seed and
+the subscription both send, so both read the identical bound. A tmux that
+cannot evaluate `e|<=` or `n:` renders the inner condition empty, which the
+ternary reads as false, so every value — seed and every subsequent report —
+comes back `!oversized`: the feature fails closed (off) rather than ever
+forwarding an unbounded value (tmux 3.2's own support for these two specific
+operators is unverified — "no forwarding on such a remote" is the accepted
+trade for never risking an unbounded client-side buffer). `og-open` itself
+never evaluates this format; it keeps appending to the log exactly as
+always, so on such a remote the session still reads as bridged and the log
+still grows, but the daemon opens nothing — the only sign on the controller
+is the gated "ignored an oversized URL log" notice.
+
 **Connect (first attach and every `repair`), in order**, called from the
 existing `subscribe` closure in `daemon.go` so it runs exactly where the other
 subscriptions (re)install:
 
-1. **Seed**: `show-options -qv -t '<pin.id>' @og_open_url` as a round-trip
-   (`-t` omitted when the id is unknown). `show-options -v` returns the raw
-   value — never `display-message -p`, whose output is strftime-expanded and
-   would rewrite a `%`-escape inside a URL. Every nonce in it is added to
-   `seen`. A missing reply or `%error` is a seed failure.
+1. **Seed**: `display-message -p -t '<pin.id>' '<openURLFormat>'` as a
+   round-trip (`-t` omitted when the id is unknown). `display-message -p`,
+   not `show-options`: it returns the raw value with no way
+   to bound it before it crosses the wire, while `display-message -p`
+   evaluates the `#{...}` format above inside the remote tmux process that
+   already holds the value, so the bound runs before anything oversized is
+   ever sent. Measured: `strftime` touches only literal `%`-escapes in the
+   *template*, never the substituted value — a URL containing `%41%2F%Y%%`
+   comes back byte-for-byte. A reply that fits (not the `!oversized`
+   sentinel, not over `openValueMaxLen`) **replaces** `seen` outright with
+   every nonce it carries — a nonce the log no longer carries can't be
+   replayed, and merging instead would let repeated reconnects grow `seen`
+   without bound. An oversized reply leaves `seen` untouched and issues no
+   notice of its own: the subscribe step below reports the same value again
+   the moment it lands, and that report's notice goes through the gate
+   (step 4). A missing reply or `%error` is a seed failure.
 2. **Subscribe** — only after a successful seed:
-   `refresh-client -B 'og_open::#{@og_open_url}'` via `sendSubscription`
+   `refresh-client -B 'og_open::<openURLFormat>'` via `sendSubscription`
    (empty `what` = the control client's session). `%error` = failure.
 3. **Register** — only after a successful subscribe:
    `set-option -F -t '<pin.id>' @og_open_client '#{client_name}'` as a
@@ -187,13 +220,21 @@ subscriptions (re)install:
    matching registered client and falls back to the remote's own opener until
    the other reconnects (and re-registers) — degraded to pre-feature
    behaviour, never a silent drop.
-4. **Failure** (seed, subscribe or register) — `notifyLocal` once for this
-   connection, naming the step: "og-open: URL opens on <host> will not reach
+4. **Failure** (seed, subscribe or register) routes through the shared notice
+   gate below, naming the step: "og-open: URL opens on <host> will not reach
    this machine (<seed|subscribe|register> failed; subscriptions need
    tmux ≥ 3.2)". A failed seed never subscribes: without a
    seed, the subscribe-time report would replay every old record. A failed
    subscribe never registers. No polling fallback — opens are events, not
    state.
+
+**One notice gate per `urlOpener`** covers every og_open notice alike — a
+failed connect step, an oversized report, a rate-limit suppression, and an
+individual open error: at most one send in flight and at most one send per
+`openNoticeEvery` (10s), locked because an open error notices from a
+launched goroutine. A second genuine failure inside that window — two
+distinct "could not open" errors 3s apart, say — is simply dropped; only the
+first surfaces.
 
 Seeding before subscribing is what makes both edges right: tmux re-reports the
 current value right after a subscribe, and those nonces are already seen, so
@@ -208,12 +249,16 @@ immediately — nothing to coalesce, and `handle` issues no round-trip):
 1. Ignore if `session != ""` and `$N != session`.
 2. `og-open`'s own 4096-byte reset is not trusted to bound this value —
    anything holding the remote's tmux socket can write `@og_open_url`
-   directly — so the daemon bounds what one report may cost it: a value over
-   `openValueMaxLen` (12288 bytes, 3× `og-open`'s cap) is ignored whole — no
-   opens, `seen` untouched, one `notifyLocal`: "og-open: ignored an oversized
-   URL log from <host>" — on the theory that `og-open`'s own reset, which
-   replaces rather than appends past 4096 bytes, still opens on the report
-   that follows.
+   directly — but the bound itself no longer runs here: `value` already
+   arrives as either the fitting log or the literal `!oversized` sentinel,
+   evaluated remote-side by `openURLFormat` (above). `boundedOpenRecords`
+   treats the sentinel, and — defensively, should the format's own bound
+   ever be bypassed — any value still over `openValueMaxLen` (12288 bytes,
+   3× `og-open`'s cap), alike: ignored whole — no opens, `seen` untouched,
+   one notice through the gate (above): "og-open: ignored an oversized URL
+   log from <host>" — on the theory that `og-open`'s own reset, which
+   replaces rather than appends past 4096 bytes, brings the log back under
+   the bound and opens normally on the report that follows.
 3. Parse: `strings.Fields(value)`; each token is cut at its **first** `|`
    into nonce and URL. A token with no `|`, or a nonce not matching
    `^[0-9]+-[0-9]+$`, is malformed and skipped.
@@ -224,8 +269,8 @@ immediately — nothing to coalesce, and `handle` issues no round-trip):
    report and a token bucket (`openBurst` = 30 tokens, refilling one every
    `openRefill` = 2s — 30/min, scoped to this `urlOpener` for its whole run)
    has one to spend; otherwise the record is suppressed and no token is
-   spent. A launched open that returns an error sends `notifyLocal`:
-   "og-open: could not open <url>: <err>". One `notifyLocal`: "og-open:
+   spent. A launched open that returns an error notices (through the gate
+   above): "og-open: could not open <url>: <err>". One notice: "og-open:
    suppressed <N> URL opens from <host> (rate limit)" fires per report when
    anything was suppressed.
 5. `seen` = the nonces of every record parsed from this value (step 3),
@@ -328,9 +373,9 @@ prdash (remote) --$BROWSER--> og-open (remote)
   `-https://…`, `https://` (no host), space/tab/`\x00`/`\x7f`, over-long →
   reject.
 - only unseen nonces open; seen becomes exactly this value's nonces.
-- a report over `openValueMaxLen` opens nothing, leaves `seen` untouched, and
-  notifies once; the next (normal-sized) report still opens the record it
-  carries.
+- a report over `openValueMaxLen`, and one that is the literal `!oversized`
+  sentinel, each open nothing, leave `seen` untouched, and notify once; the
+  next (normal-sized) report still opens the record it carries.
 - a report with more than `openMaxPerReport` fresh valid records opens
   exactly the cap, suppresses the rest, notifies the suppressed count once,
   and marks every one of them seen so a suppressed record never opens on a
@@ -345,12 +390,28 @@ prdash (remote) --$BROWSER--> og-open (remote)
   once; a reconnect (second connect with the same opener) replays nothing.
 - connect order is seed → subscribe → register; a failed seed does not
   subscribe, a failed subscribe does not register, a failed register
-  notifies; each failure notifies once per connection; `OpenURL == nil`
-  issues none of the three.
+  notifies through the shared gate; `OpenURL == nil` issues none of the
+  three.
+- a seed that fits **replaces** `seen` outright: five reconnects in a row,
+  each seeded with a fresh 700-record log, leave `seen` at exactly 700 every
+  time, never accumulating past one log's worth. An oversized seed (the
+  `!oversized` sentinel or an over-length value) leaves `seen` untouched,
+  still subscribes and registers, and sends no notice of its own.
+- notices are gated per `urlOpener`: 100 oversized reports inside
+  `openNoticeEvery` (10s) notify once; advancing a fake clock past
+  `openNoticeEvery` allows a second notice; a notice already in flight
+  suppresses a second one queued while it runs.
+- `TestOpenURLBoundAgainstLiveTmux` (a real, isolated tmux server): the
+  seed's `display-message -p` returns a value's own `%`-escapes, commas and
+  braces verbatim; a value one display column wide but padded past
+  `openValueMaxLen` bytes with zero-width combining marks still reads
+  `!oversized` — proving the bound is byte-exact, not display-width; a value
+  of exactly `openValueMaxLen` bytes passes, one byte more reads
+  `!oversized`.
 - a foreign session id is ignored.
 - a subscription line carrying several records survives
   `controlmode.ParseLine` intact.
-- opener error → notify.
+- opener error → notice (gated).
 - `toolResolveScript` carries the `BROWSER` restore and still contains no
   single quote.
 - production opener (`cmd/daemon`): argv per GOOS, `BROWSER` stripped from

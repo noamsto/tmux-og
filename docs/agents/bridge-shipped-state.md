@@ -315,12 +315,47 @@ side is `picker/remotebridge/daemon/openurl.go`.
 - **The daemon's connect sequence, in order, each step gated on the last
   succeeding** (`urlOpener.connect`, run from the same `subscribe` closure in
   `daemon.go` that installs the label/agent subscriptions):
-  1. **Seed** — `show-options -qv -t '<pin.id>' @og_open_url` as a
-     round-trip, never `display-message -p`: its strftime pass would rewrite
-     a `%`-escape inside a URL. Every nonce found is added to `seen`.
+  1. **Seed** — `display-message -p -t '<pin.id>' '<format>'` as a
+     round-trip, where `<format>` is the *same* bounded format the
+     subscription sends (step 2 below):
+     `#{?#{e|<=:#{n:@og_open_url},12288},#{@og_open_url},!oversized}`.
+     `display-message -p`, not `show-options`: it hands back
+     the raw option value with no way to cap it before it crosses the wire,
+     while `display-message -p` evaluates a `#{...}` format inside the
+     *remote* tmux process that already holds the value, so the bound runs
+     before anything oversized is ever sent (tmux sends option values raw —
+     a control client's reader would otherwise have to buffer an unbounded
+     value whole before any Go-side check could run). Measured: `strftime`
+     touches only literal `%`-escapes in the *template*, never the
+     substituted value — a URL containing `%41%2F%Y%%` comes back
+     byte-for-byte, so the old worry that `display-message` would mangle one
+     doesn't hold. A seed that fits **replaces** `seen` outright — every
+     nonce still in the log is in the seed, so a nonce the log no longer
+     carries can't be replayed, and merging instead would let repeated
+     reconnects grow `seen` without bound. An oversized seed leaves `seen`
+     untouched and sends no notice of its own: the subscribe step below
+     reports the same value again the moment it lands, and that report's
+     notice goes through the gate (below).
   2. **Subscribe** — only after a successful seed:
-     `refresh-client -B 'og_open::#{@og_open_url}'`, session-scoped (empty
-     `what`, same posture as `og_res`/`og_usage`).
+     `refresh-client -B 'og_open::<format>'`, session-scoped (empty `what`,
+     same posture as `og_res`/`og_usage`), the same `<format>` as the seed:
+     "does `@og_open_url` fit in 12288 bytes (3× `og-open`'s own cap), and if
+     so, its value, else the literal sentinel `!oversized`". `n:` counts
+     *bytes*, not display columns — `=N:` would instead trim to N display
+     cells and could still let a zero-width combining mark through under the
+     byte bound; `n:` is exact and the comparison is byte-for-byte. A tmux
+     that cannot evaluate `e|<=` or `n:` renders the inner condition empty,
+     which the ternary reads as false, so every value — seed and every later
+     report alike — comes back `!oversized`: the feature reads as
+     permanently oversized rather than ever forwarding an unbounded value
+     (tmux 3.2's own support for these two specific operators is
+     unverified; "no forwarding on such a remote" is the accepted trade for
+     never risking an unbounded buffer client-side). `og-open` itself never
+     evaluates this format — it keeps appending to the log exactly as always
+     — so on such a remote the session still reads as bridged and the log
+     still grows, but the daemon opens nothing: the only sign on the
+     controller is the gated "ignored an oversized URL log" notice, the same
+     failure shape as any other oversized log (below).
   3. **Register** — only after a successful subscribe:
      `set-option -F -t '<pin.id>' @og_open_client '#{client_name}'`. `-F`
      expands against the *issuing* client, which over the control stream is
@@ -333,29 +368,42 @@ side is `picker/remotebridge/daemon/openurl.go`.
   URL — while a record appended between seed and subscribe is not yet in
   `seen`, so the subscribe-time report opens it once. Registering last means
   `og-open` can never see a client that is registered but not yet
-  subscribed. A failed step notifies once for that connection, naming the
-  step (`"og-open: URL opens on <host> will not reach this machine (<step>
-  failed; subscriptions need tmux ≥ 3.2)"`), and a failed seed never
-  subscribes, a failed subscribe never registers.
+  subscribed. A failed step routes through the same notice gate as every
+  other og_open notice (below), naming the step (`"og-open: URL opens on
+  <host> will not reach this machine (<step> failed; subscriptions need
+  tmux ≥ 3.2)"`), and a failed seed never subscribes, a failed subscribe
+  never registers.
+- **One notice gate per `urlOpener`** covers every og_open notice alike — a
+  failed connect step, an oversized report, a rate-limit suppression, and an
+  individual open error: at most one send in flight and at most one send per
+  10s (`openNoticeEvery`), locked because an open error notices from a
+  launched goroutine. A second genuine failure inside that window — two
+  distinct "could not open" errors 3s apart, say — is simply dropped; only
+  the first surfaces.
 - **`handle` (on `%subscription-changed og_open $N`)** ignores the report
   when a nonempty pinned session doesn't match `$N` — the subscription
   follows the control client's *current* session, so a session-pin excursion
   (#396) can report another session's log, whose records belong to whatever
   bridge is mirroring that session. The controller does not trust `og-open`'s
   own 4096-byte reset to bound this value — anything holding the remote's
-  tmux socket can write `@og_open_url` directly — so `handle` bounds the cost
-  to itself: a value over 12288 bytes (3× `og-open`'s own cap) is ignored
-  whole — no opens, `seen` untouched, one notification — on the theory that
-  `og-open`'s own reset, which replaces rather than appends past 4096 bytes,
-  still opens on the report that follows. Otherwise every record's nonce is
-  marked seen regardless of validity, so a malformed or invalid record is
-  never retried; a fresh, `validOpenURL` record opens if fewer than 16 have
-  already opened from this report and a token bucket (30 tokens, refilling
-  one per 2s — 30/min, scoped to this `urlOpener` for its whole run) has one
-  to spend, otherwise it is suppressed without spending a token. One
-  "suppressed N URL opens from `<host>` (rate limit)" notice fires per report
-  when anything was suppressed; an invalid or already-seen record is skipped
-  for free and never counts toward it.
+  tmux socket can write `@og_open_url` directly — but the bound itself no
+  longer runs client-side: what `handle` receives is already either the
+  fitting log or the literal `!oversized` sentinel, evaluated remote-side by
+  the same format the seed and subscription both send (above).
+  `boundedOpenRecords` treats the sentinel, and — defensively, should the
+  format's own bound ever be bypassed — any value still over 12288 bytes,
+  alike: ignored whole, no opens, `seen` untouched, one notice through the
+  gate above — on the theory that `og-open`'s own reset, which replaces
+  rather than appends past 4096 bytes, brings the log back under the bound
+  and opens normally on the report that follows. Otherwise every record's
+  nonce is marked seen regardless of validity, so a malformed or invalid
+  record is never retried; a fresh, `validOpenURL` record opens if fewer
+  than 16 have already opened from this report and a token bucket (30
+  tokens, refilling one per 2s — 30/min, scoped to this `urlOpener` for its
+  whole run) has one to spend, otherwise it is suppressed without spending a
+  token. One "suppressed N URL opens from `<host>` (rate limit)" notice
+  fires per report when anything was suppressed; an invalid or already-seen
+  record is skipped for free and never counts toward it.
 - **`validOpenURL` is the controller-side security boundary** — the URL is
   remote-derived and becomes a local process's argv, so it is re-checked
   daemon-side regardless of what `og-open` already validated (CLAUDE.md:
@@ -412,7 +460,12 @@ side is `picker/remotebridge/daemon/openurl.go`.
   `og-open`'s bridged check reads; if that controller disconnects first,
   `og-open` stops seeing a matching registered client and falls back to the
   remote's own opener until the other reconnects (and re-registers) —
-  degraded to pre-feature behaviour, never a silent drop.
+  degraded to pre-feature behaviour, never a silent drop. A value under the
+  byte bound can still carry raw newlines — tmux relays a subscribed
+  option's bytes unescaped over the control protocol, so a log that fits the
+  bound could still forge extra control-mode lines. This is a general,
+  pre-existing risk across every subscription this daemon runs, not
+  specific to `og_open`, and is tracked in a separate issue.
 
 ## Remote Agent Status
 

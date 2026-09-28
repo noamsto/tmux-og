@@ -207,8 +207,9 @@ path, which every caller already handles.
   both shippers (#566: subscriptions are per control client, so the fresh one
   carries none — and re-subscribing re-reports every window and pane, which is
   the label/agent-state half of the repair for free). The same call
-  re-runs `urlOpener.connect` (#854): it re-seeds `@og_open_url`'s current
-  records into `seen` before re-subscribing, then re-registers
+  re-runs `urlOpener.connect` (#854): it seeds `seen` from `@og_open_url`'s
+  current, remote-side-bounded value — replacing it outright when the value
+  fits, never merging into it — before re-subscribing, then re-registers
   `@og_open_client` under the fresh control client's name — so nothing a
   remote `og-open` appended before the drop replays once the mirror is back.
   `pause-after`
