@@ -570,7 +570,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	done <<<"$verbs"
 }
 
-@test "the drag block sends only float-drag, which ctl resolves into the daemon's float-geom" {
+@test "the drag block sends only drag, which ctl resolves into the daemon's float-geom or tile-layout" {
 	local block="$BATS_TEST_TMPDIR/dragblock-verbs.conf"
 	# The SECOND gated block: count %if openings and print only the second.
 	awk '/^%if "#\{==:#\{version\},/ { n++ } n == 2 { print } n == 2 && /^%endif$/ { exit }' "$CONF" >"$block"
@@ -578,7 +578,8 @@ assert_wire_argv() { # payload_file verb [arg...]
 	grep -q 'MouseDrag1Border' "$block"
 	local verbs
 	verbs="$(grep -oP -- '--sock=#+\{q:@bridge_sock\}\s+\K[a-z-]+' "$block" | sort -u)"
-	[ "$verbs" = float-drag ]
-	grep -qF '"float-drag"' "$CTL_MAIN_GO"
+	[ "$verbs" = drag ]
+	grep -qF '"drag"' "$CTL_MAIN_GO"
 	grep -qF '"float-geom": {' "$CTL_GO"
+	grep -qF '"tile-layout": {' "$CTL_GO"
 }

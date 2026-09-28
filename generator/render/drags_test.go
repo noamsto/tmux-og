@@ -18,7 +18,7 @@ func TestDragBindsGatedOnStockVersion(t *testing.T) {
 func TestDragStartBinds(t *testing.T) {
 	p := keysPaths()
 	lines := strings.Split(dragBinds(p), "\n")
-	gate := "#{&&:" + bridgeGate + ",#{pane_floating_flag}}"
+	floatGate := "#{&&:" + bridgeGate + ",#{pane_floating_flag}}"
 
 	var rootLines []string
 	for _, l := range lines {
@@ -30,16 +30,25 @@ func TestDragStartBinds(t *testing.T) {
 		t.Fatalf("%d root binds, want %d (one per stockdrags.txt line)", len(rootLines), len(dragStock))
 	}
 
+	wideGateCount := 0
 	for i, s := range dragStock {
 		head, word := trailingQuoted(t, rootLines[i])
 		if got, want := unquote(t, word), s.cmd; got != want {
 			t.Fatalf("%s %s: stock branch =\n%q\nwant\n%q", s.table, s.key, got, want)
+		}
+		gate := floatGate
+		if s.cmd == "resize-pane -M" {
+			gate = bridgeGate
+			wideGateCount++
 		}
 		want := "bind-key -N '" + dragStartNote + "' -T " + s.table + " " + s.key + " if-shell -F -t = '" + gate + "' { " +
 			"set -F @og_bridge_drag '#{pane_id}' ; " + s.cmd + " ; switch-client -T " + dragBindTable + " } "
 		if head != want {
 			t.Fatalf("%s %s: mirror branch =\n%q\nwant\n%q", s.table, s.key, head, want)
 		}
+	}
+	if wideGateCount != 1 {
+		t.Fatalf("%d stock binds took the wide gate, want exactly 1 (resize-pane -M)", wideGateCount)
 	}
 }
 
@@ -64,7 +73,7 @@ func TestDragEndTableComplete(t *testing.T) {
 			wantKeys[mod+"MouseDragEnd1"+loc] = true
 		}
 	}
-	wantBody := `run-shell "` + bridgeCtl(p) + ` float-drag #{q:@og_bridge_drag}"`
+	wantBody := `run-shell "` + bridgeCtl(p) + ` drag #{q:@og_bridge_drag}"`
 	gotKeys := map[string]bool{}
 	for _, l := range endLines {
 		rest := strings.TrimPrefix(l, prefix)

@@ -76,6 +76,16 @@ func (w *mirrorWindow) allRemotePanes() []string {
 	return append(out, floats...)
 }
 
+// noteLocalLayout records that a local drag reshaped w to sent behind the
+// reconcile. Unless layout already equals sent, it is a stale dedup key, so it
+// is cleared the way applyPaneOps clears it: the next pass re-applies the
+// remote's shape, which snaps the window back if the remote refused the drag.
+func (w *mirrorWindow) noteLocalLayout(sent string) {
+	if sent != "" && w.layout != sent {
+		w.layout = ""
+	}
+}
+
 // registry maps remote window ids (@N) to their local mirror windows.
 //
 // The main loop mutates it while the resize watcher reads the mirrored ids

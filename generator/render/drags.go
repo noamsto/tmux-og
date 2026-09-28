@@ -8,7 +8,7 @@ import (
 )
 
 // dragStockText is the pinned tmux's own `list-keys -T root <key>` line for
-// each stock float-drag binding, verbatim. Not in stockmenus.txt: menuBinds
+// each stock drag binding this file re-binds, verbatim. Not in stockmenus.txt: menuBinds
 // panics on an entry with no mirror menu.
 //
 //go:embed stockdrags.txt
@@ -36,27 +36,35 @@ var dragModifiers = []string{"", "M-", "C-", "S-", "C-M-", "M-S-", "C-S-", "C-M-
 // The notes bind-note-assertions requires of every bind.
 const (
 	dragStartNote = "Resize or move a pane by its border"
-	dragEndNote   = "Route a mirror float border drag to the remote"
+	dragEndNote   = "Route a mirror border drag to the remote"
 )
 
-// dragBinds routes a mirror float's drag to the remote (#797). tmux's float
-// drag runs as a C mouse_drag_update callback that fires no hook or
-// notification, so the only event that reaches a key table is the drag end
-// (MouseDragEnd1<release location>). Each stock float-drag bind is re-bound
-// behind bridgeGate && pane_floating_flag: it stashes the float's local pane
-// id (the drag end's own target is wherever the button came up) and enters
-// dragBindTable, whose next key is always the drag end, since drag updates
-// skip key tables. That key hands the id to ctl float-drag. Like menuBinds,
+// dragBinds routes a mirror pane's border drag to the remote (#797, #823).
+// tmux's own drag runs as a C mouse_drag_update callback that fires no hook
+// or notification, so the only event that reaches a key table is the drag
+// end (MouseDragEnd1<release location>). Each stock drag bind is re-bound to
+// stash the drag's local pane id (the drag end's own target is wherever the
+// button came up) and enter dragBindTable, whose next key is always the drag
+// end, since drag updates skip key tables; that key hands the id to ctl
+// drag. `resize-pane -M` (MouseDrag1Border) is the only stock drag that can
+// reshape a TILED pane, so it takes the mirror branch for any mirror pane
+// (bridgeGate alone). The `move-pane -M` binds keep the float-only gate:
+// cmd_join_pane_mouse_update (cmd-join-pane.c) returns early for a
+// non-floating pane, so they never reshape a tiled layout. Like menuBinds,
 // the else-branch is the stock command as a string, parsed only when it
 // runs, and the block is version-gated (#407).
 func dragBinds(p *paths.Paths) string {
-	gate := "#{&&:" + bridgeGate + ",#{pane_floating_flag}}"
+	floatGate := "#{&&:" + bridgeGate + ",#{pane_floating_flag}}"
 	lines := []string{`%if "#{==:#{version},` + stockMenuVersion + `}"`}
 	for _, s := range dragStock {
+		gate := floatGate
+		if s.cmd == "resize-pane -M" {
+			gate = bridgeGate
+		}
 		mirror := "set -F @og_bridge_drag '#{pane_id}' ; " + s.cmd + " ; switch-client -T " + dragBindTable
 		lines = append(lines, "bind-key -N '"+dragStartNote+"' -T "+s.table+" "+s.key+" if-shell -F -t = '"+gate+"' { "+mirror+" } "+tmuxDoubleQuote(s.cmd))
 	}
-	body := `run-shell "` + bridgeCtl(p) + ` float-drag #{q:@og_bridge_drag}"`
+	body := `run-shell "` + bridgeCtl(p) + ` drag #{q:@og_bridge_drag}"`
 	for _, loc := range dragLocations {
 		for _, mod := range dragModifiers {
 			lines = append(lines, "bind-key -N '"+dragEndNote+"' -T "+dragBindTable+" "+mod+"MouseDragEnd1"+loc+" "+body)

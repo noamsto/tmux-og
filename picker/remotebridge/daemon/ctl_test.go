@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
@@ -40,6 +41,21 @@ func wantFloatResize(pane string, w, h int) string {
 	return fmt.Sprintf("if-shell -t %s -F %s %s %s", pane, tmuxQuote(wantResizeTrigger),
 		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h-1)),
 		tmuxQuote(fmt.Sprintf("resize-pane -t %s -x %d -y %d", pane, w, h)))
+}
+
+// wantTileLayout builds tile-layout's exact if-shell command from the plain
+// order/w/h/raw a tiledArg result carries, rather than by calling
+// tileLayoutCommand, so the test pins the wire shape independently of it.
+func wantTileLayout(pane string, order []string, w, h int, raw string) string {
+	var ids strings.Builder
+	for _, id := range order {
+		ids.WriteString(id)
+		ids.WriteByte(' ')
+	}
+	cond := fmt.Sprintf("#{&&:#{==:#{P/i:#{?pane_floating_flag,,#{pane_id} }},%s},#{&&:#{==:#{window_width}x#{window_height},%dx%d},#{==:#{window_zoomed_flag},0}}}",
+		ids.String(), w, h)
+	inner := fmt.Sprintf("select-layout -t %s %s", pane, tmuxQuote(raw))
+	return fmt.Sprintf("if-shell -t %s -F %s %s", pane, tmuxQuote(cond), tmuxQuote(inner))
 }
 
 // wantLocalFloatResize is floatResizeArgv's argv for an outer w x h box.
@@ -338,6 +354,10 @@ func TestParseCtlRejects(t *testing.T) {
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
+		{"tile-layout wants its one layout argument", []string{wire.CtlProtocolVersion, "tile-layout", "%3"}, "wants 1 argument"},
+		{"tile-layout rejects a second argument", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "a", "b"}, "wants 1 argument"},
+		{"tile-layout rejects unparsable text", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "garbage"}, "layout:"},
+		{"tile-layout rejects a v1 leaf with an empty id", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "csum,100x30,0,0,"}, "no valid remote id"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -437,6 +457,152 @@ func TestParseCtlFloatGeomFlags(t *testing.T) {
 	}
 }
 
+// A v1 tiled layout string, checksum and all, is re-parsed and rebuilt from
+// scratch: the fresh checksum below was hand-verified against layoutChecksum
+// (tile-layout must never trust the wire body's own checksum, hostile or
+// stale as it may be).
+const tileLayoutWantRaw = "eb98,100x30,0,0{50x30,0,0,3,49x30,51,0,4}"
+
+func TestParseCtlTileLayout(t *testing.T) {
+	c := newCtlStateWith("@1", "%3", "%4")
+	// A wrong checksum prefix on the wire: parseCtl must recompute it rather
+	// than trust or forward the one sent.
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%3", "0000,100x30,0,0{50x30,0,0,3,49x30,51,0,4}"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl tile-layout: %v", err)
+	}
+	want := []string{wantTileLayout("%3", []string{"%3", "%4"}, 100, 30, tileLayoutWantRaw)}
+	if !reflect.DeepEqual(req.cmds, want) {
+		t.Errorf("cmds = %q, want %q", req.cmds, want)
+	}
+	if req.wantLayout != "@1" {
+		t.Errorf("wantLayout = %q, want @1", req.wantLayout)
+	}
+	if req.sentLayout != tileLayoutWantRaw {
+		t.Errorf("sentLayout = %q, want %q", req.sentLayout, tileLayoutWantRaw)
+	}
+	if req.invalidate != "" {
+		t.Errorf("invalidate = %q, want none", req.invalidate)
+	}
+}
+
+// A v2 layout carrying a float leaf must prune to the same tiled command as
+// the v1 shape above: the daemon rebuilds Raw from the parsed tree, so the
+// wire format the ctl client happened to send never shapes the result.
+func TestParseCtlTileLayoutV2PrunesFloats(t *testing.T) {
+	c := newCtlStateWith("@1", "%3", "%4")
+	v2 := `{"V":2,"L":{"t":"h","w":100,"h":30,"x":0,"y":0,"c":[` +
+		`{"t":"p","w":50,"h":30,"x":0,"y":0,"I":"%3"},` +
+		`{"t":"p","w":49,"h":30,"x":51,"y":0,"I":"%4"},` +
+		`{"t":"p","w":10,"h":10,"x":5,"y":5,"I":"%5","z":1}]}}`
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%3", v2}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl tile-layout v2: %v", err)
+	}
+	want := []string{wantTileLayout("%3", []string{"%3", "%4"}, 100, 30, tileLayoutWantRaw)}
+	if !reflect.DeepEqual(req.cmds, want) {
+		t.Errorf("cmds = %q, want %q", req.cmds, want)
+	}
+}
+
+// A hostile checksum prefix is discarded along with the rest of the raw
+// text: Raw is always rebuilt from the parsed tree, never echoed.
+func TestParseCtlTileLayoutRejectsHostileChecksum(t *testing.T) {
+	c := newCtlStateWith("@1", "%3", "%4")
+	hostile := "x'; kill-server,100x30,0,0{50x30,0,0,3,49x30,51,0,4}"
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%3", hostile}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl tile-layout: %v", err)
+	}
+	for _, cmd := range req.cmds {
+		if strings.Contains(cmd, "kill-server") {
+			t.Fatalf("cmds = %q, hostile text reached the command", req.cmds)
+		}
+	}
+}
+
+func TestTileLayoutIntentCoalescing(t *testing.T) {
+	const raw1 = "csum,50x30,0,0,2"
+	const raw2 = "csum,50x30,0,0,3"
+
+	tileReq := func(c *ctlState, raw string) ctlRequest {
+		req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "tile-layout", "%2", raw}, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl tile-layout: %v", err)
+		}
+		return req
+	}
+	layoutReq := func(c *ctlState) ctlRequest {
+		req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "layout", "%2", "tiled"}, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl layout: %v", err)
+		}
+		return req
+	}
+	send := func(...string) bool { return true }
+
+	t.Run("tile-layout then layout coalesces to the drag's sentLayout", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		req := tileReq(c, raw1)
+		S := req.sentLayout
+		c.submit(req, send)
+		c.submit(layoutReq(c), send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": S}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("layout then tile-layout coalesces to the drag's sentLayout", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(layoutReq(c), send)
+		req := tileReq(c, raw1)
+		S := req.sentLayout
+		c.submit(req, send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": S}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("two drags: the later replaces the earlier", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(tileReq(c, raw1), send)
+		req2 := tileReq(c, raw2)
+		S2 := req2.sentLayout
+		c.submit(req2, send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": S2}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("layout alone carries no sentLayout", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(layoutReq(c), send)
+
+		_, layouts, _ := c.takeIntents()
+		if want := (map[string]string{"@1": ""}); !reflect.DeepEqual(layouts, want) {
+			t.Errorf("layouts = %v, want %v", layouts, want)
+		}
+	})
+
+	t.Run("forgetWindow drops a pending drag", func(t *testing.T) {
+		c := newCtlStateWith("@1", "%2", "%3")
+		c.submit(tileReq(c, raw1), send)
+		c.forgetWindow("@1")
+
+		if _, layouts, _ := c.takeIntents(); len(layouts) != 0 {
+			t.Errorf("layouts = %v, want none after forgetWindow", layouts)
+		}
+	})
+}
+
 func TestParseCtlPingProbesCompatibilityBeforePaneLookup(t *testing.T) {
 	c := newCtlState()
 	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "ping", "placeholder"}, "rem")
@@ -498,7 +664,7 @@ func TestSubmitRegistersIntentBeforeSending(t *testing.T) {
 	ok := c.submit(req, func(...string) bool {
 		// Read the field directly: takeIntents would deadlock on the held mutex,
 		// which is itself the property under test.
-		sawIntent = c.wantLayout["@1"]
+		_, sawIntent = c.wantLayout["@1"]
 		return true
 	})
 	if !ok {
@@ -1699,4 +1865,144 @@ func TestHandleCtlSendsNothingWhenALocalCommandFails(t *testing.T) {
 	if windows, layouts, reseeds := cst.takeIntents(); windows || len(layouts) != 0 || len(reseeds) != 0 {
 		t.Errorf("intents = (%v, %v, %v), want none", windows, layouts, reseeds)
 	}
+}
+
+// Only tmux's own -F evaluation can show the guard's order, size and zoom
+// clauses actually refuse.
+func TestTileLayoutCommandGuardsOnLiveTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		// OG_REQUIRE_TMUX is set by pickerChecked's checkPhase in flake.nix,
+		// which also puts tmux in nativeBuildInputs — so a missing tmux there
+		// means that input was pruned, not that this is a dev machine.
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+
+	if out, err := tmux("split-window", "-d", "-h", "-t", "w").CombinedOutput(); err != nil {
+		t.Fatalf("split-window: %v\n%s", err, out)
+	}
+	idsOut, err := tmux("list-panes", "-t", "w", "-F", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatalf("list-panes: %v", err)
+	}
+	ids := strings.Fields(string(idsOut))
+	if len(ids) != 2 {
+		t.Fatalf("pane ids = %v, want 2", ids)
+	}
+	id0, id1 := ids[0], ids[1]
+	digits0, digits1 := strings.TrimPrefix(id0, "%"), strings.TrimPrefix(id1, "%")
+
+	confDir := t.TempDir()
+	// apply writes tileLayoutCommand's production output to a file and
+	// sources it, the same way the control connection's command line would
+	// reach tmux's own parser.
+	apply := func(t *testing.T, L controlmode.Layout) {
+		t.Helper()
+		conf := filepath.Join(confDir, "cmd.conf")
+		if err := os.WriteFile(conf, []byte(tileLayoutCommand(id0, L)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+			t.Fatalf("source-file: %v\n%s", err, out)
+		}
+	}
+	paneWidths := func(t *testing.T) map[string]string {
+		t.Helper()
+		out, err := tmux("list-panes", "-t", "w", "-F", "#{pane_id}|#{pane_width}").Output()
+		if err != nil {
+			t.Fatalf("list-panes: %v", err)
+		}
+		widths := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			id, w, ok := strings.Cut(line, "|")
+			if !ok {
+				t.Fatalf("list-panes line %q missing '|'", line)
+			}
+			widths[id] = w
+		}
+		return widths
+	}
+	// reset re-splits evenly before each subtest and returns the resulting
+	// widths, so a "no-op" assertion compares against tmux's own numbers
+	// rather than a hardcoded guess.
+	reset := func(t *testing.T) map[string]string {
+		t.Helper()
+		if out, err := tmux("select-layout", "-t", "w", "even-horizontal").CombinedOutput(); err != nil {
+			t.Fatalf("select-layout even-horizontal: %v\n%s", err, out)
+		}
+		return paneWidths(t)
+	}
+	windowSize := func(t *testing.T) string {
+		t.Helper()
+		out, err := tmux("display-message", "-p", "-t", "w", "#{window_width}x#{window_height}").Output()
+		if err != nil {
+			t.Fatalf("display-message: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	zoomedFlag := func(t *testing.T) string {
+		t.Helper()
+		out, err := tmux("display-message", "-p", "-t", "w", "#{window_zoomed_flag}").Output()
+		if err != nil {
+			t.Fatalf("display-message: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	t.Run("matching order, size, unzoomed applies", func(t *testing.T) {
+		reset(t)
+		L, err := tiledArg(fmt.Sprintf("0000,80x24,0,0{30x24,0,0,%s,49x24,31,0,%s}", digits0, digits1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := paneWidths(t)[id0]; got != "30" {
+			t.Errorf("pane %s width = %s, want 30", id0, got)
+		}
+	})
+
+	t.Run("swapped order is a no-op", func(t *testing.T) {
+		before := reset(t)
+		L, err := tiledArg(fmt.Sprintf("0000,80x24,0,0{30x24,0,0,%s,49x24,31,0,%s}", digits1, digits0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := paneWidths(t); got[id0] != before[id0] || got[id1] != before[id1] {
+			t.Errorf("widths = %v, want unchanged from %v", got, before)
+		}
+	})
+
+	t.Run("size mismatch is a no-op", func(t *testing.T) {
+		before := reset(t)
+		L, err := tiledArg(fmt.Sprintf("0000,90x24,0,0{40x24,0,0,%s,49x24,41,0,%s}", digits0, digits1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := paneWidths(t); got[id0] != before[id0] || got[id1] != before[id1] {
+			t.Errorf("widths = %v, want unchanged from %v", got, before)
+		}
+		if got := windowSize(t); got != "80x24" {
+			t.Errorf("window size = %s, want unchanged 80x24", got)
+		}
+	})
+
+	t.Run("zoomed is a no-op", func(t *testing.T) {
+		reset(t)
+		if out, err := tmux("resize-pane", "-Z", "-t", id0).CombinedOutput(); err != nil {
+			t.Fatalf("resize-pane -Z: %v\n%s", err, out)
+		}
+		L, err := tiledArg(fmt.Sprintf("0000,80x24,0,0{30x24,0,0,%s,49x24,31,0,%s}", digits0, digits1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, L)
+		if got := zoomedFlag(t); got != "1" {
+			t.Errorf("window_zoomed_flag = %s, want still 1", got)
+		}
+	})
 }

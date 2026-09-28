@@ -42,34 +42,18 @@ type Layout struct {
 // entirely. Float leaves are pruned out of the tree (collapsing any split
 // left with a single child) and the checksum recomputed over the pruned body.
 func ParseLayout(s string) (Layout, error) {
-	if strings.HasPrefix(s, "{") {
-		return parseLayoutV2(s)
-	}
-	// Strip the leading "<checksum>," prefix.
-	_, body, ok := strings.Cut(s, ",")
-	if !ok {
-		return Layout{}, fmt.Errorf("layout: no checksum separator in %q", s)
-	}
-	p := &layoutParser{s: body}
-	root, err := p.cell()
+	root, floats, err := parseTree(s)
 	if err != nil {
 		return Layout{}, err
-	}
-	var floats []PaneCell
-	if p.pos < len(p.s) && p.s[p.pos] == '<' {
-		floats, err = p.floatSection()
-		if err != nil {
-			return Layout{}, err
-		}
-	}
-	if p.pos != len(p.s) {
-		return Layout{}, fmt.Errorf("layout: trailing data %q", p.s[p.pos:])
 	}
 	var out Layout
 	out.W, out.H = root.w, root.h
 	out.Floats = floats
 
-	if len(floats) == 0 {
+	// A v1 string with no floats needs no rewrite; echo it verbatim. v2
+	// always rebuilds Raw (tmux's own v1 dump only ever names tiled panes,
+	// with a checksum over that pruned body), even absent floats.
+	if len(floats) == 0 && !strings.HasPrefix(s, "{") {
 		out.Raw = s
 	} else {
 		floatIDs := make(map[string]bool, len(floats))
@@ -93,6 +77,87 @@ func ParseLayout(s string) (Layout, error) {
 	return out, nil
 }
 
+// TiledLayout parses s like ParseLayout and returns its tiled-only layout
+// with every pane id replaced by id(pane), an error unless id reports ok and
+// the result is "%"+digits. Raw is always rebuilt from the tree, never s
+// echoed, so no input text (a hostile checksum prefix included) survives into
+// it. W and H are the unpruned root's (the window size); Floats is nil.
+func TiledLayout(s string, id func(string) (string, bool)) (Layout, error) {
+	root, floats, err := parseTree(s)
+	if err != nil {
+		return Layout{}, err
+	}
+	w, h := root.w, root.h
+
+	floatIDs := make(map[string]bool, len(floats))
+	for _, f := range floats {
+		floatIDs[f.ID] = true
+	}
+	tiled := pruneFloats(root, floatIDs)
+	if tiled == nil {
+		return Layout{}, fmt.Errorf("layout: no tiled panes in %q", s)
+	}
+	if err := remapIDs(tiled, id); err != nil {
+		return Layout{}, err
+	}
+
+	var sb strings.Builder
+	writeCell(tiled, &sb)
+
+	var out Layout
+	out.W, out.H = w, h
+	out.Raw = fmt.Sprintf("%04x,%s", layoutChecksum(sb.String()), sb.String())
+	collectLeaves(tiled, &out.Panes)
+	return out, nil
+}
+
+// remapIDs replaces every leaf id in the tree rooted at n in place, via id.
+func remapIDs(n *node, id func(string) (string, bool)) error {
+	if len(n.children) == 0 {
+		mapped, ok := id(n.id)
+		if !ok || !validPaneID(mapped) {
+			return fmt.Errorf("layout: no valid remote id for pane %q", n.id)
+		}
+		n.id = mapped
+		return nil
+	}
+	for _, c := range n.children {
+		if err := remapIDs(c, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseTree parses a tmux layout string in either format (see ParseLayout)
+// into its unpruned cell tree and its float leaves.
+func parseTree(s string) (*node, []PaneCell, error) {
+	if strings.HasPrefix(s, "{") {
+		return parseTreeV2(s)
+	}
+	// Strip the leading "<checksum>," prefix.
+	_, body, ok := strings.Cut(s, ",")
+	if !ok {
+		return nil, nil, fmt.Errorf("layout: no checksum separator in %q", s)
+	}
+	p := &layoutParser{s: body}
+	root, err := p.cell()
+	if err != nil {
+		return nil, nil, err
+	}
+	var floats []PaneCell
+	if p.pos < len(p.s) && p.s[p.pos] == '<' {
+		floats, err = p.floatSection()
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if p.pos != len(p.s) {
+		return nil, nil, fmt.Errorf("layout: trailing data %q", p.s[p.pos:])
+	}
+	return root, floats, nil
+}
+
 // maxLayoutDepth matches tmux's own v1 nesting limit; the v2 walk is
 // recursive, and the tree comes from the remote.
 const maxLayoutDepth = 1000
@@ -114,50 +179,29 @@ type jsonCell struct {
 	Ignore int        `json:"i"`
 }
 
-func parseLayoutV2(s string) (Layout, error) {
+func parseTreeV2(s string) (*node, []PaneCell, error) {
 	var doc struct {
 		V *int     `json:"V"`
 		L jsonCell `json:"L"`
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	if err := dec.Decode(&doc); err != nil {
-		return Layout{}, fmt.Errorf("layout: bad v2 json in %q: %w", s, err)
+		return nil, nil, fmt.Errorf("layout: bad v2 json in %q: %w", s, err)
 	}
 	// dec.More() reports false for a trailing "}" or "]".
 	if _, err := dec.Token(); err != io.EOF {
-		return Layout{}, fmt.Errorf("layout: trailing data after v2 json in %q", s)
+		return nil, nil, fmt.Errorf("layout: trailing data after v2 json in %q", s)
 	}
 	if doc.V == nil || *doc.V != 2 {
-		return Layout{}, fmt.Errorf("layout: unsupported v2 version %v in %q", doc.V, s)
+		return nil, nil, fmt.Errorf("layout: unsupported v2 version %v in %q", doc.V, s)
 	}
 
 	var floats []PaneCell
 	root, err := buildV2Node(doc.L, 0, &floats)
 	if err != nil {
-		return Layout{}, err
+		return nil, nil, err
 	}
-
-	var out Layout
-	out.W, out.H = root.w, root.h
-	out.Floats = floats
-
-	floatIDs := make(map[string]bool, len(floats))
-	for _, f := range floats {
-		floatIDs[f.ID] = true
-	}
-	tiled := pruneFloats(root, floatIDs)
-	if tiled == nil {
-		return Layout{}, fmt.Errorf("layout: no tiled panes in %q", s)
-	}
-	var sb strings.Builder
-	writeCell(tiled, &sb)
-	out.Raw = fmt.Sprintf("%04x,%s", layoutChecksum(sb.String()), sb.String())
-
-	collectLeaves(tiled, &out.Panes)
-	if len(out.Panes) == 0 {
-		return Layout{}, fmt.Errorf("layout: no panes in %q", s)
-	}
-	return out, nil
+	return root, floats, nil
 }
 
 // buildV2Node converts a decoded v2 cell into a *node, appending each float

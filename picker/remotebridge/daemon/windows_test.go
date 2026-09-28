@@ -210,3 +210,21 @@ func TestActiveFirst(t *testing.T) {
 		t.Fatalf("activeFirst(\"\") = %v, want %v", got, ids)
 	}
 }
+
+func TestNoteLocalLayout(t *testing.T) {
+	tests := []struct {
+		layout, sent, want string
+	}{
+		{"A", "", "A"},
+		{"A", "A", "A"},
+		{"A", "B", ""},
+		{"", "B", ""},
+	}
+	for _, tc := range tests {
+		w := &mirrorWindow{layout: tc.layout}
+		w.noteLocalLayout(tc.sent)
+		if w.layout != tc.want {
+			t.Errorf("layout=%q noteLocalLayout(%q) = %q, want %q", tc.layout, tc.sent, w.layout, tc.want)
+		}
+	}
+}

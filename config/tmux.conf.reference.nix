@@ -342,11 +342,20 @@
 
   dragBindTable = "og-bridge-drag";
   dragStartNote = "Resize or move a pane by its border";
-  dragEndNote = "Route a mirror float border drag to the remote";
-  dragGate = "#{&&:${bridgeGate},#{pane_floating_flag}}";
+  dragEndNote = "Route a mirror border drag to the remote";
+  # resize-pane -M (MouseDrag1Border) is the only stock drag that can reshape
+  # a TILED pane, so it takes the mirror branch for any mirror pane. The
+  # move-pane -M binds keep the float-only gate: cmd_join_pane_mouse_update
+  # (cmd-join-pane.c) returns early for a non-floating pane, so they never
+  # reshape a tiled layout (#823).
+  dragFloatGate = "#{&&:${bridgeGate},#{pane_floating_flag}}";
+  dragGate = s:
+    if s.cmd == "resize-pane -M"
+    then bridgeGate
+    else dragFloatGate;
 
   dragStartBindLine = s:
-    "bind-key -N '${dragStartNote}' -T ${s.table} ${s.key} if-shell -F -t = '${dragGate}' { "
+    "bind-key -N '${dragStartNote}' -T ${s.table} ${s.key} if-shell -F -t = '${dragGate s}' { "
     + "set -F @og_bridge_drag '#{pane_id}' ; ${s.cmd} ; switch-client -T ${dragBindTable}"
     + " } "
     + menuQuote s.cmd;
@@ -376,7 +385,7 @@
   ];
   dragModifiers = ["" "M-" "C-" "S-" "C-M-" "M-S-" "C-S-" "C-M-S-"];
 
-  dragEndBody = "run-shell \"${bridgeCtl} float-drag #{q:@og_bridge_drag}\"";
+  dragEndBody = "run-shell \"${bridgeCtl} drag #{q:@og_bridge_drag}\"";
   dragEndBindLine = mod: loc: "bind-key -N '${dragEndNote}' -T ${dragBindTable} ${mod}MouseDragEnd1${loc} ${dragEndBody}";
 
   dragBinds = lib.concatStringsSep "\n" (
@@ -844,10 +853,10 @@
     # keeps any other server version on its own stock menus (#407).
     ${menuBinds}
 
-    # Mirror float border drag reaches the remote (#797): the drag start stashes
-    # the float's pane id and switches into a one-shot table that catches the
-    # drag end and routes it to ctl float-drag, since tmux's own float drag fires
-    # no hook while it runs.
+    # A mirror pane's border drag reaches the remote, a float's (#797) or a
+    # tiled divider's (#823): the drag start stashes the pane id and switches
+    # into a one-shot table that catches the drag end and routes it to ctl
+    # drag, since tmux's own drag fires no hook while it runs.
     ${dragBinds}
 
     # Vim-tmux navigation (respects zoom)
