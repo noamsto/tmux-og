@@ -49,16 +49,17 @@ func TestReconcileWindowsReflowsOnEarlyReturn(t *testing.T) {
 // notification of its own, so the flag has to ride on the layout read that a
 // ctl zoom's reconcile performs.
 func TestReadLayoutCarriesTheZoomFlag(t *testing.T) {
+	cfg := Config{RemoteSession: "sess"}
 	for _, tc := range []struct {
 		reply string
 		want  bool
 	}{
-		{"bd67,190x45,0,0,3 %7 1", true},
-		{"bd67,190x45,0,0,3 %7 0", false},
-		{"bd67,190x45,0,0,3 %7", false}, // no flag: never guess a zoom
+		{"@1 bd67,190x45,0,0,3 %7 1", true},
+		{"@1 bd67,190x45,0,0,3 %7 0", false},
+		{"@1 bd67,190x45,0,0,3 %7", false}, // no flag: never guess a zoom
 	} {
 		rt, _ := scriptedRT("%begin 1 1 1\n" + tc.reply + "\n%end 1 1 1\n")
-		_, active, zoomed, err := readLayout(rt, "sess:@1")
+		_, active, zoomed, err := readLayout(rt, cfg, "@1")
 		if err != nil {
 			t.Fatalf("readLayout(%q): %v", tc.reply, err)
 		}
