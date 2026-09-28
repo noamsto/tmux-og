@@ -2,6 +2,9 @@ package controlmode
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -356,6 +359,61 @@ func depthBombLayout(depth int) string {
 		body = `{"t":"h","w":1,"h":1,"x":0,"y":0,"c":[` + body + `,` + sibling + `]}`
 	}
 	return `{"V":2,"L":` + body + `}`
+}
+
+// TestParseLayoutV1DepthBomb pins that a v1 tree nested past maxLayoutDepth
+// errors instead of overflowing the goroutine stack. The parse runs in a
+// subprocess with a bounded stack: an unfixed build overflows the child (a
+// fatal error, clean non-zero exit) or parses successfully and exits non-zero
+// on the assertion, so the test reds either way rather than taking down the
+// test binary.
+func TestParseLayoutV1DepthBomb(t *testing.T) {
+	if os.Getenv("LAYOUT_V1_DEPTH_BOMB_CHILD") == "1" {
+		debug.SetMaxStack(16 << 20)
+		for _, depth := range []int{maxLayoutDepth + 1, 100000} {
+			if _, err := ParseLayout(v1DepthBombLayout(depth)); err == nil {
+				os.Exit(1)
+			}
+		}
+		os.Exit(0)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestParseLayoutV1DepthBomb")
+	cmd.Env = append(os.Environ(), "LAYOUT_V1_DEPTH_BOMB_CHILD=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("v1 depth bomb child failed (%v):\n%s", err, out)
+	}
+}
+
+// TestParseLayoutV1AtMaxDepth pins the boundary: a v1 tree nested exactly
+// maxLayoutDepth deep still parses (maxLayoutDepth+1 is the bomb above).
+func TestParseLayoutV1AtMaxDepth(t *testing.T) {
+	L, err := ParseLayout(v1DepthBombLayout(maxLayoutDepth))
+	if err != nil {
+		t.Fatalf("ParseLayout at maxLayoutDepth: unexpected error %v", err)
+	}
+	if len(L.Panes) != maxLayoutDepth+1 {
+		t.Fatalf("panes = %d, want %d", len(L.Panes), maxLayoutDepth+1)
+	}
+}
+
+// v1DepthBombLayout builds a v1 layout nested depth levels deep. The innermost
+// cell is a lone pane; each wrapping level is a two-child split pairing the
+// previous level with a sibling pane, so every split stays valid while nesting
+// grows by one per level.
+func v1DepthBombLayout(depth int) string {
+	const open = "1x1,0,0{"
+	const close = ",1x1,0,0,1}"
+	const leaf = "1x1,0,0,0"
+	var sb strings.Builder
+	sb.Grow(len("0000,") + depth*(len(open)+len(close)) + len(leaf))
+	for i := 0; i < depth; i++ {
+		sb.WriteString(open)
+	}
+	sb.WriteString(leaf)
+	for i := 0; i < depth; i++ {
+		sb.WriteString(close)
+	}
+	return "0000," + sb.String()
 }
 
 // wantBody is Raw after the checksum prefix; the prefix is checked by the
