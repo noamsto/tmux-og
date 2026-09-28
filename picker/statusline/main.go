@@ -89,9 +89,8 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	return f[0] == "1", true
 }
 
-// statuslineCacheDir returns the per-session last-good rendered line store so a
-// failed fetchVolatile re-paints the previous frame rather than a degraded one.
-// It is uid-qualified so two accounts on one host never collide, and
+// statuslineCacheDir is the per-session last-good frame store. It is
+// uid-qualified so two accounts on one host cannot collide, and
 // OG_STATUSLINE_CACHE_DIR overrides it for tests and scratch servers.
 func statuslineCacheDir() string {
 	if dir := os.Getenv("OG_STATUSLINE_CACHE_DIR"); dir != "" {
