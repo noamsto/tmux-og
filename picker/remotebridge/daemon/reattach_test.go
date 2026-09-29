@@ -187,7 +187,9 @@ func (r *localTmuxRecorder) record(args ...string) error {
 func (r *localTmuxRecorder) calls() [][]string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([][]string(nil), r.argv...)
+	out := make([][]string, len(r.argv))
+	copy(out, r.argv)
+	return out
 }
 
 // reattachCfg is a Config with just the fields reattach reads. LocalSess stays
@@ -312,7 +314,7 @@ func TestReattachStopRaisedDuringTheDialTearsDown(t *testing.T) {
 	if hold.get() != nil {
 		t.Error("a connection the stop discarded was published anyway")
 	}
-	if !conn.isClosed() {
+	if conn == nil || !conn.isClosed() {
 		t.Error("reattach left the transport it dialled open")
 	}
 }
@@ -524,7 +526,7 @@ func TestAttemptCycleRefusedAttachIsAVerdict(t *testing.T) {
 	if dials != 1 {
 		t.Errorf("dials = %d, want 1 — a refusal is a verdict, not a retry", dials)
 	}
-	if !conn.isClosed() {
+	if conn == nil || !conn.isClosed() {
 		t.Error("attemptCycle left the refused connection open")
 	}
 }
@@ -552,7 +554,7 @@ func TestAttemptCycleRefusalSeenAfterAFailedWrite(t *testing.T) {
 	if dials != 1 {
 		t.Errorf("dials = %d, want 1", dials)
 	}
-	if !conn.isClosed() {
+	if conn == nil || !conn.isClosed() {
 		t.Error("attemptCycle left the refused connection open")
 	}
 }

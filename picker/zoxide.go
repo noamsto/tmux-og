@@ -84,7 +84,7 @@ func collapseWorktree(p string) string {
 // in dir) and returns the main repo root, or "" when it is not a worktree
 // pointer. The "gitdir:" path may be relative to dir.
 func mainRootFromGitFile(gitFile, dir string) string {
-	data, err := os.ReadFile(gitFile)
+	data, err := os.ReadFile(gitFile) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return ""
 	}
@@ -173,7 +173,7 @@ func isExcluded(path string, patterns []string) bool {
 // non-empty patterns.
 func parseExcludePatterns(raw string) []string {
 	var out []string
-	for _, p := range strings.Split(raw, ",") {
+	for p := range strings.SplitSeq(raw, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}
@@ -218,7 +218,7 @@ func zoxideForget(path string) error {
 	if len(raw) == 0 {
 		return nil
 	}
-	if out, err := exec.Command("zoxide", append([]string{"remove"}, raw...)...).CombinedOutput(); err != nil {
+	if out, err := exec.Command("zoxide", append([]string{"remove"}, raw...)...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, argv passed without a shell
 		return fmt.Errorf("zoxide remove: %s", strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -236,7 +236,7 @@ func collectZoxide(sessions []sessionData, exclude []string) []suggestion {
 	}
 	sessionPaths, sessionNames := sessionFilterMaps(sessions)
 	var paths []string
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		l = strings.TrimSpace(l)
 		if l == "" {
 			continue
@@ -297,27 +297,27 @@ func newSessionSizeArgs() []string {
 // exists) and switches the attached client to it. zoxide add keeps the dir's
 // rank fresh: the new session's shell never cd's, so zoxide never sees it.
 func createAndSwitch(name, path string) error {
-	if exec.Command("tmux", "has-session", "-t", "="+name).Run() != nil {
+	if exec.Command("tmux", "has-session", "-t", "="+name).Run() != nil { //nolint:gosec // G204: fixed binary, argv passed without a shell
 		args := []string{"new-session", "-d", "-s", name, "-c", path}
 		args = append(args, newSessionSizeArgs()...)
-		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, argv passed without a shell
 			return fmt.Errorf("new-session: %s", strings.TrimSpace(string(out)))
 		}
 	}
 	logEvent("picker", "event", "create", "target", name, "path", path)
-	exec.Command("tmux", "switch-client", "-t", "="+name).Run() //nolint:errcheck
-	exec.Command("zoxide", "add", path).Run()                   //nolint:errcheck
+	_ = exec.Command("tmux", "switch-client", "-t", "="+name).Run() //nolint:gosec // fixed binary, argv passed without a shell
+	_ = exec.Command("zoxide", "add", path).Run()                   //nolint:gosec // fixed binary, argv passed without a shell
 	return nil
 }
 
 // listDir renders a directory listing for the preview pane, preferring eza.
 func listDir(path string) string {
 	if eza, err := exec.LookPath("eza"); err == nil {
-		if out, err := exec.Command(eza, "-la", "--color=always", "--group-directories-first", path).Output(); err == nil {
+		if out, err := exec.Command(eza, "-la", "--color=always", "--group-directories-first", path).Output(); err == nil { //nolint:gosec // G204: fixed binary, argv passed without a shell
 			return strings.TrimRight(string(out), "\n ")
 		}
 	}
-	out, err := exec.Command("ls", "-la", path).Output()
+	out, err := exec.Command("ls", "-la", path).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return "(no preview available)"
 	}

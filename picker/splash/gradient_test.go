@@ -13,7 +13,10 @@ func TestBuildGradientLengthAndStart(t *testing.T) {
 }
 
 func TestPlasmaBoundedAndAnimated(t *testing.T) {
-	for _, c := range []struct{ x, y int; t float64 }{{0, 0, 0}, {80, 24, 3.7}, {13, 7, 100}} {
+	for _, c := range []struct {
+		x, y int
+		t    float64
+	}{{0, 0, 0}, {80, 24, 3.7}, {13, 7, 100}} {
 		v := plasma(c.x, c.y, c.t)
 		if v < 0 || v > 1 {
 			t.Errorf("plasma(%d,%d,%v) = %v, out of [0,1]", c.x, c.y, c.t, v)
@@ -29,8 +32,8 @@ func TestPlasmaBoundedAndAnimated(t *testing.T) {
 
 func TestCellHashRangeAndDeterminism(t *testing.T) {
 	seen := map[float64]bool{}
-	for x := 0; x < 16; x++ {
-		for y := 0; y < 8; y++ {
+	for x := range 16 {
+		for y := range 8 {
 			h := cellHash(x, y, 0)
 			if h < 0 || h >= 1 {
 				t.Fatalf("cellHash(%d,%d,0) = %v, out of [0,1)", x, y, h)

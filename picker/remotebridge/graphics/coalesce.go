@@ -1,5 +1,7 @@
 package graphics
 
+import "slices"
+
 // Coalesce drops stores that a later store in the same batch supersedes.
 //
 // This is safe because of how a viewer pans: each store re-places under the same
@@ -23,8 +25,8 @@ package graphics
 func Coalesce(in []Chunk) []Chunk {
 	superseded := make([]bool, len(in))
 	seen := map[string]bool{} // image id -> a later store exists
-	for i := len(in) - 1; i >= 0; i-- {
-		q := in[i].Seq
+	for i, c := range slices.Backward(in) {
+		q := c.Seq
 		if q == nil {
 			continue
 		}

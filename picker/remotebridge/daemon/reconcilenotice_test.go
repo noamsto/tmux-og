@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,10 +62,8 @@ func (f *noticeFake) config() Config {
 			return nil
 		},
 		LocalTmuxOut: func(args ...string) (string, error) {
-			for _, a := range args {
-				if a == "#{window_zoomed_flag}" {
-					return f.local, nil
-				}
+			if slices.Contains(args, "#{window_zoomed_flag}") {
+				return f.local, nil
 			}
 			return "", nil
 		},
@@ -368,11 +367,9 @@ func geometryOrderingFake(log *orderedLog, zoomReads *[]int) Config {
 			return nil
 		},
 		LocalTmuxOut: func(args ...string) (string, error) {
-			for _, a := range args {
-				if a == "#{window_zoomed_flag}" {
-					*zoomReads = append(*zoomReads, len(log.entries))
-					return "0\n", nil
-				}
+			if slices.Contains(args, "#{window_zoomed_flag}") {
+				*zoomReads = append(*zoomReads, len(log.entries))
+				return "0\n", nil
 			}
 			return "", nil
 		},

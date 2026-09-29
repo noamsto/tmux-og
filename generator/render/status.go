@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/noamsto/tmux-og/generator/config"
@@ -49,9 +50,7 @@ func oneZero(v bool) string {
 // default glyph carrying '#' a second one the moment one is added.
 func enrichIconsDoubled(cfg *config.Config) map[string]string {
 	m := make(map[string]string, len(enrichIconDefaults))
-	for k, v := range enrichIconDefaults {
-		m[k] = v
-	}
+	maps.Copy(m, enrichIconDefaults)
 	for k, v := range cfg.Enrich.Icons {
 		m[k] = strings.ReplaceAll(v, "#", "##")
 	}

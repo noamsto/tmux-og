@@ -33,8 +33,7 @@ func exitError(t *testing.T, code int) error {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperExitCode$")
 	cmd.Env = append(os.Environ(), helperExitEnv+"="+strconv.Itoa(code))
 	err := cmd.Run()
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
+	if _, ok := errors.AsType[*exec.ExitError](err); !ok {
 		t.Fatalf("helper exit %d: got %v (%T), want *exec.ExitError", code, err, err)
 	}
 	return err

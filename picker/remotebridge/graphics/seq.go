@@ -132,12 +132,12 @@ func decodeSeq(b []byte, resume int) (*Seq, int, dropReason) {
 // removes the disagreement instead of trying to match it.
 func hasDuplicateKey(keys []byte) bool {
 	seen := make(map[string]bool)
-	for _, kv := range bytes.Split(keys, []byte{','}) {
-		i := bytes.IndexByte(kv, '=')
-		if i < 0 {
+	for kv := range bytes.SplitSeq(keys, []byte{','}) {
+		before, _, ok := bytes.Cut(kv, []byte{'='})
+		if !ok {
 			continue
 		}
-		k := string(kv[:i])
+		k := string(before)
 		if seen[k] {
 			return true
 		}
@@ -147,18 +147,19 @@ func hasDuplicateKey(keys []byte) bool {
 }
 
 func decodeBare(b []byte) (*Seq, int, bool) {
-	if !bytes.HasPrefix(b, []byte(apcStart)) {
+	rest, ok := bytes.CutPrefix(b, []byte(apcStart))
+	if !ok {
 		return nil, 0, false
 	}
-	end := bytes.Index(b[len(apcStart):], []byte(st))
-	if end < 0 {
+	body, _, ok := bytes.Cut(rest, []byte(st))
+	if !ok {
 		return nil, 0, false
 	}
-	body := b[len(apcStart) : len(apcStart)+end]
+	end := len(body)
 	q := &Seq{}
-	if i := bytes.IndexByte(body, ';'); i >= 0 {
-		q.Keys = append([]byte(nil), body[:i]...)
-		q.Payload = append([]byte(nil), body[i+1:]...)
+	if before, after, ok := bytes.Cut(body, []byte{';'}); ok {
+		q.Keys = append([]byte(nil), before...)
+		q.Payload = append([]byte(nil), after...)
 		q.HasBody = true
 	} else {
 		q.Keys = append([]byte(nil), body...)
@@ -246,10 +247,7 @@ func consumeBareSixel(b []byte, resume int) (n int, complete bool) {
 		j++
 	}
 	// j points at 'q'.
-	from := j + 1
-	if resume > from {
-		from = resume
-	}
+	from := max(resume, j+1)
 	end := bytes.Index(b[from:], []byte(st))
 	if end < 0 {
 		return 0, false
@@ -331,13 +329,13 @@ func peekPassthroughInner(b []byte) []byte {
 // Get returns the value of a comma-separated control key ("t", "i", "a", …),
 // or "" when absent.
 func (q *Seq) Get(key string) string {
-	for _, kv := range bytes.Split(q.Keys, []byte{','}) {
-		i := bytes.IndexByte(kv, '=')
-		if i < 0 {
+	for kv := range bytes.SplitSeq(q.Keys, []byte{','}) {
+		before, after, ok := bytes.Cut(kv, []byte{'='})
+		if !ok {
 			continue
 		}
-		if string(kv[:i]) == key {
-			return string(kv[i+1:])
+		if string(before) == key {
+			return string(after)
 		}
 	}
 	return ""
@@ -411,10 +409,7 @@ func decodeOSC1337(b []byte) (*Seq, int, dropReason) {
 // should stop at a candidate, and whether a held or overflowed span is this
 // sequence rather than ordinary OSC text.
 func oscFileViable(b []byte) bool {
-	n := len(osc1337FilePrefix)
-	if len(b) < n {
-		n = len(b)
-	}
+	n := min(len(b), len(osc1337FilePrefix))
 	return bytes.Equal(b[:n], []byte(osc1337FilePrefix)[:n])
 }
 

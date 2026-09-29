@@ -78,7 +78,7 @@ func loadUsageCaches(dir string) map[string]usageCache {
 	}
 	out := map[string]usageCache{}
 	for _, agent := range usageAgentOrder {
-		data, err := os.ReadFile(filepath.Join(dir, agent+".json"))
+		data, err := os.ReadFile(filepath.Join(dir, agent+".json")) //nolint:gosec // G304: path built from trusted local state, not user input
 		if err != nil {
 			continue
 		}

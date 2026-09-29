@@ -13,8 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -267,10 +269,10 @@ func parseWindowID(s string) (string, error) {
 // session with it (#547). A dead pane instead of a lost session is the
 // difference; healDeadRenderers repairs it from there.
 func stampMirrorWindow(cfg Config, localWin, remoteName string) {
-	cfg.LocalTmux("set-option", "-w", "-t", localWin, "@bridge_win", "1")
-	cfg.LocalTmux("set-option", "-w", "-t", localWin, "pane-base-index", "0")
-	cfg.LocalTmux("set-option", "-w", "-t", localWin, "automatic-rename", "off")
-	cfg.LocalTmux("set-option", "-w", "-t", localWin, "remain-on-exit", "on")
+	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "@bridge_win", "1")
+	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "pane-base-index", "0")
+	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "automatic-rename", "off")
+	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "remain-on-exit", "on")
 	applyMirrorName(cfg, localWin, remoteName)
 }
 
@@ -292,12 +294,12 @@ func stampMirrorWindow(cfg Config, localWin, remoteName string) {
 func applyMirrorName(cfg Config, localWin, remoteName string) {
 	name := sanitizeWindowName(remoteName)
 	if name == "" {
-		cfg.LocalTmux("set-option", "-w", "-t", localWin, "-u", "@window_bridge_name")
-		cfg.LocalTmux("rename-window", "-t", localWin, "#{b:pane_current_path}")
+		_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "-u", "@window_bridge_name")
+		_ = cfg.LocalTmux("rename-window", "-t", localWin, "#{b:pane_current_path}")
 		return
 	}
-	cfg.LocalTmux("set-option", "-w", "-t", localWin, "@window_bridge_name", name)
-	cfg.LocalTmux("rename-window", "-t", localWin, name)
+	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "@window_bridge_name", name)
+	_ = cfg.LocalTmux("rename-window", "-t", localWin, name)
 }
 
 // outputSinkBuf is the per-renderer output buffer depth. Overflow drops the
@@ -494,9 +496,9 @@ func registerResizeNudge(cfg Config, nudgePath string) {
 		return
 	}
 	for _, event := range legacyResizeHooks {
-		cfg.LocalTmux("set-hook", "-u", "-t", cfg.LocalSess, event)
+		_ = cfg.LocalTmux("set-hook", "-u", "-t", cfg.LocalSess, event)
 	}
-	cfg.LocalTmux("set-option", "-t", cfg.LocalSess, bridgeNudgeOption, nudgePath)
+	_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, bridgeNudgeOption, nudgePath)
 }
 
 // unregisterResizeNudge unsets the option registerResizeNudge published, for
@@ -505,7 +507,7 @@ func unregisterResizeNudge(cfg Config) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, bridgeNudgeOption)
+	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, bridgeNudgeOption)
 }
 
 // stream owns the command side of the control connection. It serializes writes
@@ -593,15 +595,16 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 	if s.closed {
 		return nil, false
 	}
+	seqs = make([]uint64, 0, len(cmds))
 	for _, cmd := range cmds {
-		fmt.Fprintf(s.w, "%s\n", cmd)
+		_, _ = fmt.Fprintf(s.w, "%s\n", cmd)
 		s.sent++
 		seqs = append(seqs, s.sent)
 		// The tag is a format to display-message: keep it a literal, never
 		// remote-derived text. No -t either — a target that vanished would
 		// answer with an error block and leave the swallow window open.
 		f := fanout{after: s.sent, tag: fmt.Sprintf("og-fanout-%d", s.sent)}
-		fmt.Fprintf(s.w, "display-message -p %s\n", f.tag)
+		_, _ = fmt.Fprintf(s.w, "display-message -p %s\n", f.tag)
 		s.sent++
 		s.fans = append(s.fans, f)
 	}
@@ -778,7 +781,7 @@ func mirrorStartupWindows(cfg Config, remoteWins []remoteWindow, send func(strin
 			cv.forget(rw.id)
 			cst.forgetWindow(rw.id)
 			if localWin != placeholder {
-				cfg.LocalTmux("kill-window", "-t", localWin)
+				_ = cfg.LocalTmux("kill-window", "-t", localWin)
 			}
 			continue
 		}
@@ -797,7 +800,7 @@ func dropUnclaimedPlaceholder(cfg Config, reg *registry, placeholder string) {
 	if placeholder == "" || reg.empty() {
 		return
 	}
-	cfg.LocalTmux("kill-window", "-t", placeholder)
+	_ = cfg.LocalTmux("kill-window", "-t", placeholder)
 	cfg.reflow()
 }
 
@@ -913,7 +916,7 @@ func runMirror(cfg Config) error {
 	// the reads above must not receive this mirror's session path. The bare name
 	// is safe only because the check just proved it still stands.
 	if sessionPath != "" {
-		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", sessionPath)
+		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", sessionPath)
 	}
 
 	// Published here for the first attach; repair() (below) re-sends the same
@@ -925,7 +928,7 @@ func runMirror(cfg Config) error {
 	// the remote emit graphics this proxy only drops.
 	sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()))
 
-	os.Remove(cfg.SockPath)
+	_ = os.Remove(cfg.SockPath)
 	listener, err := net.Listen("unix", cfg.SockPath)
 	if err != nil {
 		hold.close()
@@ -996,11 +999,11 @@ func runMirror(cfg Config) error {
 	// a bridge window whose session has no socket yet — and stamped by the daemon
 	// rather than the launcher so the offline --test-local harness gets it too.
 	if cfg.LocalSess != "" {
-		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_sock", cfg.SockPath)
+		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_sock", cfg.SockPath)
 		// @bridge_host is what the session picker's Host column reads; the local
 		// session name can't be split back into host+session (either may hold a "-").
-		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_host", cfg.RemoteHost)
-		cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session", cfg.RemoteSession)
+		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_host", cfg.RemoteHost)
+		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session", cfg.RemoteSession)
 	}
 	// The launcher reuses a mirror session (#474), so a prior daemon killed
 	// mid-outage — teardown would have taken the session with it — can leave
@@ -1038,7 +1041,7 @@ func runMirror(cfg Config) error {
 	// same socket path can't be mistaken for a resize before the option is ever
 	// published again.
 	nudgePath := cfg.SockPath + resizeNudgeSuffix
-	os.Remove(nudgePath)
+	_ = os.Remove(nudgePath)
 	// stopWatch stops the resize watcher (started just before the main loop).
 	// Declared here so teardown can close it; teardown runs exactly once per
 	// Run return path, so a plain close is safe.
@@ -1073,7 +1076,7 @@ func runMirror(cfg Config) error {
 		close(stopWatch)
 		clearPhase(cfg)
 		unregisterResizeNudge(cfg)
-		os.Remove(nudgePath)
+		_ = os.Remove(nudgePath)
 		if agents != nil {
 			agents.clear()
 		}
@@ -1091,14 +1094,14 @@ func runMirror(cfg Config) error {
 		if loopTick != nil {
 			loopTick.Stop()
 		}
-		listener.Close()
-		os.Remove(cfg.SockPath)
+		_ = listener.Close()
+		_ = os.Remove(cfg.SockPath)
 		// The pidfile names this same live process through the rebuild, so
 		// og-remote-detach and the picker's stopBridgeDaemon SIGTERM it rather
 		// than falling back to a bare kill-session under a half-built mirror;
 		// the next run rewrites it.
 		if ending != endReplaced {
-			os.Remove(pidFile)
+			_ = os.Remove(pidFile)
 		}
 		for _, mw := range reg.all() {
 			// Unregister closes each pane's output sink, stopping its pump
@@ -1108,7 +1111,7 @@ func runMirror(cfg Config) error {
 				router.Unregister(id)
 			}
 			for _, c := range mw.conns {
-				c.Close()
+				_ = c.Close()
 			}
 		}
 		// Unset before hold.close(): the variable describes the *local*
@@ -1137,7 +1140,7 @@ func runMirror(cfg Config) error {
 		case endGone:
 			tombstoneMirror(cfg, tombstoneText(cfg.RemoteHost, cfg.RemoteSession))
 		default:
-			cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
+			_ = cfg.LocalTmux("kill-session", "-t", cfg.LocalSess)
 		}
 	}
 
@@ -1161,7 +1164,7 @@ func runMirror(cfg Config) error {
 	// (not an id), so resolve index -> id -> local window via the enumerated
 	// list; never treat it as id "@<idx>".
 	if initWin, ok := localWinForRemoteIndex(remoteWins, reg, cfg.RemoteWindow); ok {
-		cfg.LocalTmux("select-window", "-t", initWin)
+		_ = cfg.LocalTmux("select-window", "-t", initWin)
 	}
 
 	// Re-read the remote once setup is done. Names were captured by the single
@@ -1263,7 +1266,7 @@ func runMirror(cfg Config) error {
 			pin.apply(l, reg, router, rt)
 		case controlmode.SessionWindowChanged:
 			if argv, ok := translateWindowNotification(l, reg); ok {
-				cfg.LocalTmux(argv...)
+				_ = cfg.LocalTmux(argv...)
 			}
 		case controlmode.WindowAdd:
 			if len(l.Args) > 0 {
@@ -1315,6 +1318,8 @@ func runMirror(cfg Config) error {
 			}
 		case controlmode.Exit:
 			return true
+		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error:
+			// Reply framing and unmodelled lines: reply readers consume them.
 		}
 		return false
 	}
@@ -1780,9 +1785,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 	if err != nil {
 		return err
 	}
-	for id, c := range byRemote {
-		mw.conns[id] = c
-	}
+	maps.Copy(mw.conns, byRemote)
 
 	// Seed every connected pane in one batch. Panes that never hello'd are
 	// filtered out rather than skipped in the loop, so no command is issued for
@@ -1815,7 +1818,9 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 		// leaving a blank one behind a live registry entry.
 		if len(mw.remotePanes) == 1 {
 			router.Unregister(remotePane)
-			mw.conns[remotePane].Close()
+			if c := mw.conns[remotePane]; c != nil {
+				_ = c.Close()
+			}
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
@@ -1877,7 +1882,7 @@ func addWindow(cfg Config, send func(string), router *Router, waitHellos helloWa
 		fmt.Fprintf(os.Stderr, "daemon: window-add %s: %v\n", remoteID, err)
 		reg.remove(remoteID)
 		cv.forget(remoteID)
-		cfg.LocalTmux("kill-window", "-t", localWin)
+		_ = cfg.LocalTmux("kill-window", "-t", localWin)
 		return
 	}
 	cfg.reflow()
@@ -1898,9 +1903,9 @@ func closeWindow(cfg Config, router *Router, cst *ctlState, reg *registry, cv *c
 		router.Unregister(id)
 	}
 	for _, c := range mw.conns {
-		c.Close()
+		_ = c.Close()
 	}
-	cfg.LocalTmux("kill-window", "-t", mw.localWin)
+	_ = cfg.LocalTmux("kill-window", "-t", mw.localWin)
 }
 
 // retireMirror drops the mirror for a remote window whose LOCAL window is gone,
@@ -2320,8 +2325,8 @@ func rendererSpawnArgs(cfg Config, remotePane string) []string {
 // split), and pane options survive respawn-pane -k, select-layout and
 // swap-pane, so this is the only place either option needs writing.
 func markRendererPane(cfg Config, target, remotePane string) {
-	cfg.LocalTmux("set-option", "-p", "-t", target, "@bridge_pane", remotePane)
-	cfg.LocalTmux("set-option", "-p", "-t", target, "allow-passthrough", "all")
+	_ = cfg.LocalTmux("set-option", "-p", "-t", target, "@bridge_pane", remotePane)
+	_ = cfg.LocalTmux("set-option", "-p", "-t", target, "allow-passthrough", "all")
 }
 
 // acceptConns accepts connections on l until it's closed and dispatches each on
@@ -2339,21 +2344,21 @@ func acceptConns(l net.Listener, out chan<- helloConn, onCtl func(argv []string)
 		go func() {
 			f, err := wire.ReadFrame(conn)
 			if err != nil {
-				conn.Close()
+				_ = conn.Close()
 				return
 			}
 			switch f.Type {
 			case wire.FrameHello:
 				out <- helloConn{paneID: string(f.Payload), conn: conn}
 			case wire.FrameCtl:
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				msg := ""
 				if err := onCtl(wire.DecodeArgv(f.Payload)); err != nil {
 					msg = err.Error()
 				}
-				wire.WriteFrame(conn, wire.FrameCtlAck, []byte(msg))
+				_ = wire.WriteFrame(conn, wire.FrameCtlAck, []byte(msg))
 			default:
-				conn.Close()
+				_ = conn.Close()
 			}
 		}()
 	}
@@ -2393,12 +2398,12 @@ func waitHellos(lines <-chan controlmode.Line, router *Router, async *asyncQueue
 				if unexpected != nil {
 					unexpected(hc)
 				} else {
-					hc.conn.Close()
+					_ = hc.conn.Close()
 				}
 				continue
 			}
 			if prev := out[hc.paneID]; prev != nil {
-				prev.Close()
+				_ = prev.Close()
 			}
 			out[hc.paneID] = hc.conn
 		case l, ok := <-lines:
@@ -2425,22 +2430,19 @@ func waitHellos(lines <-chan controlmode.Line, router *Router, async *asyncQueue
 func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router, reg *registry, rt roundTrip) {
 	var mw *mirrorWindow
 	for _, w := range reg.all() {
-		for _, id := range w.allRemotePanes() {
-			if id == hc.paneID {
-				mw = w
-				break
-			}
+		if slices.Contains(w.allRemotePanes(), hc.paneID) {
+			mw = w
 		}
 		if mw != nil {
 			break
 		}
 	}
 	if mw == nil {
-		hc.conn.Close()
+		_ = hc.conn.Close()
 		return
 	}
 	if old := mw.conns[hc.paneID]; old != nil {
-		old.Close()
+		_ = old.Close()
 	}
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
@@ -2469,7 +2471,7 @@ func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
 
 func closeConns(conns map[string]net.Conn) {
 	for _, c := range conns {
-		c.Close()
+		_ = c.Close()
 	}
 }
 
@@ -2615,7 +2617,7 @@ func (s *outputSink) start(conn net.Conn) {
 					}
 					if len(tail) > 0 {
 						s.mouse.Feed(tail)
-						wire.WriteStream(conn, wire.FrameOutput, tail)
+						_ = wire.WriteStream(conn, wire.FrameOutput, tail)
 					}
 					return
 				}
@@ -2944,7 +2946,6 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 				// Deliver whatever is still carried, then report the close.
 				stopTimer()
 				deliver(carry)
-				carry = nil
 				if died != nil {
 					died()
 				}
@@ -3139,10 +3140,7 @@ func csiEnd(b []byte) (int, bool) {
 		if params < 3 || incomp {
 			return 0, false
 		}
-		raw := 3 + 3
-		if raw > len(b) {
-			raw = len(b)
-		}
+		raw := min(3+3, len(b))
 		if end != raw && (b[3] >= 0xc2 || (raw < len(b) && b[raw]&0xc0 == 0x80)) {
 			return end, true
 		}
@@ -3193,10 +3191,7 @@ func csiEnd(b []byte) (int, bool) {
 // consumes to the end. The UTF-8 length comes from x10UTF8End, the same rule
 // splitIncompleteEscape uses.
 func skipX10Mouse(b []byte, utf8, known bool) []byte {
-	raw := 3 + 3
-	if raw > len(b) {
-		raw = len(b)
-	}
+	raw := min(3+3, len(b))
 	utf8End, _, _ := x10UTF8End(b)
 	if known {
 		if utf8 {

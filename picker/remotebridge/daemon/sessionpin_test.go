@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -68,8 +69,8 @@ func TestSessionPinDisabledWithoutID(t *testing.T) {
 // mirror of its own.
 func TestSessionPinSwitchesBackReseedsAndHandsOff(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	router.Register("%1", newOutputSink(local, nil))
@@ -110,7 +111,7 @@ func TestSessionPinSwitchesBackReseedsAndHandsOff(t *testing.T) {
 	}
 
 	// No -c: over this stream, "current client" is the control client itself.
-	if first := strings.SplitN(sent.String(), "\n", 2)[0]; first != "switch-client -t '$0'" {
+	if first, _, _ := strings.Cut(sent.String(), "\n"); first != "switch-client -t '$0'" {
 		t.Errorf("first command = %q, want the switch back", first)
 	}
 }
@@ -169,6 +170,9 @@ func TestNewSessionPinToleratesAnOldRemoteRejectingTheFlag(t *testing.T) {
 		rt, _ := scriptedRT(script)
 		p = newSessionPin(Config{RemoteSession: "A"}, rt)
 	})
+	if p == nil {
+		t.Fatal("newSessionPin returned nil")
+	}
 	if p.id != "$3" || !p.identityKnown {
 		t.Errorf("id = %q identityKnown = %v, want $3 / true — an %%error on the flag reply must not fail the identity read", p.id, p.identityKnown)
 	}
@@ -256,8 +260,8 @@ func TestReadIdentityDistinguishesRetryFromTeardown(t *testing.T) {
 			if err == nil {
 				t.Fatal("err = nil, want a failure")
 			}
-			ie, ok := err.(*identityReadErr)
-			if !ok {
+			var ie *identityReadErr
+			if !errors.As(err, &ie) {
 				t.Fatalf("err = %T, want *identityReadErr", err)
 			}
 			if ie.Retry() != tt.wantRetry {
@@ -305,8 +309,8 @@ func TestSessionPinReseedRoutesEachPaneItsOwnCapture(t *testing.T) {
 		{"@2", "@102", "%2"},
 	} {
 		local, peer := net.Pipe()
-		defer local.Close()
-		defer peer.Close()
+		defer func() { _ = local.Close() }()
+		defer func() { _ = peer.Close() }()
 		peers[w.pane] = peer
 		router.Register(w.pane, newOutputSink(local, nil))
 		reg.add(w.remoteWin, w.localWin).remotePanes = []string{w.pane}
@@ -325,6 +329,9 @@ func TestSessionPinReseedRoutesEachPaneItsOwnCapture(t *testing.T) {
 	// reg.all() walks a map, so the issue order is whatever it gave us; the
 	// commands on the wire are the record of it.
 	order := capturedPanes(sent.String())
+	if len(order) < 2 {
+		t.Fatalf("captured panes = %v, want 2", order)
+	}
 	want := map[string]string{order[0]: "FRESH-A", order[1]: "FRESH-B"}
 	for pane, peer := range peers {
 		f, err := wire.ReadFrame(peer)
@@ -341,7 +348,7 @@ func TestSessionPinReseedRoutesEachPaneItsOwnCapture(t *testing.T) {
 // the order they were issued.
 func capturedPanes(sent string) []string {
 	var ids []string
-	for _, line := range strings.Split(sent, "\n") {
+	for line := range strings.SplitSeq(sent, "\n") {
 		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == "capture-pane" {
 			ids = append(ids, fields[len(fields)-1])
 		}

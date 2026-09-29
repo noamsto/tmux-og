@@ -12,7 +12,7 @@ import (
 // "name=1" (found) or "name=0" (not found) line per remoteChecklist entry.
 func ParseRemote(output string) []Result {
 	found := make(map[string]string, len(remoteChecklist))
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -51,7 +51,7 @@ func RunRemote(ctx context.Context, host string) (string, error) {
 	for _, item := range remoteChecklist {
 		fmt.Fprintf(&sweep, "command -v %s >/dev/null 2>&1 && echo %s=1 || echo %s=0;", item.Name, item.Name, item.Name)
 	}
-	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", host, sweep.String())
+	cmd := exec.CommandContext(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", host, sweep.String()) //nolint:gosec // host follows "--"; sweep is built from the fixed checklist
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("doctor: ssh %s: %s", host, sshErrorDetail(err))

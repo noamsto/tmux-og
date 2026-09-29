@@ -585,8 +585,8 @@ func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
 		t.Fatalf("control client: %v", err)
 	}
 	t.Cleanup(func() {
-		ctl.Process.Kill()
-		ctl.Wait()
+		_ = ctl.Process.Kill()
+		_ = ctl.Wait()
 	})
 
 	lines := make(chan controlmode.Line, 256)

@@ -38,6 +38,6 @@ func setPhase(cfg Config, format string, args ...any) {
 // path cannot show the previous bridge's last caption before writing its own.
 func clearPhase(cfg Config) {
 	if path := phasePath(cfg); path != "" {
-		os.Remove(path)
+		_ = os.Remove(path)
 	}
 }

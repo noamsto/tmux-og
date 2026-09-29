@@ -33,7 +33,7 @@ func TestFrameRoundTrip(t *testing.T) {
 			t.Errorf("frame[%d] = %d/%q, want %d/%q", i, f.Type, f.Payload, x.t, x.p)
 		}
 	}
-	if _, err := ReadFrame(&buf); err != io.EOF {
+	if _, err := ReadFrame(&buf); !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF after last frame, got %v", err)
 	}
 }

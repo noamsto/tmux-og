@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/noamsto/tmux-og/generator/config"
@@ -187,12 +188,8 @@ var enrichIconDefaults = map[string]string{
 // not re-parsed as a tmux format, so ##-escaped glyphs must not reach it.
 func enrichIconsRaw(cfg *config.Config) map[string]string {
 	m := make(map[string]string, len(enrichIconDefaults))
-	for k, v := range enrichIconDefaults {
-		m[k] = v
-	}
-	for k, v := range cfg.Enrich.Icons {
-		m[k] = v
-	}
+	maps.Copy(m, enrichIconDefaults)
+	maps.Copy(m, cfg.Enrich.Icons)
 	return m
 }
 

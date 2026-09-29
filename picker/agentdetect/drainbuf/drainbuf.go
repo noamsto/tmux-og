@@ -33,10 +33,7 @@ func (b *Buffer) Append(p []byte) {
 	b.mu.Lock()
 	b.data = append(b.data, p...)
 	if len(b.data) > b.max {
-		keep := b.max / 2
-		if keep > len(b.data) {
-			keep = len(b.data)
-		}
+		keep := min(b.max/2, len(b.data))
 		b.data = append(b.data[:0], b.data[len(b.data)-keep:]...)
 		b.trunc = true
 	}

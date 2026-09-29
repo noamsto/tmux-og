@@ -58,8 +58,8 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 		t.Fatalf("control client: %v", err)
 	}
 	t.Cleanup(func() {
-		ctl.Process.Kill()
-		ctl.Wait()
+		_ = ctl.Process.Kill()
+		_ = ctl.Wait()
 	})
 	go func() {
 		sc := bufio.NewScanner(stdout)
@@ -71,15 +71,15 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 	send := func(cmd string) {
 		mu.Lock()
 		defer mu.Unlock()
-		fmt.Fprintln(stdin, cmd)
+		_, _ = fmt.Fprintln(stdin, cmd)
 	}
 
 	peers := make(map[string]net.Conn, 4)
 	for _, id := range []string{live, deadKeyTiled, deadKeyFloat, deadOn} {
 		conn, peer := net.Pipe()
 		t.Cleanup(func() {
-			conn.Close()
-			peer.Close()
+			_ = conn.Close()
+			_ = peer.Close()
 		})
 		peers[id] = peer
 		go pumpInput(conn, id, send, nil, nil, nil, nil)
@@ -87,7 +87,10 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 
 	for _, id := range []string{live, deadKeyTiled, deadKeyFloat, deadOn} {
 		peer := peers[id]
-		peer.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if peer == nil {
+			t.Fatalf("no peer for %s", id)
+		}
+		_ = peer.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
 			t.Fatalf("write input to %s: %v", id, err)
 		}
@@ -99,7 +102,10 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 	// connection before the assertions below run.
 	for _, id := range []string{live, deadOn} {
 		peer := peers[id]
-		peer.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if peer == nil {
+			t.Fatalf("no peer for %s", id)
+		}
+		_ = peer.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
 			t.Fatalf("write second input to %s: %v", id, err)
 		}
@@ -122,7 +128,7 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 			t.Fatalf("wait-for og748: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		waitCmd.Process.Kill()
+		_ = waitCmd.Process.Kill()
 		t.Fatal("wait-for og748 timed out — a queued command never reached the server")
 	}
 

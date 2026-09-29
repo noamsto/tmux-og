@@ -22,7 +22,7 @@ import (
 func gitOutput(dir string, args ...string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return "", false
 	}
@@ -70,7 +70,7 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	format := strings.Join(volatileFields, "|")
-	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", a.session, "-F", format).Output()
+	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", a.session, "-F", format).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return false, false
 	}
@@ -131,7 +131,7 @@ func readLastGood(dir, session string) (string, bool) {
 	if !ownerdir.OwnerOnly(dir) {
 		return "", false
 	}
-	out, err := os.ReadFile(filepath.Join(dir, cacheFileName(session)))
+	out, err := os.ReadFile(filepath.Join(dir, cacheFileName(session))) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return "", false
 	}
@@ -147,7 +147,9 @@ func writeLastGood(dir, session, line string) {
 	if os.WriteFile(tmp, []byte(line), 0o600) != nil {
 		return
 	}
-	os.Rename(tmp, path)
+	if os.Rename(tmp, path) != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 type args struct {
@@ -451,9 +453,9 @@ func main() {
 	// and tmux keeps only the LAST complete line, so the render below wins.
 	lastGood, hadLastGood := readLastGood(statuslineCacheDir(), a.session)
 	if hadLastGood {
-		os.Stdout.WriteString(lastGood + "\n")
+		_, _ = os.Stdout.WriteString(lastGood + "\n")
 	} else {
-		os.Stdout.WriteString("\n")
+		_, _ = os.Stdout.WriteString("\n")
 	}
 
 	prefixActive, ok := a.fetchVolatile()
@@ -494,5 +496,5 @@ func main() {
 	if ok && panesOK {
 		writeLastGood(statuslineCacheDir(), a.session, line)
 	}
-	os.Stdout.WriteString(line + "\n")
+	_, _ = os.Stdout.WriteString(line + "\n")
 }

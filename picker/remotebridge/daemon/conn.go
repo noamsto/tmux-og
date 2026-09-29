@@ -133,7 +133,7 @@ func (c *ctlConn) routeWhile(fn func()) {
 // only the write half leaves a silent far end holding the pump forever.
 func (c *ctlConn) close() {
 	c.st.close()
-	c.rwc.Close()
+	_ = c.rwc.Close()
 }
 
 // connHolder is the one indirection between the daemon's long-lived goroutines
@@ -322,6 +322,8 @@ func reattach(cfg Config, router *Router, hold *connHolder, want remoteIdentity,
 			return nil, endTeardown
 		case cycleReplaced:
 			return nil, endReplaced
+		case cycleExhausted:
+			// Falls out to park below.
 		case cycleRefused:
 			if restoring {
 				return nil, endGone
@@ -658,28 +660,28 @@ func setBridgeState(cfg Config, v string) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_state", v)
+	_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_state", v)
 }
 
 func clearBridgeState(cfg Config) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_state")
+	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_state")
 }
 
 func clearBridgeRes(cfg Config) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
+	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
 }
 
 func clearBridgeUsage(cfg Config) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_usage")
+	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_usage")
 }
 
 // stopped reports whether the user has asked the daemon to shut down. A nil

@@ -23,7 +23,7 @@ const agentScreenOption = "@agent_screen"
 type TmuxRunner func(args ...string) error
 
 func runTmux(args ...string) error {
-	return exec.Command("tmux", args...).Run()
+	return exec.Command("tmux", args...).Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 }
 
 type Writer struct {
@@ -65,12 +65,12 @@ func (w *Writer) Update(state string, flags map[string]int, now time.Time) (bool
 	if key == w.last {
 		return false, nil
 	}
-	if err := os.MkdirAll(w.dir, 0o755); err != nil {
+	if err := os.MkdirAll(w.dir, 0o755); err != nil { //nolint:gosec // non-secret state read by same-user tmux scripts
 		return false, err
 	}
 	tmp := w.path() + ".tmp"
 	content := fmt.Sprintf("state=%s\ntimestamp=%d\n%s%s", state, now.Unix(), w.serverLine(), flagLines(flags))
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil { //nolint:gosec // non-secret state read by same-user tmux scripts
 		return false, err
 	}
 	if err := os.Rename(tmp, w.path()); err != nil {

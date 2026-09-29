@@ -25,15 +25,15 @@ func TestRendererPaintsAndForwards(t *testing.T) {
 		t.Fatalf("hello = %v %q err %v", f.Type, f.Payload, err)
 	}
 	// Send a seed + one output frame, then close.
-	wire.WriteFrame(server, wire.FrameSeed, []byte("SEED"))
-	wire.WriteFrame(server, wire.FrameOutput, []byte("OUT"))
+	_ = wire.WriteFrame(server, wire.FrameSeed, []byte("SEED"))
+	_ = wire.WriteFrame(server, wire.FrameOutput, []byte("OUT"))
 
 	// Expect the forwarded stdin as an Input frame.
 	fi, err := wire.ReadFrame(server)
 	if err != nil || fi.Type != wire.FrameInput || string(fi.Payload) != "ls\r" {
 		t.Fatalf("input = %v %q err %v", fi.Type, fi.Payload, err)
 	}
-	server.Close()
+	_ = server.Close()
 
 	select {
 	case <-done:
@@ -61,11 +61,11 @@ func TestRendererRecordsResize(t *testing.T) {
 	if err != nil || f.Type != wire.FrameHello {
 		t.Fatalf("hello: %v %v", f.Type, err)
 	}
-	wire.WriteFrame(server, wire.FrameResize, wire.EncodeResize(159, 52))
-	wire.WriteFrame(server, wire.FrameSeed, []byte("SEED"))
+	_ = wire.WriteFrame(server, wire.FrameResize, wire.EncodeResize(159, 52))
+	_ = wire.WriteFrame(server, wire.FrameSeed, []byte("SEED"))
 	// Give the paint loop a moment, then close.
 	time.Sleep(50 * time.Millisecond)
-	server.Close()
+	_ = server.Close()
 
 	select {
 	case <-done:

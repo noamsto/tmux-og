@@ -322,6 +322,9 @@ func TestParseWindowPaneRowsBridgeIdentity(t *testing.T) {
 		t.Fatalf("got %d windows, want 1", len(order))
 	}
 	wi := m[order[0]]
+	if wi == nil {
+		t.Fatal("no window record")
+	}
 	if !wi.bridgeWin {
 		t.Fatal("bridgeWin = false, want true")
 	}
@@ -350,6 +353,9 @@ func TestParseWindowPaneRowsBridgeHost(t *testing.T) {
 	)
 	order, m := parseWindowPaneRows([]string{row})
 	wi := m[order[0]]
+	if wi == nil {
+		t.Fatal("no window record")
+	}
 	if wi.bridgeHost != "tp-g6" {
 		t.Errorf("bridgeHost = %q, want tp-g6", wi.bridgeHost)
 	}
@@ -368,6 +374,9 @@ func TestParseWindowPaneRowsLocalUnchanged(t *testing.T) {
 	)
 	order, m := parseWindowPaneRows([]string{row})
 	wi := m[order[0]]
+	if wi == nil {
+		t.Fatal("no window record")
+	}
 	if wi.bridgeWin {
 		t.Fatal("bridgeWin = true, want false")
 	}
@@ -390,6 +399,9 @@ func TestParseWindowPaneRowsLocalNoAgentBlanksCrew(t *testing.T) {
 	)
 	order, m := parseWindowPaneRows([]string{row})
 	wi := m[order[0]]
+	if wi == nil {
+		t.Fatal("no window record")
+	}
 	if wi.bridgeWin {
 		t.Fatal("bridgeWin = true, want false")
 	}
@@ -414,6 +426,9 @@ func TestParseWindowPaneRowsBridgeEmptyIDFallsBackToRest(t *testing.T) {
 	)
 	order, m := parseWindowPaneRows([]string{row})
 	wi := m[order[0]]
+	if wi == nil {
+		t.Fatal("no window record")
+	}
 	if wi.labelID != "" {
 		t.Fatalf("labelID = %q, want empty", wi.labelID)
 	}
@@ -438,6 +453,9 @@ func TestParseWindowPaneRowsBareBridgeKeepsDecodedWindowName(t *testing.T) {
 	)
 	order, m := parseWindowPaneRows([]string{row})
 	wi := m[order[0]]
+	if wi == nil {
+		t.Fatal("no window record")
+	}
 	if wi.labelID != "" || wi.labelRest != "" {
 		t.Fatalf("labelID/labelRest = %q/%q, want both empty", wi.labelID, wi.labelRest)
 	}
@@ -472,10 +490,16 @@ func TestParseWindowPaneRowsBridgeProcOverride(t *testing.T) {
 		t.Fatalf("got %d windows, want 2", len(order))
 	}
 	mirror := m[order[0]]
+	if mirror == nil {
+		t.Fatal("no window record")
+	}
 	if len(mirror.procs) != 1 || mirror.procs[0] != "claude" {
 		t.Errorf("mirror procs = %v, want [claude] (bridge_proc must override the renderer's fish)", mirror.procs)
 	}
 	local := m[order[1]]
+	if local == nil {
+		t.Fatal("no window record")
+	}
 	if len(local.procs) != 1 || local.procs[0] != "bash" {
 		t.Errorf("local procs = %v, want [bash] (empty bridge_proc must fall through to pane_current_command)", local.procs)
 	}

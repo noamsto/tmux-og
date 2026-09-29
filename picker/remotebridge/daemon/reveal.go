@@ -61,7 +61,7 @@ func clientViewsArgs(sess string) []string {
 // looking at, which is what revealedWindows diffs against a prior poll.
 func clientViews(out string) map[string]string {
 	views := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" {
 			continue

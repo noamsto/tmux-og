@@ -88,8 +88,8 @@ func TestReshapedPanesSkipsNonSinks(t *testing.T) {
 // rewrapped screen the reshape pass had to ship.
 func TestReseedReshapedRepaintsFromCapture(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	s := newOutputSink(local, nil)
 	s.markReshaped()
@@ -104,7 +104,7 @@ func TestReseedReshapedRepaintsFromCapture(t *testing.T) {
 	reseedReshaped(router, rt) // marking pass: nothing due, no round-trip spent
 	go reseedReshaped(router, rt)
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	f, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read frame: %v", err)
@@ -120,8 +120,8 @@ func TestReseedReshapedRepaintsFromCapture(t *testing.T) {
 // confirmation capture.
 func TestReshapeReconcileMarksTheReseededPane(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	sink := newOutputSink(local, nil)
@@ -158,8 +158,8 @@ func TestReshapeReconcileMarksTheReseededPane(t *testing.T) {
 
 	// Drain the reshape's own frames so the sink is idle; the mark is what is
 	// under test, not the frames.
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
-	for i := 0; i < 2; i++ {
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
+	for i := range 2 {
 		if _, err := wire.ReadFrame(peer); err != nil {
 			t.Fatalf("read frame %d: %v", i, err)
 		}

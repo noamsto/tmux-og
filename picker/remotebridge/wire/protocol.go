@@ -65,7 +65,7 @@ type Frame struct {
 func WriteFrame(w io.Writer, t FrameType, payload []byte) error {
 	buf := make([]byte, 5+len(payload))
 	buf[0] = byte(t)
-	binary.BigEndian.PutUint32(buf[1:5], uint32(len(payload)))
+	binary.BigEndian.PutUint32(buf[1:5], uint32(len(payload))) //nolint:gosec // payload length is bounded far below 4 GiB
 	copy(buf[5:], payload)
 	_, err := w.Write(buf)
 	return err
@@ -128,8 +128,8 @@ func ReadFrame(r io.Reader) (Frame, error) {
 
 func EncodeResize(w, h int) []byte {
 	b := make([]byte, 8)
-	binary.BigEndian.PutUint32(b[0:], uint32(w))
-	binary.BigEndian.PutUint32(b[4:], uint32(h))
+	binary.BigEndian.PutUint32(b[0:], uint32(w)) //nolint:gosec // cell dims are small non-negative ints
+	binary.BigEndian.PutUint32(b[4:], uint32(h)) //nolint:gosec // cell dims are small non-negative ints
 	return b
 }
 

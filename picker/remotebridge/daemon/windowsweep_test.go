@@ -31,7 +31,7 @@ func TestWindowSweeperFloorsRepeatedPasses(t *testing.T) {
 	reg.add("@1", "@143")
 
 	var s windowSweeper
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		s.sweep(cfg, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), emptyRemote())
 	}
 	if forks != 1 {

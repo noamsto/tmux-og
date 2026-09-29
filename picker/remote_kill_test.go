@@ -106,7 +106,7 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(scratch) })
+	t.Cleanup(func() { _ = os.RemoveAll(scratch) })
 
 	// Unique names: if the shim ever fails to shadow PATH, the surviving real
 	// session can never be a user's.
@@ -124,7 +124,7 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 	t.Cleanup(func() {
 		cmd := exec.Command(realTmux, "-L", sock, "kill-server")
 		cmd.Env = env
-		cmd.Run()
+		_ = cmd.Run()
 	})
 
 	shimDir := t.TempDir()

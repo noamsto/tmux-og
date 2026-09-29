@@ -18,7 +18,7 @@ func buildOutputStreamForBench(n, payloadLen int) string {
 
 	var sb strings.Builder
 	sb.Grow(n * (len(line) + 16))
-	for i := 0; i < n; i++ {
+	for range n {
 		sb.WriteString("%output %1 ")
 		sb.WriteString(line)
 		sb.WriteByte('\n')

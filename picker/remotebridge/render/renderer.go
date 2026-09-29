@@ -2,6 +2,7 @@ package render
 
 import (
 	"bufio"
+	"errors"
 	"io"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
@@ -21,7 +22,7 @@ func Run(conn io.ReadWriteCloser, paneID string, in io.Reader, out io.Writer, ra
 		return err
 	}
 	if restore != nil {
-		defer restore()
+		defer restore() //nolint:errcheck // restore of terminal mode at exit; failure is not actionable
 	}
 
 	// stdin -> Input frames
@@ -46,11 +47,11 @@ func Run(conn io.ReadWriteCloser, paneID string, in io.Reader, out io.Writer, ra
 	// The in-loop flush below only fires when the loop keeps going; an abrupt
 	// exit (read error, EOF mid-frame-burst) must still flush whatever the
 	// last iteration already painted but hadn't flushed yet, or it's lost.
-	defer writer.Flush()
+	defer writer.Flush() //nolint:errcheck // final flush on the exit path; the write error already surfaced
 	for {
 		f, err := wire.ReadFrame(reader)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
@@ -66,6 +67,8 @@ func Run(conn io.ReadWriteCloser, paneID string, in io.Reader, out io.Writer, ra
 			if w, h, err := wire.DecodeResize(f.Payload); err == nil && recordResize != nil {
 				recordResize(w, h)
 			}
+		case wire.FrameHello, wire.FrameInput, wire.FrameCtl, wire.FrameCtlAck:
+			// Renderer-bound traffic is seed/output/resize only.
 		}
 		// Flush only when nothing else is already buffered to read, so a
 		// burst of frames paints in one write but a lone frame still lands

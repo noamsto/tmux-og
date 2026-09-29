@@ -17,8 +17,8 @@ func loadFixture(t *testing.T, name string) (title, screen string) {
 		t.Fatal(err)
 	}
 	lines := strings.SplitN(string(b), "\n", 2)
-	if strings.HasPrefix(lines[0], "TITLE:") {
-		return strings.TrimPrefix(lines[0], "TITLE:"), lines[1]
+	if after, ok := strings.CutPrefix(lines[0], "TITLE:"); ok {
+		return after, lines[1]
 	}
 	return "", string(b)
 }

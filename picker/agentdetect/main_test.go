@@ -149,7 +149,7 @@ func TestPaneAliveRealTmux(t *testing.T) {
 	if err := exec.Command("tmux", "new-session", "-d", "-s", session, "-x", "80", "-y", "24").Run(); err != nil {
 		t.Skipf("could not start a scratch tmux session: %v", err)
 	}
-	defer exec.Command("tmux", "kill-session", "-t", session).Run()
+	defer exec.Command("tmux", "kill-session", "-t", session).Run() //nolint:errcheck // best-effort scratch-session cleanup
 
 	out, err := exec.Command("tmux", "list-panes", "-t", session, "-F", "#{pane_id}").Output()
 	if err != nil {

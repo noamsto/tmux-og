@@ -27,7 +27,7 @@ func pinLocalSession(cfg Config) (localPin, bool) {
 	if err != nil {
 		return localPin{}, false
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		f := strings.SplitN(line, "|", 3)
 		if len(f) == 3 && f[2] == cfg.LocalSess && f[0] != "" && sessionIDPattern.MatchString(f[1]) {
 			return localPin{serverPID: f[0], id: f[1]}, true

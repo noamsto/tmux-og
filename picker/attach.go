@@ -61,6 +61,8 @@ func attachPhaseLabel(p attachPhase) string {
 		return "creating session"
 	case phaseMirror:
 		return "attaching"
+	case phaseLaunch:
+		return "starting"
 	}
 	return "starting"
 }
@@ -71,6 +73,7 @@ func parseAttachPhase(line string) (attachPhase, bool) {
 	switch p := attachPhase(line); p {
 	case phaseConnect, phaseStartServer, phaseRestore, phaseCreate, phaseMirror:
 		return p, true
+	case phaseLaunch:
 	}
 	return "", false
 }
@@ -154,7 +157,7 @@ func buildAttachCmd(spec attachSpec, grace time.Duration) *exec.Cmd {
 	if spec.sess != "" {
 		args = append(args, spec.sess)
 	}
-	cmd := exec.Command(spec.bin, args...)
+	cmd := exec.Command(spec.bin, args...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	// With no controlling tty (Setsid), ssh must fail a surprise auth prompt
 	// fast rather than pop a GUI askpass.
 	cmd.Env = append(os.Environ(), "OG_REMOTE_OPEN_PROGRESS_FD=3", "SSH_ASKPASS_REQUIRE=never")
@@ -182,7 +185,7 @@ func (r *attachRun) run() {
 		r.finish(attachResult{outcome: attachFailed, phase: phaseLaunch, msg: sanitizeStatusText(err.Error())})
 		return
 	}
-	defer pr.Close()
+	defer func() { _ = pr.Close() }()
 	cmd := buildAttachCmd(r.spec, r.grace)
 	cmd.ExtraFiles = []*os.File{pw}
 	// Launcher stderr is the failure text, never painted: the picker owns the
@@ -195,7 +198,7 @@ func (r *attachRun) run() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	err = cmd.Start()
-	pw.Close()
+	_ = pw.Close()
 	if err != nil {
 		r.finish(attachResult{outcome: attachFailed, phase: phaseLaunch, msg: sanitizeStatusText(err.Error())})
 		return
@@ -227,7 +230,7 @@ func (r *attachRun) run() {
 	terminate := func() {
 		phaseTimer.Stop()
 		ctxDone = nil
-		syscall.Kill(-pgid, syscall.SIGTERM) //nolint:errcheck
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		graceC = time.After(r.grace)
 	}
 	for {
@@ -251,7 +254,7 @@ func (r *attachRun) run() {
 			terminate()
 		case <-graceC:
 			graceC = nil
-			syscall.Kill(-pgid, syscall.SIGKILL) //nolint:errcheck
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		case err := <-waited:
 			r.drainLines(lines, pr, timedOut || cancelled)
 			r.finish(classifyAttach(err, cmd, cur, timedOut, cancelled, budget, stderr.String()))
@@ -283,7 +286,7 @@ func (r *attachRun) drainLines(lines <-chan attachPhase, pr *os.File, killed boo
 			r.emit(p)
 		case <-deadline:
 			deadline = nil
-			pr.Close()
+			_ = pr.Close()
 		}
 	}
 }

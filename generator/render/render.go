@@ -117,7 +117,7 @@ func Build(cfg *config.Config, p *paths.Paths) Data {
 // Execute renders templatePath. missingkey=error covers map lookups; a struct
 // field the template names but Data lacks is already fatal without it.
 func Execute(templatePath string, d Data) ([]byte, error) {
-	src, err := os.ReadFile(templatePath)
+	src, err := os.ReadFile(templatePath) //nolint:gosec // template path is a CLI flag from the trusted caller
 	if err != nil {
 		return nil, fmt.Errorf("render: %w", err)
 	}

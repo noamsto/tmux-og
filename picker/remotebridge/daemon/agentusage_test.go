@@ -15,8 +15,6 @@ import (
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
-func usd(v float64) *float64 { return &v }
-
 func decodeUsage(t *testing.T, out string) map[string]usageCache {
 	t.Helper()
 	if out == "" {
@@ -71,7 +69,7 @@ func TestSanitizeUsage(t *testing.T) {
 				`"cursor":{"windows":[{"label":"mo","pct":9}]}}`,
 			want: map[string]usageCache{
 				"claude": {Windows: []usageWindow{{Label: "5h", Pct: 1}}},
-				"pi":     {Windows: []usageWindow{}, Spend: &usageSpend{USD: 2.5, LimitUSD: usd(10)}},
+				"pi":     {Windows: []usageWindow{}, Spend: &usageSpend{USD: 2.5, LimitUSD: new(10.0)}},
 				"cursor": {Windows: []usageWindow{{Label: "mo", Pct: 9}}},
 			},
 		},
@@ -111,12 +109,12 @@ func TestSanitizeUsage(t *testing.T) {
 		{
 			name: "remaining credit is carried",
 			v:    `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":18.4,"remaining_label":"day"}}}`,
-			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 0, RemainingUSD: usd(18.4), RemainingLabel: "day"}}},
+			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 0, RemainingUSD: new(18.4), RemainingLabel: "day"}}},
 		},
 		{
 			name: "a negative remaining_usd is carried",
 			v:    `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":-3.5}}}`,
-			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 0, RemainingUSD: usd(-3.5)}}},
+			want: map[string]usageCache{"pi": {Windows: []usageWindow{}, Spend: &usageSpend{USD: 0, RemainingUSD: new(-3.5)}}},
 		},
 		{name: "an out-of-range remaining_usd drops the agent", v: `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":2e7}}}`},
 		{name: "an invalid remaining_label drops the agent", v: `pi |{"pi":{"windows":[],"spend":{"usd":0,"remaining_usd":1,"remaining_label":"#(evil)"}}}`, absent: []string{"#", "evil"}},
@@ -179,24 +177,24 @@ func TestSanitizeUsage(t *testing.T) {
 // but not the others must fail here rather than silently misgate a provider.
 func TestUsageAgentTablesAgree(t *testing.T) {
 	const marker = "#{m/r:"
-	i := strings.Index(agentUsageFormat, marker)
-	if i < 0 {
+	_, after, ok := strings.Cut(agentUsageFormat, marker)
+	if !ok {
 		t.Fatalf("agentUsageFormat has no %q: %s", marker, agentUsageFormat)
 	}
-	rest := agentUsageFormat[i+len(marker):]
-	j := strings.Index(rest, ",#{pane_current_command}}")
-	if j < 0 {
+	rest := after
+	before0, _, ok0 := strings.Cut(rest, ",#{pane_current_command}}")
+	if !ok0 {
 		t.Fatalf("agentUsageFormat's #{m/r:...} has no ,#{pane_current_command}} close: %s", agentUsageFormat)
 	}
-	re, err := regexp.Compile(rest[:j])
+	re, err := regexp.Compile(before0)
 	if err != nil {
-		t.Fatalf("pattern %q: %v", rest[:j], err)
+		t.Fatalf("pattern %q: %v", before0, err)
 	}
 
 	for cmd := range usageAgentCmds {
 		for _, form := range []string{cmd, "." + cmd + "-wrapped", "/nix/store/abc/bin/" + cmd} {
 			if !re.MatchString(form) {
-				t.Errorf("agentUsageFormat's open-pane pattern %q does not match %q (usageAgentCmds key %q)", rest[:j], form, cmd)
+				t.Errorf("agentUsageFormat's open-pane pattern %q does not match %q (usageAgentCmds key %q)", before0, form, cmd)
 			}
 		}
 	}
@@ -221,16 +219,16 @@ func TestUsageAgentTablesAgree(t *testing.T) {
 	// Reverse: every agent in the alternation of agentUsageFormat's
 	// open-pane regex has a usageAgentCmds entry.
 	altPrefix := "[.]?("
-	altStart := strings.Index(rest[:j], altPrefix)
+	altStart := strings.Index(before0, altPrefix)
 	if altStart < 0 {
-		t.Fatalf("no alternation group after %q in pattern %q", altPrefix, rest[:j])
+		t.Fatalf("no alternation group after %q in pattern %q", altPrefix, before0)
 	}
 	altStart += len(altPrefix)
-	altEnd := strings.Index(rest[:j][altStart:], ")")
+	altEnd := strings.Index(before0[altStart:], ")")
 	if altEnd < 0 {
-		t.Fatalf("no closing paren for alternation group in pattern %q", rest[:j])
+		t.Fatalf("no closing paren for alternation group in pattern %q", before0)
 	}
-	for _, alt := range strings.Split(rest[:j][altStart:altStart+altEnd], "|") {
+	for alt := range strings.SplitSeq(before0[altStart:altStart+altEnd], "|") {
 		if _, ok := usageAgentCmds[alt]; !ok {
 			t.Errorf("agentUsageFormat alternation has %q with no usageAgentCmds entry", alt)
 		}
@@ -364,8 +362,8 @@ func TestAgentUsageSubscriptionReportsOpenAgents(t *testing.T) {
 		t.Fatalf("control client: %v", err)
 	}
 	t.Cleanup(func() {
-		ctl.Process.Kill()
-		ctl.Wait()
+		_ = ctl.Process.Kill()
+		_ = ctl.Wait()
 	})
 
 	lines := make(chan string, 256)

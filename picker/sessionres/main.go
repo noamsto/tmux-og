@@ -62,7 +62,7 @@ func main() {
 		return
 	}
 
-	ps, err := exec.Command(psPath(), proctree.PSArgs...).Output()
+	ps, err := exec.Command(psPath(), proctree.PSArgs...).Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	if err != nil {
 		return
 	}
@@ -80,7 +80,7 @@ func main() {
 	if argv == nil {
 		return
 	}
-	_ = exec.Command("tmux", argv...).Run()
+	_ = exec.Command("tmux", argv...).Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 }
 
 // parseControlClients is the gate: a pass runs only while something is bridged
@@ -89,7 +89,7 @@ func main() {
 // this binary stamps. Anything that is not a literal "1" — no clients, a failed
 // read's empty string, garbage — reads as "nobody is watching".
 func parseControlClients(out string) bool {
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.TrimSpace(line) == "1" {
 			return true
 		}
@@ -102,7 +102,7 @@ func parseControlClients(out string) bool {
 // targets. Split at the LAST "|": pane_pid is the trailing field.
 func parsePanePIDs(out string) map[string][]int {
 	roots := make(map[string][]int)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		i := strings.LastIndex(line, "|")
 		if i < 0 {

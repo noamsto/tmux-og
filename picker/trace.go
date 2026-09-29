@@ -46,8 +46,8 @@ func (t *tracer) mark(event string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	fmt.Fprintf(f, "%s %d\n", event, time.Since(t.t0).Microseconds())
+	defer func() { _ = f.Close() }()
+	_, _ = fmt.Fprintf(f, "%s %d\n", event, time.Since(t.t0).Microseconds())
 }
 
 // firstFrame records the first frame that draws the list.

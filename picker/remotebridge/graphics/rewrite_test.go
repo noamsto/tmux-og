@@ -38,6 +38,9 @@ func TestRewriteLocalisesFilePayload(t *testing.T) {
 	if len(f.asked) != 1 || f.asked[0] != "/tmp/x.png" {
 		t.Fatalf("asked = %v, want [/tmp/x.png]", f.asked)
 	}
+	if q == nil {
+		t.Fatal("Rewrite returned nil seq")
+	}
 	got, _ := base64.StdEncoding.DecodeString(string(q.Payload))
 	if string(got) != "/local/cache/abc.bin" {
 		t.Fatalf("payload = %q", got)
@@ -60,6 +63,9 @@ func TestRewriteLocalisesTransmitAndDelete(t *testing.T) {
 	if len(f.asked) != 1 || f.asked[0] != "/tmp/x.png" {
 		t.Fatalf("asked = %v, want [/tmp/x.png]", f.asked)
 	}
+	if q == nil {
+		t.Fatal("Rewrite returned nil seq")
+	}
 	got, _ := base64.StdEncoding.DecodeString(string(q.Payload))
 	if string(got) != "/local/cache/abc.bin" {
 		t.Fatalf("payload = %q", got)
@@ -77,6 +83,9 @@ func TestRewriteDowngradesTransmitAndDeleteToTransmit(t *testing.T) {
 	q, drop, err := Rewrite(context.Background(), in, f)
 	if err != nil || drop {
 		t.Fatalf("drop=%v err=%v", drop, err)
+	}
+	if q == nil {
+		t.Fatal("Rewrite returned nil seq")
 	}
 	if q.Get("t") != "f" {
 		t.Fatalf("t = %q, want f", q.Get("t"))
@@ -102,6 +111,9 @@ func TestRewritePassesThroughInlineAndDelete(t *testing.T) {
 		}
 		if len(f.asked) != 0 {
 			t.Fatalf("%q: fetched needlessly", raw)
+		}
+		if q == nil {
+			t.Fatalf("%q: Rewrite returned nil seq", raw)
 		}
 		if string(q.Encode()) != raw {
 			t.Fatalf("%q: mutated to %q", raw, q.Encode())

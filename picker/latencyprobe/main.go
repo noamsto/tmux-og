@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +78,7 @@ func main() {
 	maxMissed := flag.Int("max-missed", 3, "stop after this many consecutive timeouts: the echo path is gone, not slow")
 	flag.Parse()
 
-	cmd := exec.Command(*tmuxBin, "-L", *sock, "-C", "attach", "-t", *sess)
+	cmd := exec.Command(*tmuxBin, "-L", *sock, "-C", "attach", "-t", *sess) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	cmd.Env = append(os.Environ(), "TMUX=")
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -96,10 +96,10 @@ func main() {
 	}
 	done := make(chan struct{})
 	defer func() {
-		in.Close()
-		cmd.Process.Kill()
+		_ = in.Close()
+		_ = cmd.Process.Kill()
 		<-done
-		cmd.Wait()
+		_ = cmd.Wait()
 	}()
 
 	var mu sync.Mutex
@@ -150,7 +150,7 @@ func main() {
 		mu.Lock()
 		pending[m] = time.Now()
 		mu.Unlock()
-		fmt.Fprintf(in, "send-keys -t %s -l %s\n", *pane, m)
+		_, _ = fmt.Fprintf(in, "send-keys -t %s -l %s\n", *pane, m)
 		deadline := time.Now().Add(*timeout)
 		for {
 			mu.Lock()
@@ -176,7 +176,7 @@ func main() {
 
 	mu.Lock()
 	defer mu.Unlock()
-	sort.Slice(lat, func(a, b int) bool { return lat[a] < lat[b] })
+	slices.Sort(lat)
 	if aborted {
 		fmt.Fprintf(os.Stderr, "latencyprobe: %d consecutive timeouts, gave up\n", missed)
 	}

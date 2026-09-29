@@ -355,7 +355,7 @@ func TestParseLayoutV2DepthBomb(t *testing.T) {
 func depthBombLayout(depth int) string {
 	body := `{"t":"p","w":1,"h":1,"x":0,"y":0,"I":"%0"}`
 	sibling := `{"t":"p","w":1,"h":1,"x":0,"y":0,"I":"%1"}`
-	for i := 0; i < depth; i++ {
+	for range depth {
 		body = `{"t":"h","w":1,"h":1,"x":0,"y":0,"c":[` + body + `,` + sibling + `]}`
 	}
 	return `{"V":2,"L":` + body + `}`
@@ -406,11 +406,11 @@ func v1DepthBombLayout(depth int) string {
 	const leaf = "1x1,0,0,0"
 	var sb strings.Builder
 	sb.Grow(len("0000,") + depth*(len(open)+len(close)) + len(leaf))
-	for i := 0; i < depth; i++ {
+	for range depth {
 		sb.WriteString(open)
 	}
 	sb.WriteString(leaf)
-	for i := 0; i < depth; i++ {
+	for range depth {
 		sb.WriteString(close)
 	}
 	return "0000," + sb.String()

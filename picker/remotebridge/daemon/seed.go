@@ -155,7 +155,7 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 
 // privateModeSet reports whether a #{pane_private_modes} list contains mode.
 func privateModeSet(list string, mode int) bool {
-	for _, m := range strings.Split(list, ",") {
+	for m := range strings.SplitSeq(list, ",") {
 		if n, err := strconv.Atoi(m); err == nil && n == mode {
 			return true
 		}

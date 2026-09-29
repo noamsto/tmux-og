@@ -164,7 +164,7 @@ func seedBytes(out []byte) []byte {
 func seededScreen(paneID string) (screen.Screen, int, int) {
 	cols, rows, _, _ := paneInfo(paneID)
 	scr := screen.New(cols, rows)
-	if out, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-t", "%"+paneID).Output(); err == nil {
+	if out, err := exec.Command("tmux", "capture-pane", "-p", "-e", "-t", "%"+paneID).Output(); err == nil { //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		scr.Feed(seedBytes(out))
 	}
 	return scr, cols, rows
@@ -213,7 +213,7 @@ func readStdin(buf *drainbuf.Buffer) {
 
 func paneInfo(paneID string) (cols, rows int, cmd string, ok bool) {
 	cols, rows = 80, 24
-	out, err := exec.Command("tmux", "display", "-p", "-t", "%"+paneID,
+	out, err := exec.Command("tmux", "display", "-p", "-t", "%"+paneID, //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		"#{pane_width} #{pane_height} #{pane_current_command}").Output()
 	if err != nil {
 		return
@@ -252,7 +252,7 @@ var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
 // cannot be resolved to a number. It is the ownership stamp that keeps another
 // server's boot-time prune off this pane's state files.
 func serverPID(paneID string) string {
-	out, err := exec.Command("tmux", "display", "-p", "-t", "%"+paneID, "#{pid}").Output()
+	out, err := exec.Command("tmux", "display", "-p", "-t", "%"+paneID, "#{pid}").Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	if err != nil {
 		return ""
 	}
@@ -270,7 +270,7 @@ func serverPID(paneID string) string {
 // guarantee it's the sole watcher for this pane, so it should not become a
 // long-lived process that might duplicate one (#239).
 func registerWatcher(dir, paneID string, pid int, server string) bool {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // non-secret state read by same-user tmux scripts
 		return false
 	}
 	final := filepath.Join(dir, paneID)
@@ -279,10 +279,10 @@ func registerWatcher(dir, paneID string, pid int, server string) bool {
 	if server != "" {
 		content += "\nserver=" + server + "\n"
 	}
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil { //nolint:gosec // non-secret state read by same-user tmux scripts
 		return false
 	}
-	return os.Rename(tmp, final) == nil
+	return os.Rename(tmp, final) == nil //nolint:gosec // path is built from trusted internal roots, not user input
 }
 
 // stillOwner reports whether pid is still the registered watcher for paneID.
@@ -290,7 +290,7 @@ func registerWatcher(dir, paneID string, pid int, server string) bool {
 // happens the old process reads a mismatch here and exits, which is what
 // closes the re-arm leak (#239) without any tmux-side changes.
 func stillOwner(dir, paneID string, pid int) bool {
-	content, err := os.ReadFile(filepath.Join(dir, paneID))
+	content, err := os.ReadFile(filepath.Join(dir, paneID)) //nolint:gosec // path is built from trusted internal roots, not user input
 	if err != nil {
 		return false
 	}
@@ -314,7 +314,7 @@ func ownerMatches(registered string, pid int) bool {
 // exits nonzero on a dead one; it's also the pattern seededScreen already uses
 // elsewhere in this file, so no new probing style is introduced.
 func paneAlive(paneID string) bool {
-	err := exec.Command("tmux", "capture-pane", "-p", "-t", "%"+paneID).Run()
+	err := exec.Command("tmux", "capture-pane", "-p", "-t", "%"+paneID).Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	return aliveFromProbe(err)
 }
 

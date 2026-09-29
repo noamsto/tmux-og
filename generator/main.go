@@ -23,7 +23,7 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("og-generate", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: og-generate --config FILE (--paths FILE | --prefix DIR) --out DIR --template FILE")
+		_, _ = fmt.Fprintln(fs.Output(), "usage: og-generate --config FILE (--paths FILE | --prefix DIR) --out DIR --template FILE")
 		fs.PrintDefaults()
 	}
 	configPath := fs.String("config", "", "path to config.toml")
@@ -65,10 +65,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(*outDir, 0o755); err != nil {
+	if err := os.MkdirAll(*outDir, 0o755); err != nil { //nolint:gosec // tmux.conf lands in the nix store, which must be world-readable
 		return fmt.Errorf("og-generate: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(*outDir, "tmux.conf"), out, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(*outDir, "tmux.conf"), out, 0o644); err != nil { //nolint:gosec // tmux.conf lands in the nix store, which must be world-readable
 		return fmt.Errorf("og-generate: %w", err)
 	}
 	return nil
@@ -81,6 +81,6 @@ func fail(err error) {
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}
-	os.Stderr.WriteString(msg)
+	_, _ = os.Stderr.WriteString(msg)
 	os.Exit(1)
 }

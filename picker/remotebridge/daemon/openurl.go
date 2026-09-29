@@ -56,7 +56,7 @@ type openRecord struct{ nonce, url string }
 // pipe inside the URL survives.
 func parseOpenRecords(v string) []openRecord {
 	var recs []openRecord
-	for _, tok := range strings.Fields(v) {
+	for tok := range strings.FieldsSeq(v) {
 		nonce, u, ok := strings.Cut(tok, "|")
 		if !ok || !openNonceRe.MatchString(nonce) {
 			continue
@@ -84,7 +84,10 @@ func validOpenURL(u string) bool {
 		}
 	}
 	p, err := url.Parse(u)
-	return err == nil && (p.Scheme == "http" || p.Scheme == "https") && p.Host != ""
+	if err != nil {
+		return false
+	}
+	return (p.Scheme == "http" || p.Scheme == "https") && p.Host != ""
 }
 
 // urlOpener opens on this machine the URLs a mirrored session's og-open
@@ -274,7 +277,7 @@ func (o *urlOpener) takeToken() bool {
 // BrowserOpener is the production Config.OpenURL for goos.
 func BrowserOpener(goos string) func(string) error {
 	name := browserOpenerName(goos)
-	return func(u string) error { return runBounded(exec.Command(name, u), openerWaitBound) }
+	return func(u string) error { return runBounded(exec.Command(name, u), openerWaitBound) } //nolint:gosec // name comes from browserOpenerName (fixed per-OS binaries); the URL is a single argv element, no shell
 }
 
 func browserOpenerName(goos string) string {

@@ -116,6 +116,9 @@ func TestFetcherThreadsABoundedContextToRun(t *testing.T) {
 	if _, err := f.Localize(context.Background(), "/tmp/a.png"); err != nil {
 		t.Fatal(err)
 	}
+	if gotCtx == nil {
+		t.Fatal("Run was never called")
+	}
 	deadline, ok := gotCtx.Deadline()
 	if !ok {
 		t.Fatal("Run's context has no deadline — a hung ssh would run forever")
@@ -262,11 +265,9 @@ func TestFetcherLocalizeRunsConcurrently(t *testing.T) {
 	locals := make([]string, 2)
 	errs := make([]error, 2)
 	for i, p := range []string{"/tmp/a.png", "/tmp/b.png"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			locals[i], errs[i] = f.Localize(context.Background(), p)
-		}()
+		})
 	}
 	// Both fetches must be in flight before either completes.
 	seen := map[string]bool{<-started: true, <-started: true}
@@ -300,11 +301,9 @@ func TestFetcherDedupsConcurrentFetchesOfOnePath(t *testing.T) {
 	locals := make([]string, 2)
 	errs := make([]error, 2)
 	for i := range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			locals[i], errs[i] = f.Localize(context.Background(), "/tmp/a.png")
-		}()
+		})
 	}
 	// Let the first fetch reach Run and the second park on the inflight call.
 	for runs.Load() == 0 {
@@ -335,7 +334,7 @@ func TestFetcherRecoversWhenTheCachedCopyIsGone(t *testing.T) {
 		return []byte("1700000000 1\nA"), nil
 	}}
 	local, _ := f.Localize(context.Background(), "/tmp/a.png")
-	os.Remove(local) // pruned, or the daemon restarted
+	_ = os.Remove(local) // pruned, or the daemon restarted
 	if _, err := f.Localize(context.Background(), "/tmp/a.png"); err == nil {
 		t.Fatal("a lost cache entry must error once")
 	}

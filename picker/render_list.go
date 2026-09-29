@@ -213,10 +213,7 @@ func (m tuiModel) renderHints() string {
 		// The (y/N) answer is the one part that must never be truncated away,
 		// so reserve its cells and clip only the name/question to the rest.
 		suffix := warn.Render("  (y/N)")
-		headWidth := m.width - visibleWidth("  (y/N)")
-		if headWidth < 0 {
-			headWidth = 0
-		}
+		headWidth := max(m.width-visibleWidth("  (y/N)"), 0)
 		return fitVisibleWidth(warn.Render("  "+prompt), headWidth) + suffix
 	}
 
@@ -326,6 +323,9 @@ var attachSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "�
 // the same row so bodyHeight is unchanged. The key-hint suffix gets its cells
 // reserved first, like the kill prompt above, so the label is what truncates.
 func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
+	if m.attach == nil {
+		return ""
+	}
 	frame := attachSpinnerFrames[m.attach.frame%len(attachSpinnerFrames)]
 
 	hintKey, hintDesc := "esc", "cancel"
@@ -347,6 +347,9 @@ func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
 // renderKillStatus replaces the hint line while a kill batch is in flight,
 // mirroring renderAttachStatus's reserved-suffix layout.
 func (m tuiModel) renderKillStatus(dim, key lipgloss.Style) string {
+	if m.killRun == nil {
+		return ""
+	}
 	frame := attachSpinnerFrames[m.killRun.frame%len(attachSpinnerFrames)]
 
 	hintKey, hintDesc := "esc", "cancel"

@@ -137,7 +137,7 @@ func TestRemoteResourcesCmdFishSafe(t *testing.T) {
 	// The separator is echoed by the remote's own login shell, which is fish on
 	// these hosts: `echo --` there prints a blank line, and the ps table then
 	// never gets found. Verified live against tp-g6.
-	if first := remoteResourcesSeparator[0]; !(first >= 'A' && first <= 'Z') && !(first >= 'a' && first <= 'z') {
+	if first := remoteResourcesSeparator[0]; (first < 'A' || first > 'Z') && (first < 'a' || first > 'z') {
 		t.Errorf("separator %q must start with a letter so no shell reads it as an option", remoteResourcesSeparator)
 	}
 	if !strings.Contains(remoteResourcesCmd, "echo "+remoteResourcesSeparator) {
@@ -240,7 +240,7 @@ func TestCPUColorScalesAgainstTheRowsOwnMachine(t *testing.T) {
 func seedRemoteResourceCache(t *testing.T, byHost map[string]remoteHostResources, ts map[string]time.Time) {
 	t.Helper()
 	remoteResourceCache.Lock()
-	remoteResourceCache.byHost, remoteResourceCache.ts, remoteResourceCache.inflight = byHost, ts, nil
+	remoteResourceCache.byHost, remoteResourceCache.ts, remoteResourceCache.inflight = byHost, ts, map[string]bool{}
 	remoteResourceCache.Unlock()
 	t.Cleanup(func() {
 		for range 200 {

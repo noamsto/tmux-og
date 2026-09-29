@@ -339,6 +339,9 @@ func TestAgentShipperDropsFilesWhenAgentLeavesPane(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); !os.IsNotExist(err) {
 		t.Error("state file outlived the agent that left the pane")
 	}
+	if len(calls) == 0 {
+		t.Fatal("no stamps issued")
+	}
 	last := calls[len(calls)-1]
 	if last[5] != "fish" {
 		t.Errorf("last stamp = %v, want the pane's new command", last)

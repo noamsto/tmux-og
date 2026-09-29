@@ -18,10 +18,7 @@ func SendKeysArgs(pane string, b []byte, maxHexPerCmd int) [][]string {
 	}
 	var cmds [][]string
 	for i := 0; i < len(b); i += maxHexPerCmd {
-		end := i + maxHexPerCmd
-		if end > len(b) {
-			end = len(b)
-		}
+		end := min(i+maxHexPerCmd, len(b))
 		cmd := []string{"send-keys", "-H", "-t", pane}
 		for _, by := range b[i:end] {
 			cmd = append(cmd, fmt.Sprintf("%02x", by))

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -222,10 +223,5 @@ func (e *VS16Error) Error() string {
 }
 
 func contains(set []string, v string) bool {
-	for _, s := range set {
-		if s == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(set, v)
 }

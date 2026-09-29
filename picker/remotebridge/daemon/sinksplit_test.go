@@ -14,8 +14,8 @@ import (
 // byte-stream type.
 func TestOutputSinkResizeUnsplit(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 
 	s := &outputSink{ch: make(chan sinkFrame, outputSinkBuf)}
 	s.enqueue(wire.FrameResize, wire.EncodeResize(120, 40))
@@ -54,8 +54,8 @@ func TestOutputSinkResizeUnsplit(t *testing.T) {
 // unsplit wire.WriteFrame.
 func TestOutputSinkMultiFrameOutputByteIdentical(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 
 	chunks := [][]byte{
 		[]byte("first chunk of pane output\n"),
@@ -87,8 +87,8 @@ func TestOutputSinkMultiFrameOutputByteIdentical(t *testing.T) {
 // frame type.
 func TestOutputSinkSeedStillWorks(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 
 	s := &outputSink{ch: make(chan sinkFrame, outputSinkBuf)}
 	s.enqueue(wire.FrameSeed, []byte("initial screen capture"))

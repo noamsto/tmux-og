@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -79,7 +80,7 @@ type fetchCall struct {
 func NewSSHFetcher(host string, ctlSock func() string, cacheDir string, maxBytes int64) *SSHFetcher {
 	f := &SSHFetcher{Host: host, CtlSock: ctlSock, CacheDir: cacheDir, MaxBytes: maxBytes}
 	f.Run = func(ctx context.Context, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, "ssh", args...).Output()
+		return exec.CommandContext(ctx, "ssh", args...).Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	}
 	_ = os.MkdirAll(cacheDir, 0o700)
 	f.prune()
@@ -106,7 +107,7 @@ func (f *SSHFetcher) Localize(ctx context.Context, remote string) (string, error
 	// completion — otherwise every retry on a slow link pays the full stream
 	// timeout and the image never resolves. The detached context is still
 	// bounded, so a dead link's ssh cannot live forever.
-	go func() {
+	go func() { //nolint:gosec // fetch deliberately outlives the caller (#558) and is bounded by bgFetchTimeout
 		fetchCtx, cancel := context.WithTimeout(context.Background(), bgFetchTimeout)
 		defer cancel()
 		local, err := f.fetch(fetchCtx, remote, key)
@@ -150,9 +151,7 @@ func (f *SSHFetcher) LocalizeBatch(ctx context.Context, remotes []string) ([]str
 	sem := make(chan struct{}, maxConcurrentFetches)
 	var wg sync.WaitGroup
 	for i, remote := range remotes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -161,7 +160,7 @@ func (f *SSHFetcher) LocalizeBatch(ctx context.Context, remotes []string) ([]str
 				return
 			}
 			locals[i], errs[i] = f.Localize(ctx, remote)
-		}()
+		})
 	}
 	wg.Wait()
 	return locals, errs
@@ -190,15 +189,14 @@ func (f *SSHFetcher) fetch(ctx context.Context, remote, key string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("fetch %s: %w", remote, err)
 	}
-	nl := strings.IndexByte(string(out), '\n')
-	if nl < 0 {
+	hdrLine, body, ok := bytes.Cut(out, []byte{'\n'})
+	if !ok {
 		return "", fmt.Errorf("fetch %s: no header in reply", remote)
 	}
-	hdr := strings.TrimSpace(string(out[:nl]))
+	hdr := strings.TrimSpace(string(hdrLine))
 	if len(strings.Fields(hdr)) != 2 {
 		return "", fmt.Errorf("fetch %s: bad header %q", remote, hdr)
 	}
-	body := out[nl+1:]
 
 	ck := remote + "\x00" + hdr
 	if len(body) == 0 {

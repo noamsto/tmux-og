@@ -31,7 +31,7 @@ func TestComposeFrameMatchesLipgloss(t *testing.T) {
 	builds := []build{
 		{"sessions", func() []listItem {
 			snap := panesSnapshot{}
-			for i := 0; i < 30; i++ {
+			for i := range 30 {
 				snap = append(snap, fmt.Sprintf("%%%d|sess%d|0|/home/u/proj%d|%d|||fish|%d|||", i, i, i, 1000+i, 100+i))
 			}
 			snap = append(snap, "%90|日本語|0|/tmp/日本|5|||vim|900|||")
@@ -39,7 +39,7 @@ func TestComposeFrameMatchesLipgloss(t *testing.T) {
 		}, false},
 		{"windows", func() []listItem {
 			var ws []windowData
-			for i := 0; i < 30; i++ {
+			for i := range 30 {
 				ws = append(ws, windowData{session: fmt.Sprintf("s%d", i/5), index: i % 5, name: fmt.Sprintf("win%d", i), branch: fmt.Sprintf("feat/%d", i)})
 			}
 			ws = append(ws, windowData{session: "sé", index: 0, name: "日本語 🙂", branch: "ブランチ"})

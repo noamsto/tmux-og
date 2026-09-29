@@ -30,7 +30,7 @@ type winOpts struct {
 // keep their last good state.
 func readWindowState(target string) winOpts {
 	var o winOpts
-	out, err := exec.Command("tmux", "show-options", "-w", "-t", target).Output()
+	out, err := exec.Command("tmux", "show-options", "-w", "-t", target).Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	if err != nil {
 		return o
 	}
@@ -43,7 +43,7 @@ func readWindowState(target string) winOpts {
 // bridge (`@bridge_*`) names are parsed into their own winState side by
 // side — see resolve in bridge.go for how they're combined.
 func parseWindowOptions(out string, o *winOpts) {
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		name, val, ok := strings.Cut(line, " ")
 		if !ok {
 			continue
@@ -142,7 +142,7 @@ func detectBaseBranch(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	out, err := exec.Command("git", "-C", dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	if err != nil {
 		return ""
 	}

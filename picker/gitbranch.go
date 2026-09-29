@@ -19,7 +19,7 @@ func currentBranch(dir string) string {
 	if branch, ok := headBranch(dir); ok {
 		return branch
 	}
-	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output()
+	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return ""
 	}
@@ -98,7 +98,7 @@ func gitDirOf(workTree, dotGit string, fi os.FileInfo) (string, bool) {
 	if !fi.Mode().IsRegular() {
 		return "", false
 	}
-	b, err := os.ReadFile(dotGit)
+	b, err := os.ReadFile(dotGit) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return "", false
 	}
@@ -165,11 +165,11 @@ func readSmallFile(path string) ([]byte, error) {
 	if st, err := os.Stat(path); err != nil || !st.Mode().IsRegular() || st.Size() > 4096 {
 		return nil, errors.New("not a small regular file")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return io.ReadAll(io.LimitReader(f, 4096))
 }
 

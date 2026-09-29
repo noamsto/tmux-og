@@ -231,7 +231,7 @@ func TestFooterDegradesGracefully(t *testing.T) {
 		cfg: testCfg(), height: heightFloor,
 		win: winState{
 			issueProvider: "linear", issueID: "ENG-6794",
-			issueURL:   "https://linear.app/x/issue/ENG-6794",
+			issueURL: "https://linear.app/x/issue/ENG-6794",
 			prNumber: "103", prState: "open", prCheck: "success",
 			prMergeable: "mergeable", prTitle: "kitty nav",
 			branch: "feat/103-kitty-nav",
@@ -358,7 +358,7 @@ func TestBranchBlockLongBranchStaysInsideCardWidth(t *testing.T) {
 		branch: "feat/768-enrichcard-truncate-by-display-width-not-and-then-some-more",
 	}}
 	out := render(m)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if w := lipgloss.Width(line); w > m.width {
 			t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 		}
@@ -389,8 +389,8 @@ func TestIssueBlockLongIDStaysInsideCardWidth(t *testing.T) {
 				issueTitle: "carousel nav", issueURL: "https://linear.app/x/issue/1",
 			}}
 			out := render(m)
-			lines := strings.Split(out, "\n")
-			for _, line := range lines {
+			lines := strings.SplitSeq(out, "\n")
+			for line := range lines {
 				if w := lipgloss.Width(line); w > m.width {
 					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 				}
@@ -427,17 +427,17 @@ func TestPRBlockLongBadgeStaysInsideCardWidth(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{
-				prNumber:   tc.prNumber,
-				prState:    "open",
-				prCheck:    tc.prCheck,
-				prProgress: "999998/999999",
+				prNumber:    tc.prNumber,
+				prState:     "open",
+				prCheck:     tc.prCheck,
+				prProgress:  "999998/999999",
 				prMergeable: "mergeable",
-				prTitle:    "kitty nav",
-				branch:     "b",
+				prTitle:     "kitty nav",
+				branch:      "b",
 			}}
 			out := render(m)
-			lines := strings.Split(out, "\n")
-			for _, line := range lines {
+			lines := strings.SplitSeq(out, "\n")
+			for line := range lines {
 				if w := lipgloss.Width(line); w > m.width {
 					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 				}
@@ -475,7 +475,7 @@ func TestFooterLongFlashStaysInsideCardWidth(t *testing.T) {
 			m := model{cfg: testCfg(), width: 60, height: 18, win: winState{branch: "b"}}
 			m.flash = tc.flash
 			out := render(m)
-			for _, line := range strings.Split(out, "\n") {
+			for line := range strings.SplitSeq(out, "\n") {
 				if w := lipgloss.Width(line); w > m.width {
 					t.Errorf("rendered line exceeds card width %d (got %d): %q", m.width, w, line)
 				}
@@ -649,7 +649,7 @@ func TestCardNoRoomForFrameStaysWithinWidth(t *testing.T) {
 				task:   strings.Repeat("x", 200),
 			}}
 			out := render(m)
-			for _, line := range strings.Split(out, "\n") {
+			for line := range strings.SplitSeq(out, "\n") {
 				if w := lipgloss.Width(line); w > tc.width {
 					t.Errorf("line exceeds width %d (got %d): %q", tc.width, w, line)
 				}

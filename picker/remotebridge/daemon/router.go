@@ -119,10 +119,12 @@ func (r *Router) Route(paneID string, data []byte) {
 	r.mu.Lock()
 	sink, registered := r.sinks[paneID]
 	reason := ""
-	if registered && sink == nil {
-		reason = r.routeDropLocked("registered without a sink")
-	} else if registered {
-		r.writeLocked(sink, data)
+	if registered {
+		if sink == nil {
+			reason = r.routeDropLocked("registered without a sink")
+		} else {
+			r.writeLocked(sink, data)
+		}
 	} else if _, gone := r.gone[paneID]; gone {
 		reason = r.routeDropLocked("pane is gone")
 	} else if len(data) > routerPendingMaxBytes {
@@ -138,18 +140,17 @@ func (r *Router) Route(paneID string, data []byte) {
 				p.timer = time.AfterFunc(r.pendingLifetime, func() { r.expirePending(paneID, p) })
 			}
 		}
-		if reason == "" && (len(p.frames) >= routerPendingMaxFrames ||
-			p.bytes+len(data) > routerPendingMaxBytes) {
-			reason = r.routeDropLocked("per-pane buffer full")
-		}
-		if reason == "" && r.pendingBytes+len(data) > r.pendingMaxTotalBytes {
-			reason = r.routeDropLocked("total pre-registration buffer full")
-		}
-		if reason == "" {
-			owned := append([]byte(nil), data...)
-			p.frames = append(p.frames, owned)
-			p.bytes += len(owned)
-			r.pendingBytes += len(owned)
+		if p != nil {
+			if len(p.frames) >= routerPendingMaxFrames || p.bytes+len(data) > routerPendingMaxBytes {
+				reason = r.routeDropLocked("per-pane buffer full")
+			} else if r.pendingBytes+len(data) > r.pendingMaxTotalBytes {
+				reason = r.routeDropLocked("total pre-registration buffer full")
+			} else {
+				owned := append([]byte(nil), data...)
+				p.frames = append(p.frames, owned)
+				p.bytes += len(owned)
+				r.pendingBytes += len(owned)
+			}
 		}
 	}
 	r.mu.Unlock()
@@ -163,12 +164,12 @@ func (r *Router) writeLocked(sink io.Writer, data []byte) {
 		ow.writeOwned(data)
 		return
 	}
-	sink.Write(data) // best-effort; sink is non-blocking (see daemon.go), and test fakes only implement io.Writer
+	_, _ = sink.Write(data) // best-effort; sink is non-blocking (see daemon.go), and test fakes only implement io.Writer
 }
 
 func (r *Router) expirePending(paneID string, p *pendingOutput) {
 	r.mu.Lock()
-	if r.pending[paneID] != p {
+	if p == nil || r.pending[paneID] != p {
 		r.mu.Unlock()
 		return
 	}
@@ -207,7 +208,7 @@ func (r *Router) clearPendingLocked(p *pendingOutput) {
 
 func (r *Router) expireGone(paneID string, g *gonePane) {
 	r.mu.Lock()
-	if r.gone[paneID] == g {
+	if g != nil && r.gone[paneID] == g {
 		delete(r.gone, paneID)
 		g.timer.Stop()
 		g.timer = nil

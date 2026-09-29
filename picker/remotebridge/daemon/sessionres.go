@@ -115,7 +115,7 @@ func (r *resShipper) flush(cfg Config) {
 		// option. Either way there is nothing to measure and the picker must
 		// render '-' rather than the figures of whenever it last did.
 		r.figures = ""
-		cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
+		_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
 		return
 	}
 	if len(v) > sessionResMaxLen || !sessionResRe.MatchString(v) {
@@ -146,7 +146,7 @@ func (r *resShipper) flush(cfg Config) {
 	// reader compares it against its own clock, so there is no skew to correct
 	// for — and it is what lets an orphaned mirror, whose daemon was killed
 	// without teardown, age out with no cooperation from the corpse.
-	cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_res",
+	_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_res",
 		fmt.Sprintf("%s %s %s %d %s", f[0], f[1], f[2], time.Now().Unix(), f[4]))
 }
 

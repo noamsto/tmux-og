@@ -977,6 +977,9 @@ func TestCarouselResolveScriptStampsNoBin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(cmds) == 0 {
+		t.Fatal("build returned no commands")
+	}
 	conf := filepath.Join(dir, "cmd.conf")
 	if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1126,7 +1129,7 @@ func startIsolatedTmux(t *testing.T, extraEnv ...string) func(args ...string) *e
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(tmpdir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpdir) })
 	const socket = "s"
 	env := append(os.Environ(), "TMUX_TMPDIR="+tmpdir)
 	env = append(env, extraEnv...)
@@ -1139,7 +1142,7 @@ func startIsolatedTmux(t *testing.T, extraEnv ...string) func(args ...string) *e
 	t.Cleanup(func() {
 		stop := exec.Command("tmux", "-L", socket, "kill-server")
 		stop.Env = env
-		stop.Run()
+		_ = stop.Run()
 	})
 	return func(args ...string) *exec.Cmd {
 		cmd := exec.Command("tmux", append([]string{"-L", socket}, args...)...)
@@ -1197,6 +1200,9 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 	cmds, err := v.build("%5", "@2", "sess", []string{"prdash"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(cmds) == 0 {
+		t.Fatal("build returned no commands")
 	}
 	for _, want := range []string{nestedQuote("-c '#{pane_current_path}'"), "show-environment -g PATH", "command -v prdash", "exec prdash"} {
 		if !strings.Contains(cmds[0], want) {
@@ -1282,7 +1288,7 @@ func TestToolVerbDoesNotStackFloats(t *testing.T) {
 			t.Fatalf("list-panes: %v", err)
 		}
 		var got [][3]string
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 			f := strings.Split(line, "|")
 			if len(f) == 4 && f[1] == "1" {
 				got = append(got, [3]string{f[0], f[2], f[3]})
@@ -1442,6 +1448,9 @@ func TestToolVerbUsesSuppliedCwd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dir %q: %v", dir, err)
 		}
+		if len(cmds) == 0 {
+			t.Fatal("build returned no commands")
+		}
 		// Inside the reuse gate's own quoting: the create branch is a nested
 		// command string now, so its quotes are re-escaped one level deeper.
 		want := nestedQuote("new-pane -t %5 -c " + tmuxQuote(dir) + " ")
@@ -1464,6 +1473,9 @@ func TestToolVerbUsesSuppliedCwd(t *testing.T) {
 		cmds, err := v.build("%5", "@2", "sess", []string{"prdash", dir})
 		if err != nil {
 			t.Fatalf("dir %q: %v", dir, err)
+		}
+		if len(cmds) == 0 {
+			t.Fatal("build returned no commands")
 		}
 		if !strings.Contains(cmds[0], nestedQuote("-c '#{pane_current_path}'")) {
 			t.Fatalf("dir %q was not dropped back to the format: %q", dir, cmds[0])
@@ -1750,9 +1762,9 @@ func TestCtlResolvesAFloatAddedByTheReconcile(t *testing.T) {
 	c.setWindowPanes("@1", w.allRemotePanes())
 
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
-	go io.Copy(io.Discard, peer)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
 
 	rt := setupWindowRT(strings.Join([]string{
 		"%begin 1 1 1", "@1 " + tiledFloatLayout + " %0 0", "%end 1 1 1", // readLayout: the float is already there
@@ -2035,7 +2047,7 @@ func TestTileLayoutCommandGuardsOnLiveTmux(t *testing.T) {
 			t.Fatalf("list-panes: %v", err)
 		}
 		widths := map[string]string{}
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 			id, w, ok := strings.Cut(line, "|")
 			if !ok {
 				t.Fatalf("list-panes line %q missing '|'", line)

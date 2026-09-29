@@ -102,8 +102,9 @@
         # engine, the pane diff, the ctl verb table and the focus state machine
         # live. Both run here in one derivation: as two, all nine subPackages got
         # compiled twice over the same source, the most expensive thing in a CI
-        # run. -race on remotebridge because the mirror engine touches mirror
-        # state from a second goroutine (M2.3).
+        # run. -race across the whole module (~20s): the mirror engine touches
+        # mirror state from a second goroutine (M2.3), and a per-package list
+        # let new goroutine-spawning packages slip past it.
         # Reused (not just for its checkPhase) by the remote bridge integration
         # checks below, which need its binaries prebuilt and offline.
         pickerChecked =
@@ -136,17 +137,33 @@
             checkPhase = ''
               runHook preCheck
               export GOFLAGS=''${GOFLAGS//-trimpath/}
-              go test ./tmuxformat/...
-              go test ./enrichstate/...
-              go test ./agentdetect/...
-              go test ./statusline/...
-              go test ./ownerdir/...
-              go test ./proctree/...
-              go test ./mirrorname/...
-              go test ./latencyprobe/...
-              go test -race ./remotebridge/...
+              go test -race ./...
               runHook postCheck
             '';
+          });
+
+        # golangci-lint (.golangci.yml) + nilaway over a Go module, offline
+        # against the vendored deps buildGoModule already resolved. Reuses the
+        # module's own derivation so no second vendorHash exists, but skips its
+        # build and install: the linters type-check from source.
+        goLintGate = {race ? false}: pkg:
+          pkg.overrideAttrs (old: {
+            pname = "${old.pname}-lint";
+            doCheck = true;
+            nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.golangci-lint pkgs.nilaway];
+            buildPhase = "true";
+            postInstall = "";
+            checkPhase = ''
+              runHook preCheck
+              export GOFLAGS=''${GOFLAGS//-trimpath/}
+              export GOLANGCI_LINT_CACHE=$TMPDIR/golangci-lint
+              cp ${./.golangci.yml} .golangci.yml
+              golangci-lint run ./...
+              nilaway -include-pkgs="$(go list -m)" ./...
+              ${lib.optionalString race "go test -race ./..."}
+              runHook postCheck
+            '';
+            installPhase = "touch $out";
           });
       in {
         # Not a check: the hook closure (python + every nix/shell linter, ~1200
@@ -186,6 +203,8 @@
               pkgs.go
               pkgs.gopls
               pkgs.gotools
+              pkgs.golangci-lint
+              pkgs.nilaway
               pkgs.bats
               pkgs.jq
             ];
@@ -1989,6 +2008,9 @@
             '';
 
           picker-go-tests = pickerChecked;
+
+          picker-go-lint = goLintGate {} pickerChecked;
+          generator-go-lint = goLintGate {race = true;} (pkgs.callPackage ./generator {});
 
           reflow-fanout-tests =
             pkgs.runCommand "reflow-fanout-tests" {

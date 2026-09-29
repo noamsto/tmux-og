@@ -27,13 +27,13 @@ func TestRunReportsDaemonErrorAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { listener.Close() })
+	t.Cleanup(func() { _ = listener.Close() })
 
 	done := make(chan error, 1)
 	go func() {
 		conn, err := listener.Accept()
 		if err == nil {
-			defer conn.Close()
+			defer conn.Close() //nolint:errcheck // test cleanup
 			_, err = wire.ReadFrame(conn)
 		}
 		if err == nil {
@@ -204,7 +204,7 @@ func TestShowErrorWithTmuxServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(tmpdir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpdir) })
 	const socket = "s"
 	env := append(os.Environ(), "TMUX_TMPDIR="+tmpdir)
 

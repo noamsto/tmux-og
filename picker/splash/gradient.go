@@ -28,10 +28,13 @@ func lerp(a, b float64, t float64) float64 { return a + (b-a)*t }
 // buildGradient interpolates the anchors into `steps` evenly-spaced colors,
 // looping back to the first anchor so the ripple is seamless.
 func buildGradient(anchors []string, steps int) []string {
+	if len(anchors) == 0 {
+		return nil
+	}
 	loop := append(append([]string{}, anchors...), anchors[0])
 	segs := len(loop) - 1
 	out := make([]string, steps)
-	for i := 0; i < steps; i++ {
+	for i := range steps {
 		p := float64(i) / float64(steps) * float64(segs)
 		seg := int(p)
 		if seg >= segs {
@@ -64,7 +67,7 @@ func plasma(x, y int, t float64) float64 {
 // the dissolve-in and pick noise glyphs without math/rand (frames must be
 // reproducible for tests).
 func cellHash(x, y, salt int) float64 {
-	h := uint32(x*73856093) ^ uint32(y*19349663) ^ uint32(salt*83492791)
+	h := uint32(x*73856093) ^ uint32(y*19349663) ^ uint32(salt*83492791) //nolint:gosec // intentional wrapping hash
 	h ^= h >> 13
 	h *= 2654435761
 	h ^= h >> 16

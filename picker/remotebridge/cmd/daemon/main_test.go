@@ -60,7 +60,7 @@ func TestReflowRunShellArgsSurvivesFormatInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(tmpdir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpdir) })
 	const socket = "s"
 	env := append(os.Environ(), "TMUX_TMPDIR="+tmpdir)
 
@@ -379,7 +379,7 @@ func TestTransportCurrentPathFallsBackAfterAnAbortedDial(t *testing.T) {
 	startChildAt(t, tr, exec.Command("sleep", "60"), oldPath)
 	aborted := startChildAt(t, tr, exec.Command("sleep", "60"), newPath)
 
-	aborted.Close()
+	_ = aborted.Close()
 	waitEnded(t, aborted, "the aborted replacement never ended")
 
 	if got := tr.currentPath(); got != oldPath {
@@ -413,7 +413,7 @@ func TestTransportStopIsANoOpForAnAlreadyClosedChild(t *testing.T) {
 	a := startChild(t, tr, exec.Command("sleep", "60"))
 	b := startChild(t, tr, exec.Command("sleep", "60"))
 
-	a.Close()
+	_ = a.Close()
 	waitEnded(t, a, "the individually closed child never ended")
 
 	tr.mu.Lock()
@@ -440,7 +440,7 @@ func TestChildCloseUnlinksItsSocketPath(t *testing.T) {
 	}
 	c := startChildAt(t, &transport{}, exec.Command("sleep", "60"), path)
 
-	c.Close()
+	_ = c.Close()
 
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("Close left the socket path behind: stat err = %v", err)
@@ -477,7 +477,7 @@ func TestChildCloseUnblocksParkedReader(t *testing.T) {
 	}
 
 	closed := make(chan struct{})
-	go func() { c.Close(); c.Close(); close(closed) }() // twice: the drop path and teardown both close
+	go func() { _ = c.Close(); _ = c.Close(); close(closed) }() // twice: the drop path and teardown both close
 	select {
 	case <-closed:
 	case <-time.After(time.Second):
@@ -527,7 +527,7 @@ func startChildAt(t *testing.T, tr *transport, cmd *exec.Cmd, path string) *chil
 	if err := tr.start(c); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 	return c
 }
 
@@ -536,7 +536,7 @@ func waitEnded(t *testing.T, c *child, msg string) {
 	select {
 	case <-c.ended:
 	case <-time.After(transportKillGrace + 5*time.Second):
-		c.cmd.Process.Kill()
+		_ = c.cmd.Process.Kill()
 		t.Fatal(msg)
 	}
 }

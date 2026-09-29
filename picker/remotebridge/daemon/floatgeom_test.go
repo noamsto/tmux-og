@@ -189,7 +189,7 @@ func TestFloatResizeExactUnderPaneBorderStatusLiveTmux(t *testing.T) {
 		return c
 	}
 	var winW, winH int
-	fmt.Sscanf(run("display-message", "-p", "-t", "w", "#{window_width} #{window_height}"), "%d %d", &winW, &winH)
+	_, _ = fmt.Sscanf(run("display-message", "-p", "-t", "w", "#{window_width} #{window_height}"), "%d %d", &winW, &winH)
 
 	// Rows are the float's inner pane_top; the trigger is on the inner box, so
 	// the same rows fire for a bordered and a borderless float.

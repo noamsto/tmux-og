@@ -121,7 +121,7 @@ var sshRemoteResources = func(host string) (remoteHostResources, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh",
+	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=2",
 		"-T",
@@ -300,7 +300,7 @@ func mergeRemoteResources(sessions []sessionData) {
 // it mirrors, from the same `list-sessions` output parseBridgeSessions reads.
 func parseBridgeSessionNames(out string) map[string]string {
 	res := make(map[string]string)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		parts := strings.Split(line, "|")
 		if len(parts) != 3 || parts[2] == "" {
 			continue

@@ -49,7 +49,7 @@ func rawTestReader(s string) *controlmode.Reader {
 func withBarriers(script string) string {
 	var out []string
 	cmds := 0
-	for _, line := range strings.Split(script, "\n") {
+	for line := range strings.SplitSeq(script, "\n") {
 		out = append(out, line)
 		if !isFlaggedBlockEnd(line) {
 			continue
@@ -100,7 +100,7 @@ func TestStampAllFailsTheBatchOnFlushError(t *testing.T) {
 	// A reader that never yields, so a batch believed to be in flight hangs
 	// here exactly as it would against a live remote.
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	rt := newRoundTrip(controlmode.NewReader(pr), NewRouter(), &asyncQueue{}, st)
 
 	yielded := make(chan bool, 1)
@@ -118,7 +118,7 @@ func TestStampAllFailsTheBatchOnFlushError(t *testing.T) {
 	// loss rather than hanging.
 	seeded := make(chan error, 2)
 	go PaneSeeds(rt, []string{"%1", "%2"}, func(_ int, _ []byte, err error) { seeded <- err })
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		select {
 		case err := <-seeded:
 			if err == nil {
@@ -265,8 +265,8 @@ func TestCloseWindowTearsDownOnlyItsWindow(t *testing.T) {
 	router.Register("%2", sink2)
 	c1, c1peer := net.Pipe()
 	c2, c2peer := net.Pipe()
-	defer c1peer.Close()
-	defer c2peer.Close()
+	defer func() { _ = c1peer.Close() }()
+	defer func() { _ = c2peer.Close() }()
 	mw.conns["%1"] = c1
 	mw.conns["%2"] = c2
 
@@ -327,8 +327,8 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 	// it and the test can read its frames off the peer); %2 -> a capBuf, to
 	// assert sibling output isn't dropped during the re-seed round-trip.
 	oneLocal, onePeer := net.Pipe()
-	defer oneLocal.Close()
-	defer onePeer.Close()
+	defer func() { _ = oneLocal.Close() }()
+	defer func() { _ = onePeer.Close() }()
 
 	router := NewRouter()
 	router.Register("%1", newOutputSink(oneLocal, nil))
@@ -372,6 +372,7 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 			handleContinue(router, rt, l.Args[0])
 		case controlmode.Exit:
 			// stop below
+		default:
 		}
 		if l.Kind == controlmode.Exit {
 			break
@@ -410,8 +411,8 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 // land as FrameOutput immediately BEFORE the FrameSeed that repaints it.
 func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	oneLocal, onePeer := net.Pipe()
-	defer oneLocal.Close()
-	defer onePeer.Close()
+	defer func() { _ = oneLocal.Close() }()
+	defer func() { _ = onePeer.Close() }()
 
 	p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 	router := NewRouter()
@@ -445,6 +446,7 @@ func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 			handlePause(router, func(string) {}, l.Args[0])
 		case controlmode.Continue:
 			handleContinue(router, rt, l.Args[0])
+		default:
 		}
 		if l.Kind == controlmode.Exit {
 			break
@@ -478,12 +480,12 @@ func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 // proxy; teardown drops the sink and a fresh proxy must not inherit replay.
 func TestOutputSinkCloseDiscardsReplayState(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 
 	p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 	s := newOutputSink(remote, p)
-	s.Write(testKittyStore("1"))
+	_, _ = s.Write(testKittyStore("1"))
 	if got := readAllFrames(t, local, 200*time.Millisecond); !strings.Contains(got, kittyLocalisedMarker) {
 		t.Fatalf("store not forwarded: %q", got)
 	}
@@ -499,8 +501,8 @@ func TestOutputSinkCloseDiscardsReplayState(t *testing.T) {
 	}
 
 	local2, remote2 := net.Pipe()
-	defer local2.Close()
-	defer remote2.Close()
+	defer func() { _ = local2.Close() }()
+	defer func() { _ = remote2.Close() }()
 	s2 := newOutputSink(remote2, p2)
 	enqueueSeedWithReplay(s2, []byte("only-seed"))
 	seed, err := wire.ReadFrame(local2)
@@ -530,13 +532,13 @@ func TestWaitHellosTimesOutWhenRenderersDontConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 
 	connCh := make(chan helloConn, 16)
 	go acceptConns(l, connCh, func([]string) error { return nil })
 
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	pump := startCtlPump(controlmode.NewReader(pr))
 
 	start := time.Now()
@@ -846,8 +848,8 @@ func TestWatchLocalClientEmptyResolutionPreservesState(t *testing.T) {
 
 func TestOutputSinkFiltersAndCoalescesThroughTheProxy(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 
 	p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 
@@ -859,8 +861,8 @@ func TestOutputSinkFiltersAndCoalescesThroughTheProxy(t *testing.T) {
 	seq := func(payload string) []byte {
 		return []byte("\x1b_Gi=7,a=T,U=1,f=100,t=f;" + payload + "\x1b\\")
 	}
-	s.Write(seq("L3RtcC9hLnBuZw==")) // /tmp/a.png
-	s.Write(seq("L3RtcC9iLnBuZw==")) // /tmp/b.png
+	_, _ = s.Write(seq("L3RtcC9hLnBuZw==")) // /tmp/a.png
+	_, _ = s.Write(seq("L3RtcC9iLnBuZw==")) // /tmp/b.png
 	s.start(remote)
 	defer s.Close()
 
@@ -934,14 +936,14 @@ func TestDrainOutputCoalescesConsecutiveStopsAtBoundary(t *testing.T) {
 // the pump's own !ok exit path.
 func TestOutputSinkFlushesTheProxyHeldPartialOnClose(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 
 	p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 	s := newOutputSink(remote, p)
 
 	const partial = "\x1b_Gi=1,a=T;abc" // no ST: the scanner holds it, incomplete
-	s.Write([]byte(partial))
+	_, _ = s.Write([]byte(partial))
 	s.Close()
 
 	got := readAllFrames(t, local, 500*time.Millisecond)

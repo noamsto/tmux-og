@@ -92,11 +92,11 @@ func TestReconcileZoomsBeforeReseeding(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			local, peer := net.Pipe()
-			defer local.Close()
-			defer peer.Close()
+			defer func() { _ = local.Close() }()
+			defer func() { _ = peer.Close() }()
 			// Nothing here is asserted from the wire; drain it so the sink's
 			// pump goroutine never blocks writing to a pipe nobody reads.
-			go io.Copy(io.Discard, peer)
+			go func() { _, _ = io.Copy(io.Discard, peer) }()
 
 			router := NewRouter()
 			router.Register("%3", newOutputSink(local, nil))
@@ -178,14 +178,14 @@ func TestReconcileZoomsBeforeReseeding(t *testing.T) {
 // to smuggle the live output in behind.
 func TestReconcileSeedsPaneBeforeItsLaterOutputArrives(t *testing.T) {
 	localA, peerA := net.Pipe()
-	defer localA.Close()
-	defer peerA.Close()
+	defer func() { _ = localA.Close() }()
+	defer func() { _ = peerA.Close() }()
 	localB, peerB := net.Pipe()
-	defer localB.Close()
-	defer peerB.Close()
+	defer func() { _ = localB.Close() }()
+	defer func() { _ = peerB.Close() }()
 	// Pane B's frames are never asserted on; drain them so its sink's pump
 	// goroutine never blocks writing to a pipe nobody reads.
-	go io.Copy(io.Discard, peerB)
+	go func() { _, _ = io.Copy(io.Discard, peerB) }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(localA, nil))
@@ -218,7 +218,7 @@ func TestReconcileSeedsPaneBeforeItsLaterOutputArrives(t *testing.T) {
 	}
 	go reconcileLayout(cfg, w, func(string) {}, router, noHellos, newCtlState(), newConverger(), rt)
 
-	peerA.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerA.SetDeadline(time.Now().Add(5 * time.Second))
 
 	// The resize lands first (pushed right after select-layout, ahead of any
 	// re-seed) — same shape as TestStructuralReconcileReseedsTheSurvivor.

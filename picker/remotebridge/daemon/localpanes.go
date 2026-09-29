@@ -17,7 +17,7 @@ const localPaneListFormat = "#{pane_id} #{?pane_floating_flag,1,0}"
 // an ordinal slot like any other pane, so only the tiled list is positionally
 // comparable to the remote's pane order.
 func parseLocalPaneList(out string) (tiled, floats []string) {
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		id, flag, ok := strings.Cut(strings.TrimSpace(line), " ")
 		if !ok || !strings.HasPrefix(id, "%") {
 			continue
@@ -88,7 +88,7 @@ func localWindowSet(cfg Config) (map[string]bool, bool) {
 		return nil, false
 	}
 	live := make(map[string]bool)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		live[strings.TrimSpace(line)] = true
 	}
 	return live, true

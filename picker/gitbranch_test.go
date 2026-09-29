@@ -24,7 +24,7 @@ func clearDiscoveryVars(t *testing.T) {
 	t.Helper()
 	for _, name := range discoveryVars {
 		t.Setenv(name, "")
-		os.Unsetenv(name)
+		_ = os.Unsetenv(name)
 	}
 }
 

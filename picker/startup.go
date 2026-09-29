@@ -40,7 +40,7 @@ func collectTmuxArgv(windowMode, withOpts bool) []string {
 // command in it errored), and the caller falls back to the separate reads,
 // which degrade per call rather than as a whole.
 func collectTmux(windowMode, withOpts bool) (tmuxData, bool) {
-	out, err := exec.Command("tmux", collectTmuxArgv(windowMode, withOpts)...).Output()
+	out, err := exec.Command("tmux", collectTmuxArgv(windowMode, withOpts)...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return tmuxData{}, false
 	}
@@ -59,7 +59,7 @@ func parseTmuxData(out string, windowMode, withOpts bool) (tmuxData, bool) {
 	// text and could carry it mid-line.
 	parts := make([]string, 0, want)
 	var cur []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if line == startupSep {
 			parts = append(parts, strings.Join(cur, "\n"))
 			cur = cur[:0]

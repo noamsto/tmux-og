@@ -73,7 +73,7 @@ func twoPaneAppendHarness(t *testing.T, send func(string)) (cfg Config, w *mirro
 // and local/remote pane counts aligned — no kill-pane.
 func TestSeedFailureApplyPaneOpsKeepsPaneWired(t *testing.T) {
 	_, w, router, _, newPeer, _, trace := twoPaneAppendHarness(t, func(string) {})
-	defer newPeer.Close()
+	defer func() { _ = newPeer.Close() }()
 
 	if _, err := newPeer.Write([]byte("x")); err != nil {
 		t.Errorf("appended renderer conn not writable: %v", err)
@@ -108,7 +108,7 @@ func TestSeedFailureInputStillFlows(t *testing.T) {
 		mu.Unlock()
 	}
 	_, _, _, _, newPeer, _, _ := twoPaneAppendHarness(t, send)
-	defer newPeer.Close()
+	defer func() { _ = newPeer.Close() }()
 
 	if err := wire.WriteFrame(newPeer, wire.FrameInput, []byte("x")); err != nil {
 		t.Fatalf("write FrameInput: %v", err)
@@ -136,12 +136,12 @@ func TestSeedFailureInputStillFlows(t *testing.T) {
 // uses over newRemote after a reshape.
 func TestSeedFailurePaneInTrailingReseedSet(t *testing.T) {
 	_, w, router, _, newPeer, _, _ := twoPaneAppendHarness(t, func(string) {})
-	defer newPeer.Close()
+	defer func() { _ = newPeer.Close() }()
 
 	w.remotePanes = []string{"%1", "%2"}
 
 	peer := newPeer
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	f, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read resize after unseeded wire: %v", err)
@@ -187,8 +187,8 @@ func (c *trackCloseConn) Close() error {
 // setupWindow fails before replacing renderers, the kept pane's conn stays open.
 func TestResetWindowKeepsKeptPaneConnOnSetupFailure(t *testing.T) {
 	raw, keptPeer := net.Pipe()
-	defer keptPeer.Close()
-	go io.Copy(io.Discard, keptPeer)
+	defer func() { _ = keptPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, keptPeer) }()
 
 	keptConn := &trackCloseConn{Conn: raw}
 
@@ -226,14 +226,14 @@ func TestResetWindowKeepsKeptPaneConnOnSetupFailure(t *testing.T) {
 // success the old renderer conn is closed only after setupWindow's reshape ran.
 func TestResetWindowClosesKeptPaneConnAfterSuccessfulReshape(t *testing.T) {
 	oldRaw, oldPeer := net.Pipe()
-	defer oldPeer.Close()
-	go io.Copy(io.Discard, oldPeer)
+	defer func() { _ = oldPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, oldPeer) }()
 	oldConn := &trackCloseConn{Conn: oldRaw}
 
 	newConn, newPeer := net.Pipe()
-	defer newConn.Close()
-	defer newPeer.Close()
-	go io.Copy(io.Discard, newPeer)
+	defer func() { _ = newConn.Close() }()
+	defer func() { _ = newPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, newPeer) }()
 
 	connCh := make(chan helloConn, 1)
 	connCh <- helloConn{paneID: "%0", conn: newConn}
@@ -288,7 +288,7 @@ func TestResetWindowClosesKeptPaneConnAfterSuccessfulReshape(t *testing.T) {
 // failure still errors, and disposes of the sink and conn wireRenderer registered.
 func TestSetupWindowSolePaneSeedFailureCleansUp(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer peer.Close()
+	defer func() { _ = peer.Close() }()
 
 	connCh := make(chan helloConn, 1)
 	connCh <- helloConn{paneID: "%0", conn: conn}
@@ -336,8 +336,8 @@ func TestSetupWindowSolePaneSeedFailureCleansUp(t *testing.T) {
 // closed and not merged back — the old renderer is dead.
 func TestResetWindowClosesKeptPaneConnOnSpawnedSetupFailure(t *testing.T) {
 	raw, keptPeer := net.Pipe()
-	defer keptPeer.Close()
-	go io.Copy(io.Discard, keptPeer)
+	defer func() { _ = keptPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, keptPeer) }()
 
 	keptConn := &trackCloseConn{Conn: raw}
 

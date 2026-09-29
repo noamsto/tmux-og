@@ -32,14 +32,8 @@ const (
 // past the window. Size wins over position: the float keeps the remote's dims
 // and slides back in.
 func outerFromCell(c controlmode.PaneCell, winW, winH int) (w, h, x, y int) {
-	w = c.W + floatInset*2
-	if w > winW {
-		w = winW
-	}
-	h = c.H + floatInset*2
-	if h > winH {
-		h = winH
-	}
+	w = min(c.W+floatInset*2, winW)
+	h = min(c.H+floatInset*2, winH)
 	x = clampOffset(c.X-floatInset, w, winW)
 	y = clampOffset(c.Y-floatInset, h, winH)
 	return w, h, x, y

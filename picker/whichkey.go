@@ -165,7 +165,7 @@ func parseListKeysRows(out string) []whichKeyRow {
 		return nil
 	}
 	var rows []whichKeyRow
-	for _, line := range strings.Split(trimmed, "\n") {
+	for line := range strings.SplitSeq(trimmed, "\n") {
 		// SplitN(5): key_string is the trailing field and may itself be "|".
 		parts := strings.SplitN(line, "|", 5)
 		if len(parts) != 5 || parts[4] == "" {
@@ -276,7 +276,7 @@ func replayBind(row whichKeyRow, originPane string) error {
 		return whichKeyFail(originPane, fmt.Sprintf("which-key: cannot parse bind for %s: %v", row.key, err))
 	}
 
-	out, err := exec.Command("tmux", "run-shell", "-b",
+	out, err := exec.Command("tmux", "run-shell", "-b", //nolint:gosec // G204: fixed binary, argv passed without a shell
 		"-d", whichKeyReplayDelay, "-t", originPane, "-C", command).CombinedOutput()
 	if err != nil {
 		return whichKeyFail(originPane, fmt.Sprintf("which-key: %s failed: %s", row.key, strings.TrimSpace(string(out))))
@@ -293,7 +293,7 @@ func resolveBindLine(table, key string) (string, error) {
 	if key == ";" {
 		key = `\;`
 	}
-	out, err := exec.Command("tmux", "list-keys", "-T", table, key).Output()
+	out, err := exec.Command("tmux", "list-keys", "-T", table, key).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return "", err
 	}
@@ -312,7 +312,7 @@ func resolveBindLine(table, key string) (string, error) {
 // stderr dies with the popup, so display-message is the only channel the user
 // actually sees; main.go still prints the returned error for a CLI run.
 func whichKeyFail(originPane, msg string) error {
-	_ = exec.Command("tmux", "display-message", "-d", "5000", "-t", originPane, msg).Run()
+	_ = exec.Command("tmux", "display-message", "-d", "5000", "-t", originPane, msg).Run() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	return fmt.Errorf("%s", msg)
 }
 
@@ -522,7 +522,7 @@ func (m whichKeyModel) rebuildVisible() whichKeyModel {
 	q := strings.ToLower(strings.TrimSpace(m.query))
 
 	if q == "" {
-		var visible []whichKeyItem
+		visible := []whichKeyItem{}
 		for _, g := range m.groups {
 			visible = append(visible, whichKeyItem{isHeader: true, table: g.table})
 			for _, r := range g.rows {
@@ -712,31 +712,15 @@ func (m whichKeyModel) currentRow() (whichKeyRow, bool) {
 // page never scrolls past its own end.
 func (m whichKeyModel) scrollRaw(delta int) whichKeyModel {
 	h := m.bodyHeight()
-	maxScroll := len(m.rawLines) - h
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	s := m.rawScroll + delta
-	if s < 0 {
-		s = 0
-	}
-	if s > maxScroll {
-		s = maxScroll
-	}
-	m.rawScroll = s
+	maxScroll := max(len(m.rawLines)-h, 0)
+	m.rawScroll = min(max(m.rawScroll+delta, 0), maxScroll)
 	return m
 }
 
 func (m whichKeyModel) scrollStart(h int) int {
-	start := m.cursor - h/2
-	if start < 0 {
-		start = 0
-	}
+	start := max(m.cursor-h/2, 0)
 	if start+h > len(m.visible) {
-		start = len(m.visible) - h
-		if start < 0 {
-			start = 0
-		}
+		start = max(len(m.visible)-h, 0)
 	}
 	return start
 }
@@ -907,10 +891,7 @@ func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected, showTable bool)
 		tableW = m.tblColWidth + 2
 	}
 	key := fitVisibleWidth(r.key, m.keyColWidth)
-	noteW := w - m.keyColWidth - 4 - tableW
-	if noteW < 0 {
-		noteW = 0
-	}
+	noteW := max(w-m.keyColWidth-4-tableW, 0)
 	line := keyStyle.Render(key) + "  "
 	if showTable {
 		line += dim.Render(fitVisibleWidth(r.note, noteW)) + "  " + table.Render(r.table)

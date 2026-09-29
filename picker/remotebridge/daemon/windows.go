@@ -123,7 +123,10 @@ func (r *registry) byRemoteID(remoteID string) (*mirrorWindow, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	w, ok := r.byRemote[remoteID]
-	return w, ok
+	if !ok || w == nil {
+		return nil, false
+	}
+	return w, true
 }
 
 func (r *registry) remove(remoteID string) (*mirrorWindow, bool) {
@@ -134,7 +137,10 @@ func (r *registry) remove(remoteID string) (*mirrorWindow, bool) {
 		delete(r.byRemote, remoteID)
 		r.generation++
 	}
-	return w, ok
+	if !ok || w == nil {
+		return nil, false
+	}
+	return w, true
 }
 
 // gen snapshots the generation. Read on the main loop, bumped there too, but
@@ -193,7 +199,7 @@ const windowListFormat = "'#{window_index} #{window_id} #{window_active} #{windo
 // ordered remote windows, dropping blank/malformed rows.
 func parseWindowList(body string) []remoteWindow {
 	var wins []remoteWindow
-	for _, row := range strings.Split(body, "\n") {
+	for row := range strings.SplitSeq(body, "\n") {
 		row = strings.TrimSpace(row)
 		if row == "" {
 			continue

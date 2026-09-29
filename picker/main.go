@@ -176,9 +176,9 @@ func panesSnapshotArgv() []string {
 // @bridge_res is appended after both, and every later field must go after it
 // too: each one is positional, so a mid-format insert shifts all the rest.
 func collectPanesSnapshot() panesSnapshot {
-	out, err := exec.Command("tmux", panesSnapshotArgv()...).Output()
+	out, err := exec.Command("tmux", panesSnapshotArgv()...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
-		return nil
+		return panesSnapshot{}
 	}
 	return parsePanesSnapshot(string(out))
 }
@@ -267,7 +267,7 @@ func sessionActivityArgv() []string {
 }
 
 func collectSessionActivity() map[string]int64 {
-	out, err := exec.Command("tmux", sessionActivityArgv()...).Output()
+	out, err := exec.Command("tmux", sessionActivityArgv()...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return nil
 	}
@@ -276,7 +276,7 @@ func collectSessionActivity() map[string]int64 {
 
 func parseSessionActivity(out string) map[string]int64 {
 	m := make(map[string]int64)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		parts := strings.Split(line, "|")
 		if len(parts) != 2 {
 			continue
@@ -354,7 +354,7 @@ type winInfo struct {
 func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 	m := make(map[winKey]*winInfo)
 	// Preserve ordering
-	var order []winKey
+	order := []winKey{}
 
 	field := func(parts []string, i int) string {
 		if len(parts) > i {
@@ -468,7 +468,7 @@ func collectWindows() []windowData {
 	// icons/colors from automatic-rename-format so we reconstruct a clean name.
 	// -f drops a popup-float's pane (notModalFilter): it is the window's active
 	// pane while open, but its content is chrome, not window content.
-	out, err := exec.Command("tmux", windowsArgv()...).Output()
+	out, err := exec.Command("tmux", windowsArgv()...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return nil
 	}
@@ -491,6 +491,9 @@ func windowsFromRows(rows []string) []windowData {
 	var wg sync.WaitGroup
 	for _, k := range order {
 		wi := m[k]
+		if wi == nil {
+			continue
+		}
 		if wi.branch == "" && wi.path != "" && !wi.bridgeWin {
 			wg.Add(1)
 			go func(wi *winInfo) {
@@ -504,6 +507,9 @@ func windowsFromRows(rows []string) []windowData {
 	windows := make([]windowData, 0, len(order))
 	for _, k := range order {
 		wi := m[k]
+		if wi == nil {
+			continue
+		}
 		windows = append(windows, windowData{
 			session:     k.sess,
 			index:       k.idx,
@@ -592,7 +598,7 @@ func collectSessionResources(sessions []sessionData) map[string]sessionResources
 		}
 	}
 
-	psOut, err := exec.Command("ps", psArgs...).Output()
+	psOut, err := exec.Command("ps", psArgs...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return nil
 	}
@@ -734,12 +740,12 @@ func readHookPaneStates(dir string) map[string]hookPaneState {
 		if e.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // G304: path built from trusted local state, not user input
 		if err != nil {
 			continue
 		}
 		var hp hookPaneState
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok {
 				switch k {
 				case "state":
@@ -771,12 +777,12 @@ func readScreenPaneStates(dir string) map[string]screenPaneState {
 		if e.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		data, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // G304: path built from trusted local state, not user input
 		if err != nil {
 			continue
 		}
 		var sp screenPaneState
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok {
 				switch k {
 				case "state":
@@ -908,7 +914,7 @@ func collectAgentPanesFrom(hookDir, screenDir, issuesDir string, paneMap map[str
 // readPaneIssues reads the comma-separated self-reported issue id list for a
 // pane. Missing file (the common case) yields nil.
 func readPaneIssues(path string) []string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return nil
 	}
@@ -917,7 +923,7 @@ func readPaneIssues(path string) []string {
 		return nil
 	}
 	var ids []string
-	for _, id := range strings.Split(line, ",") {
+	for id := range strings.SplitSeq(line, ",") {
 		if id != "" {
 			ids = append(ids, id)
 		}
@@ -1015,13 +1021,7 @@ func addAgentState(cc *agentCounts, state string) {
 
 func addIssues(cc *agentCounts, ids []string) {
 	for _, id := range ids {
-		seen := false
-		for _, e := range cc.issues {
-			if e == id {
-				seen = true
-				break
-			}
-		}
+		seen := slices.Contains(cc.issues, id)
 		if !seen {
 			cc.issues = append(cc.issues, id)
 		}
@@ -1253,9 +1253,8 @@ func runeCellWidth(r rune) int {
 // VS16 emoji are stripped at build time (process-icons.nix) to avoid lipgloss
 // width miscalculation (charmbracelet/lipgloss#55, #562).
 func iconCellWidth(s string) int {
-	runes := []rune(s)
 	w := 0
-	for _, r := range runes {
+	for _, r := range s {
 		w += runeCellWidth(r)
 	}
 	return w
@@ -1406,7 +1405,7 @@ func parseShowOptionsLine(line string) (name, value string, ok bool) {
 // custom -F format, which bypasses the default template's quote-escaping —
 // so an empty-string option comes back empty, not the literal ”.
 func readTmuxOpts() map[string]string {
-	out, err := exec.Command("tmux", showOptionsArgv()...).Output()
+	out, err := exec.Command("tmux", showOptionsArgv()...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return nil
 	}
@@ -1420,7 +1419,7 @@ func showOptionsArgv() []string {
 
 func parseTmuxOpts(out string) map[string]string {
 	m := make(map[string]string)
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if name, value, ok := parseShowOptionsLine(line); ok {
 			m[name] = value
 		}
@@ -1447,7 +1446,7 @@ func themeFromOpts(opts map[string]string) string {
 // Bare-name exec relies on the tmux wrapper's PATH, like our tmux/zoxide calls.
 // No-ops when debug is off (the CLI checks the sentinel).
 func logEvent(args ...string) {
-	exec.Command("og-log-event", args...).Run() //nolint:errcheck
+	_ = exec.Command("og-log-event", args...).Run() //nolint:gosec // fixed binary, argv passed without a shell
 }
 
 func envOrMap(envKey string, tmuxOpts map[string]string, tmuxOpt, fallback string) string {

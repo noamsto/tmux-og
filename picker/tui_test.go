@@ -522,6 +522,9 @@ func TestRenderWindowItemsLayout(t *testing.T) {
 			crewName: "rust", crewColor: "colour210"},
 	}
 	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
+	if len(items) < 3 {
+		t.Fatalf("got %d items, want at least 3", len(items))
+	}
 
 	var plains []string
 	for _, it := range items {

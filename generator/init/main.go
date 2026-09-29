@@ -22,7 +22,7 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("og-init", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: og-init [--out FILE] [--force]")
+		_, _ = fmt.Fprintln(fs.Output(), "usage: og-init [--out FILE] [--force]")
 		fs.PrintDefaults()
 	}
 	out := fs.String("out", "", "path to write config.toml to (default: XDG config dir)")
@@ -47,10 +47,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil { //nolint:gosec // generated config is meant to be world-readable
 		return fmt.Errorf("og-init: %w", err)
 	}
-	if err := os.WriteFile(*out, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(*out, []byte(content), 0o644); err != nil { //nolint:gosec // generated config is meant to be world-readable
 		return fmt.Errorf("og-init: %w", err)
 	}
 
@@ -65,6 +65,6 @@ func fail(err error) {
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}
-	os.Stderr.WriteString(msg)
+	_, _ = os.Stderr.WriteString(msg)
 	os.Exit(1)
 }

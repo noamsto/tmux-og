@@ -37,11 +37,11 @@ const (
 )
 
 var runTmux = func(args ...string) error {
-	return exec.Command("tmux", args...).Run()
+	return exec.Command("tmux", args...).Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 }
 
 var runTmuxOut = func(args ...string) (string, error) {
-	out, err := exec.Command("tmux", args...).Output()
+	out, err := exec.Command("tmux", args...).Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	return string(out), err
 }
 
@@ -77,7 +77,7 @@ func resolveDrag(localPane string) ([]string, error) {
 	}
 
 	remoteByLocal := make(map[string]string)
-	for _, pair := range strings.Fields(fields[8]) {
+	for pair := range strings.FieldsSeq(fields[8]) {
 		local, remote, ok := strings.Cut(pair, "=")
 		if !ok || !panePattern.MatchString(remote) {
 			continue
@@ -138,11 +138,11 @@ func showError(client string, err error) error {
 }
 
 func run(sock string, args []string) error {
-	conn, err := net.DialTimeout("unix", sock, dialTimeout)
+	conn, err := net.DialTimeout("unix", sock, dialTimeout) //nolint:gosec // dials a local unix socket path we own, not a network address
 	if err != nil {
 		return fmt.Errorf("bridge daemon unreachable: %w", err)
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck // deferred close of a request/response conn; failure is not actionable
 	if err := conn.SetDeadline(time.Now().Add(overallTimeout)); err != nil {
 		return err
 	}

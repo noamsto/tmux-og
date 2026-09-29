@@ -17,8 +17,8 @@ import (
 // the survivor kept the screen it was painted with at the old size.
 func TestStructuralReconcileReseedsTheSurvivor(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	router.Register("%3", newOutputSink(local, nil))
@@ -61,7 +61,7 @@ func TestStructuralReconcileReseedsTheSurvivor(t *testing.T) {
 	// the repaint. Both matter, and the order is the point: a seed sized for the
 	// new geometry must not arrive before the pane has it (#233).
 	deadline := time.Now().Add(5 * time.Second)
-	peer.SetDeadline(deadline)
+	_ = peer.SetDeadline(deadline)
 
 	f, err := wire.ReadFrame(peer)
 	if err != nil {
@@ -83,12 +83,12 @@ func TestStructuralReconcileReseedsTheSurvivor(t *testing.T) {
 // on the layout-reshape re-seed path.
 func TestStructuralReconcileReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 	sink := newOutputSink(local, p)
-	sink.Write(testKittyStore("3"))
+	_, _ = sink.Write(testKittyStore("3"))
 	storeFrame, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read store: %v", err)
@@ -130,7 +130,7 @@ func TestStructuralReconcileReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	}
 	go reconcileLayout(cfg, w, func(string) {}, router, noHellos, newCtlState(), newConverger(), rt)
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 
 	resize, err := wire.ReadFrame(peer)
 	if err != nil {

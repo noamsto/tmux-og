@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -267,7 +268,7 @@ func isCachedRemoteSelfAlias(host string) bool {
 		return false
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Getuid()) {
+	if !ok || stat.Uid != uint32(os.Getuid()) { //nolint:gosec // G115: value is non-negative and fits uint32
 		return false
 	}
 	return true
@@ -363,10 +364,10 @@ func readRemoteSessionCache(host string) (remoteSessionCache, bool) {
 	if err != nil || !info.Mode().IsRegular() {
 		return remoteSessionCache{}, false
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) {
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) { //nolint:gosec // G115: value is non-negative and fits uint32
 		return remoteSessionCache{}, false
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return remoteSessionCache{}, false
 	}
@@ -419,7 +420,7 @@ func bridgeSessionLegacyKey(name string) string {
 // names happen to equal the old <host>-<session> convention.
 func parseBridgeSessions(raw string) map[string]bool {
 	bridges := make(map[string]bool)
-	for _, line := range strings.Split(strings.TrimRight(raw, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(raw, "\n"), "\n") {
 		parts := strings.SplitN(line, "|", 3)
 		if len(parts) < 2 || parts[1] == "" {
 			continue
@@ -455,7 +456,7 @@ func bridgeSessionPresent(bridges map[string]bool, host, sess string) bool {
 // skipped (nothing to resolve).
 func parseBridgeMirrors(raw string) []bridgeMirror {
 	var mirrors []bridgeMirror
-	for _, line := range strings.Split(strings.TrimRight(raw, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(raw, "\n"), "\n") {
 		parts := strings.SplitN(line, "|", 3)
 		if len(parts) < 2 || parts[1] == "" {
 			continue
@@ -660,8 +661,7 @@ func (e *tailscaleCheckErr) Unwrap() error { return errRemoteTailscaleCheck }
 // tailscaleCheckURL recovers the login URL classifyProbeErr captured for a
 // Tailscale SSH "check" host, or "" if err isn't that state or carried none.
 func tailscaleCheckURL(err error) string {
-	var e *tailscaleCheckErr
-	if errors.As(err, &e) {
+	if e, ok := errors.AsType[*tailscaleCheckErr](err); ok && e != nil {
 		return e.url
 	}
 	return ""
@@ -675,8 +675,7 @@ func tailscaleCheckURL(err error) string {
 // restarts) has nothing on screen to explain, and that is the only case worth
 // surfacing into the status line.
 func remoteAuthStartFailure(err error) (string, bool) {
-	var startErr *exec.Error
-	if errors.As(err, &startErr) {
+	if _, ok := errors.AsType[*exec.Error](err); ok {
 		return err.Error(), true
 	}
 	return "", false
@@ -702,7 +701,7 @@ func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
 	ctx, cancel := context.WithTimeout(ctx, remoteProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh",
+	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=2",
 		"-T",
@@ -740,7 +739,7 @@ func sshListRemoteSessions(host string) (remoteProbeResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh",
+	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=2",
 		"-T",
@@ -794,7 +793,7 @@ type remuxEvent struct {
 func newestSnapshotManifest(ndjson string) (remuxManifest, bool) {
 	var best remuxEvent
 	found := false
-	for _, line := range strings.Split(ndjson, "\n") {
+	for line := range strings.SplitSeq(ndjson, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -886,7 +885,7 @@ func sshListRestorableSessions(host string) (remuxManifest, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh",
+	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=2",
 		"-T",
@@ -909,7 +908,7 @@ func sshListRestorableSessions(host string) (remuxManifest, error) {
 func bridgeCtlKillWindow(tmuxOpts map[string]string, sock, pane string) error {
 	// An option, not a PATH lookup — see @bridge_ctl_bin in the config.
 	bin := envOrMap("BRIDGE_CTL_BIN", tmuxOpts, "@bridge_ctl_bin", "og-remote-bridge-ctl")
-	cmd := exec.Command(bin, "--sock="+sock, "kill-window", pane)
+	cmd := exec.Command(bin, "--sock="+sock, "kill-window", pane) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -930,7 +929,7 @@ func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, r
 	if sess != "" {
 		args = append(args, sess)
 	}
-	cmd := exec.Command(remoteOpenBin(tmuxOpts), args...)
+	cmd := exec.Command(remoteOpenBin(tmuxOpts), args...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if restore {
 		cmd.Env = append(os.Environ(), "OG_REMOTE_RESTORE=1")
 	}
@@ -953,8 +952,8 @@ func remoteOpenBin(tmuxOpts map[string]string) string {
 // systemctl noise comes first, the script's own message last.
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(s, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); line != "" {
+	for _, line := range slices.Backward(lines) {
+		if line := strings.TrimSpace(line); line != "" {
 			return line
 		}
 	}
@@ -1007,7 +1006,7 @@ func hostColorFunc(tmuxOpts map[string]string) func(string) string {
 	preferredSlot := func(host string) int {
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(host))
-		return int(h.Sum32() % uint32(n))
+		return int(h.Sum32() % uint32(n)) //nolint:gosec // G115: value is non-negative and fits uint32
 	}
 	hashColor := func(host string) string {
 		return colors[preferredSlot(host)]
@@ -1028,7 +1027,7 @@ func hostColorFunc(tmuxOpts map[string]string) func(string) string {
 	for _, host := range sorted {
 		preferred := preferredSlot(host)
 		slot := preferred
-		for i := 0; i < n; i++ {
+		for i := range n {
 			candidate := (preferred + i) % n
 			if !used[candidate] {
 				slot = candidate
@@ -1243,6 +1242,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 				}
 			case remoteProbeTailscaleCheck:
 				res.tailscaleURL = tailscaleCheckURL(err)
+			case remoteProbeNeedsAuth, remoteProbeHostKeyChanged:
 			}
 			if state == remoteProbeNoServer {
 				if m, err := restoreProbe(h); err == nil && len(m.Sessions) > 0 {
@@ -1302,6 +1302,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 		case remoteProbeTailscaleCheck:
 			hostRow.remoteTailscaleCheck = true
 			hostRow.remoteTailscaleURL = r.tailscaleURL
+		case remoteProbeOK, remoteProbeNoServer, remoteProbeUnreachable:
 		}
 		items = append(items, hostRow)
 		cH := hostColor(r.host)
@@ -1346,7 +1347,7 @@ func bridgePIDFromFile(raw string) (pid int, ok bool) {
 // exits), so this only needs to deliver the signal.
 func stopBridgeDaemon(sess string) {
 	logEvent("picker", "event", "stop_bridge_daemon", "target", sess)
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", sess, "#{@bridge_sock}").Output()
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", sess, "#{@bridge_sock}").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return
 	}
@@ -1354,7 +1355,7 @@ func stopBridgeDaemon(sess string) {
 	if sock == "" {
 		return
 	}
-	raw, err := os.ReadFile(sock + ".pid")
+	raw, err := os.ReadFile(sock + ".pid") //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return
 	}
@@ -1366,7 +1367,7 @@ func stopBridgeDaemon(sess string) {
 	if err != nil {
 		return
 	}
-	proc.Signal(syscall.SIGTERM) //nolint:errcheck
+	_ = proc.Signal(syscall.SIGTERM)
 }
 
 // stopBridgeDaemonFn seals stopBridgeDaemon for tests: the remote-session kill

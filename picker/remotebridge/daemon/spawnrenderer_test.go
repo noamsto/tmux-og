@@ -44,9 +44,9 @@ func TestSpawnRendererArgvIsSockThenRemotePane(t *testing.T) {
 
 func TestRebindRendererReplacesTheSink(t *testing.T) {
 	oldConn, oldPeer := net.Pipe()
-	defer oldPeer.Close()
+	defer func() { _ = oldPeer.Close() }()
 	newConn, newPeer := net.Pipe()
-	defer newPeer.Close()
+	defer func() { _ = newPeer.Close() }()
 
 	reg := newRegistry()
 	mw := reg.add("@1", "@101")
@@ -62,7 +62,7 @@ func TestRebindRendererReplacesTheSink(t *testing.T) {
 	if mw.conns["%2"] != newConn {
 		t.Fatal("conns[%2] was not replaced with the redialed renderer")
 	}
-	oldPeer.SetDeadline(time.Now().Add(time.Second))
+	_ = oldPeer.SetDeadline(time.Now().Add(time.Second))
 	if _, err := oldPeer.Read(make([]byte, 1)); err == nil {
 		t.Error("old renderer conn still open")
 	}
@@ -71,10 +71,10 @@ func TestRebindRendererReplacesTheSink(t *testing.T) {
 
 func TestRebindRendererDropsAnUnknownPane(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer peer.Close()
+	defer func() { _ = peer.Close() }()
 	rebindRenderer(Config{}, helloConn{paneID: "%9", conn: conn}, func(string) {}, NewRouter(), newRegistry(),
 		setupWindowRT(oneSeedScript("UNUSED")))
-	peer.SetDeadline(time.Now().Add(time.Second))
+	_ = peer.SetDeadline(time.Now().Add(time.Second))
 	if _, err := peer.Read(make([]byte, 1)); err == nil {
 		t.Error("unknown-pane hello was kept open")
 	}

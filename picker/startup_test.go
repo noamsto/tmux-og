@@ -189,7 +189,7 @@ fi
 		{"window", true, []string{"alpha", "feat/874-fast", "beta"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			os.Remove(calls)
+			_ = os.Remove(calls)
 			var out bytes.Buffer
 			if err := dumpFirstFrame(&out, tc.window, false, false); err != nil {
 				t.Fatal(err)

@@ -183,13 +183,13 @@ type paneFile struct {
 }
 
 func readPaneFile(path string) paneFile {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return paneFile{}
 	}
 	var pf paneFile
 	pf.ok = true
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		k, v, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
@@ -274,7 +274,7 @@ func aggregateSession(dir, session string, now int64, liveIDs map[string]bool) s
 }
 
 func readIssueFile(path string) []string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return nil
 	}
@@ -402,7 +402,7 @@ func listSessionPaneIDs(session string) (map[string]bool, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-s", "-t", session, "-F", "#{pane_id}").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return map[string]bool{}, false
 	}

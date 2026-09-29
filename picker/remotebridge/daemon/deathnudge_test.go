@@ -30,7 +30,7 @@ func TestDeathNudgeWakeArms(t *testing.T) {
 // no fake-timer seam needed.
 func TestDeathNudgeRepeatedWakeIsANoOp(t *testing.T) {
 	d := newDeathNudge()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		d.wake()
 		if !d.isArmed() {
 			t.Fatalf("armed = false after wake() call #%d, want true", i+1)

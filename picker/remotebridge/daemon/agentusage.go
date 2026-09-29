@@ -81,7 +81,7 @@ type usageCache struct {
 // does, so the remote and local gates agree on what "open" means.
 func usageOpenSet(part string) map[string]bool {
 	open := map[string]bool{}
-	for _, tok := range strings.Fields(part) {
+	for tok := range strings.FieldsSeq(part) {
 		base := path.Base(tok)
 		if m := usageWrappedRe.FindStringSubmatch(base); m != nil {
 			base = m[1]
@@ -246,7 +246,7 @@ func (u *usageShipper) flush(cfg Config) {
 		clearBridgeUsage(cfg)
 		return
 	}
-	cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_usage", out)
+	_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_usage", out)
 }
 
 // reset forgets what was written, so the re-report after repair's re-subscribe
