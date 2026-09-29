@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	imgcolor "image/color"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -405,6 +407,43 @@ func newPickerModel(windowMode, agentOnly, wall bool, opts map[string]string, th
 	return m
 }
 
+// initialModel gathers the data a first paint needs and builds the model, shared
+// by runTUI and the headless --dump-first-frame mode.
+func initialModel(windowMode, agentOnly, wall bool, emitPath string) tuiModel {
+	trace.mark("start")
+	// One tmux invocation for every read the first paint needs; the separate
+	// calls remain as the fallback when the chained list fails.
+	data, ok := collectTmux(windowMode, true)
+	if !ok {
+		data = tmuxData{opts: readTmuxOpts(), snap: collectPanesSnapshot()}
+	}
+	trace.mark("tmux")
+	opts, snap := data.opts, data.snap
+	theme := themeFromOpts(opts)
+	panes := collectAgentPanes(snap)
+	trace.mark("agent_panes")
+	currentSession := os.Getenv("OG_PICKER_CURRENT_SESSION")
+
+	var items []listItem
+	switch {
+	case windowMode && data.windowRows != nil:
+		items = renderWindowItemsWith(windowsFromRows(data.windowRows), data.activity, opts, panes, theme, 0, false)
+	case windowMode:
+		items = buildWindowItems(opts, panes, theme, 0, false)
+	default:
+		items = buildSessionItems(opts, snap, panes, theme, false, currentSession)
+	}
+	trace.mark("items")
+
+	m := newPickerModel(windowMode, agentOnly, wall, opts, theme, items, emitPath)
+	m.currentSession = currentSession
+	if emitPath != "" {
+		m.emitHost = os.Getenv("OG_PICKER_HOST")
+	}
+	trace.mark("model")
+	return m
+}
+
 func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 	var emitPath string
 	if remotePick {
@@ -419,28 +458,12 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 		}
 	}
 
-	opts := readTmuxOpts()
-	theme := themeFromOpts(opts)
-	snap := collectPanesSnapshot()
-	panes := collectAgentPanes(snap)
-	currentSession := os.Getenv("OG_PICKER_CURRENT_SESSION")
-
-	var items []listItem
-	if windowMode {
-		items = buildWindowItems(opts, panes, theme, 0, false)
-	} else {
-		items = buildSessionItems(opts, snap, panes, theme, false, currentSession)
-	}
-
-	m := newPickerModel(windowMode, agentOnly, wall, opts, theme, items, emitPath)
-	m.currentSession = currentSession
-	if emitPath != "" {
-		m.emitHost = os.Getenv("OG_PICKER_HOST")
-	}
+	m := initialModel(windowMode, agentOnly, wall, emitPath)
 	sup := &attachSupervisor{}
 	m.attachSup = sup
 
-	p := tea.NewProgram(m)
+	trace.mark("run")
+	p := tea.NewProgram(m, programOptions()...)
 	// The popup pane dying under the picker (window closed, client detached)
 	// delivers SIGHUP; its default disposition would kill the picker before
 	// sup.stop below cancels the Setsid'd launcher, so turn it into a Kill
@@ -474,6 +497,7 @@ func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
 // --- Bubbletea interface ---
 
 func (m tuiModel) Init() tea.Cmd {
+	trace.mark("init")
 	// No wall capture here: the grid is derived from a size this model doesn't
 	// have yet, and nothing paints before the WindowSizeMsg that brings it.
 	cmds := []tea.Cmd{tickCmd(), previewTickCmd(), wallTickCmd(), m.loadPreviewCmd()}
@@ -494,6 +518,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
+		trace.mark("window_size")
 		widthChanged := msg.Width != m.width
 		m.width = msg.Width
 		m.height = msg.Height
@@ -1347,20 +1372,12 @@ func (m tuiModel) View() tea.View {
 		}, "\n")
 
 	default:
-		body := m.renderList()
-		if m.showPreview {
-			body = m.renderPreview(body)
-		}
-		borderColor := m.thmColor("@thm_surface_1", "#45475a", "#9ca0b0")
-		bordered := lipgloss.NewStyle().
-			Width(m.width).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderBottom(true).
-			BorderForeground(borderColor).
-			Render(body)
-		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSearch(), bordered, m.renderHints())
+		content = m.renderFrame()
 	}
 
+	if m.ready {
+		trace.firstFrame()
+	}
 	v := tea.NewView(content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
@@ -2317,13 +2334,19 @@ func (m tuiModel) refreshDataCmd() tea.Cmd {
 	cur := m.currentSession
 	lw := m.listWidth() // capture the value; the closure runs off-thread
 	return func() tea.Msg {
-		snap := collectPanesSnapshot()
-		panes := collectAgentPanes(snap)
 		var items []listItem
 		var mirrors []bridgeMirror
 		if wm {
-			items = buildWindowItems(opts, panes, theme, lw, sg)
+			// One tmux call for the three reads a window refresh makes, every
+			// second; the separate calls only if the chained list failed.
+			if data, ok := collectTmux(true, false); ok {
+				items = renderWindowItemsWith(windowsFromRows(data.windowRows), data.activity, opts, collectAgentPanes(data.snap), theme, lw, sg)
+			} else {
+				items = buildWindowItems(opts, collectAgentPanes(collectPanesSnapshot()), theme, lw, sg)
+			}
 		} else {
+			snap := collectPanesSnapshot()
+			panes := collectAgentPanes(snap)
 			items = buildSessionItems(opts, snap, panes, theme, true, cur)
 			// Only the session picker cycles host scope, so window mode would
 			// pay for this fork every tick and never read the result — and with
@@ -2527,10 +2550,14 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 			return previewMsg{content: msg, target: t, scrollTop: true}
 		}
 	}
+	seq := previewGate.request()
 	return func() tea.Msg {
+		if !previewGate.admit(seq) {
+			return nil // a newer request took over while this one waited its turn
+		}
 		// selfCaptureTarget: never capture the picker's own popup pane over
 		// the window/session it covers.
-		out, err := exec.Command("tmux", "capture-pane", "-t", selfCaptureTarget(t), "-p", "-e").Output()
+		out, err := previewCapture(selfCaptureTarget(t))
 		if err != nil {
 			return previewMsg{content: "(no preview available)", target: t}
 		}
@@ -2950,6 +2977,12 @@ func groupWindowsByState(windows []windowData, sessActivity map[string]int64) []
 // the enriched row layout can be unit-tested with synthetic windows. width is
 // the list width in cells (0 = unknown → default identity cap).
 func renderWindowItems(windows []windowData, tmuxOpts map[string]string, agentPanes []agentPaneInfo, theme string, width int, stateGrouped bool) []listItem {
+	return renderWindowItemsWith(windows, collectSessionActivity(), tmuxOpts, agentPanes, theme, width, stateGrouped)
+}
+
+// renderWindowItemsWith is renderWindowItems with the session-activity map
+// already in hand, for the first paint that fetched it in its chained read.
+func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, tmuxOpts map[string]string, agentPanes []agentPaneInfo, theme string, width int, stateGrouped bool) []listItem {
 	agentByWin := aggregateAgentByWindow(agentPanes)
 	mergeAgentWindows(windows, agentByWin)
 
@@ -2971,7 +3004,6 @@ func renderWindowItems(windows []windowData, tmuxOpts map[string]string, agentPa
 	dim := "\033[2m"
 	prCols := prColors{success: cGreen, failure: ansiFg(thmRed), pending: ansiFg(thmPeach), merged: cMauve, closed: ansiFg(thmOverlay0), required: ansiFg(thmOverlay0), underline: "\033[4m", reset: reset}
 
-	sessActivity := collectSessionActivity()
 	var groups []windowGroup
 	if stateGrouped {
 		groups = groupWindowsByState(windows, sessActivity)
@@ -3536,4 +3568,87 @@ func fuzzyScore(text, pattern string) int {
 	}
 
 	return score
+}
+
+// dumpFirstFrame is the hidden headless mode behind --dump-first-frame: the
+// same data collection and model build as --tui, then the first list frame as
+// plain text at OG_PICKER_DUMP_SIZE (WxH, default 120x40). It runs no
+// tea.Cmd, so the frame is what paints before any async data lands.
+func dumpFirstFrame(w io.Writer, windowMode, agentOnly, wall bool) error {
+	width, height := 120, 40
+	if v := os.Getenv("OG_PICKER_DUMP_SIZE"); v != "" {
+		if _, err := fmt.Sscanf(v, "%dx%d", &width, &height); err != nil {
+			return fmt.Errorf("OG_PICKER_DUMP_SIZE must be WxH: %w", err)
+		}
+	}
+	m := initialModel(windowMode, agentOnly, wall, "")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	_, err := fmt.Fprintln(w, stripANSI(next.(tuiModel).View().Content))
+	return err
+}
+
+// programOptions are the bubbletea options the pickers run with.
+func programOptions() []tea.ProgramOption {
+	return append([]tea.ProgramOption{
+		// The renderer flushes on a frame ticker, so the first list frame paints
+		// at the next tick after it is drawn: 60fps averages ~8ms of waiting,
+		// 120fps (the cap) half that.
+		tea.WithFPS(120),
+		// lipgloss.Writer detected the profile at package init, forking `tmux
+		// info` for it. Handing it over stops Run from forking a second one
+		// before it paints anything; both detect from os.Stdout and os.Environ.
+		tea.WithColorProfile(lipgloss.Writer.Profile),
+	}, trace.programOptions()...)
+}
+
+// previewCapture reads a pane's screen for the preview; a test seam.
+var previewCapture = func(target string) ([]byte, error) {
+	return exec.Command("tmux", "capture-pane", "-t", target, "-p", "-e").Output()
+}
+
+// previewMinGap is the least time between two preview captures starting.
+// A held j/k moves the cursor faster than a capture (a fork queued behind the
+// tmux server) completes, and every row it passes over would otherwise fork one.
+const previewMinGap = 40 * time.Millisecond
+
+// previewThrottle spaces preview captures: the first request after a quiet
+// spell runs at once, so a single cursor move previews as fast as ever, and
+// requests arriving inside the gap wait it out, with only the newest of them
+// still running when it ends. The last row of a fast scroll is therefore
+// always previewed, at most previewMinGap late.
+type previewThrottle struct {
+	mu      sync.Mutex
+	latest  uint64
+	lastRun time.Time
+}
+
+var previewGate = &previewThrottle{}
+
+// request registers a capture and returns its ticket. It is called from Update,
+// so tickets are ordered by the key presses that asked for them.
+func (g *previewThrottle) request() uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.latest++
+	return g.latest
+}
+
+// admit blocks until the gap since the last capture has passed and reports
+// whether the ticket is still the newest; only then may the capture run.
+func (g *previewThrottle) admit(ticket uint64) bool {
+	for {
+		g.mu.Lock()
+		if g.latest != ticket {
+			g.mu.Unlock()
+			return false
+		}
+		wait := previewMinGap - time.Since(g.lastRun)
+		if wait <= 0 {
+			g.lastRun = time.Now()
+			g.mu.Unlock()
+			return true
+		}
+		g.mu.Unlock()
+		time.Sleep(wait)
+	}
 }

@@ -1,0 +1,77 @@
+{
+  "version": "v1",
+  "name": "tmux-og picker first frame",
+  "target": {
+    "repository": "https://github.com/noamsto/tmux-og",
+    "build": {"package": ".", "binary": "tmux-picker-generate"},
+    "command": []
+  },
+  "workloads": {
+    "seeds": [
+      {
+        "id": "session-first-frame",
+        "name": "session picker, data collection to first frame",
+        "tier": "representative",
+        "args": ["--dump-first-frame"],
+        "provenance": "manifest",
+        "description": "Same collection and model build as prefix+s, printed as plain text. Needs the scratch tmux fixture from tests/perf/picker-open-latency.sh."
+      },
+      {
+        "id": "window-first-frame",
+        "name": "window picker, data collection to first frame",
+        "tier": "representative",
+        "args": ["--dump-first-frame", "--windows"],
+        "provenance": "manifest",
+        "description": "Same as prefix+w. Window rows read each pane's branch."
+      }
+    ],
+    "discovery": {
+      "enabled": false,
+      "sources": ["tests"],
+      "strategies": ["seed_mutation"],
+      "seed": 1,
+      "max_cases": 1,
+      "max_depth": 1
+    },
+    "tiers": {
+      "representative": {"weight": 1.0, "acceptance_eligible": true},
+      "plausible": {"weight": 0.5, "acceptance_eligible": false},
+      "stress": {"weight": 0.0, "acceptance_eligible": false}
+    }
+  },
+  "sandbox": {
+    "network": "deny",
+    "filesystem": {"read": "repo_and_assets", "write": "temp_only"},
+    "environment": {
+      "allow": ["LANG", "LC_ALL"],
+      "passthrough": ["PATH", "HOME", "TMUX", "TMUX_TMPDIR", "CLAUDE_STATUS_DIR", "ZOXIDE_DATA_DIR", "GIT_CONFIG_GLOBAL"]
+    },
+    "max_processes": 1
+  },
+  "normalization": {
+    "stdout": {"mode": "exact"},
+    "stderr": {"mode": "exact"},
+    "files": []
+  },
+  "performance": {
+    "primary_metric": "wall_time_ns",
+    "minimum_improvement_percent": 3.0,
+    "maximum_guardrail_regression_percent": 2.0,
+    "statistical_support_required": true,
+    "guardrails": [
+      {"name": "peak_memory_bytes", "maximum_regression_percent": 2.0, "required": true},
+      {"name": "cpu_time_ns", "maximum_regression_percent": 2.0, "required": true},
+      {"name": "binary_size_bytes", "maximum_regression_percent": 2.0, "required": true}
+    ]
+  },
+  "campaign": {
+    "max_duration": "45m",
+    "max_candidate_patches": 8,
+    "max_concurrent_candidates": 1,
+    "stop_after_failures": 4,
+    "discovery_stall_timeout": "20m",
+    "per_command_timeout_multiple": 4.0,
+    "minimum_command_timeout": "30s"
+  },
+  "optimization_policy": "idiomatic"
+}
