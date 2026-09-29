@@ -330,7 +330,7 @@ func TestRenderLineFull(t *testing.T) {
 		paneIcon: "I", paneCmd: ".nvim-wrapped",
 	}
 
-	got := renderLine(a, dir, "dark", false, now, "", nil)
+	got := renderLine(a, dir, true, "dark", false, now, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S work#[norange]  #[fg=#89b,bold]B feat/x" +
 		"  #[fg=#9a8,nobold]D ./" +
@@ -339,6 +339,35 @@ func TestRenderLineFull(t *testing.T) {
 		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I nvim}}} "
 	if got != want {
 		t.Fatalf("renderLine\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestRenderLineUntrustedDirSuppressesAgentGlyph: a loose (0755) or planted
+// claude-status root must not feed the agent segment even when it holds
+// exactly the pane state that would otherwise render a glyph (#850).
+func TestRenderLineUntrustedDirSuppressesAgentGlyph(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/panes", 0o755)
+	os.WriteFile(dir+"/panes/1", []byte("state=processing\ntimestamp=9000\nsession=work\n"), 0o644)
+	now := int64(9000)
+
+	a := args{
+		session: "work", branch: "feat/x", panePath: "/repo", gitRoot: "/repo",
+		iconSession: "S", iconBranch: "B", iconDir: "D",
+		thmBg: "#000", thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd",
+		thmSubtext0: "#9a8", thmOverlay1: "#777",
+		paneIcon: "I", paneCmd: ".nvim-wrapped",
+	}
+
+	got := renderLine(a, dir, false, "dark", false, now, "", nil)
+	want := "#[align=left,bg=#000]" +
+		"#[fg=#c6a] #[range=left]S work#[norange]  #[fg=#89b,bold]B feat/x" +
+		"  #[fg=#9a8,nobold]D ./" +
+		"  #[fg=#777]" +
+		" #[align=right]" +
+		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I nvim}}} "
+	if got != want {
+		t.Fatalf("renderLine untrusted\n got %q\nwant %q", got, want)
 	}
 }
 
@@ -360,7 +389,7 @@ func TestRenderLineBridgeWinSuppressesDir(t *testing.T) {
 		paneIcon: "I", paneCmd: ".nvim-wrapped",
 	}
 
-	got := renderLine(a, dir, "dark", false, now, "", nil)
+	got := renderLine(a, dir, true, "dark", false, now, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S work#[norange]  " +
 		"  #[fg=#777]" +
@@ -385,7 +414,7 @@ func TestRenderLineBridgeHost(t *testing.T) {
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
-	got := renderLine(a, dir, "dark", false, 9000, "", nil)
+	got := renderLine(a, dir, true, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
 		"#[fg=#fab]R g6  " +
@@ -412,7 +441,7 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
-	got := renderLine(a, dir, "dark", false, 9000, "", nil)
+	got := renderLine(a, dir, true, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
 		"#[fg=#fab]R g6  " +
@@ -440,7 +469,7 @@ func TestRenderLineBridgeStateParked(t *testing.T) {
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
-	got := renderLine(a, dir, "dark", false, 9000, "", nil)
+	got := renderLine(a, dir, true, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
 		"#[fg=#fab]R g6  " +
@@ -516,7 +545,7 @@ func TestRenderLineUsageAdjacentToPaneSlot(t *testing.T) {
 	}
 	usage := "#[fg=#0f0]42%·5h  "
 
-	got := renderLine(a, dir, "dark", false, 9000, usage, nil)
+	got := renderLine(a, dir, true, "dark", false, 9000, usage, nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S work#[norange]  #[fg=#89b,bold]B feat/x" +
 		"  #[fg=#9a8,nobold]D ./" +

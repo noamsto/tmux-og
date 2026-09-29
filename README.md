@@ -498,7 +498,7 @@ The plugin maps OpenCode events as follows:
 
 ### State Files
 
-State files are written to `/tmp/claude-status/` and cleaned up automatically.
+State files are written to `${CLAUDE_STATUS_DIR:-/tmp/claude-status-$(id -u)}/` and cleaned up automatically.
 Stale states (e.g. a `processing` state older than 15 seconds) are resolved automatically
 if a hook fails to fire.
 

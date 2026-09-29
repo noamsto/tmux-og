@@ -29,7 +29,7 @@ func TestPumpInputDismissesDeadKeyPaneLiveTmux(t *testing.T) {
 		}
 		t.Skip("tmux is not available")
 	}
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 
 	if out, err := tmux("set-option", "-w", "-t", "w", "remain-on-exit", "on").CombinedOutput(); err != nil {
 		t.Fatalf("set remain-on-exit: %v\n%s", err, out)

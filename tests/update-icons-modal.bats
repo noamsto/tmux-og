@@ -19,6 +19,8 @@ setup() {
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
 	export CLAUDE_STATUS_DIR="$TDIR/claude-status"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$CLAUDE_STATUS_DIR"/{panes,screen,tasks,names}
 	export TMPDIR="$TDIR"
 

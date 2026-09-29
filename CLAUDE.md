@@ -9,7 +9,7 @@ This file holds only what every task needs. The measured evidence, invariants an
 | Working on… | Read |
 |---|---|
 | Any `scripts/*.sh` — what invokes it, which options/files it owns, its ownership guards | `docs/agents/scripts.md` (one long table row per script — `rg` the script name rather than reading the file whole) |
-| `/tmp/claude-status/*` files, `read_pane_state`, agent-detect, interrupt/dead-agent detection, `@window_has_agent` naming reset, self-report files | `docs/agents/agent-state.md` |
+| `$CLAUDE_STATUS_DIR/*` files, `read_pane_state`, agent-detect, interrupt/dead-agent detection, `@window_has_agent` naming reset, self-report files | `docs/agents/agent-state.md` |
 | Status bar lines, `tmux-reflow-windows`, grid column widths, icon variables | `docs/agents/status-bar.md` |
 | `picker/` TUI layout, header/pinned line, key input, which-key ranking | `docs/agents/picker.md` |
 | `@issue_*`/`@pr_*`, `tmux-pr-enrich`, agent usage segment, `@window_cwd_seen` | `docs/agents/enrichment.md` |
@@ -83,7 +83,7 @@ The repo doubles as a CC plugin marketplace: `.claude-plugin/marketplace.json` �
 - **Target a session by id (`-t '$N'`) in `set-option`** — a numeric name like `0` also resolves as a pane index. `show-options` rejects the `=name` exact-match prefix and `-q` hides the error as an empty value: read session options with a bare `-t "$name"` or `display-message -p`.
 - **Address a window or pane by id (`@N`/`%N`), never `<sess>:<index>`** — `renumber-windows` is on, so an index captured earlier slides onto a neighbour.
 - **Every hand-rolled tmux repro runs on its own server with its own state dir:**
-  `TMUX_TMPDIR=/tmp/og-$$ CLAUDE_STATUS_DIR=/tmp/og-$$/status tmux -L probe new-session -d …`, then `kill-server` on that same socket. Inside a pane `$TMUX` is set, so a bare `tmux new-session` leaks a session onto the user's live server and a bare `kill-server` kills it. `CLAUDE_STATUS_DIR` defaults to a `/tmp/claude-status` shared by every server on the machine, and a scratch server prunes and reaps from it. Reading the live server is fine.
+  `TMUX_TMPDIR=/tmp/og-$$ CLAUDE_STATUS_DIR=/tmp/og-$$/status tmux -L probe new-session -d …`, then `kill-server` on that same socket. Inside a pane `$TMUX` is set, so a bare `tmux new-session` leaks a session onto the user's live server and a bare `kill-server` kills it. `CLAUDE_STATUS_DIR` defaults to `/tmp/claude-status-<uid>` (#850), shared by every server of your uid, and a scratch server run as the same user prunes and reaps from it. Reading the live server is fine.
 - **Drive a background side effect from a `-B` monitor hook, never from `status-format`.** A control-mode client (the remote bridge) renders no status line, so `#()` jobs never run on a bridge-only host (#603). Anything destructive to the shared `/tmp` dirs stays on the client-gated per-tick path. The three `-B` traps (empty target field, string body under a version guard, unconditional `-u -B` clear) are in `tmux-gotchas.md`.
 - **Window options are the source of truth** for enrichment (`@issue_*`, `@pr_*`): only the stamp/enrich scripts write them; display formats, keybinds and pickers only read.
 - **A `@bridge_win` mirror window is daemon-owned.** Local scripts skip it; the daemon writes `@bridge_*`, never the real option names (a same-name write is a two-writer race reflow wins). Every consumer naming a mirror pane's command prefers `@bridge_proc`.

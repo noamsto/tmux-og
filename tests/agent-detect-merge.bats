@@ -5,6 +5,9 @@ load helper
 setup() {
 	CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR"
 	export CLAUDE_STATUS_DIR
+	# BATS_TEST_TMPDIR already exists (0755) -- chmod, not mkdir -m, to make it
+	# owner-only before the source-time trust check.
+	chmod 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$CLAUDE_STATUS_DIR/panes" "$CLAUDE_STATUS_DIR/screen"
 	setup_lib_claude
 	CLAUDE_NOW=100000 # pin the clock

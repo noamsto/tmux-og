@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+// privateDir returns a fresh 0700 temp dir. t.TempDir() itself is created
+// 0777&^umask (0755 in the common case), which claudestatus.Ensure now
+// refuses to write into — every shipper fixture in this file needs an
+// owner-only root to exercise the trusted write path.
+func privateDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestParseAgentStatus(t *testing.T) {
 	body := strings.Join([]string{
 		"%1|claude|processing 1700000000 |",                       // trailing empty fields trimmed away
@@ -60,7 +73,7 @@ func TestParseAgentStatus(t *testing.T) {
 // which is what the local pane-border-format draws from — the local pane runs a
 // renderer and knows neither its role nor its state.
 func TestAgentShipperStampsCrewDecorations(t *testing.T) {
-	a := &agentShipper{dir: t.TempDir(), sess: "lab-mono", written: map[string]paneStatus{}}
+	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
 
@@ -115,7 +128,7 @@ func mirrorCfg(calls *[][]string) Config {
 }
 
 func TestAgentShipperApply(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", skew: 10, written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -156,7 +169,7 @@ func TestAgentShipperApply(t *testing.T) {
 // PID as server=, so a second server's boot-time prune can tell it belongs to
 // a still-live server rather than deleting it (#676).
 func TestAgentShipperStampsServerPID(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -194,7 +207,7 @@ func TestAgentShipperOmitsUnusableServerPID(t *testing.T) {
 		"malformed": func(...string) (string, error) { return "12\nstate=done", nil },
 	}
 	run := func(t *testing.T, out func(args ...string) (string, error)) string {
-		dir := t.TempDir()
+		dir := privateDir(t)
 		a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 		var calls [][]string
 		cfg := mirrorCfg(&calls)
@@ -219,7 +232,7 @@ func TestAgentShipperOmitsUnusableServerPID(t *testing.T) {
 // A failed resolution is retried on the next stamp pass rather than latched off
 // for the daemon's life, and a successful one is never asked for again.
 func TestAgentShipperRetriesServerPID(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -258,7 +271,7 @@ func TestAgentShipperRetriesServerPID(t *testing.T) {
 // resolved it forks tmux display-message, so hoisting bounds that to once per
 // stamp pass rather than once per changed row (#712).
 func TestAgentShipperResolvesServerPIDOncePerPass(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -283,7 +296,7 @@ func TestAgentShipperResolvesServerPIDOncePerPass(t *testing.T) {
 // @bridge_proc carries the remote's — stamped for every mirrored pane, agent or
 // not, and only when it changes (else it is a fork per pane per second).
 func TestAgentShipperStampsRemoteCommand(t *testing.T) {
-	a := &agentShipper{dir: t.TempDir(), sess: "lab-mono", written: map[string]paneStatus{}}
+	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
 
@@ -312,12 +325,15 @@ func TestAgentShipperStampsRemoteCommand(t *testing.T) {
 // An agent-free pane is still mirrored — it gets the icon stamp, but no state
 // file, and a file left from a previous agent goes away.
 func TestAgentShipperDropsFilesWhenAgentLeavesPane(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
 
 	a.apply(cfg, []paneStatus{{pane: "%1", proc: "claude", state: "done", ts: 1700000000}})
+	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); err != nil {
+		t.Fatalf("state file not written before the pane changed: %v", err)
+	}
 	a.apply(cfg, []paneStatus{{pane: "%1", proc: "fish"}})
 
 	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); !os.IsNotExist(err) {
@@ -333,7 +349,7 @@ func TestAgentShipperDropsFilesWhenAgentLeavesPane(t *testing.T) {
 // rides @agent_screen alone. It must land in screen/<id>, independent of
 // panes/, tasks/, issues/ — none of which a screen-only pane ever gets.
 func TestAgentShipperWritesScreenFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", skew: 10, written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -368,7 +384,7 @@ func TestAgentShipperWritesScreenFile(t *testing.T) {
 // screen-only pane has no panes/ sibling to protect it from another server's
 // boot-time prune.
 func TestAgentShipperStampsServerPIDOnScreenFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", skew: 10, written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -395,7 +411,7 @@ func TestAgentShipperStampsServerPIDOnScreenFile(t *testing.T) {
 // stamps only @claude_status and a screen-only pane stamps only
 // @agent_screen.
 func TestAgentShipperLeavesUnchangedScreenRowAlone(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -425,11 +441,14 @@ func TestAgentShipperLeavesUnchangedScreenRowAlone(t *testing.T) {
 // Teardown (a dying bridge) must drop the screen file exactly as it drops
 // panes/tasks/issues.
 func TestAgentShipperClearDropsScreenFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
 	a.apply(cfg, []paneStatus{{pane: "%1", proc: "pi", screenState: "processing", screenTS: 1700000000}})
+	if _, err := os.Stat(filepath.Join(dir, "screen", "7")); err != nil {
+		t.Fatalf("screen file not written before clear: %v", err)
+	}
 
 	a.clear()
 	if _, err := os.Stat(filepath.Join(dir, "screen", "7")); !os.IsNotExist(err) {
@@ -441,7 +460,7 @@ func TestAgentShipperClearDropsScreenFile(t *testing.T) {
 // `unseen` from the file. The remote's stamp still says 1 until its agent writes
 // again, so an unchanged row must not be written back over that.
 func TestAgentShipperLeavesUnchangedRowsAlone(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
@@ -469,11 +488,14 @@ func TestAgentShipperLeavesUnchangedRowsAlone(t *testing.T) {
 // A bridge that dies must not leave a mirror pane's state behind: the shell-side
 // prune collects by server-start mtime and would keep it until a tmux restart.
 func TestAgentShipperClear(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
 	cfg := mirrorCfg(&calls)
 	a.apply(cfg, []paneStatus{{pane: "%1", state: "processing", ts: 1700000000}})
+	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); err != nil {
+		t.Fatalf("pane file not written before clear: %v", err)
+	}
 
 	a.clear()
 	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); !os.IsNotExist(err) {
@@ -485,7 +507,7 @@ func TestAgentShipperClear(t *testing.T) {
 }
 
 func TestAgentShipperNoLocalPanes(t *testing.T) {
-	a := &agentShipper{dir: t.TempDir(), written: map[string]paneStatus{}}
+	a := &agentShipper{dir: privateDir(t), written: map[string]paneStatus{}}
 	a.apply(Config{}, []paneStatus{{pane: "%1", state: "done", ts: 1}})
 	if len(a.written) != 0 {
 		t.Errorf("no LocalPanes seam should write nothing, got %v", a.written)
@@ -497,7 +519,7 @@ func TestAgentShipperNoLocalPanes(t *testing.T) {
 // every other pane as "stopped reporting" and delete its files — an agent's
 // state vanishing from the status bar because a different pane changed.
 func TestAgentShipperQueuedFlushDoesNotReapOtherPanes(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	a := newAgentShipper("lab-mono", 0)
 	a.dir = dir
 	var calls [][]string
@@ -539,5 +561,78 @@ func TestAgentShipperQueuedFlushDoesNotReapOtherPanes(t *testing.T) {
 	a.apply(cfg, []paneStatus{{pane: "%2", proc: "claude", state: "done", ts: 1700000100}})
 	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); !os.IsNotExist(err) {
 		t.Error("a full read that omits a pane must reap it")
+	}
+}
+
+// TestAgentShipperLooseRootWritesNothing is the #850 security gate: a
+// pre-existing 0755 CLAUDE_STATUS_DIR must not receive any state file this
+// shipper would otherwise write — claudestatus.Ensure refuses to repair (let
+// alone trust) a dir it doesn't own exclusively, so a loose or planted root
+// must come back empty.
+func TestAgentShipperLooseRootWritesNothing(t *testing.T) {
+	dir := t.TempDir() // 0755 by default (0777 &^ umask) — loose, not owner-only.
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	a.apply(cfg, []paneStatus{
+		{pane: "%1", proc: "claude", state: "waiting", ts: 1700000000, task: "ship it", issues: "ENG-7"},
+		{pane: "%2", proc: "pi", screenState: "processing", screenTS: 1700000000},
+	})
+
+	for _, sub := range []string{"panes", "tasks", "issues", "screen"} {
+		if _, err := os.Stat(filepath.Join(dir, sub)); !os.IsNotExist(err) {
+			t.Errorf("%s/ must not be created against a loose root (err=%v)", sub, err)
+		}
+	}
+	// The tmux-option stamps (icon, crew badge) are unrelated to file trust and
+	// still fire — only the claude-status file writes are gated.
+	if len(calls) == 0 {
+		t.Error("want @bridge_proc still stamped even when the file writes are gated")
+	}
+
+	// clear() must be equally inert against a loose root.
+	a.clear()
+	for _, sub := range []string{"panes", "tasks", "issues", "screen"} {
+		if _, err := os.Stat(filepath.Join(dir, sub)); !os.IsNotExist(err) {
+			t.Errorf("%s/ must not exist after clear() on a loose root (err=%v)", sub, err)
+		}
+	}
+}
+
+// TestAgentShipperResyncsOnceRootBecomesTrusted covers the #850 follow-up: a
+// row seen while the root is loose must not be marked "written" for good. Once
+// the root is fixed up to 0700, the SAME unchanged row has to be written on the
+// next pass rather than skipped forever by the unchanged-row shortcut.
+func TestAgentShipperResyncsOnceRootBecomesTrusted(t *testing.T) {
+	dir := t.TempDir() // 0755 by default — loose, not owner-only.
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	row := []paneStatus{{
+		pane: "%1", proc: "claude", state: "waiting", ts: 1700000000,
+		task: "ship it", issues: "ENG-7",
+		screenState: "idle", screenTS: 1700000000,
+	}}
+
+	a.apply(cfg, row)
+	for _, sub := range []string{"panes", "tasks", "issues", "screen"} {
+		if _, err := os.Stat(filepath.Join(dir, sub)); !os.IsNotExist(err) {
+			t.Fatalf("%s/ must not be created against a loose root (err=%v)", sub, err)
+		}
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same row, unchanged — must still be written now that the root is trusted.
+	a.apply(cfg, row)
+	if _, err := os.Stat(filepath.Join(dir, "panes", "7")); err != nil {
+		t.Errorf("panes/7 was never written after the root became trusted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "screen", "7")); err != nil {
+		t.Errorf("screen/7 was never written after the root became trusted: %v", err)
 	}
 }

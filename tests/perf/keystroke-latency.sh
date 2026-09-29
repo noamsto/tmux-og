@@ -25,7 +25,9 @@ W="$(mktemp -d /tmp/og-perf.XXXX)"
 export TMUX_TMPDIR="$W"
 export CLAUDE_STATUS_DIR="$W/status"
 unset TMUX
-mkdir -p "$CLAUDE_STATUS_DIR" "$W/bin" "$W/vlog"
+# shellcheck disable=SC2174  # only the root itself must be owner-only
+mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
+mkdir -p "$W/bin" "$W/vlog"
 : >"$W/daemon.pids"
 
 cleanup() {

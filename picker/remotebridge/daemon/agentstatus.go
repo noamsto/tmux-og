@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
@@ -178,6 +179,11 @@ type agentShipper struct {
 	// burst collapses to one row per pane, and applied by flush rather than by
 	// the dispatch that queued them.
 	pending map[string]paneStatus
+
+	// unsynced marks pane ids whose row was recorded in written while the dir
+	// was untrusted, so their files were never written; they bypass the
+	// unchanged-row skip until a trusted pass writes them. Lazily initialised.
+	unsynced map[string]bool
 }
 
 // queue records the row a %subscription-changed line carried. Pure: it is
@@ -216,10 +222,7 @@ func (a *agentShipper) flush(cfg Config, rt roundTrip, gen uint64, drained bool)
 }
 
 func newAgentShipper(localSess string, skew int64) *agentShipper {
-	dir := os.Getenv("CLAUDE_STATUS_DIR")
-	if dir == "" {
-		dir = "/tmp/claude-status"
-	}
+	dir := claudestatus.Dir()
 	return &agentShipper{
 		dir:     dir,
 		sess:    localSess,
@@ -268,6 +271,10 @@ func (a *agentShipper) apply(cfg Config, rows []paneStatus) {
 	if !ok {
 		return
 	}
+	// Reaping removes files; gate it the same way stamp gates writing them.
+	if !claudestatus.Ensure(a.dir) {
+		return
+	}
 	for id := range a.written {
 		if live[id] {
 			continue
@@ -289,6 +296,9 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 	// that one fork per row instead of one per pass (#712). Cached once it
 	// succeeds, so the steady state is unchanged.
 	localPID := a.localServerPID(cfg)
+	// Gates only the file writes and removes: a loose or planted dir must not
+	// receive remote-sourced content, while the tmux-option stamps carry none.
+	trusted := claudestatus.Ensure(a.dir)
 
 	for _, r := range rows {
 		localPane, ok := local[r.pane]
@@ -302,7 +312,7 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// mirror window while the remote's stamp still says 1. It also keeps the
 		// stamp below from forking tmux once per pane per second.
 		prev, seen := a.written[id]
-		if seen && prev == r {
+		if seen && prev == r && !a.unsynced[id] {
 			continue
 		}
 		a.written[id] = r
@@ -318,6 +328,13 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// Before the agent-less return below: a role pane the dispatcher
 		// decorated still draws a border when no agent ever reported on it.
 		stampCrew(cfg, localPane, r, prev, seen)
+		if !trusted {
+			if a.unsynced == nil {
+				a.unsynced = map[string]bool{}
+			}
+			a.unsynced[id] = true
+			continue
+		}
 		if r.state == "" {
 			// The pane is mirrored but has no hook-driven agent — nothing to
 			// render but the icon, and a leftover file would keep one lit.
@@ -355,6 +372,7 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 			}
 			writeStatusFile(filepath.Join(a.dir, "screen", id), body)
 		}
+		delete(a.unsynced, id)
 	}
 	return live, true
 }
@@ -405,6 +423,9 @@ func stampCrew(cfg Config, localPane string, r, prev paneStatus, seen bool) {
 // clear drops every file this bridge wrote. The shell-side prune collects by
 // server-start mtime, so nothing else would ever reap them.
 func (a *agentShipper) clear() {
+	if !claudestatus.Ensure(a.dir) {
+		return
+	}
 	for id := range a.written {
 		a.forget(id)
 	}
@@ -414,6 +435,7 @@ func (a *agentShipper) forget(id string) {
 	a.removeFiles(id)
 	a.removeScreenFile(id)
 	delete(a.written, id)
+	delete(a.unsynced, id)
 }
 
 func (a *agentShipper) removeFiles(id string) {

@@ -37,7 +37,8 @@ setup() {
 	# defaults to a bare /tmp path shared by every tmux server on the machine)
 	# — isolate it anyway rather than assume this script never grows a read.
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
-	mkdir -p "$CLAUDE_STATUS_DIR"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	# The script's lock dir lives under TMPDIR and a direct call (no $TMUX)
 	# names it after server "0", so parallel bats runs on one machine would
 	# share it and a setup apply could lose the lock. The server inherits this

@@ -381,6 +381,17 @@ func sessionLiveIDs(dir, session string) (map[string]bool, bool) {
 	return listSessionPaneIDs(session)
 }
 
+// gatedLiveIDs is sessionLiveIDs behind the same trust gate as the agent
+// segment it exclusively feeds: an untrusted dir must not have its screen/
+// read at all, or a planted file there would fork tmux every tick off a root
+// this process must not trust.
+func gatedLiveIDs(dir string, trusted bool, session string) (map[string]bool, bool) {
+	if !trusted {
+		return map[string]bool{}, true
+	}
+	return sessionLiveIDs(dir, session)
+}
+
 // listSessionPaneIDs returns pane ids (without the leading %) in session.
 // ok is false when tmux errors or the call times out — an empty map then
 // means "unknown", not "no panes".

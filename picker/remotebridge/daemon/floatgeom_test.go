@@ -162,7 +162,7 @@ func TestFloatResizeExactUnderPaneBorderStatusLiveTmux(t *testing.T) {
 		}
 		t.Skip("tmux is not available")
 	}
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 	run := func(args ...string) string {
 		t.Helper()
 		out, err := tmux(args...).CombinedOutput()
@@ -289,7 +289,7 @@ func TestFloatResizeArgvLeavesATiledPaneAloneLiveTmux(t *testing.T) {
 		}
 		t.Skip("tmux is not available")
 	}
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 	p := newPane(t, tmux, "split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", "w")
 	size := func() string {
 		t.Helper()

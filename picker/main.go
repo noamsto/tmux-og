@@ -23,6 +23,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/noamsto/themestate"
+	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/proctree"
 )
 
@@ -686,8 +687,8 @@ func (rc resourceColors) memColor(mb float64) string {
 // Agent status
 // ---------------------------------------------------------------------------
 
-// hookPaneState is one /tmp/claude-status/panes/<pane_id> hook-written state
-// file — written by the Claude Code plugin's own hooks.
+// hookPaneState is one <claudestatus.Dir()>/panes/<pane_id> hook-written
+// state file — written by the Claude Code plugin's own hooks.
 type hookPaneState struct {
 	state     string
 	session   string
@@ -695,7 +696,7 @@ type hookPaneState struct {
 	unseen    bool
 }
 
-// screenPaneState is one /tmp/claude-status/screen/<pane_id> scraper-written
+// screenPaneState is one <claudestatus.Dir()>/screen/<pane_id> scraper-written
 // state file (agentdetect) — no session/unseen fields, since the scraper
 // never sees the hook's request context, only the pane's screen contents.
 type screenPaneState struct {
@@ -800,8 +801,12 @@ func screenOverrideMaxAge(state string) int64 {
 // map instead of blanking it — this picker's session/window aggregation both
 // key off the same field, so blanking it would drop the pane entirely.
 func collectAgentPanes(snap panesSnapshot) []agentPaneInfo {
+	root := claudestatus.Dir()
+	if !claudestatus.Trusted(root) {
+		return nil
+	}
 	return collectAgentPanesFrom(
-		"/tmp/claude-status/panes", "/tmp/claude-status/screen", "/tmp/claude-status/issues",
+		filepath.Join(root, "panes"), filepath.Join(root, "screen"), filepath.Join(root, "issues"),
 		snap.paneMap(), time.Now().Unix(),
 	)
 }

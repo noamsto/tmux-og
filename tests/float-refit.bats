@@ -37,7 +37,8 @@ setup() {
 	# machine) — this script never reads it, but every scratch-server test in
 	# this repo isolates it anyway rather than assume that stays true.
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
-	mkdir -p "$CLAUDE_STATUS_DIR"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 
 	# -f /dev/null: a real config would arm the window-resized hook that runs
 	# this very script automatically, which would invalidate the before/after

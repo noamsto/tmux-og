@@ -16,6 +16,7 @@ import (
 	"github.com/noamsto/tmux-og/picker/agentdetect/manifest"
 	"github.com/noamsto/tmux-og/picker/agentdetect/screen"
 	"github.com/noamsto/tmux-og/picker/agentdetect/statefile"
+	"github.com/noamsto/tmux-og/picker/claudestatus"
 )
 
 const (
@@ -24,7 +25,6 @@ const (
 	// than debounceWindow never fall quiet, so this is their only sampling
 	// path (#238); it also bounds how long any pane can show a stale state.
 	sampleCeiling = 500 * time.Millisecond
-	stateDir      = "/tmp/claude-status/screen"
 	// Per-pane backlog cap. The reader always drains stdin into this buffer so
 	// tmux never buffers the pipe-pane backlog in-server; if the emulator can't
 	// keep up, oldest bytes are dropped and the emulator is resynced. 1 MiB
@@ -42,7 +42,6 @@ const (
 	// the parser (feedSafe re-seeds) or silently clamps the rows where the
 	// idle signal lives (#251).
 	geometryInterval = 5 * time.Second
-	watcherRegDir    = "/tmp/claude-status/watchers"
 )
 
 func main() {
@@ -60,6 +59,13 @@ func main() {
 	if !ok {
 		return // pane isn't running a known agent; nothing to watch
 	}
+
+	root := claudestatus.Dir()
+	if !claudestatus.Ensure(root) {
+		return
+	}
+	watcherRegDir := filepath.Join(root, "watchers")
+	stateDir := filepath.Join(root, "screen")
 
 	myPID := os.Getpid()
 	server := serverPID(paneID)

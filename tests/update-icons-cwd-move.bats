@@ -16,7 +16,8 @@ setup() {
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
 	export CLAUDE_STATUS_DIR="$TDIR/claude-status"
-	mkdir -p "$CLAUDE_STATUS_DIR"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	export TMPDIR="$TDIR"
 
 	# Fake reflow: update-icons kicks it on every relevant change; a no-op is

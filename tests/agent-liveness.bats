@@ -7,8 +7,12 @@ load helper
 
 setup() {
 	# Export before sourcing: lib-claude derives CLAUDE_*_DIR (including the
-	# live/ stamps these tests write) from this at source time.
+	# live/ stamps these tests write) from this at source time. Owner-only
+	# (0700) so the source-time trust check passes and derives the real dirs
+	# instead of the fail-closed /dev/null sentinel.
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	PANE_DIR="$BATS_TEST_TMPDIR/panes"
 	mkdir -p "$PANE_DIR"
 }
@@ -230,6 +234,13 @@ setup_sweep() {
 	export AGENT_DETECT_BIN="agent-detect"
 	export AGENT_COMMANDS="claude codex"
 	export CLAUDE_LIVE_DIR="$BATS_TEST_TMPDIR/live"
+	# tmux-update-icons.sh sources @lib_claude@ raw here (unsubstituted), which
+	# fails silently (no set -e) and never sets CLAUDE_STATUS_TRUSTED — set it
+	# by hand, same as CLAUDE_LIVE_DIR above, so arm_agent_detect's trust gate
+	# doesn't refuse to stamp.
+	# shellcheck disable=SC2174  # only the root itself must be owner-only
+	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
+	export CLAUDE_STATUS_TRUSTED=1
 	# Multiple of 5 so the every-5th-tick throttle lets the sweep run.
 	export CLAUDE_NOW=100
 	: >"$BATS_TEST_TMPDIR/pipe.log"

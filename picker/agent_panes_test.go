@@ -174,6 +174,37 @@ func TestCollectAgentPanesTakesBGFromScreenUnderFreshHook(t *testing.T) {
 	}
 }
 
+// TestCollectAgentPanesUntrustedDirReturnsNil covers the #850 gate at the
+// collectAgentPanes level: a loose CLAUDE_STATUS_DIR must yield no panes at
+// all, even when it holds a state file that would otherwise match live panes.
+func TestCollectAgentPanesUntrustedDirReturnsNil(t *testing.T) {
+	root := t.TempDir() // t.TempDir() is 0755, i.e. not owner-only.
+	writePaneStateFile(t, filepath.Join(root, "panes"), "1", "processing", 1000, "session=s\n")
+	t.Setenv("CLAUDE_STATUS_DIR", root)
+
+	snap := panesSnapshot{"%1|s|0||||||||"}
+	if panes := collectAgentPanes(snap); panes != nil {
+		t.Fatalf("collectAgentPanes() on an untrusted root = %+v, want nil", panes)
+	}
+}
+
+// TestCollectAgentPanesTrustedDirReturnsPanes is the positive counterpart: a
+// 0700 CLAUDE_STATUS_DIR is read normally.
+func TestCollectAgentPanesTrustedDirReturnsPanes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writePaneStateFile(t, filepath.Join(root, "panes"), "1", "processing", 1000, "session=s\n")
+	t.Setenv("CLAUDE_STATUS_DIR", root)
+
+	snap := panesSnapshot{"%1|s|0||||||||"}
+	panes := collectAgentPanes(snap)
+	if len(panes) != 1 || panes[0].state != "processing" {
+		t.Fatalf("collectAgentPanes() on a trusted root = %+v, want one processing pane", panes)
+	}
+}
+
 func TestAppendAgentIconBadgeIsAdditive(t *testing.T) {
 	plain, plainDW := appendAgentIcon("", 0, agentCounts{idle: 1}, "dark", "", "")
 	withBG, bgDW := appendAgentIcon("", 0, agentCounts{idle: 1, bg: 2}, "dark", "", "")

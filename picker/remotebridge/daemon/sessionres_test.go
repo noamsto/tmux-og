@@ -246,10 +246,12 @@ func TestSessionResSubscriptionIsSessionScoped(t *testing.T) {
 		t.Skip("tmux is not available")
 	}
 	// A private TMUX_TMPDIR does not isolate CLAUDE_STATUS_DIR, which defaults
-	// to a bare /tmp/claude-status every tmux server on the machine shares —
-	// and this server's own config-load tick prunes and reaps under it, so
-	// omitting this would have the test destroy another server's agent state.
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	// to a per-user dir every tmux server of this uid shares — and this
+	// server's own config-load tick prunes and reaps under it, so omitting
+	// this would have the test destroy another server's agent state. The dir
+	// must be owner-only (0700) or lib-claude's trust check falls back to a
+	// fail-closed sentinel and the server never touches this test's state.
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 
 	// The tmux-og wrapper injects its config even alongside the -f /dev/null
 	// above, so this server is not bare: the @og-res-tick monitor hook runs

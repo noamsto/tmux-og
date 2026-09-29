@@ -344,7 +344,7 @@ func TestAgentUsageSubscriptionReportsOpenAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 	// A second session: the loop must walk every session on the server, not
 	// only the control client's own.
 	if out, err := tmux("new-session", "-d", "-s", "agents", claude, "-c", "sleep 600; :").CombinedOutput(); err != nil {

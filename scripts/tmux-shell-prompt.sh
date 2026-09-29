@@ -15,8 +15,8 @@
 # @crew_name/@crew_color themselves — dispatcher-owned, CLAUDE.md hard
 # constraint). It takes only the *option* half of that reset and stamps
 # @window_naming_dirty: this hook is server-side, so it fires with or without
-# an attached client, and CLAUDE_STATUS_DIR is a bare /tmp path shared by every
-# tmux server on the machine — the rm's stay on the client-gated per-tick pass
+# an attached client, and CLAUDE_STATUS_DIR is a per-user dir shared by every
+# tmux server of this uid — the rm's stay on the client-gated per-tick pass
 # (#692), which clears the mark last. tmux-update-icons.sh is the ground truth
 # for whatever this event path can't reach: its per-tick loop for a client-less
 # window or a shell with no OSC 133 support, and since #692 its

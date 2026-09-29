@@ -1920,7 +1920,7 @@ func TestTileLayoutCommandGuardsOnLiveTmux(t *testing.T) {
 		}
 		t.Skip("tmux is not available")
 	}
-	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+t.TempDir())
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
 
 	if out, err := tmux("split-window", "-d", "-h", "-t", "w").CombinedOutput(); err != nil {
 		t.Fatalf("split-window: %v\n%s", err, out)
