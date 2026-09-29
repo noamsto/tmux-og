@@ -53,6 +53,7 @@ setup() {
 	export S_A="$BATS_TEST_TMPDIR/sa"
 	export S_B="$BATS_TEST_TMPDIR/sb"
 	export S_C="$BATS_TEST_TMPDIR/sc"
+	export S_D="$BATS_TEST_TMPDIR/sd"
 
 	FAKEBIN="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$FAKEBIN"
@@ -136,10 +137,17 @@ setup() {
 	# text lands there instead of at the title.
 	QUOTE="x' '' '' ; run-shell 'touch \$S_A' #"
 	SUBST='x##(touch $S_B)'
+	# Same substitution injection, a different sentinel. tmux caches a `#()` job
+	# by (client, command) and starts an identical command at most once per
+	# wall-clock second (format.c: only when the expanded command changed, or
+	# `fj->job == NULL && fj->last != t`), so reusing SUBST's sentinel for both
+	# click 2 (title) and click 3 (loop) lets the loop click hit that cache and
+	# silently skip its `touch` (#862). The loop case gets its own command.
+	SUBST_LOOP='x##(touch $S_D)'
 	# The issue's literal quote payload, verbatim. It fires on a mirror
 	# window, whose session menu (#769) has no Rename item for it to break.
 	LITERAL="x' '' ; run-shell 'touch \$S_C' ; display-menu -T 'y"
-	export QUOTE SUBST LITERAL
+	export QUOTE SUBST SUBST_LOOP LITERAL
 
 	inner new-session -d -s s -x 200 -y 50
 	# The splash popup would eat the click and repaint the status line.
@@ -219,9 +227,35 @@ wait_for_sentinel() { # path [budget_secs]
 	return 1
 }
 
+# switch_client returns once the server has taken the switch, but the
+# status-line redraw that rebuilds the click ranges happens later (tmux defers
+# it while the client's tty output is pending — server-client.c
+# server_client_check_redraw). A click sent in that gap is resolved against the
+# old status line and opens no menu (#862). Wait for the client to report the
+# target session, then give the deferred status redraw a short bounded settle
+# (it re-arms on a 1ms timer, so 0.2s is ample margin).
+# The status pill is not a usable name signal here: status-format[0] re-expands
+# its `#()` job's output with FORMAT_EXPAND_NOJOBS, so the `#(...)` in
+# `h-x#(touch $S_B)` collapses to `h-x` (dropped, never run), and `s` is a
+# substring of almost everything — only the QUOTE pill stays distinctive.
+# Target the SESSION field explicitly: -t '=name' resolves as a pane target and
+# prints nothing, so append ':'.
+STATUS_SETTLE_SECS=0.2
 switch_client_to() { # target (session id or exact name)
+	local want deadline
+	want="$(inner display-message -p -t "$1:" '#{session_name}')"
 	inner switch-client -c "$(inner list-clients -F '#{client_name}')" -t "$1"
-	sleep 0.3
+	deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)); do
+		[[ "$(inner list-clients -F '#{client_session}')" == "$want" ]] && break
+		sleep 0.05
+	done
+	if [[ "$(inner list-clients -F '#{client_session}')" != "$want" ]]; then
+		printf 'switch-client to %s never applied; client still on %s\n' \
+			"$want" "$(inner list-clients -F '#{client_session}')" >&2
+		return 1
+	fi
+	sleep "$STATUS_SETTLE_SECS"
 }
 
 # Flips the #769 mirror gate the session menu branches on, the way the daemon
@@ -283,20 +317,28 @@ open_remote() { # remote-sess-name [no_switch]
 	switch_client_to "$sid"
 	rm -f "$S_A" "$S_B"
 	click 3 1
-	wait_for_sentinel "$S_B" # title x subst
-	wait_for_sentinel "$S_A" # loop x quote
+	wait_for_screen 'Switch To' # the menu must render before its payload can
+	wait_for_sentinel "$S_B"    # title x subst
+	wait_for_sentinel "$S_A"    # loop x quote
 	rm -f "$S_A" "$S_B"
 	dismiss_menu
 
+	# Created only now so click 2's loop cannot fire this payload first.
+	local did
+	did="$(inner new-session -d -P -F '#{session_id}' -s "h-$SUBST_LOOP")"
+	inner set-option -t "$did" @bridge_host h
+	inner set-option -t "$did" @bridge_session "$SUBST_LOOP"
+
 	# Click 3: attached to the plain base session "s" — title is inert, so
 	# this click's single display-menu call renders a "Switch To" loop entry
-	# for BOTH QUOTE and SUBST, completing loop x subst (the one case click 1
+	# for QUOTE and SUBST_LOOP, completing loop x subst (the one case click 1
 	# cannot observe).
 	switch_client_to s
-	rm -f "$S_A" "$S_B"
+	rm -f "$S_A" "$S_D"
 	click 3 1
-	wait_for_sentinel "$S_B" # loop x subst
-	wait_for_sentinel "$S_A" # loop x quote (again)
+	wait_for_screen 'Switch To' # the menu must render before its payload can
+	wait_for_sentinel "$S_D"    # loop x subst
+	wait_for_sentinel "$S_A"    # loop x quote (again)
 	dismiss_menu
 
 	# Click 4: the issue's literal payload as the title of the mirror-branch
