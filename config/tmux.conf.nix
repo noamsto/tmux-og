@@ -459,14 +459,16 @@
 
   # tmux-client-theme's recovery replay runs catppuccin, tmux-apply-theme-colors
   # and og-remote-theme directly (the same three the config's own load order
-  # runs), plus lib-log for the lock and log_event. catppuccin needs both its
-  # own path and bash to run it with, exactly as pluginRunShells does.
+  # runs), plus lib-log for the lock and log_event, and ps for the theme-toggle
+  # check (nixpkgs' darwin procps ships ps but no pgrep). catppuccin needs both
+  # its own path and bash to run it with, exactly as pluginRunShells does.
   mkScriptClientTheme = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings
-      ["@lib_log@" "@catppuccin@" "@bash@" "@apply_theme_colors@" "@remote_theme@"]
+      ["@lib_log@" "@ps@" "@catppuccin@" "@bash@" "@apply_theme_colors@" "@remote_theme@"]
       [
         "${lib-log}"
+        "${pkgs.procps}/bin/ps"
         "${catppuccin}/share/tmux-plugins/catppuccin/catppuccin.tmux"
         "${pkgs.bash}/bin/bash"
         "${script.tmux-apply-theme-colors}/bin/tmux-apply-theme-colors"

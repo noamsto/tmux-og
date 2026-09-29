@@ -1550,6 +1550,84 @@ func TestThemeVerbRejectsUnlistedTheme(t *testing.T) {
 	}
 }
 
+// A `-t` run-shell job's stdout and non-zero exit both land in view mode on the
+// target pane, and a view-mode overlay on a mirrored pane wedges the mirror.
+// The host PATH is withheld so no real theme-toggle can flip the desktop theme
+// and so the absent case is really absent; the verb body needs nothing from
+// PATH (/bin/sh is absolute, command -v is a builtin).
+func TestThemeVerbNeverOverlaysPane(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	tests := []struct {
+		name   string
+		toggle bool
+	}{
+		{"no theme-toggle on PATH", false},
+		{"theme-toggle prints and exits 1", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			binDir := filepath.Join(dir, "bin")
+			if err := os.Mkdir(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(dir, "ran")
+			if tc.toggle {
+				stub := "#!/bin/sh\n: >\"" + marker + "\"\necho noisy\nexit 1\n"
+				if err := os.WriteFile(filepath.Join(binDir, "theme-toggle"), []byte(stub), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			tmux := startIsolatedTmux(t, "PATH="+binDir)
+			paneOut, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			pane := strings.TrimSpace(string(paneOut))
+
+			cmds, err := verbs["theme"].build(pane, "@0", "w", []string{"light"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conf := filepath.Join(dir, "cmd.conf")
+			if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+				t.Fatalf("source-file: %v\n%s", err, out)
+			}
+
+			if !tc.toggle {
+				time.Sleep(time.Second)
+			} else {
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+				if _, err := os.Stat(marker); err != nil {
+					t.Fatal("theme-toggle stub never ran")
+				}
+				time.Sleep(300 * time.Millisecond)
+			}
+
+			out, err := tmux("display-message", "-p", "-t", pane, "#{pane_in_mode}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			if got := strings.TrimSpace(string(out)); got != "0" {
+				shown, _ := tmux("capture-pane", "-p", "-M", "-t", pane).CombinedOutput()
+				t.Errorf("pane_in_mode = %q, want 0 — the job's output or exit status reached the pane:\n%s", got, shown)
+			}
+		})
+	}
+}
+
 // Nothing under nix flake check ever runs this body against a real remote
 // run-shell, so these substring assertions are the only regression net the two
 // emptiness guards will ever have — and what they prevent is severe: an empty

@@ -159,6 +159,61 @@ theme_setup() {
 	BASELINE="$(reload_count)"
 }
 
+# no_pane_in_mode -- a failed run-shell job paints its output in view mode on a
+# pane; any pane left in a mode means an error overlay reached the user.
+no_pane_in_mode() {
+	local rows pane rest
+	rows="$(inner list-panes -a -F '#{pane_id}|#{pane_in_mode}')"
+	grep -q '|1$' <<<"$rows" || return 0
+	echo "$rows"
+	while IFS='|' read -r pane rest; do
+		[ "$rest" = 1 ] || continue
+		echo "--- $pane ---"
+		inner capture-pane -p -M -t "$pane"
+	done <<<"$rows"
+	return 1
+}
+
+# write_fake_toggle burst|fail [name] -- a stand-in for nix-config's
+# theme-toggle (name defaults to that; macOS ships it as theme-apply-macos),
+# which is not a tmux-og script. "burst" clears every @thm_* in a loop for ~3s,
+# sets the flavor and sources the conf with its output captured; "fail" clears,
+# sets the flavor and exits 1 without sourcing. Call after theme_setup: it
+# bakes in INNER_TMPDIR, and it never uses $TMUX.
+write_fake_toggle() {
+	local mode=$1 fake="$BATS_TEST_TMPDIR/bin/${2:-theme-toggle}"
+	cat >"$fake" <<-EOF
+		#!/bin/sh
+		t() { TMUX_TMPDIR="$INNER_TMPDIR" "$TMUX_BIN" -L s "\$@"; }
+		clear_thm() {
+			for v in \$(t show-options -g | while read -r name _; do
+				case \$name in (@thm_*) echo "\$name" ;; esac
+			done); do
+				t set -gu "\$v"
+			done
+		}
+	EOF
+	case $mode in
+	burst)
+		cat >>"$fake" <<-EOF
+			end=\$(( \$(date +%s) + 3 ))
+			while [ "\$(date +%s)" -lt "\$end" ]; do clear_thm; done
+			t set -g @catppuccin_flavor latte
+			t source-file "\$HOME/.config/tmux/tmux.conf" >>"$BATS_TEST_TMPDIR/toggle.out" 2>&1
+			exit 0
+		EOF
+		;;
+	fail)
+		cat >>"$fake" <<-EOF
+			clear_thm
+			t set -g @catppuccin_flavor latte
+			exit 1
+		EOF
+		;;
+	esac
+	chmod +x "$fake"
+}
+
 @test "light report: flavor latte, thm_bg set, applied light, one reload, state file untouched" {
 	theme_setup
 
@@ -306,4 +361,79 @@ theme_setup() {
 
 	wait_for 20 flavor_is latte
 	thm_bg_is '#eff1f5'
+}
+
+@test "a failing plugin in the reload never paints a pane" {
+	theme_setup
+	printf 'run-shell "echo x >> %s"\nrun-shell "exit 1"\nsource-file %s\n' "$RELOADS" "$TMUX_CONF" \
+		>"$HOME/.config/tmux/tmux.conf"
+
+	report "$CLIENT1" light
+	wait_for 20 applied_is light
+	settle
+
+	no_pane_in_mode
+	thm_bg_is '#eff1f5'
+}
+
+# Runs the fake toggle named $1 in the background, reports light meanwhile,
+# and asserts the deferral held: one reload, no overlay, catppuccin never failed.
+assert_report_deferred_to_toggle() {
+	write_fake_toggle burst "$1"
+
+	"$BATS_TEST_TMPDIR/bin/$1" &
+	local toggle_pid=$!
+	report "$CLIENT1" light
+	wait "$toggle_pid"
+	settle
+
+	no_pane_in_mode
+	# Only catppuccin's line: the sandbox has no /usr/bin/env, so plugins with
+	# an env shebang return 127 there whatever the race does.
+	if grep -q "catppuccin.tmux' returned" "$BATS_TEST_TMPDIR/toggle.out"; then
+		cat "$BATS_TEST_TMPDIR/toggle.out"
+		return 1
+	fi
+	[ "$(($(reload_count) - BASELINE))" -eq 1 ]
+	flavor_is latte
+	thm_bg_is '#eff1f5'
+}
+
+@test "report during a theme-toggle run: one reload, no overlay, catppuccin never fails" {
+	theme_setup
+	assert_report_deferred_to_toggle theme-toggle
+}
+
+@test "report during a theme-apply-macos run (macOS name): one reload, no overlay" {
+	theme_setup
+	assert_report_deferred_to_toggle theme-apply-macos
+}
+
+@test "a failed theme-toggle reload is still recovered" {
+	theme_setup
+	write_fake_toggle fail
+
+	"$BATS_TEST_TMPDIR/bin/theme-toggle" || true
+	report "$CLIENT1" light
+
+	wait_for 20 thm_bg_is '#eff1f5'
+}
+
+@test "a process merely naming theme-toggle does not delay the report" {
+	theme_setup
+
+	# Its ps args line is exactly `rg theme-toggle`: theme-toggle is only an
+	# argument, so the deferral must not treat it as a running toggle.
+	local dir="$BATS_TEST_TMPDIR/decoy"
+	mkdir -p "$dir"
+	echo 'sleep 8' >"$dir/theme-toggle"
+	(cd "$dir" && exec -a rg bash theme-toggle) &
+	local decoy_pid=$!
+
+	report "$CLIENT1" light
+	local rc=0
+	wait_for 5 applied_is light || rc=1
+	kill "$decoy_pid" 2>/dev/null || true
+	[ "$rc" -eq 0 ]
+	flavor_is latte
 }
