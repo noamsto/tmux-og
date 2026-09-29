@@ -418,3 +418,22 @@ assert_report_deferred_to_toggle() {
 
 	wait_for 20 thm_bg_is '#eff1f5'
 }
+
+@test "a process merely naming theme-toggle does not delay the report" {
+	theme_setup
+
+	# Its ps args line is exactly `rg theme-toggle`: theme-toggle is only an
+	# argument, so the deferral must not treat it as a running toggle.
+	local dir="$BATS_TEST_TMPDIR/decoy"
+	mkdir -p "$dir"
+	echo 'sleep 8' >"$dir/theme-toggle"
+	(cd "$dir" && exec -a rg bash theme-toggle) &
+	local decoy_pid=$!
+
+	report "$CLIENT1" light
+	local rc=0
+	wait_for 5 applied_is light || rc=1
+	kill "$decoy_pid" 2>/dev/null || true
+	[ "$rc" -eq 0 ]
+	flavor_is latte
+}
