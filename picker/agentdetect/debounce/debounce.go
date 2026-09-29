@@ -30,6 +30,8 @@ func (d *Debouncer) Mark(t time.Time) {
 	d.fired = false
 }
 
+func (d *Debouncer) Pending() bool { return d.dirty }
+
 func (d *Debouncer) Due(now time.Time) bool {
 	if !d.dirty || d.fired {
 		return false

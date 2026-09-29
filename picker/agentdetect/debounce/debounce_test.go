@@ -62,3 +62,20 @@ func TestCeilingMeasuredFromFirstMarkSinceLastFire(t *testing.T) {
 		t.Fatal("ceiling should be measured from the new mark, not the epoch")
 	}
 }
+
+// The watcher stops its sample ticker whenever nothing is pending, so Pending
+// must stay true from a mark until the sample that consumes it.
+func TestPendingFromMarkUntilSampled(t *testing.T) {
+	base := time.Unix(1000, 0)
+	d := New(80*time.Millisecond, time.Hour)
+	if d.Pending() {
+		t.Fatal("fresh debouncer should have nothing pending")
+	}
+	d.Mark(base)
+	if d.Due(base.Add(40*time.Millisecond)) || !d.Pending() {
+		t.Fatal("mark should stay pending until the quiet window closes")
+	}
+	if !d.Due(base.Add(80*time.Millisecond)) || d.Pending() {
+		t.Fatal("sampling should clear pending")
+	}
+}
