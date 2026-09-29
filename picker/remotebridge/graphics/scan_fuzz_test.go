@@ -77,6 +77,9 @@ func spliceMiddle(body, canary []byte) []byte {
 		}
 		body = append(body, pad...)
 	}
+	if body == nil {
+		body = []byte{}
+	}
 	mid := len(body) / 2
 	out := make([]byte, 0, len(body)+len(canary))
 	out = append(out, body[:mid]...)

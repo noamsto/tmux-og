@@ -32,7 +32,7 @@ func recordingRT(script string, issued *[]string) roundTrip {
 // enqueues the seed, then the resize — and returns the resize's cell dims.
 func readSeedThenResize(t *testing.T, peer net.Conn, pane string) (w, h int) {
 	t.Helper()
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	f, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("%s: read seed frame: %v", pane, err)
@@ -70,14 +70,14 @@ func TestSetupWindowResizesEachPaneFromItsOwnLayoutCell(t *testing.T) {
 	const layout = "a1b2,190x45,0,0{90x45,0,0,0,99x45,91,0[99x20,91,0,1,99x24,91,21,2]}"
 
 	conn0, peer0 := net.Pipe()
-	defer conn0.Close()
-	defer peer0.Close()
+	defer func() { _ = conn0.Close() }()
+	defer func() { _ = peer0.Close() }()
 	conn2, peer2 := net.Pipe()
-	defer conn2.Close()
-	defer peer2.Close()
+	defer func() { _ = conn2.Close() }()
+	defer func() { _ = peer2.Close() }()
 	stray, strayPeer := net.Pipe()
-	defer stray.Close()
-	defer strayPeer.Close()
+	defer func() { _ = stray.Close() }()
+	defer func() { _ = strayPeer.Close() }()
 
 	// collectHellos counts connections, not panes, and keys them by the id each
 	// announced — so a renderer left over from a pane this window no longer has
@@ -248,8 +248,8 @@ func TestResetWindowRecordsItsCapInTheSharedConverger(t *testing.T) {
 // registry entry.
 func TestSetupWindowFailsWhenSolePaneSeedFails(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	connCh := make(chan helloConn, 1)
 	connCh <- helloConn{paneID: "%0", conn: conn}
@@ -288,9 +288,9 @@ func TestSetupWindowAssertsRemoteZoom(t *testing.T) {
 	const layout = "bd67,190x45,0,0,3"
 
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
-	go func() { io.Copy(io.Discard, peer) }()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
 
 	connCh := make(chan helloConn, 1)
 	connCh <- helloConn{paneID: "%3", conn: conn}

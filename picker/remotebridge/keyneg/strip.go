@@ -411,6 +411,7 @@ func (f *Filter) classifyOSC(b []byte) (int, verdict) {
 		// a query to strip — hand it to the region walker, which owns the one
 		// implementation of where a region ends.
 		return 2, vRegion
+	case stopTerm:
 	}
 	end := from + body
 	if oscQuery(num, b[i+1:end]) {

@@ -78,7 +78,7 @@ func main() {
 	}
 	seq := strings.Split(*keys, ",")
 
-	cmd := exec.Command(*tmuxBin, "-L", *sock, "-C", "attach", "-t", *sess)
+	cmd := exec.Command(*tmuxBin, "-L", *sock, "-C", "attach", "-t", *sess) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	cmd.Env = append(os.Environ(), "TMUX=")
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -95,9 +95,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() {
-		in.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
+		_ = in.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 	}()
 
 	ticks := make(chan time.Time, 4096)
@@ -116,7 +116,7 @@ func main() {
 	}()
 
 	if *size != "" {
-		fmt.Fprintf(in, "refresh-client -C %s\n", *size)
+		_, _ = fmt.Fprintf(in, "refresh-client -C %s\n", *size)
 	}
 	time.Sleep(300 * time.Millisecond)
 	waitQuiet(ticks, 4**quiet)
@@ -124,16 +124,16 @@ func main() {
 	var first, settled []time.Duration
 	for i := 0; i < *n; i++ {
 		if *jitter > 0 {
-			time.Sleep(rand.N(*jitter))
+			time.Sleep(rand.N(*jitter)) //nolint:gosec // probe jitter only, not security-sensitive
 		}
 		t0 := time.Now()
 		if *burst > 0 {
 			for j := 0; j < *burst; j++ {
-				fmt.Fprintf(in, "send-keys -t %s %s\n", *pane, seq[(i**burst+j)%len(seq)])
+				_, _ = fmt.Fprintf(in, "send-keys -t %s %s\n", *pane, seq[(i**burst+j)%len(seq)])
 				time.Sleep(*burstGap)
 			}
 		} else {
-			fmt.Fprintf(in, "send-keys -t %s %s\n", *pane, seq[i%len(seq)])
+			_, _ = fmt.Fprintf(in, "send-keys -t %s %s\n", *pane, seq[i%len(seq)])
 		}
 		select {
 		case t := <-ticks:

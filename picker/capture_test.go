@@ -23,6 +23,9 @@ type fakeCapture struct {
 func (f *fakeCapture) run(args ...string) ([]byte, error) {
 	f.calls++
 	f.argv = args
+	if len(args) == 0 {
+		return nil, errors.New("fakeCapture: no args")
+	}
 	f.marker = args[len(args)-1]
 	return []byte(strings.ReplaceAll(f.stdout, "%M", f.marker)), f.err
 }
@@ -273,8 +276,7 @@ func TestCaptureTargetsAttributesOnlyGoneTargets(t *testing.T) {
 				t.Errorf("content missing the captured target (%+v)", got)
 			}
 			target := ""
-			var cErr *captureErr
-			if errors.As(err, &cErr) {
+			if cErr, ok := errors.AsType[*captureErr](err); ok {
 				target = cErr.Target
 			}
 			if target != c.wantTarget {

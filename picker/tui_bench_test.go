@@ -15,13 +15,13 @@ func benchModel(b *testing.B, windowMode bool) tuiModel {
 	var items []listItem
 	if windowMode {
 		windows := make([]windowData, 0, 40)
-		for i := 0; i < 40; i++ {
+		for i := range 40 {
 			windows = append(windows, windowData{session: fmt.Sprintf("s%d", i/5), index: i % 5, name: fmt.Sprintf("win%d", i), branch: fmt.Sprintf("feat/%d-work", i)})
 		}
 		items = renderWindowItemsWith(windows, map[string]int64{}, map[string]string{}, nil, "dark", 0, false)
 	} else {
 		snap := make(panesSnapshot, 0, 40)
-		for i := 0; i < 40; i++ {
+		for i := range 40 {
 			snap = append(snap, fmt.Sprintf("%%%d|sess%d|0|/home/u/proj%d|%d|||fish|%d|||", i, i, i, 1000+i, 100+i))
 		}
 		items = buildSessionItems(map[string]string{}, snap, nil, "dark", false, "")
@@ -30,7 +30,7 @@ func benchModel(b *testing.B, windowMode bool) tuiModel {
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 50})
 	m = next.(tuiModel)
 	var sb strings.Builder
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		fmt.Fprintf(&sb, "\x1b[32mline %d\x1b[0m  some build output that fills a preview row\x1b[49m\n", i)
 	}
 	next, _ = m.Update(previewMsg{target: m.currentTarget(), content: strings.TrimRight(sb.String(), "\n")})

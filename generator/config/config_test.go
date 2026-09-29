@@ -97,8 +97,8 @@ func TestDefaultShellAbsentVersusEmpty(t *testing.T) {
 		want *string
 	}{
 		{"absent", minimal, nil},
-		{"empty", minimal + "default_shell = \"\"\n", ptr("")},
-		{"set", minimal + "default_shell = \"/run/current-system/sw/bin/fish\"\n", ptr("/run/current-system/sw/bin/fish")},
+		{"empty", minimal + "default_shell = \"\"\n", new("")},
+		{"set", minimal + "default_shell = \"/run/current-system/sw/bin/fish\"\n", new("/run/current-system/sw/bin/fish")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -250,8 +250,6 @@ claude = "x"
 		t.Errorf("ai_naming/resume = %v %v %v", c.AINaming.Enable, c.Resume.Claude, c.Resume.Carousel)
 	}
 }
-
-func ptr(s string) *string { return &s }
 
 func TestDefaults(t *testing.T) {
 	c, err := Defaults()

@@ -81,7 +81,7 @@ func (s *logSink) Write(p []byte) (int, error) {
 // lines are decoration.
 func replyBlocks(n int) string {
 	var b strings.Builder
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fmt.Fprintf(&b, "%%begin 1 %d 1\nok\n%%end 1 %d 1\n", i+2, i+2)
 	}
 	return b.String()

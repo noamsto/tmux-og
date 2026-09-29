@@ -84,20 +84,20 @@ var extSep = []byte(" : ")
 // cutSpace splits b at the first space, mirroring strings.Cut(string(b), " ")
 // without ever converting b to a string.
 func cutSpace(b []byte) (before, after []byte, found bool) {
-	i := bytes.IndexByte(b, ' ')
-	if i < 0 {
+	before, after, ok := bytes.Cut(b, []byte{' '})
+	if !ok {
 		return b, nil, false
 	}
-	return b[:i], b[i+1:], true
+	return before, after, true
 }
 
 // cutExtSep splits b at the first " : ", mirroring strings.Cut(string(b), " : ").
 func cutExtSep(b []byte) (before, after []byte, found bool) {
-	i := bytes.Index(b, extSep)
-	if i < 0 {
+	before, after, ok := bytes.Cut(b, extSep)
+	if !ok {
 		return b, nil, false
 	}
-	return b[:i], b[i+len(extSep):], true
+	return before, after, true
 }
 
 // fieldsToStrings copies each field to an owned string; used for the
@@ -261,10 +261,10 @@ func (rd *Reader) readBlock(begin Line) []Line {
 	for rd.sc.Scan() {
 		raw := rd.sc.Text()
 		t := ParseLine(raw)
-		switch {
-		case t.Kind == End || t.Kind == Error:
+		switch t.Kind {
+		case End, Error:
 			return end(t.Kind, t.Flags)
-		case t.Kind == Other || t.Kind == Begin:
+		case Other, Begin:
 			body = append(body, raw)
 		default:
 			out = append(out, t)

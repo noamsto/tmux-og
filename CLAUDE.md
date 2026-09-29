@@ -35,6 +35,8 @@ nix flake check       # bats (tests/*.bats) + Go tests + conf assertions
 nix build .#lint      # pre-commit hooks: alejandra, statix, deadnix, shellcheck, shfmt, typos, ...
 ```
 
+`nix flake check` also gates both Go modules with `golangci-lint` (`.golangci.yml`), `nilaway` and `go test -race ./...` (`picker-go-lint`, `generator-go-lint` — which also races the generator tests — and `picker-go-tests`); the devShell ships both tools for running them by hand. A suppression is a per-line `//nolint:<linter> // <why>` — never a path or linter exclusion (the sole exception, `gosec` off for `_test.go`, is in the config).
+
 `nix flake check` runs no formatter — a formatting failure reaches CI only by skipping `nix build .#lint` (#327). CI mirrors the split: a `lint` job, and a `build` job on `x86_64-linux` + `aarch64-darwin`.
 
 Reload a running tmux with `prefix + r`. `./tests/test-display.sh` is a manual display test, outside `nix flake check`.

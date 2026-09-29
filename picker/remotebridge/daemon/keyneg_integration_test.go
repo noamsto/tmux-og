@@ -15,12 +15,12 @@ import (
 // had requested it (#338).
 func TestKeyNegStrippedEndToEndThroughASink(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	s := newOutputSink(remote, nil) // nil gfx: the strip must not depend on graphics being wired in
 	defer s.Close()
 
-	s.Write([]byte("hello \x1b[>4;2mworld"))
+	_, _ = s.Write([]byte("hello \x1b[>4;2mworld"))
 
 	got := readAllFrames(t, local, 500*time.Millisecond)
 	if strings.Contains(got, "\x1b[>4;2m") {
@@ -36,13 +36,13 @@ func TestKeyNegStrippedEndToEndThroughASink(t *testing.T) {
 // pane-output frames.
 func TestKeyNegSplitAcrossWritesEndToEnd(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	s := newOutputSink(remote, nil)
 	defer s.Close()
 
-	s.Write([]byte("hello \x1b[>4;"))
-	s.Write([]byte("2mworld"))
+	_, _ = s.Write([]byte("hello \x1b[>4;"))
+	_, _ = s.Write([]byte("2mworld"))
 
 	got := readAllFrames(t, local, 500*time.Millisecond)
 	if want := "hello world"; got != want {
@@ -56,12 +56,12 @@ func TestKeyNegSplitAcrossWritesEndToEnd(t *testing.T) {
 // (#544).
 func TestQueriesStrippedEndToEndThroughASink(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	s := newOutputSink(remote, nil)
 	defer s.Close()
 
-	s.Write([]byte("a\x1b[6nb\x1b[?2004$pc\x1b[16td"))
+	_, _ = s.Write([]byte("a\x1b[6nb\x1b[?2004$pc\x1b[16td"))
 
 	got := readAllFrames(t, local, 500*time.Millisecond)
 	if want := "abcd"; got != want {
@@ -74,13 +74,13 @@ func TestQueriesStrippedEndToEndThroughASink(t *testing.T) {
 // stripping it would be a regression, not a fix.
 func TestPassthroughWrappedQuerySurvivesTheSink(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	s := newOutputSink(remote, nil)
 	defer s.Close()
 
 	in := "\x1bPtmux;\x1b\x1b[6n\x1b\\"
-	s.Write([]byte(in))
+	_, _ = s.Write([]byte(in))
 
 	got := readAllFrames(t, local, 500*time.Millisecond)
 	if got != in {
@@ -94,8 +94,8 @@ func TestPassthroughWrappedQuerySurvivesTheSink(t *testing.T) {
 // the original byte order of the stream's tail.
 func TestKeyNegAndGraphicsFlushOrderOnClose(t *testing.T) {
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	s := newOutputSink(remote, graphics.New(nil, nil))
 
 	// An incomplete kitty APC (held by gfx), then — in a separate write, so it
@@ -103,9 +103,9 @@ func TestKeyNegAndGraphicsFlushOrderOnClose(t *testing.T) {
 	// trailing "\x1b[>4;" rather than holding it: the unterminated APC is an
 	// open region, and a region's bytes go through verbatim. gfx is what holds
 	// the whole tail here, so this pins the close path's ordering.
-	s.Write([]byte("AAA\x1b_Ga=t,f=100;"))
+	_, _ = s.Write([]byte("AAA\x1b_Ga=t,f=100;"))
 	time.Sleep(20 * time.Millisecond)
-	s.Write([]byte("BBB\x1b[>4;"))
+	_, _ = s.Write([]byte("BBB\x1b[>4;"))
 	time.Sleep(20 * time.Millisecond)
 
 	s.Close()

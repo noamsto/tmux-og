@@ -22,13 +22,13 @@ func TestGraphicsEndToEndThroughASink(t *testing.T) {
 		},
 	}
 	local, remote := net.Pipe()
-	defer local.Close()
-	defer remote.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = remote.Close() }()
 	s := newOutputSink(remote, graphics.New(f, nil))
 	defer s.Close()
 
 	// base64("/remote/tmp/diagram.png")
-	s.Write([]byte("\x1b_Gi=300,a=T,U=1,f=100,c=40,r=20,t=f;L3JlbW90ZS90bXAvZGlhZ3JhbS5wbmc=\x1b\\"))
+	_, _ = s.Write([]byte("\x1b_Gi=300,a=T,U=1,f=100,c=40,r=20,t=f;L3JlbW90ZS90bXAvZGlhZ3JhbS5wbmc=\x1b\\"))
 
 	got := readAllFrames(t, local, 500*time.Millisecond)
 	if strings.Count(got, "\x1bPtmux;") != 1 {

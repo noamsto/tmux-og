@@ -88,6 +88,9 @@ func TestKillProgressAdvancesThroughTargets(t *testing.T) {
 		m = next.(tuiModel)
 		if p, ok := msg.(killProgressMsg); ok {
 			seen = append(seen, pair{p.progress.index, p.progress.total})
+			if m.killRun == nil {
+				t.Fatal("killRun cleared mid-batch")
+			}
 			labels = append(labels, m.killRun.label)
 			continue
 		}
@@ -153,7 +156,7 @@ exit 0`, sentinel("t1"), sentinel("t2"), sentinel("t3"))
 
 	next, _ = m.handleKillRunKey("esc")
 	m = next.(tuiModel)
-	if !m.killRun.cancelling {
+	if m.killRun == nil || !m.killRun.cancelling {
 		t.Fatal("cancelling not set")
 	}
 

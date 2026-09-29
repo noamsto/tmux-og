@@ -22,16 +22,16 @@ import (
 // no-op-while-armed behavior deathNudge.wake() already owns.
 func TestPumpInputCallsDiedOnceOnReadError(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	var diedCount int32
+	var diedCount atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		pumpInput(conn, "%7", func(string) {}, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil, nil)
+		pumpInput(conn, "%7", func(string) {}, nil, func() { diedCount.Add(1) }, nil, nil)
 		close(done)
 	}()
 
-	peer.Close()
+	_ = peer.Close()
 
 	select {
 	case <-done:
@@ -39,7 +39,7 @@ func TestPumpInputCallsDiedOnceOnReadError(t *testing.T) {
 		t.Fatal("pumpInput did not return after its connection closed")
 	}
 
-	if n := atomic.LoadInt32(&diedCount); n != 1 {
+	if n := diedCount.Load(); n != 1 {
 		t.Errorf("died called %d times, want exactly 1", n)
 	}
 }
@@ -49,14 +49,14 @@ func TestPumpInputCallsDiedOnceOnReadError(t *testing.T) {
 // the sweep.
 func TestPumpInputDoesNotCallDiedOnACleanFrameRead(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
-	var diedCount int32
+	var diedCount atomic.Int32
 	sendCh := make(chan string, 1)
-	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, func() { atomic.AddInt32(&diedCount, 1) }, nil, nil)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, func() { diedCount.Add(1) }, nil, nil)
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
 		t.Fatalf("write input: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestPumpInputDoesNotCallDiedOnACleanFrameRead(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no send-keys reached the sink: the frame was never forwarded")
 	}
-	if n := atomic.LoadInt32(&diedCount); n != 0 {
+	if n := diedCount.Load(); n != 0 {
 		t.Errorf("died called %d times after a clean frame read, want 0 — the connection is still open", n)
 	}
 }
@@ -76,7 +76,7 @@ func TestPumpInputDoesNotCallDiedOnACleanFrameRead(t *testing.T) {
 // not panic or hang.
 func TestPumpInputToleratesANilDiedCallback(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -84,7 +84,7 @@ func TestPumpInputToleratesANilDiedCallback(t *testing.T) {
 		close(done)
 	}()
 
-	peer.Close()
+	_ = peer.Close()
 
 	select {
 	case <-done:
@@ -97,14 +97,14 @@ func TestPumpInputToleratesANilDiedCallback(t *testing.T) {
 // goes nowhere — and it does, before the send that fails closed while parked.
 func TestPumpInputCallsSeenBeforeForwarding(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
-	var seen int32
+	var seen atomic.Int32
 	sendCh := make(chan int32, 1)
-	go pumpInput(conn, "%7", func(string) { sendCh <- atomic.LoadInt32(&seen) }, nil, nil, func() { atomic.AddInt32(&seen, 1) }, nil)
+	go pumpInput(conn, "%7", func(string) { sendCh <- seen.Load() }, nil, nil, func() { seen.Add(1) }, nil)
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
 		t.Fatalf("write input: %v", err)
 	}
@@ -166,8 +166,8 @@ func TestPumpInputCarriesSplitMouseReport(t *testing.T) {
 		for i := 0; i <= len(reportB); i++ {
 			t.Run(fmt.Sprintf("%s/offset-%d", name, i), func(t *testing.T) {
 				conn, peer := net.Pipe()
-				defer conn.Close()
-				defer peer.Close()
+				defer func() { _ = conn.Close() }()
+				defer func() { _ = peer.Close() }()
 				sendCh := make(chan string, 16)
 				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
@@ -213,8 +213,8 @@ func TestPumpInputRealKeySplitStillDismisses(t *testing.T) {
 		for i := 0; i <= len(keyB); i++ {
 			t.Run(fmt.Sprintf("%q/offset-%d", key, i), func(t *testing.T) {
 				conn, peer := net.Pipe()
-				defer conn.Close()
-				defer peer.Close()
+				defer func() { _ = conn.Close() }()
+				defer func() { _ = peer.Close() }()
 				sendCh := make(chan string, 16)
 				go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
@@ -356,8 +356,8 @@ func TestPumpInputLoneEscDeliveredAfterGrace(t *testing.T) {
 	t.Cleanup(func() { escCarryGrace = oldGrace })
 
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 	sendCh := make(chan string, 8)
 	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
@@ -537,15 +537,15 @@ func TestPumpInputSendOrder(t *testing.T) {
 	}
 
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	sendCh := make(chan string, 8)
 	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, nil)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			peer.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 			if err := wire.WriteFrame(peer, wire.FrameInput, tt.frame); err != nil {
 				t.Fatalf("write input: %v", err)
 			}
@@ -594,8 +594,8 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			conn, peer := net.Pipe()
-			defer conn.Close()
-			defer peer.Close()
+			defer func() { _ = conn.Close() }()
+			defer func() { _ = peer.Close() }()
 
 			mode := &mouseModeTracker{}
 			if tt.utf8 {
@@ -607,7 +607,7 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 			sendCh := make(chan string, 8)
 			go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, func() *mouseModeTracker { return mode })
 
-			peer.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 			if err := wire.WriteFrame(peer, wire.FrameInput, []byte(frame)); err != nil {
 				t.Fatalf("write input: %v", err)
 			}
@@ -647,8 +647,8 @@ func TestPumpInputTracksSinkReplacementWhileRunning(t *testing.T) {
 	router.Register("%7", first)
 
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	sendCh := make(chan string, 8)
 	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, sinkMouseResolver(router, "%7"))

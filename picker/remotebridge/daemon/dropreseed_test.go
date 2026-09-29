@@ -16,8 +16,8 @@ func TestSinkDirtyOnlyOnceDrained(t *testing.T) {
 	// No pump: the channel is the only consumer, so it fills deterministically.
 	s := &outputSink{ch: make(chan sinkFrame, 1)}
 
-	s.Write([]byte("kept"))
-	s.Write([]byte("dropped"))
+	_, _ = s.Write([]byte("kept"))
+	_, _ = s.Write([]byte("dropped"))
 	if n, dirty := s.takeDirty(); dirty {
 		t.Fatalf("takeDirty = %d, %v while the queue is still full; want not dirty", n, dirty)
 	}
@@ -36,8 +36,8 @@ func TestSinkDirtyOnlyOnceDrained(t *testing.T) {
 // a paused pane is already owed a seed by its %continue.
 func TestSinkPausedIsNotDirty(t *testing.T) {
 	s := &outputSink{ch: make(chan sinkFrame, 1)}
-	s.Write([]byte("kept"))
-	s.Write([]byte("dropped"))
+	_, _ = s.Write([]byte("kept"))
+	_, _ = s.Write([]byte("dropped"))
 	<-s.ch
 	s.pause()
 	if _, dirty := s.takeDirty(); dirty {
@@ -52,8 +52,8 @@ func TestDirtyPanesSkipsNonSinks(t *testing.T) {
 	r.Register("%9", &fakeSink{})
 
 	s := &outputSink{ch: make(chan sinkFrame, 1)}
-	s.Write([]byte("kept"))
-	s.Write([]byte("dropped"))
+	_, _ = s.Write([]byte("kept"))
+	_, _ = s.Write([]byte("dropped"))
 	<-s.ch
 	r.Register("%1", s)
 
@@ -66,8 +66,8 @@ func TestDirtyPanesSkipsNonSinks(t *testing.T) {
 // a frame gets capture-pane's ground truth pushed to its renderer.
 func TestReseedDroppedRepaintsFromCapture(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	s := newOutputSink(local, nil)
 	s.mu.Lock()
@@ -102,12 +102,12 @@ func TestReseedDroppedRepaintsFromCapture(t *testing.T) {
 // the seed that repaints the placeholders referencing it.
 func TestReseedDroppedReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 	s := newOutputSink(local, p)
-	s.Write(testKittyStore("5"))
+	_, _ = s.Write(testKittyStore("5"))
 	storeFrame, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read store frame: %v", err)

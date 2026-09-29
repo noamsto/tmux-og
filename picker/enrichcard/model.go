@@ -347,7 +347,7 @@ func tickCmd() tea.Cmd {
 
 func openCmd(url string) tea.Cmd {
 	return func() tea.Msg {
-		if err := exec.Command("xdg-open", url).Start(); err != nil { // Linux-only (parity w/ old keybind)
+		if err := exec.Command("xdg-open", url).Start(); err != nil { //nolint:gosec // fixed argv, no shell; Linux-only (parity w/ old keybind)
 			return openDoneMsg{errText: err.Error()}
 		}
 		return openDoneMsg{}
@@ -389,11 +389,11 @@ func refreshCmd(c cfg, w winState) tea.Cmd {
 	return func() tea.Msg {
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			_ = exec.Command(c.prEnrichBin, "--target", c.target, "--branch", w.branch, "--dir", dir, "--force").Run()
+			_ = exec.Command(c.prEnrichBin, "--target", c.target, "--branch", w.branch, "--dir", dir, "--force").Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		})
 		if shouldStampIssue(c, w, dir) {
 			wg.Go(func() {
-				_ = exec.Command(c.issueStampBin, issueStampArgs(c.target, dir, w.branch, w.issueExplicitID)...).Run()
+				_ = exec.Command(c.issueStampBin, issueStampArgs(c.target, dir, w.branch, w.issueExplicitID)...).Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 			})
 		}
 		wg.Wait()
@@ -416,7 +416,7 @@ func bridgeRefreshArgv(sock, pane string) []string {
 // (remotebridge/cmd/ctl/main.go), which would paint over the card.
 func bridgeRefreshCmd(bin, sock, pane string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := exec.Command(bin, bridgeRefreshArgv(sock, pane)...).CombinedOutput()
+		out, err := exec.Command(bin, bridgeRefreshArgv(sock, pane)...).CombinedOutput() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		if err == nil {
 			return bridgeRefreshDoneMsg{}
 		}

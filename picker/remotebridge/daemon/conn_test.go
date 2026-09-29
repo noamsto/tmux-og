@@ -12,8 +12,8 @@ import (
 // is the already-opened Ctl, so a second one cannot be obtained at all.
 func TestDialConnNilDialUsesCtl(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	c, err := dialConn(Config{Ctl: local})
 	if err != nil {
@@ -39,11 +39,11 @@ func TestDialConnNilDialNilCtlErrors(t *testing.T) {
 // Dial is set (see the Config.Dial doc comment).
 func TestDialConnPrefersDialOverCtl(t *testing.T) {
 	local, peer := net.Pipe()
-	defer local.Close()
-	defer peer.Close()
+	defer func() { _ = local.Close() }()
+	defer func() { _ = peer.Close() }()
 	dialed, dialedPeer := net.Pipe()
-	defer dialed.Close()
-	defer dialedPeer.Close()
+	defer func() { _ = dialed.Close() }()
+	defer func() { _ = dialedPeer.Close() }()
 
 	cfg := Config{
 		Ctl:  local,
@@ -92,7 +92,7 @@ func TestConnHolderCloseEmptiesTheSlotIdempotently(t *testing.T) {
 	h.close() // empty slot: must be a no-op, not a nil-pointer panic
 
 	local, peer := net.Pipe()
-	defer peer.Close()
+	defer func() { _ = peer.Close() }()
 	h.set(newCtlConn(local))
 	h.close()
 	if h.get() != nil {

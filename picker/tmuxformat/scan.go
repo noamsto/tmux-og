@@ -97,11 +97,11 @@ func ScanGoTree(root string) ([]Violation, error) {
 			return nil
 		}
 		scanned++
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // path is built from trusted internal roots, not user input
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer f.Close() //nolint:errcheck // read-only file
 		out = append(out, ScanReader(path, f)...)
 		return nil
 	})

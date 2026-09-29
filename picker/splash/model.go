@@ -125,7 +125,7 @@ const introFrames = 20
 // brailleStatic returns a random-ish braille pattern (U+2800 + 8-bit dot mask)
 // for the dissolve-in, so the "assembling" noise matches the braille art.
 func brailleStatic(x, y, frame int) rune {
-	return rune(0x2800 + int(cellHash(x, y, frame)*256))
+	return rune(0x2800 + int(cellHash(x, y, frame)*256)) //nolint:gosec // value is bounded to a single braille byte
 }
 
 // colorizeArt renders the mascot: a dissolve-in intro (braille static settling
@@ -180,7 +180,7 @@ func (m model) renderTips() string {
 
 	half := (len(m.tips) + 1) / 2
 	var rows []string
-	for i := 0; i < half; i++ {
+	for i := range half {
 		left := m.tipCell(m.tips[i], keyOf, keyStyle, lblStyle, keyW, labelW)
 		right := ""
 		if j := i + half; j < len(m.tips) {

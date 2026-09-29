@@ -295,9 +295,9 @@ func (f *reopenFake) displayCount() int {
 // advancingNudge answers a fresh, always-later mtime on every call, so
 // focusEdge.poll always has a touch to explain and re-reads viewing.
 func advancingNudge() func() (time.Time, bool) {
-	var n int64
+	var n atomic.Int64
 	return func() (time.Time, bool) {
-		return time.Unix(0, atomic.AddInt64(&n, 1)), true
+		return time.Unix(0, n.Add(1)), true
 	}
 }
 
@@ -629,7 +629,7 @@ func TestRunLoopFirstRunErrorIsNotARebuild(t *testing.T) {
 	cfg, pidFile := runLoopConfig(t, &log, make(chan struct{}))
 	run, seen := scriptedRun(errRebuild)
 
-	if err := runLoop(cfg, run); err != errRebuild {
+	if err := runLoop(cfg, run); !errors.Is(err, errRebuild) {
 		t.Fatalf("runLoop(...) = %v, want %v as-is", err, errRebuild)
 	}
 	if len(*seen) != 1 {
@@ -746,6 +746,9 @@ func (f *fakeServer) mutate(s *fakeSession, args []string) {
 }
 
 func (f *fakeServer) out(args ...string) (string, error) {
+	if len(args) == 0 {
+		return "", nil
+	}
 	s := f.resolve(fakeTarget(args))
 	switch args[0] {
 	case "list-sessions":
@@ -779,6 +782,9 @@ func (f *fakeServer) out(args ...string) (string, error) {
 }
 
 func (f *fakeServer) run(args ...string) error {
+	if len(args) == 0 {
+		return nil
+	}
 	target := fakeTarget(args)
 	s := f.resolve(target)
 	if s == nil {
@@ -809,7 +815,7 @@ func TestNoDestructiveCallReachesAPrefixSibling(t *testing.T) {
 		after func(*fakeServer)
 	}{
 		{"mirror session gone, prefix sibling alive", func(f *fakeServer) {
-			f.run("kill-session", "-t", "$1")
+			_ = f.run("kill-session", "-t", "$1")
 		}},
 		{"server restarted, $1 reused by the sibling", func(f *fakeServer) {
 			f.pid = "200"

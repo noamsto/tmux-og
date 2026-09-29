@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -61,8 +62,8 @@ func shapedMirror(t *testing.T) *mirrorWindow {
 func drainedPipe(t *testing.T) net.Conn {
 	t.Helper()
 	conn, peer := net.Pipe()
-	t.Cleanup(func() { conn.Close(); peer.Close() })
-	go io.Copy(io.Discard, peer)
+	t.Cleanup(func() { _ = conn.Close(); _ = peer.Close() })
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
 	return conn
 }
 
@@ -102,6 +103,9 @@ func (f *layoutTmux) run(argv ...string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.argv = append(f.argv, argv)
+	if len(argv) == 0 {
+		return nil
+	}
 	if argv[0] == "select-layout" {
 		return f.selectLayoutErr
 	}
@@ -112,6 +116,9 @@ func (f *layoutTmux) out(argv ...string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.argv = append(f.argv, argv)
+	if len(argv) == 0 {
+		return "", nil
+	}
 	switch argv[0] {
 	case "display-message":
 		if argv[len(argv)-1] == "#{window_id}" {
@@ -177,10 +184,8 @@ func (f *layoutTmux) at(verb, target string) int {
 		if a[0] != verb {
 			continue
 		}
-		for _, word := range a {
-			if word == target {
-				return i
-			}
+		if slices.Contains(a, target) {
+			return i
 		}
 	}
 	return -1
@@ -266,8 +271,8 @@ func TestApplyLayoutFailureBehindAMirroredFloatKillsNothing(t *testing.T) {
 // and neither the remote's dims nor a reseed reaches a tiled renderer.
 func TestReconcileLayoutShapeFailureBehindAMirroredFloatSkipsTheBroadcast(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(conn, nil))
@@ -295,7 +300,7 @@ func TestReconcileLayoutShapeFailureBehindAMirroredFloatSkipsTheBroadcast(t *tes
 			t.Fatalf("re-seeded after a failed shape: %q", cmd)
 		}
 	}
-	peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
+	_ = peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
 	if fr, err := wire.ReadFrame(peer); err == nil {
 		t.Fatalf("sent %v %q to a pane that never took the shape", fr.Type, fr.Payload)
 	}
@@ -309,8 +314,8 @@ func TestReconcileLayoutShapeFailureBehindAMirroredFloatSkipsTheBroadcast(t *tes
 // reads as blank. Both halves are gated together.
 func TestReconcileLayoutSuppressesTheBroadcastWhenTheShapeFails(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(conn, nil))
@@ -336,7 +341,7 @@ func TestReconcileLayoutSuppressesTheBroadcastWhenTheShapeFails(t *testing.T) {
 	}
 	// The FrameResize rides the same gate, so nothing at all should reach the
 	// renderer.
-	peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
+	_ = peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
 	if fr, err := wire.ReadFrame(peer); err == nil {
 		t.Fatalf("sent %v %q to a pane that never took the shape", fr.Type, fr.Payload)
 	}
@@ -388,9 +393,9 @@ func TestReconcileLayoutRerunsWhenOnlyTheFloatSetMoved(t *testing.T) {
 // on, which is what makes the difference visible as a second new-pane.
 func TestReconcileLayoutResetPathSkipsTheTail(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
-	go io.Copy(io.Discard, peer)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
 
 	f := &layoutTmux{
 		listPanes:  []string{"%l0 0\n"},
@@ -463,8 +468,8 @@ func TestReconcileLayoutFloatOnlyChangeLeavesTheTiledPanesAlone(t *testing.T) {
 	peers := map[string]net.Conn{}
 	for _, id := range []string{"%0", "%1"} {
 		conn, peer := net.Pipe()
-		defer conn.Close()
-		defer peer.Close()
+		defer func() { _ = conn.Close() }()
+		defer func() { _ = peer.Close() }()
 		router.Register(id, newOutputSink(conn, nil))
 		peers[id] = peer
 	}
@@ -491,7 +496,7 @@ func TestReconcileLayoutFloatOnlyChangeLeavesTheTiledPanesAlone(t *testing.T) {
 		}
 	}
 	for id, peer := range peers {
-		peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
+		_ = peer.SetDeadline(time.Now().Add(250 * time.Millisecond))
 		if fr, err := wire.ReadFrame(peer); err == nil {
 			t.Errorf("sent %v %q to tiled pane %s, which did not move", fr.Type, fr.Payload, id)
 		}

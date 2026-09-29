@@ -733,6 +733,9 @@ func TestCollectRemoteItemsHostKeyChanged(t *testing.T) {
 		return remoteProbeResult{}, fmt.Errorf("%w: exit status 255", errRemoteHostKeyChanged)
 	}
 	items := collectRemoteItems(opts, nil, probe, nil)
+	if len(items) < 2 {
+		t.Fatalf("got %d items, want at least 2", len(items))
+	}
 
 	row := items[1]
 	if !strings.Contains(row.plain, "(host key changed — verify manually)") {

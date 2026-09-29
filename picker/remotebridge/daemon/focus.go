@@ -1,5 +1,7 @@
 package daemon
 
+import "slices"
+
 // Echo suppression for pane focus.
 //
 // Local focus and remote focus each drive the other, so both directions need a
@@ -93,7 +95,7 @@ func (c *ctlState) applyRemoteFocus(remoteWin, pane string) (string, bool) {
 	if i := indexOf(f.commanded, pane); i >= 0 {
 		// Our own echo. Pop through it, discarding earlier entries that will
 		// never be reported (a commanded no-op emits nothing).
-		f.commanded = f.commanded[i+1:]
+		f.commanded = slices.Delete(f.commanded, 0, i+1)
 		return "", false
 	}
 	// An unmatched report means the remote moved for its own reasons, so any

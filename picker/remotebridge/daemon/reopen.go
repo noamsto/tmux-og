@@ -110,8 +110,8 @@ func ownsLocalSession(cfg Config) bool {
 // no longer names this process, i.e. a new daemon has taken the pair over.
 func endReopen(cfg Config, tombstone string) {
 	pidFile := cfg.SockPath + ".pid"
-	if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) == strconv.Itoa(os.Getpid()) {
-		os.Remove(pidFile)
+	if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) == strconv.Itoa(os.Getpid()) { //nolint:gosec // pidFile derives from the daemon's own SockPath, not user input
+		_ = os.Remove(pidFile)
 	}
 	if cfg.LocalSess == "" {
 		return
@@ -121,7 +121,7 @@ func endReopen(cfg Config, tombstone string) {
 		return
 	}
 	if ownsLocalSession(cfg) {
-		cfg.LocalTmux("kill-session", "-t", cfg.local.id)
+		_ = cfg.LocalTmux("kill-session", "-t", cfg.local.id)
 	}
 }
 
@@ -155,9 +155,9 @@ func resetMirrorSession(cfg Config, argv ...string) (string, bool) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return "", false
 	}
-	for _, w := range strings.Split(old, "\n") {
+	for w := range strings.SplitSeq(old, "\n") {
 		if w = strings.TrimSpace(w); w != "" && w != id {
-			cfg.LocalTmux("kill-window", "-t", w)
+			_ = cfg.LocalTmux("kill-window", "-t", w)
 		}
 	}
 	return id, true
@@ -203,13 +203,13 @@ func tombstoneMirror(cfg Config, text string) {
 		return
 	}
 	// Enter closes the window, and the session with it.
-	cfg.LocalTmux("set-option", "-w", "-t", id, "remain-on-exit", "off")
+	_ = cfg.LocalTmux("set-option", "-w", "-t", id, "remain-on-exit", "off")
 	// Nothing answers the socket and nothing is dialling. @bridge_host and
 	// @bridge_session stay, so og-remote-open's pair lookup recognises this as
 	// the pair's mirror and replaces it on the next open instead of walking to
 	// a -remote suffix.
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.local.id, "@bridge_sock")
-	cfg.LocalTmux("set-option", "-u", "-t", cfg.local.id, "@bridge_state")
+	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.local.id, "@bridge_sock")
+	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.local.id, "@bridge_state")
 	fmt.Fprintf(os.Stderr, "daemon: %s\n", text)
 }
 

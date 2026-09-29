@@ -93,7 +93,7 @@ type paneStatus struct {
 // mirror window's icons.
 func parseAgentStatus(body string) []paneStatus {
 	var out []paneStatus
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimRight(line, "\r")
 		// Trailing empty fields may or may not survive the trip, so read them
 		// positionally rather than demanding the full width.
@@ -323,7 +323,7 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// carried pane value nothing validates, and tmux fails a whole ';'
 		// sequence on one argv it reads as a flag.
 		if !seen || prev.proc != r.proc {
-			cfg.LocalTmux("set-option", "-p", "-t", localPane, "@bridge_proc", r.proc)
+			_ = cfg.LocalTmux("set-option", "-p", "-t", localPane, "@bridge_proc", r.proc)
 		}
 		// Before the agent-less return below: a role pane the dispatcher
 		// decorated still draws a border when no agent ever reported on it.
@@ -417,7 +417,7 @@ func stampCrew(cfg Config, localPane string, r, prev paneStatus, seen bool) {
 	if len(argv) == 0 {
 		return
 	}
-	cfg.LocalTmux(argv...)
+	_ = cfg.LocalTmux(argv...)
 }
 
 // clear drops every file this bridge wrote. The shell-side prune collects by
@@ -440,12 +440,12 @@ func (a *agentShipper) forget(id string) {
 
 func (a *agentShipper) removeFiles(id string) {
 	for _, sub := range []string{"panes", "tasks", "issues"} {
-		os.Remove(filepath.Join(a.dir, sub, id))
+		_ = os.Remove(filepath.Join(a.dir, sub, id))
 	}
 }
 
 func (a *agentShipper) removeScreenFile(id string) {
-	os.Remove(filepath.Join(a.dir, "screen", id))
+	_ = os.Remove(filepath.Join(a.dir, "screen", id))
 }
 
 func lineOrEmpty(s string) string {
@@ -459,13 +459,13 @@ func lineOrEmpty(s string) string {
 // empty tasks/issues file would read back as a blank task rather than none.
 func writeStatusFile(path, body string) {
 	if body == "" {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // 0755 is the existing status-dir mode; tightening would change access for other readers
 		return
 	}
-	os.WriteFile(path, []byte(body), 0o644)
+	_ = os.WriteFile(path, []byte(body), 0o644) //nolint:gosec // 0644 is the existing status-file mode; tightening would change access for other readers
 }
 
 // remoteClockSkew measures localNow - remoteNow so a stamp made on the remote

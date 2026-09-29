@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -24,12 +25,7 @@ func TestApplyPaneOpsShapesBeforeHelloWait(t *testing.T) {
 	seen := func(s string) bool {
 		mu.Lock()
 		defer mu.Unlock()
-		for _, e := range trace {
-			if e == s {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(trace, s)
 	}
 
 	// The split lands the local pane %9local; applyPaneOps reads the window back
@@ -50,8 +46,8 @@ func TestApplyPaneOpsShapesBeforeHelloWait(t *testing.T) {
 	}
 
 	cli, srv := net.Pipe()
-	defer cli.Close()
-	defer srv.Close()
+	defer func() { _ = cli.Close() }()
+	defer func() { _ = srv.Close() }()
 
 	// Hand the hello over as soon as the shape lands, so a correct run is fast;
 	// the deadline makes a regressed run fail rather than hang for helloTimeout.
@@ -107,7 +103,7 @@ func TestApplyPaneOpsShapesBeforeHelloWait(t *testing.T) {
 			t.Fatalf("trace %v missing %q", trace, want)
 		}
 	}
-	if !(idx["split-window"] < idx["select-layout"] && idx["select-layout"] < idx["hello"]) {
+	if idx["split-window"] >= idx["select-layout"] || idx["select-layout"] >= idx["hello"] {
 		t.Fatalf("want split-window < select-layout < hello, got %v", trace)
 	}
 }

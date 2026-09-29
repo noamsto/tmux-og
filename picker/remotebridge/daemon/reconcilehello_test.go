@@ -73,7 +73,7 @@ func TestApplyPaneOpsRoutesSiblingOutputDuringHelloWait(t *testing.T) {
 	// A pipe nothing else writes: the only line the pump ever carries is the
 	// sibling's %output below, so the sink firing cannot be some other traffic.
 	pr, pw := io.Pipe()
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	pump := startCtlPump(controlmode.NewReader(pr))
 
 	// One Router for both the waiter and applyPaneOps — two would leave the
@@ -84,8 +84,8 @@ func TestApplyPaneOpsRoutesSiblingOutputDuringHelloWait(t *testing.T) {
 	router.Register("%1", sink)
 
 	cli, srv := net.Pipe()
-	defer cli.Close()
-	defer srv.Close()
+	defer func() { _ = cli.Close() }()
+	defer func() { _ = srv.Close() }()
 
 	connCh := make(chan helloConn)
 	handoff := make(chan error, 1)
@@ -154,7 +154,10 @@ func TestApplyPaneOpsRoutesSiblingOutputDuringHelloWait(t *testing.T) {
 // was already claimed by the time the hello is delivered.
 func TestWaitHellosKeepsReplyOrdinalsInIssueOrder(t *testing.T) {
 	st := testStream()
-	seqs, _ := st.stampAll("list-panes -t @1", "capture-pane -p -t %1")
+	seqs, ok := st.stampAll("list-panes -t @1", "capture-pane -p -t %1")
+	if !ok || len(seqs) < 2 {
+		t.Fatal("stampAll failed")
+	}
 	seq1, seq2 := seqs[0], seqs[1]
 
 	lines := make(chan controlmode.Line, 2)
@@ -166,8 +169,8 @@ func TestWaitHellosKeepsReplyOrdinalsInIssueOrder(t *testing.T) {
 	router.Register("%1", sink)
 
 	cli, srv := net.Pipe()
-	defer cli.Close()
-	defer srv.Close()
+	defer func() { _ = cli.Close() }()
+	defer func() { _ = srv.Close() }()
 
 	connCh := make(chan helloConn)
 	go func() {
@@ -207,11 +210,11 @@ func TestWaitHellosUnexpectedHelloIsNotCounted(t *testing.T) {
 	connCh := make(chan helloConn, 2)
 
 	one, onePeer := net.Pipe()
-	defer one.Close()
-	defer onePeer.Close()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = onePeer.Close() }()
 	two, twoPeer := net.Pipe()
-	defer two.Close()
-	defer twoPeer.Close()
+	defer func() { _ = two.Close() }()
+	defer func() { _ = twoPeer.Close() }()
 
 	connCh <- helloConn{paneID: "%1", conn: one}
 	connCh <- helloConn{paneID: "%2", conn: two}
@@ -239,17 +242,17 @@ func TestWaitHellosDuplicateDoesNotCompleteWait(t *testing.T) {
 	connCh := make(chan helloConn)
 
 	first, firstPeer := net.Pipe()
-	defer firstPeer.Close()
+	defer func() { _ = firstPeer.Close() }()
 	second, secondPeer := net.Pipe()
-	defer second.Close()
-	defer secondPeer.Close()
+	defer func() { _ = second.Close() }()
+	defer func() { _ = secondPeer.Close() }()
 	third, thirdPeer := net.Pipe()
-	defer third.Close()
-	defer thirdPeer.Close()
+	defer func() { _ = third.Close() }()
+	defer func() { _ = thirdPeer.Close() }()
 
 	firstClosed := make(chan struct{})
 	go func() {
-		io.Copy(io.Discard, firstPeer)
+		_, _ = io.Copy(io.Discard, firstPeer)
 		close(firstClosed)
 	}()
 

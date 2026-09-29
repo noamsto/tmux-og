@@ -19,8 +19,8 @@ func parseZoomAssertTarget(args []string) (target string, ok bool) {
 	}
 	const prefix = "resize-pane -Z -t "
 	for _, branch := range []string{args[5], args[6]} {
-		if strings.HasPrefix(branch, prefix) {
-			return strings.TrimPrefix(branch, prefix), true
+		if after, ok0 := strings.CutPrefix(branch, prefix); ok0 {
+			return after, true
 		}
 	}
 	return "", false
@@ -36,11 +36,11 @@ func parseZoomAssertTarget(args []string) (target string, ok bool) {
 // reconcile repaints it before it shows (#557).
 func TestReconcileGivesZoomedPaneTheWindowDims(t *testing.T) {
 	localA, peerA := net.Pipe()
-	defer localA.Close()
-	defer peerA.Close()
+	defer func() { _ = localA.Close() }()
+	defer func() { _ = peerA.Close() }()
 	localB, peerB := net.Pipe()
-	defer localB.Close()
-	defer peerB.Close()
+	defer func() { _ = localB.Close() }()
+	defer func() { _ = peerB.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(localA, nil))
@@ -84,8 +84,8 @@ func TestReconcileGivesZoomedPaneTheWindowDims(t *testing.T) {
 		t.Error("appliedZoom = false after successful zoom assert, want true")
 	}
 
-	peerA.SetDeadline(time.Now().Add(5 * time.Second))
-	peerB.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerA.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerB.SetDeadline(time.Now().Add(5 * time.Second))
 
 	fA, err := wire.ReadFrame(peerA)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestReconcileGivesZoomedPaneTheWindowDims(t *testing.T) {
 		t.Errorf("pane 1 (unzoomed) dims = %dx%d, want 94x45 (its own cell)", wB, hB)
 	}
 
-	peerB.SetDeadline(time.Now().Add(200 * time.Millisecond))
+	_ = peerB.SetDeadline(time.Now().Add(200 * time.Millisecond))
 	if f, err := wire.ReadFrame(peerB); err == nil {
 		t.Errorf("pane 1 (zoom-hidden) got an unexpected second frame: %v", f.Type)
 	}
@@ -128,11 +128,11 @@ func TestReconcileGivesZoomedPaneTheWindowDims(t *testing.T) {
 // zoom hid, or they would show their pre-zoom screens.
 func TestReconcileUnzoomReseedsEveryPane(t *testing.T) {
 	localA, peerA := net.Pipe()
-	defer localA.Close()
-	defer peerA.Close()
+	defer func() { _ = localA.Close() }()
+	defer func() { _ = peerA.Close() }()
 	localB, peerB := net.Pipe()
-	defer localB.Close()
-	defer peerB.Close()
+	defer func() { _ = localB.Close() }()
+	defer func() { _ = peerB.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(localA, nil))
@@ -166,8 +166,8 @@ func TestReconcileUnzoomReseedsEveryPane(t *testing.T) {
 		t.Error("appliedZoom still true after unzoom assert, want false")
 	}
 
-	peerA.SetDeadline(time.Now().Add(5 * time.Second))
-	peerB.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerA.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerB.SetDeadline(time.Now().Add(5 * time.Second))
 	for name, peer := range map[string]net.Conn{"%0": peerA, "%1": peerB} {
 		if _, err := wire.ReadFrame(peer); err != nil {
 			t.Fatalf("read %s resize: %v", name, err)
@@ -187,11 +187,11 @@ func TestReconcileUnzoomReseedsEveryPane(t *testing.T) {
 // the active pane gets its own cell, not the root, and every pane is reseeded.
 func TestReconcileKeepsPaneCellDimsOnZoomAssertFailure(t *testing.T) {
 	localA, peerA := net.Pipe()
-	defer localA.Close()
-	defer peerA.Close()
+	defer func() { _ = localA.Close() }()
+	defer func() { _ = peerA.Close() }()
 	localB, peerB := net.Pipe()
-	defer localB.Close()
-	defer peerB.Close()
+	defer func() { _ = localB.Close() }()
+	defer func() { _ = peerB.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(localA, nil))
@@ -230,8 +230,8 @@ func TestReconcileKeepsPaneCellDimsOnZoomAssertFailure(t *testing.T) {
 		t.Error("appliedZoom set despite assert failure, want false")
 	}
 
-	peerA.SetDeadline(time.Now().Add(5 * time.Second))
-	peerB.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerA.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerB.SetDeadline(time.Now().Add(5 * time.Second))
 
 	fA, err := wire.ReadFrame(peerA)
 	if err != nil {
@@ -266,11 +266,11 @@ func TestReconcileKeepsPaneCellDimsOnZoomAssertFailure(t *testing.T) {
 // float, skip zoom-on entirely rather than guessing a tiled pane.
 func TestReconcileZoomAssertNeverTargetsAFloat(t *testing.T) {
 	localA, peerA := net.Pipe()
-	defer localA.Close()
-	defer peerA.Close()
+	defer func() { _ = localA.Close() }()
+	defer func() { _ = peerA.Close() }()
 	localB, peerB := net.Pipe()
-	defer localB.Close()
-	defer peerB.Close()
+	defer func() { _ = localB.Close() }()
+	defer func() { _ = peerB.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(localA, nil))
@@ -316,8 +316,8 @@ func TestReconcileZoomAssertNeverTargetsAFloat(t *testing.T) {
 		}
 	}
 
-	peerA.SetDeadline(time.Now().Add(5 * time.Second))
-	peerB.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerA.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerB.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := wire.ReadFrame(peerA); err != nil {
 		t.Fatalf("read pane 0 frame: %v", err)
 	}
@@ -331,11 +331,11 @@ func TestReconcileZoomAssertNeverTargetsAFloat(t *testing.T) {
 // land on that tiled local, not skip or hit the float.
 func TestReconcileZoomAssertTargetsTiledPaneBesideFloat(t *testing.T) {
 	localA, peerA := net.Pipe()
-	defer localA.Close()
-	defer peerA.Close()
+	defer func() { _ = localA.Close() }()
+	defer func() { _ = peerA.Close() }()
 	localB, peerB := net.Pipe()
-	defer localB.Close()
-	defer peerB.Close()
+	defer func() { _ = localB.Close() }()
+	defer func() { _ = peerB.Close() }()
 
 	router := NewRouter()
 	router.Register("%0", newOutputSink(localA, nil))
@@ -379,8 +379,8 @@ func TestReconcileZoomAssertTargetsTiledPaneBesideFloat(t *testing.T) {
 		}
 	}
 
-	peerA.SetDeadline(time.Now().Add(5 * time.Second))
-	peerB.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerA.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peerB.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := wire.ReadFrame(peerA); err != nil {
 		t.Fatalf("read pane 0 frame: %v", err)
 	}

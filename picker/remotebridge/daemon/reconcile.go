@@ -138,7 +138,7 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 	remote := w.remotePanes
 	converged := false
 passes:
-	for pass := 0; pass < maxReconcilePasses; pass++ {
+	for range maxReconcilePasses {
 		newRemote := RemotePaneOrder(L)
 		ops := planPaneOps(remote, newRemote)
 		structural := len(ops.Remove) > 0 || len(ops.Append) > 0 || len(ops.Swaps) > 0
@@ -559,7 +559,7 @@ func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout
 		removed := remote[i]
 		router.Unregister(removed)
 		if c := w.conns[removed]; c != nil {
-			c.Close()
+			_ = c.Close()
 			delete(w.conns, removed)
 		}
 		local, ok := localPaneAt(w, i)
@@ -590,9 +590,9 @@ func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout
 	// first. srcID is the pane being split from — the last surviving remote
 	// pane for the first append, then each previous append in turn.
 	srcID := ""
-	for i := len(remote) - 1; i >= 0; i-- {
-		if indexOf(newRemote, remote[i]) >= 0 {
-			srcID = remote[i]
+	for _, r := range slices.Backward(remote) {
+		if indexOf(newRemote, r) >= 0 {
+			srcID = r
 			break
 		}
 	}
@@ -690,7 +690,7 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 	closed := map[string]bool{}
 	for remoteID, oldConn := range oldConns {
 		if newConn, ok := w.conns[remoteID]; ok && newConn != oldConn {
-			oldConn.Close()
+			_ = oldConn.Close()
 			closed[remoteID] = true
 		}
 	}
@@ -704,7 +704,7 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 			continue
 		}
 		if c := oldConns[id]; c != nil {
-			c.Close()
+			_ = c.Close()
 		}
 		closed[id] = true
 	}
@@ -713,7 +713,7 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 			if closed[remoteID] {
 				continue
 			}
-			oldConn.Close()
+			_ = oldConn.Close()
 		}
 		if err == nil {
 			return nil
@@ -747,8 +747,11 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 // fails before reaching reconcileFloats leaves them gone, which is why the drop
 // raises floatsDropped.
 func dropMirroredPanes(cfg Config, w *mirrorWindow) {
-	for i := len(w.localPanes) - 1; i > 0; i-- {
-		if err := cfg.LocalTmux("kill-pane", "-t", w.localPanes[i]); err != nil {
+	for i, pane := range slices.Backward(w.localPanes) {
+		if i == 0 {
+			break
+		}
+		if err := cfg.LocalTmux("kill-pane", "-t", pane); err != nil {
 			fmt.Fprintf(os.Stderr, "daemon: reset kill-pane: %v\n", err)
 		}
 	}
@@ -808,7 +811,7 @@ func focusLocalPane(cfg Config, cst *ctlState, w *mirrorWindow, order []string, 
 func removeFloat(cfg Config, w *mirrorWindow, router *Router, remoteID string) {
 	router.Unregister(remoteID)
 	if c := w.conns[remoteID]; c != nil {
-		c.Close()
+		_ = c.Close()
 		delete(w.conns, remoteID)
 	}
 	if local, ok := w.localFloats[remoteID]; ok {

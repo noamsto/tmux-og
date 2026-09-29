@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -83,10 +84,8 @@ func (f *floatTmux) at(verb, target string) int {
 		if a[0] != verb {
 			continue
 		}
-		for _, word := range a {
-			if word == target {
-				return i
-			}
+		if slices.Contains(a, target) {
+			return i
 		}
 	}
 	return -1
@@ -120,8 +119,8 @@ func oneSeedScript(screen string) string {
 // tmux-float-refit replays it on every window-resized.
 func TestReconcileFloatsAddMirrorsARemoteFloat(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	f := &floatTmux{newPane: []newPaneReply{{id: "%l9\n"}}}
 	w := newRegistry().add("@1", "@101")
@@ -162,7 +161,7 @@ func TestReconcileFloatsAddMirrorsARemoteFloat(t *testing.T) {
 
 	// The cell reaches the renderer unconverted: it is the float's usable size,
 	// and the inset lives only in tmux's create/resize/move flags.
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	seed, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read seed: %v", err)
@@ -192,14 +191,14 @@ func TestReconcileFloatsCapsHowManyFloatsItMirrors(t *testing.T) {
 	f := &floatTmux{}
 	conns := map[string]net.Conn{}
 	floats := make([]controlmode.PaneCell, 0, maxMirroredFloats+8)
-	for i := 0; i < maxMirroredFloats+8; i++ {
+	for i := range maxMirroredFloats + 8 {
 		id := fmt.Sprintf("%%%d", 100+i)
 		floats = append(floats, controlmode.PaneCell{ID: id, W: 20, H: 6, X: 5, Y: 5})
 		f.newPane = append(f.newPane, newPaneReply{id: fmt.Sprintf("%%l%d", 100+i)})
 		conn, peer := net.Pipe()
-		defer conn.Close()
-		defer peer.Close()
-		go io.Copy(io.Discard, peer)
+		defer func() { _ = conn.Close() }()
+		defer func() { _ = peer.Close() }()
+		go func() { _, _ = io.Copy(io.Discard, peer) }()
 		conns[id] = conn
 	}
 	L := controlmode.Layout{W: 190, H: 45, Floats: floats}
@@ -232,7 +231,7 @@ func TestReconcileFloatsCapsHowManyFloatsItMirrors(t *testing.T) {
 // mirrored and never re-add it, and a leftover sink outlives the daemon.
 func TestReconcileFloatsRemoveTearsDownTheLocalFloat(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer peer.Close()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	router.Register("%7", newOutputSink(conn, nil))
@@ -266,8 +265,8 @@ func TestReconcileFloatsRemoveTearsDownTheLocalFloat(t *testing.T) {
 // renderer needs because it holds no back-buffer to reflow.
 func TestReconcileFloatsMoveResizesThenMovesAndRepaints(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	router := NewRouter()
 	router.Register("%7", newOutputSink(conn, nil))
@@ -301,7 +300,7 @@ func TestReconcileFloatsMoveResizesThenMovesAndRepaints(t *testing.T) {
 		t.Errorf("floatGeom[%%7] = %v, want the cell just applied %v", w.floatGeom["%7"], moved)
 	}
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	resize, err := wire.ReadFrame(peer)
 	if err != nil {
 		t.Fatalf("read resize: %v", err)
@@ -328,8 +327,8 @@ func TestReconcileFloatsMoveResizesThenMovesAndRepaints(t *testing.T) {
 // float's sink.
 func TestReconcileFloatsWiresTheGraphicsProxy(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	f := &floatTmux{newPane: []newPaneReply{{id: "%l9"}}}
 	cfg := f.config()
@@ -349,10 +348,10 @@ func TestReconcileFloatsWiresTheGraphicsProxy(t *testing.T) {
 	if sink == nil {
 		t.Fatal("the float was not registered with the router")
 	}
-	sink.Write(testKittyStore("3"))
+	_, _ = sink.Write(testKittyStore("3"))
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
-	for i := 0; i < 2; i++ {
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
+	for i := range 2 {
 		if _, err := wire.ReadFrame(peer); err != nil { // the seed, then the resize
 			t.Fatalf("read frame %d: %v", i, err)
 		}
@@ -372,8 +371,8 @@ func TestReconcileFloatsWiresTheGraphicsProxy(t *testing.T) {
 // not the mirror.
 func TestReconcileFloatsSkipsAFloatItCannotCreate(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	// The first create answers with a reply carrying no pane id — a shape the
 	// Add path must reject rather than address a float by.
@@ -403,8 +402,8 @@ func TestReconcileFloatsSkipsAFloatItCannotCreate(t *testing.T) {
 // — and would leave its keystrokes unrouted in the meantime.
 func TestReconcileFloatsPumpsAFloatWhoseSeedFailed(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	f := &floatTmux{newPane: []newPaneReply{{id: "%l9"}}}
 	router := NewRouter()
@@ -424,7 +423,7 @@ func TestReconcileFloatsPumpsAFloatWhoseSeedFailed(t *testing.T) {
 			w.localFloats, w.conns)
 	}
 
-	peer.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("x")); err != nil {
 		t.Fatalf("write input: %v", err)
 	}

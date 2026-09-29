@@ -10,8 +10,8 @@ import (
 
 func TestLoadUsageCachesSkipsMissingAndMalformed(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}],"monthly":null}`), 0o644)
-	os.WriteFile(filepath.Join(dir, "codex.json"), []byte(`not json`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}],"monthly":null}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "codex.json"), []byte(`not json`), 0o644)
 	// t.TempDir() is created 0777&^umask, not owner-only.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestLoadUsageCachesSkipsMissingAndMalformed(t *testing.T) {
 
 func TestLoadUsageCachesOldSchemaNoSpendField(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}],"monthly":{"label":"mo","pct":60}}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}],"monthly":{"label":"mo","pct":60}}`), 0o644)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestUsageSegmentPiSpendWithRemainingNoLabel(t *testing.T) {
 
 func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +476,7 @@ func TestLoadUsageCachesOldSchemaNoRemaining(t *testing.T) {
 
 func TestLoadUsageCachesSpendWithoutLimitRendersSpendAlone(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "pi.json"), []byte(`{"windows":[],"monthly":null,"spend":{"label":"mo","usd":5,"period":"month"}}`), 0o644)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestUsageSegmentPiOrderAndIcon(t *testing.T) {
 
 func TestUsageForMirrorRendersBridgeUsageNeverLocal(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
 
 	a := args{
 		usageMonthlyThreshold: 50,
@@ -545,7 +545,7 @@ func TestUsageForMirrorRendersBridgeUsageNeverLocal(t *testing.T) {
 
 func TestUsageForMirrorEmptyBridgeUsageRendersNothing(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
 
 	a := args{usageMonthlyThreshold: 50, bridgeHost: "lab", bridgeUsage: ""}
 	localOpen := func() map[string]bool {
@@ -570,7 +570,7 @@ func TestUsageForMirrorMalformedBridgeUsageRendersNothing(t *testing.T) {
 
 func TestUsageForLocalSessionRendersLocalFigure(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":11}]}`), 0o644)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestUsageCacheDirPerUserDefault(t *testing.T) {
 
 func TestLoadUsageCachesRefusesForeignModeDir(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestLoadUsageCachesRefusesSymlinkedDir(t *testing.T) {
 	if err := os.Mkdir(real, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(real, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
+	mustWriteFile(t, filepath.Join(real, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
 	link := filepath.Join(filepath.Dir(real), "link")
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
@@ -657,7 +657,7 @@ func TestLoadUsageCachesRefusesSymlinkedDir(t *testing.T) {
 
 func TestLoadUsageCachesReadsPrivateDir(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
+	mustWriteFile(t, filepath.Join(dir, "claude.json"), []byte(`{"windows":[{"label":"5h","pct":42}]}`), 0o644)
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -681,5 +681,19 @@ func TestOpenAgentsFailOpen(t *testing.T) {
 		if !open[agent] {
 			t.Fatalf("open = %v, want every agent open on failed list-panes", open)
 		}
+	}
+}
+
+func mustMkdirAll(t *testing.T, path string, perm os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(path, perm); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWriteFile(t *testing.T, path string, data []byte, perm os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, data, perm); err != nil {
+		t.Fatal(err)
 	}
 }

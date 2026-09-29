@@ -69,7 +69,7 @@ func TestAppendNeverBlocksWithoutConsumer(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		chunk := make([]byte, 512)
-		for i := 0; i < 100_000; i++ {
+		for range 100_000 {
 			b.Append(chunk)
 		}
 		close(done)
@@ -101,7 +101,7 @@ func TestAppendStaysCheapWhenFull(t *testing.T) {
 	// and tmux buffers the backlog in-server anyway.
 	b := New(1 << 16)
 	chunk := make([]byte, 512)
-	for i := 0; i < 1000; i++ { // drive well past cap so we're in steady overflow
+	for range 1000 { // drive well past cap so we're in steady overflow
 		b.Append(chunk)
 	}
 	allocs := testing.AllocsPerRun(2000, func() { b.Append(chunk) })
@@ -117,7 +117,7 @@ func TestConcurrentAppendAndTakeRace(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		chunk := make([]byte, 128)
-		for i := 0; i < 10_000; i++ {
+		for range 10_000 {
 			b.Append(chunk)
 		}
 		b.Close()

@@ -81,7 +81,7 @@ func Aggregate(rootPIDs map[string][]int, psOut string) map[string]Totals {
 	}
 	procs := make(map[int]*procInfo)
 
-	for _, line := range strings.Split(strings.TrimSpace(psOut), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(psOut), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue

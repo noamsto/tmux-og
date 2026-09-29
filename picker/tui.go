@@ -5,6 +5,7 @@ import (
 	"fmt"
 	imgcolor "image/color"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -77,7 +78,7 @@ type hostScope struct {
 }
 
 // pickerMode selects which renderer draws the body. One model, three
-// renderers: modeList draws renderList (+ renderPreview), modeWall renderWall.
+// renderers: modeList draws renderList, modeWall renderWall.
 type pickerMode int8
 
 const (
@@ -705,6 +706,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.moveCursor(-1)
 		case tea.MouseWheelDown:
 			m = m.moveCursor(1)
+		default: // only the wheel scrolls the list
 		}
 		return m, m.loadPreviewCmd()
 
@@ -744,6 +746,7 @@ func nextScope(cur hostScope, hosts []string) hostScope {
 		return hostScope{kind: scopeHost, host: hosts[0]}
 	case scopeAll:
 		return hostScope{}
+	case scopeHost:
 	}
 	for i, h := range hosts {
 		if h != cur.host {
@@ -862,7 +865,7 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					}
 				} else {
 					logEvent("picker", "event", "kill_window", "target", item.target)
-					exec.Command("tmux", "kill-window", "-t", item.target).Run() //nolint:errcheck
+					_ = exec.Command("tmux", "kill-window", "-t", item.target).Run() //nolint:gosec // fixed binary, argv passed without a shell
 				}
 			} else {
 				logEvent("picker", "event", "kill_session", "target", item.target)
@@ -872,7 +875,7 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				if item.bridgeHost != "" {
 					stopBridgeDaemon(item.target)
 				}
-				exec.Command("tmux", "kill-session", "-t", item.target).Run() //nolint:errcheck
+				_ = exec.Command("tmux", "kill-session", "-t", item.target).Run() //nolint:gosec // fixed binary, argv passed without a shell
 			}
 			return m, m.refreshDataCmd()
 		}
@@ -905,12 +908,12 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "remote picker not configured — reload tmux"
 			return m, nil
 		}
-		window, err := exec.Command("tmux", "display-message", "-p", "-t", os.Getenv("TMUX_PANE"), "#{window_id}").Output()
+		window, err := exec.Command("tmux", "display-message", "-p", "-t", os.Getenv("TMUX_PANE"), "#{window_id}").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 		if err != nil {
 			m.statusMsg = "remote picker: cannot resolve own window: " + err.Error()
 			return m, nil
 		}
-		out, err := exec.Command("tmux", remotePickScheduleArgs(bin, host, strings.TrimSpace(string(window)))...).CombinedOutput()
+		out, err := exec.Command("tmux", remotePickScheduleArgs(bin, host, strings.TrimSpace(string(window)))...).CombinedOutput() //nolint:gosec // G204: fixed binary, argv passed without a shell
 		if err != nil {
 			m.statusMsg = "remote picker: " + strings.TrimSpace(string(out))
 			return m, nil
@@ -1117,13 +1120,13 @@ func (m tuiModel) handleWallKey(key string) (tuiModel, tea.Cmd, bool) {
 // prompt until esc/enter closes it; only ^c still quits. esc itself is
 // resolved by applyWallEsc before this is called — never reaches here.
 func (m tuiModel) handleWallQueryKey(key string) (tea.Model, tea.Cmd) {
-	switch {
-	case key == "ctrl+c":
+	switch key {
+	case "ctrl+c":
 		return m, tea.Quit
-	case key == "enter":
+	case "enter":
 		m.querying = false
 		return m, nil
-	case key == "backspace":
+	case "backspace":
 		if m.query == "" {
 			return m, nil
 		}
@@ -1156,7 +1159,7 @@ func (m tuiModel) handleFocusedKey(key string) (tuiModel, tea.Cmd, bool) {
 	}
 	target := item.target
 	return m, func() tea.Msg {
-		sendKeys(target, args, nil) //nolint:errcheck
+		_ = sendKeys(target, args, nil)
 		return nil
 	}, true
 }
@@ -1226,7 +1229,7 @@ func relayable(item listItem) bool {
 
 // tileItems returns the indices into visible that are relayable.
 func (m tuiModel) tileItems() []int {
-	var out []int
+	out := []int{}
 	for i, item := range m.visible {
 		if !relayable(item) {
 			continue
@@ -1328,9 +1331,7 @@ func (m tuiModel) mergeWall(msg wallMsg) tuiModel {
 	if m.wallContent == nil {
 		m.wallContent = make(map[string]string, len(msg.content))
 	}
-	for target, content := range msg.content {
-		m.wallContent[target] = content
-	}
+	maps.Copy(m.wallContent, msg.content)
 	if msg.bad != "" {
 		if m.wallBad == nil {
 			m.wallBad = map[string]bool{}
@@ -1448,15 +1449,9 @@ func (m tuiModel) previewHeight() int {
 }
 
 func (m tuiModel) scrollStart(h int) int {
-	start := m.cursor - h/2
-	if start < 0 {
-		start = 0
-	}
+	start := max(m.cursor-h/2, 0)
 	if start+h > len(m.visible) {
-		start = len(m.visible) - h
-		if start < 0 {
-			start = 0
-		}
+		start = max(len(m.visible)-h, 0)
 	}
 	return start
 }
@@ -1588,7 +1583,7 @@ func (m tuiModel) restoreCursor(keep string) tuiModel {
 
 // switchClient switches the attached client to target, seamed for tests.
 var switchClient = func(target string) error {
-	return exec.Command("tmux", "switch-client", "-t", target).Run()
+	return exec.Command("tmux", "switch-client", "-t", target).Run() //nolint:gosec // G204: fixed binary, argv passed without a shell
 }
 
 // activateCurrent switches to (or creates) the highlighted target and quits.
@@ -1647,7 +1642,7 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		// process.
 		if item.remoteNeedsAuth {
 			authBin := envOrMap("REMOTE_AUTH_BIN", m.tmuxOpts, "@remote_auth_bin", "og-remote-auth")
-			cmd := exec.Command(authBin, item.remoteHost)
+			cmd := exec.Command(authBin, item.remoteHost) //nolint:gosec // G204: fixed binary, argv passed without a shell
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return remoteAuthDoneMsg{err: err} })
 		}
 		cmd := m.beginAttach(item, nil)
@@ -1660,7 +1655,7 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		}
 	} else {
 		logEvent("picker", "event", "switch", "target", item.target)
-		switchClient(item.target) //nolint:errcheck
+		_ = switchClient(item.target)
 	}
 	return m, tea.Quit
 }
@@ -1710,6 +1705,9 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 // finishAttach lands an attach's final result. Any outcome but success leaves
 // the cursor and marks alone so Enter retries.
 func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
+	if m.attach == nil {
+		return m, nil
+	}
 	rest := m.attach.rest
 	label := m.attach.label
 	m.attach = nil
@@ -1735,7 +1733,7 @@ func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 // ctrl+c while already cancelling ends the TUI, but runTUI still waits for the
 // launcher's rollback before returning.
 func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
-	if key != "esc" && key != "ctrl+c" {
+	if m.attach == nil || (key != "esc" && key != "ctrl+c") {
 		return m, nil
 	}
 	if m.attach.cancelling {
@@ -1786,6 +1784,9 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 	}
 	targets := m.killConfirm
 	m.killConfirm = nil
+	if len(targets) == 0 {
+		return m, nil
+	}
 	cmd := m.beginKill(targets)
 	return m, cmd
 }
@@ -1826,6 +1827,9 @@ func (m *tuiModel) beginKill(targets []listItem) tea.Cmd {
 // a cancel is kept and reported as cancelled, since whether the remote kill
 // landed is unknown.
 func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
+	if m.killRun == nil {
+		return m, nil
+	}
 	label := m.killRun.label
 	m.killRun = nil
 	var forget []listItem
@@ -1861,7 +1865,7 @@ func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
 // handleKillRunKey is the whole keymap while a kill batch is in flight. A
 // second ctrl+c while already cancelling ends the TUI.
 func (m tuiModel) handleKillRunKey(key string) (tea.Model, tea.Cmd) {
-	if key != "esc" && key != "ctrl+c" {
+	if m.killRun == nil || (key != "esc" && key != "ctrl+c") {
 		return m, nil
 	}
 	if m.killRun.cancelling {
@@ -2122,7 +2126,7 @@ func (m tuiModel) withFilter() tuiModel {
 	}
 
 	// Score and filter matchable items
-	var matches []scored
+	matches := []scored{}
 	for _, item := range m.allItems {
 		if item.isHeader {
 			continue
@@ -2170,7 +2174,7 @@ func (m tuiModel) withFilter() tuiModel {
 			}
 		}
 		seen := make(map[string]bool)
-		var out []listItem
+		out := []listItem{}
 		for _, match := range matches {
 			if !seen[match.item.groupKey] {
 				seen[match.item.groupKey] = true
@@ -2198,7 +2202,7 @@ func (m tuiModel) withFilter() tuiModel {
 			}
 		}
 		seenHost := make(map[string]bool)
-		var out []listItem
+		out := []listItem{}
 		for _, match := range matches {
 			if remoteHeader != nil && match.item.isRemoteRow {
 				out = append(out, *remoteHeader)
@@ -2302,8 +2306,7 @@ func (m tuiModel) captureWallCmd() tea.Cmd {
 		// window/session it covers.
 		content, err := captureViaSelf(targets, selfCaptureTarget, nil)
 		msg := wallMsg{content: content}
-		var cErr *captureErr
-		if errors.As(err, &cErr) {
+		if cErr, ok := errors.AsType[*captureErr](err); ok {
 			msg.bad = cErr.Target
 		}
 		return msg
@@ -2393,6 +2396,7 @@ func (m tuiModel) recombine() tuiModel {
 		configured := hostSet(configuredHosts(m.tmuxOpts))
 		m.allItems = m.scopedItems(func(h string) bool { return configured[h] })
 		return m
+	case scopeLocal:
 	}
 	all := make([]listItem, 0, len(m.sessionItems)+len(m.remoteItems)+len(m.zoxideItems)+1)
 	all = append(all, m.sessionItems...)
@@ -2422,7 +2426,7 @@ func hostSet(hosts []string) map[string]bool {
 // Zoxide rows are local-scope only — a "create a session here" suggestion has
 // no host to be scoped to.
 func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
-	var out []listItem
+	out := []listItem{}
 	for _, item := range m.sessionItems {
 		if hostMatches(item.bridgeHost) {
 			out = append(out, item)
@@ -2912,9 +2916,11 @@ func groupWindowsBySession(windows []windowData, sessActivity map[string]int64) 
 		}
 		g.windows = append(g.windows, w)
 	}
-	groups := make([]windowGroup, len(order))
-	for i, name := range order {
-		groups[i] = *byName[name]
+	groups := make([]windowGroup, 0, len(order))
+	for _, name := range order {
+		if g := byName[name]; g != nil {
+			groups = append(groups, *g)
+		}
 	}
 	sort.Slice(groups, func(i, j int) bool {
 		ai, aj := sessActivity[groups[i].key], sessActivity[groups[j].key]
@@ -3108,7 +3114,6 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			if idW >= budget {
 				id = truncateCells(id, budget)
 				rest = ""
-				idW = iconCellWidth(id)
 			} else if idW+iconCellWidth(rest) > budget {
 				rest = truncateCells(rest, budget-idW)
 			}
@@ -3255,10 +3260,7 @@ func foldSessionPrefix(session, cDim, reset string, identityCap int) (prefix, pl
 	name := truncateCells(session, sessCap)
 	plain = name + sep
 	prefix = cDim + name + reset + sep
-	remainingCap = identityCap - iconCellWidth(plain)
-	if remainingCap < 1 {
-		remainingCap = 1
-	}
+	remainingCap = max(identityCap-iconCellWidth(plain), 1)
 	return prefix, plain, remainingCap
 }
 
@@ -3484,6 +3486,7 @@ func charBonus(prev, curr charClass) int {
 			return fzfBonusBoundaryDelimiter
 		case charNonWord:
 			return fzfBonusBoundary
+		case charLower, charUpper, charNumber:
 		}
 	}
 	if prev == charLower && curr == charUpper {
@@ -3603,7 +3606,7 @@ func programOptions() []tea.ProgramOption {
 
 // previewCapture reads a pane's screen for the preview; a test seam.
 var previewCapture = func(target string) ([]byte, error) {
-	return exec.Command("tmux", "capture-pane", "-t", target, "-p", "-e").Output()
+	return exec.Command("tmux", "capture-pane", "-t", target, "-p", "-e").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 }
 
 // previewMinGap is the least time between two preview captures starting.

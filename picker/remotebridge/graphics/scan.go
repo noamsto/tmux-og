@@ -121,7 +121,7 @@ func (s *Scanner) Feed(p []byte) []Chunk {
 		s.held = nil
 		owned = true
 	}
-	var out []Chunk
+	out := []Chunk{}
 	for len(buf) > 0 {
 		resume := scanned
 		scanned = 0

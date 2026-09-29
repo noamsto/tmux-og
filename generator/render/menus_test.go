@@ -24,13 +24,14 @@ func unquote(t *testing.T, q string) string {
 	body := q[1 : len(q)-1]
 	for i := 0; i < len(body); i++ {
 		c := body[i]
-		if c == '\\' {
+		switch c {
+		case '\\':
 			i++
 			if i == len(body) || !strings.ContainsRune(`\"$`, rune(body[i])) {
 				t.Fatalf("bad escape in %q", q)
 			}
 			c = body[i]
-		} else if c == '"' || c == '$' {
+		case '"', '$':
 			t.Fatalf("unescaped %q in %q", c, q)
 		}
 		b.WriteByte(c)

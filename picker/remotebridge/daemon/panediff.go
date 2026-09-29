@@ -1,5 +1,7 @@
 package daemon
 
+import "slices"
+
 // paneOps is the local pane surgery that turns a mirror window's current pane
 // order into the remote's. Phases are applied in field order: Remove, Append,
 // Swaps. Reset short-circuits all of them.
@@ -42,8 +44,8 @@ func planPaneOps(have, want []string) paneOps {
 
 	var survivors []string
 	var ops paneOps
-	for i := len(have) - 1; i >= 0; i-- {
-		if !wantSet[have[i]] {
+	for i, h := range slices.Backward(have) {
+		if !wantSet[h] {
 			ops.Remove = append(ops.Remove, i)
 		}
 	}
@@ -77,7 +79,7 @@ func planPaneOps(have, want []string) paneOps {
 			continue
 		}
 		for j := i + 1; j < len(cur); j++ {
-			if cur[j] == want[i] {
+			if cur[j] == want[i] { //nolint:gosec // callers pass unique pane ids, so cur ends up len(want) long
 				cur[i], cur[j] = cur[j], cur[i]
 				ops.Swaps = append(ops.Swaps, [2]int{i, j})
 				break

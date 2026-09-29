@@ -129,12 +129,12 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 func TestReseedRevealedReplaysBeforeSeed(t *testing.T) {
 	t.Run("retained store replays before the fresh seed", func(t *testing.T) {
 		local, peer := net.Pipe()
-		defer local.Close()
-		defer peer.Close()
+		defer func() { _ = local.Close() }()
+		defer func() { _ = peer.Close() }()
 
 		p := graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil)
 		sink := newOutputSink(local, p)
-		sink.Write(testKittyStore("9"))
+		_, _ = sink.Write(testKittyStore("9"))
 		storeFrame, err := wire.ReadFrame(peer)
 		if err != nil {
 			t.Fatalf("read store: %v", err)
@@ -160,7 +160,7 @@ func TestReseedRevealedReplaysBeforeSeed(t *testing.T) {
 
 		reseedRevealed(reg, router, rt, reveals)
 
-		peer.SetDeadline(time.Now().Add(5 * time.Second))
+		_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 		replay, seed := replayThenSeedFrames(t, peer)
 		if replay.Type != wire.FrameOutput || !strings.Contains(string(replay.Payload), kittyLocalisedMarker) {
 			t.Fatalf("replay = %v %q, want retained localised store", replay.Type, replay.Payload)
@@ -172,8 +172,8 @@ func TestReseedRevealedReplaysBeforeSeed(t *testing.T) {
 
 	t.Run("no retained store issues no capture", func(t *testing.T) {
 		local, peer := net.Pipe()
-		defer local.Close()
-		defer peer.Close()
+		defer func() { _ = local.Close() }()
+		defer func() { _ = peer.Close() }()
 
 		sink := newOutputSink(local, nil) // no graphics proxy: hasImages stays false
 		router := NewRouter()
@@ -186,7 +186,7 @@ func TestReseedRevealedReplaysBeforeSeed(t *testing.T) {
 		reveals := &revealQueue{}
 		reveals.add("@7")
 
-		var rt roundTrip = func(cmds ...string) replies {
+		rt := func(cmds ...string) replies {
 			t.Fatal("reseedRevealed issued a round-trip with no retained store")
 			return nil
 		}

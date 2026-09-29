@@ -55,8 +55,8 @@ func TestMouseModeTrackerNilIsUnknown(t *testing.T) {
 // isolation.
 func TestOutputSinkTracksMouseMode(t *testing.T) {
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
 
 	// Drain the renderer side continuously: net.Pipe is synchronous, so a pump
 	// write blocks until read, exactly as a live renderer never lets it.

@@ -55,11 +55,15 @@ func TestRouterBuffersBeforeRegisterInOrder(t *testing.T) {
 
 func TestRouterBoundsPreRegistrationBuffer(t *testing.T) {
 	r := NewRouter()
-	for i := 0; i < routerPendingMaxFrames+1; i++ {
+	for range routerPendingMaxFrames + 1 {
 		r.Route("%1", []byte("x"))
 	}
 
-	if got := len(r.pending["%1"].frames); got != routerPendingMaxFrames {
+	p := r.pending["%1"]
+	if p == nil {
+		t.Fatal("no pending buffer for %1")
+	}
+	if got := len(p.frames); got != routerPendingMaxFrames {
 		t.Fatalf("pending frames = %d, want %d", got, routerPendingMaxFrames)
 	}
 	if r.dropped != 1 {
@@ -70,6 +74,26 @@ func TestRouterBoundsPreRegistrationBuffer(t *testing.T) {
 	r.Register("%1", &sink)
 	if got, want := sink.Len(), routerPendingMaxFrames; got != want {
 		t.Fatalf("flushed bytes = %d, want %d", got, want)
+	}
+}
+
+// routeDropLocked logs a reason once; the buffer cap must still hold for every
+// later overflow, not just the first.
+func TestRouterKeepsBoundingAfterFirstDrop(t *testing.T) {
+	r := NewRouter()
+	for range routerPendingMaxFrames + 3 {
+		r.Route("%1", []byte("x"))
+	}
+
+	p := r.pending["%1"]
+	if p == nil {
+		t.Fatal("no pending buffer for %1")
+	}
+	if got := len(p.frames); got != routerPendingMaxFrames {
+		t.Fatalf("pending frames = %d, want %d", got, routerPendingMaxFrames)
+	}
+	if r.dropped != 3 {
+		t.Fatalf("dropped = %d, want 3", r.dropped)
 	}
 }
 
@@ -132,7 +156,7 @@ func TestRouterRouteGoneDropsLogOnce(t *testing.T) {
 	r.Unregister("%gone")
 
 	logs := captureRouterStderr(t, func() {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			r.Route("%gone", []byte("dropped"))
 		}
 	})
@@ -149,7 +173,7 @@ func TestRouterRouteDropLoggingStateBounded(t *testing.T) {
 	r := NewRouter()
 	frame := bytes.Repeat([]byte("x"), routerPendingMaxBytes+1)
 	logs := captureRouterStderr(t, func() {
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			r.Route("%oversized-"+strconv.Itoa(i), frame)
 		}
 	})
@@ -178,7 +202,7 @@ func captureRouterStderr(t *testing.T, f func()) string {
 		t.Fatal(err)
 	}
 	os.Stderr = old
-	defer read.Close()
+	defer func() { _ = read.Close() }()
 	logs, err := io.ReadAll(read)
 	if err != nil {
 		t.Fatal(err)

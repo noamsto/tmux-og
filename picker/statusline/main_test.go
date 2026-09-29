@@ -317,9 +317,9 @@ func TestLastGoodCreatesPrivateDir(t *testing.T) {
 
 func TestRenderLineFull(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
-	os.MkdirAll(dir+"/issues", 0o755)
-	os.WriteFile(dir+"/panes/1", []byte("state=processing\ntimestamp=9000\nsession=work\n"), 0o644)
+	mustMkdirAll(t, dir+"/panes", 0o755)
+	mustMkdirAll(t, dir+"/issues", 0o755)
+	mustWriteFile(t, dir+"/panes/1", []byte("state=processing\ntimestamp=9000\nsession=work\n"), 0o644)
 	now := int64(9000)
 
 	a := args{
@@ -347,8 +347,8 @@ func TestRenderLineFull(t *testing.T) {
 // exactly the pane state that would otherwise render a glyph (#850).
 func TestRenderLineUntrustedDirSuppressesAgentGlyph(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
-	os.WriteFile(dir+"/panes/1", []byte("state=processing\ntimestamp=9000\nsession=work\n"), 0o644)
+	mustMkdirAll(t, dir+"/panes", 0o755)
+	mustWriteFile(t, dir+"/panes/1", []byte("state=processing\ntimestamp=9000\nsession=work\n"), 0o644)
 	now := int64(9000)
 
 	a := args{
@@ -377,7 +377,7 @@ func TestRenderLineUntrustedDirSuppressesAgentGlyph(t *testing.T) {
 // pane-command segment survive untouched.
 func TestRenderLineBridgeWinSuppressesDir(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
+	mustMkdirAll(t, dir+"/panes", 0o755)
 	now := int64(9000)
 
 	a := args{
@@ -404,7 +404,7 @@ func TestRenderLineBridgeWinSuppressesDir(t *testing.T) {
 // right after the session pill, so it can't read as a local window.
 func TestRenderLineBridgeHost(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
+	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
 		session: "g6-main", bridgeWin: "1", bridgeHost: "g6",
@@ -431,7 +431,7 @@ func TestRenderLineBridgeHost(t *testing.T) {
 // @pr_draft on a PR badge — the host badge itself is untouched.
 func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
+	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
 		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "disconnected",
@@ -459,7 +459,7 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 // of the disconnected badge.
 func TestRenderLineBridgeStateParked(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
+	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
 		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "parked",
@@ -534,7 +534,7 @@ func TestPaneSlotAdjacentToUsage(t *testing.T) {
 // characters in between.
 func TestRenderLineUsageAdjacentToPaneSlot(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(dir+"/panes", 0o755)
+	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
 		session: "work", branch: "feat/x", panePath: "/repo", gitRoot: "/repo",
@@ -586,7 +586,7 @@ func TestPaneSlotPadDirectionLiveTmux(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(tmpdir) })
+	t.Cleanup(func() { _ = os.RemoveAll(tmpdir) })
 	const socket = "s"
 	env := append(os.Environ(), "TMUX_TMPDIR="+tmpdir)
 

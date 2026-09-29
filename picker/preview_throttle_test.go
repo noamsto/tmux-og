@@ -31,11 +31,9 @@ func TestPreviewThrottleKeepsOnlyTheNewestOfABurst(t *testing.T) {
 	admitted := make([]bool, n)
 	var wg sync.WaitGroup
 	for i := range tickets {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			admitted[i] = g.admit(tickets[i])
-		}()
+		})
 	}
 	wg.Wait()
 	for i, ok := range admitted {
@@ -78,7 +76,7 @@ func TestLoadPreviewCoalescesAHeldKey(t *testing.T) {
 	m.cursor = m.firstSelectable(0)
 
 	var cmds []func() any
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		cmd := m.loadPreviewCmd()
 		if cmd == nil {
 			t.Fatal("loadPreviewCmd returned no command")
@@ -88,11 +86,9 @@ func TestLoadPreviewCoalescesAHeldKey(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	for _, run := range cmds {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			run()
-		}()
+		})
 	}
 	wg.Wait()
 

@@ -56,8 +56,7 @@ func TestRenderIsValidConfig(t *testing.T) {
 // config.Config that Render must document field-for-field.
 func leafPaths(t reflect.Type, prefix string) []string {
 	var paths []string
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		tag := f.Tag.Get("toml")
 		if tag == "" || tag == "-" {
 			continue
@@ -93,7 +92,7 @@ func decomment(s string) string {
 }
 
 func TestRenderCoversEveryField(t *testing.T) {
-	paths := leafPaths(reflect.TypeOf(config.Config{}), "")
+	paths := leafPaths(reflect.TypeFor[config.Config](), "")
 	sort.Strings(paths)
 	if len(paths) == 0 {
 		t.Fatal("leafPaths found no fields — reflection is broken")

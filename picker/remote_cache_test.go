@@ -20,10 +20,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	f.Close()
-	os.Setenv("XDG_CACHE_HOME", f.Name())
+	_ = f.Close()
+	_ = os.Setenv("XDG_CACHE_HOME", f.Name())
 	code := m.Run()
-	os.Remove(f.Name())
+	_ = os.Remove(f.Name())
 	os.Exit(code)
 }
 
@@ -54,12 +54,18 @@ func TestRemoteSessionCacheRoundTrip(t *testing.T) {
 		t.Fatalf("got %+v", c)
 	}
 	info, err := os.Stat(dir)
-	if err != nil || info.Mode().Perm() != 0o700 {
-		t.Errorf("cache dir mode = %v (%v), want 0700", info.Mode().Perm(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("cache dir mode = %v, want 0700", info.Mode().Perm())
 	}
 	info, err = os.Stat(filepath.Join(dir, "lab.json"))
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Errorf("cache file mode = %v (%v), want 0600", info.Mode().Perm(), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("cache file mode = %v, want 0600", info.Mode().Perm())
 	}
 	if _, ok := readRemoteSessionCache("dead"); ok {
 		t.Error("a host never cached must not read")
@@ -221,7 +227,7 @@ func TestPendingRemoteItemsPaintsCache(t *testing.T) {
 	opts := map[string]string{"@remote_bridge_hosts": "lab old"}
 	bridges := firstPaintBridges([]listItem{{target: "lab-mono", session: "lab-mono", bridgeHost: "lab"}})
 
-	var plains []string
+	plains := []string{}
 	for _, it := range pendingRemoteItems(opts, bridges) {
 		plains = append(plains, it.plain)
 	}

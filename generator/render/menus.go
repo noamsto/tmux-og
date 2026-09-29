@@ -31,7 +31,7 @@ var stockMenus = parseStockMenus(stockMenusText, "stockmenus.txt")
 // input, shared with stockdrags.txt via this same parser.
 func parseStockMenus(text, name string) []stockMenu {
 	var out []stockMenu
-	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(text, "\n"), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 5 || f[0] != "bind-key" || f[1] != "-T" {
 			panic(name + ": malformed line: " + line)

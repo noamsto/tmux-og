@@ -160,7 +160,7 @@ func TestFlushEmitsHeldPartialThenNothing(t *testing.T) {
 		t.Fatalf("partial emitted early: %q", chunkKinds(cs))
 	}
 	cs := s.Flush()
-	if chunkKinds(cs) != "L" || string(cs[0].Literal) != partial {
+	if len(cs) == 0 || chunkKinds(cs) != "L" || string(cs[0].Literal) != partial {
 		t.Fatalf("kinds = %q literal = %q, want L / %q", chunkKinds(cs), cs[0].Literal, partial)
 	}
 	if got := s.Flush(); got != nil {
@@ -709,7 +709,7 @@ func TestFeedHoldIsAmortised(t *testing.T) {
 	}
 	runtime.ReadMemStats(&after)
 
-	if chunkKinds(got) != "R" || len(got[0].Raster) != len(sixel) {
+	if len(got) == 0 || chunkKinds(got) != "R" || len(got[0].Raster) != len(sixel) {
 		t.Fatalf("kinds = %q, want one complete R", chunkKinds(got))
 	}
 	// Quadratic re-copy of a 2 MiB hold in 4 KiB pieces allocates ~1 GB; the
@@ -752,7 +752,7 @@ func TestFeedHoldScanIsLinear(t *testing.T) {
 		// this is exactly the bytes this Feed examined.
 		searched += len(s.held) - resume
 	}
-	if chunkKinds(got) != "R" || len(got[0].Raster) != len(sixel) {
+	if len(got) == 0 || chunkKinds(got) != "R" || len(got[0].Raster) != len(sixel) {
 		t.Fatalf("kinds = %q, want one complete R", chunkKinds(got))
 	}
 	// Linear: every byte is searched once, plus the len(st)-1 overlap each Feed

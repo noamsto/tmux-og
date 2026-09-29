@@ -41,13 +41,13 @@ func TestDropMirroredPanesReapsMirroredFloats(t *testing.T) {
 // pane it drove, so the merge would put a live sink on a pane that is gone.
 func TestResetWindowNeverMergesBackAFloatConn(t *testing.T) {
 	tiledRaw, tiledPeer := net.Pipe()
-	defer tiledPeer.Close()
-	go io.Copy(io.Discard, tiledPeer)
+	defer func() { _ = tiledPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, tiledPeer) }()
 	tiledConn := &trackCloseConn{Conn: tiledRaw}
 
 	floatRaw, floatPeer := net.Pipe()
-	defer floatPeer.Close()
-	go io.Copy(io.Discard, floatPeer)
+	defer func() { _ = floatPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, floatPeer) }()
 	floatConn := &trackCloseConn{Conn: floatRaw}
 
 	cfg := Config{
@@ -93,9 +93,9 @@ func TestResetWindowNeverMergesBackAFloatConn(t *testing.T) {
 // walking only remotePanes leaves its pump running for the daemon's whole life.
 func TestCloseWindowUnregistersFloatSinks(t *testing.T) {
 	tiled, tiledPeer := net.Pipe()
-	defer tiledPeer.Close()
+	defer func() { _ = tiledPeer.Close() }()
 	flt, floatPeer := net.Pipe()
-	defer floatPeer.Close()
+	defer func() { _ = floatPeer.Close() }()
 
 	reg := newRegistry()
 	w := reg.add("@1", "@101")
@@ -124,11 +124,11 @@ func TestCloseWindowUnregistersFloatSinks(t *testing.T) {
 // either, so leaving it out strands it on a screen the remote has moved past.
 func TestReseedPanesRepaintsMirroredFloats(t *testing.T) {
 	tiled, tiledPeer := net.Pipe()
-	defer tiledPeer.Close()
-	go io.Copy(io.Discard, tiledPeer)
+	defer func() { _ = tiledPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, tiledPeer) }()
 	flt, floatPeer := net.Pipe()
-	defer floatPeer.Close()
-	go io.Copy(io.Discard, floatPeer)
+	defer func() { _ = floatPeer.Close() }()
+	go func() { _, _ = io.Copy(io.Discard, floatPeer) }()
 
 	reg := newRegistry()
 	w := reg.add("@1", "@101")

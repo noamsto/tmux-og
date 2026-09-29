@@ -40,7 +40,7 @@ func main() {
 	tmuxArgv := strings.Fields(*remoteTmux)
 	var ctl *exec.Cmd
 	if *sshCmd == "" {
-		ctl = exec.Command(tmuxArgv[0], append(append([]string{}, tmuxArgv[1:]...),
+		ctl = exec.Command(tmuxArgv[0], append(append([]string{}, tmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 			"-C", "attach-session", "-t", *session)...)
 	} else {
 		// ssh space-joins the post-host argv into one string run by the
@@ -48,7 +48,7 @@ func main() {
 		// spaces) to keep it a single target token.
 		args := append([]string{"-T", "-e", "none", *host, "--", "env", "TMUX_TMPDIR=" + *tmpdir}, tmuxArgv...)
 		args = append(args, "-C", "attach-session", "-t", shellQuote(*session))
-		ctl = exec.Command(*sshCmd, args...)
+		ctl = exec.Command(*sshCmd, args...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 	}
 	stdin, err := ctl.StdinPipe()
 	if err != nil {
@@ -73,8 +73,8 @@ func main() {
 		if closed {
 			return
 		}
-		fmt.Fprintf(cmds, "%s\n", s)
-		cmds.Flush()
+		_, _ = fmt.Fprintf(cmds, "%s\n", s)
+		_ = cmds.Flush()
 	}
 
 	if err := ctl.Start(); err != nil {
@@ -100,15 +100,15 @@ func main() {
 	// "\r\r\n" by an OPOST that's still on.
 	captured := bytes.ReplaceAll(s.captured, []byte("\n"), []byte("\r\n"))
 	restore, _ := render.MakeRaw(0)
-	os.Stdout.Write(render.Seed(captured, s.cx, s.cy, s.alt, s.appck, nil, nil))
+	_, _ = os.Stdout.Write(render.Seed(captured, s.cx, s.cy, s.alt, s.appck, nil, nil))
 
 	teardown := func() {
 		if restore != nil {
-			restore()
+			_ = restore()
 		}
 		sendMu.Lock()
 		closed = true
-		stdin.Close()
+		_ = stdin.Close()
 		sendMu.Unlock()
 	}
 
@@ -155,11 +155,12 @@ func main() {
 		switch l.Kind {
 		case controlmode.Output:
 			if l.Pane == pane {
-				os.Stdout.Write(l.Data)
+				_, _ = os.Stdout.Write(l.Data)
 			}
 		case controlmode.WindowClose, controlmode.Exit:
 			teardown()
 			return
+		default:
 		}
 	}
 }
@@ -227,7 +228,7 @@ func readActivePane(reader *controlmode.Reader) string {
 	if !ok || l.Kind == controlmode.Error {
 		return ""
 	}
-	for _, row := range strings.Split(string(l.Data), "\n") {
+	for row := range strings.SplitSeq(string(l.Data), "\n") {
 		fields := strings.Fields(row)
 		if len(fields) == 2 && fields[0] == "1" {
 			return fields[1]

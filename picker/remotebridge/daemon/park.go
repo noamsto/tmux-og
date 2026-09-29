@@ -133,7 +133,7 @@ func localViewing(cfg Config) bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == cfg.LocalSess {
 			return true
 		}
@@ -159,7 +159,7 @@ func dimMirror(cfg Config, reg *registry) {
 	}
 	for _, mw := range reg.all() {
 		for _, opt := range parkDimOptions {
-			cfg.LocalTmux("set-option", "-w", "-t", mw.localWin, opt, parkDimStyle)
+			_ = cfg.LocalTmux("set-option", "-w", "-t", mw.localWin, opt, parkDimStyle)
 		}
 	}
 }
@@ -173,7 +173,7 @@ func undimMirror(cfg Config, reg *registry) {
 	}
 	for _, mw := range reg.all() {
 		for _, opt := range parkDimOptions {
-			cfg.LocalTmux("set-option", "-w", "-u", "-t", mw.localWin, opt)
+			_ = cfg.LocalTmux("set-option", "-w", "-u", "-t", mw.localWin, opt)
 		}
 	}
 }

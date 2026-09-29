@@ -325,7 +325,7 @@ func probeClipboardImage() (probe clipboardProbe, ok bool, err error) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
-		out, listErr := exec.CommandContext(ctx, tool.name, tool.listArgs...).Output()
+		out, listErr := exec.CommandContext(ctx, tool.name, tool.listArgs...).Output() //nolint:gosec // tool.name is from the fixed clipboardTools table; target comes from the clipboard's own target list, passed as argv
 		cancel()
 		if listErr != nil {
 			continue
@@ -348,7 +348,7 @@ func extractClipboardImage(tool clipboardTool, target string) func() ([]byte, er
 	return func() ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, tool.name, tool.extractArg(target)...)
+		cmd := exec.CommandContext(ctx, tool.name, tool.extractArg(target)...) //nolint:gosec // tool.name is from the fixed clipboardTools table; target was chosen by imageTarget from a fixed set
 		pipe, err := cmd.StdoutPipe()
 		if err != nil {
 			return nil, err
@@ -391,7 +391,7 @@ func bridgeProc(cfg Config, remotePane string) string {
 		if r.err != nil {
 			return ""
 		}
-		for _, line := range strings.Split(strings.TrimSpace(r.out), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(r.out), "\n") {
 			pane, proc, found := strings.Cut(line, "|")
 			if found && pane == remotePane {
 				return proc
@@ -423,6 +423,6 @@ func notifyLocal(cfg Config, msg string) bool {
 		return false
 	}
 	esc := strings.NewReplacer("#", "##", "%", "%%").Replace(msg)
-	cfg.LocalTmux("display-message", "-c", client, "-d", "5000", "--", esc)
+	_ = cfg.LocalTmux("display-message", "-c", client, "-d", "5000", "--", esc)
 	return true
 }

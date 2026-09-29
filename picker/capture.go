@@ -32,7 +32,7 @@ type captureRunner func(args ...string) ([]byte, error)
 func defaultCaptureRunner(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "tmux", args...).Output()
+	return exec.CommandContext(ctx, "tmux", args...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 }
 
 // captureErr names the target whose capture aborted the batch.
@@ -128,8 +128,8 @@ func captureTargetGone(err error) bool {
 // Anything trailing the last marker is an unfinished capture, so it is dropped.
 func splitCaptures(stdout, marker string) []string {
 	var parts []string
-	var rows []string
-	for _, line := range strings.Split(stdout, "\n") {
+	rows := []string{}
+	for line := range strings.SplitSeq(stdout, "\n") {
 		if line == marker {
 			parts = append(parts, joinCaptureRows(trimBlankRows(rows)))
 			rows = rows[:0]
@@ -181,6 +181,9 @@ func stripStringEscapes(s string) string {
 // trimBlankRows drops the trailing empty rows tmux pads a capture with — an
 // idle pane is mostly them, and they'd render as dead space in a tile.
 func trimBlankRows(rows []string) []string {
+	if len(rows) == 0 {
+		return rows
+	}
 	end := len(rows)
 	for end > 0 && strings.TrimSpace(stripANSI(rows[end-1])) == "" {
 		end--
@@ -332,8 +335,7 @@ func captureViaSelf(targets []string, resolve func(string) string, run captureRu
 		}
 	}
 
-	var cErr *captureErr
-	if errors.As(err, &cErr) {
+	if cErr, ok := errors.AsType[*captureErr](err); ok && cErr != nil {
 		if orig, ok := resolvedToOriginal[cErr.Target]; ok {
 			err = &captureErr{Target: orig, Err: cErr.Err}
 		}

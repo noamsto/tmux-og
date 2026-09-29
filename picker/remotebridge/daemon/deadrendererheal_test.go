@@ -134,7 +134,7 @@ func TestHealDeadRenderersStopsRebuildingAWindowThatKeepsDying(t *testing.T) {
 	rig := &healRig{}
 	s := &windowSweeper{}
 
-	for i := 0; i < deadRendererStrikes+3; i++ {
+	for range deadRendererStrikes + 3 {
 		rig.heal(cfg, map[string]bool{"@143": true}, reg, s)
 	}
 
@@ -153,7 +153,7 @@ func TestHealDeadRenderersReturnsTheBudgetAfterAHealthyPass(t *testing.T) {
 	rig := &healRig{}
 	s := &windowSweeper{}
 
-	for i := 0; i < deadRendererStrikes; i++ {
+	for range deadRendererStrikes {
 		rig.heal(cfg, map[string]bool{"@143": true}, reg, s)
 	}
 	// The healthy pass below must land outside deadRendererRecovery of the
@@ -188,7 +188,7 @@ func TestHealDeadRenderersStaysCappedUnderEventDrivenCrashLoop(t *testing.T) {
 	rig := &healRig{}
 	s := &windowSweeper{}
 
-	for i := 0; i < deadRendererStrikes+3; i++ {
+	for range deadRendererStrikes + 3 {
 		rig.heal(cfg, map[string]bool{"@143": true}, reg, s) // dead pass: may rebuild
 		rig.heal(cfg, map[string]bool{}, reg, s)             // its own died() echo, no time gap
 	}

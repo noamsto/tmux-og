@@ -158,7 +158,7 @@ var (
 // per remote window, so nothing unclean reaches a caller.
 func parseWindowLabels(body string) []labelRow {
 	var out []labelRow
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		// Only the CR comes off: @window_pr_plain carries a LEADING space by
 		// construction (" <glyph> #<n>") and reflow's pr_colw padding assumes
 		// it, so no TrimSpace, per row or per field.
@@ -390,7 +390,7 @@ func (s *labelShipper) apply(cfg Config, reg *registry, rows []labelRow) (change
 			}
 			argv = append(argv, "set-option", "-w", "-t", mw.localWin, o.opt, v)
 		}
-		cfg.LocalTmux(argv...)
+		_ = cfg.LocalTmux(argv...)
 		changed = true
 	}
 
@@ -424,7 +424,7 @@ func (s *labelShipper) clear(cfg Config, reg *registry) {
 			}
 			argv = append(argv, "set-option", "-w", "-t", mw.localWin, "-u", o.opt)
 		}
-		cfg.LocalTmux(argv...)
+		_ = cfg.LocalTmux(argv...)
 	}
 	s.written = map[string]writtenLabels{}
 }

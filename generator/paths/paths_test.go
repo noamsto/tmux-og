@@ -206,8 +206,7 @@ func TestFromPrefixOptionalProbeError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("FromPrefix = %v, want a probe error", p)
 	}
-	var perr *fs.PathError
-	if !errors.As(err, &perr) {
+	if _, ok := errors.AsType[*fs.PathError](err); !ok {
 		t.Errorf("err = %v, want it to wrap a *fs.PathError", err)
 	}
 }

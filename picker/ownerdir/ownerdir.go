@@ -22,7 +22,7 @@ func OwnerOnly(dir string) bool {
 // ownedPrivate is split from OwnerOnly so a foreign owner is testable without root.
 func ownedPrivate(info fs.FileInfo, uid int) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(uid) {
+	if !ok || stat.Uid != uint32(uid) { //nolint:gosec // callers pass os.Getuid, which is non-negative
 		return false
 	}
 	return info.Mode().Perm()&0o077 == 0

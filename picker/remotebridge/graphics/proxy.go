@@ -194,7 +194,7 @@ func (p *Proxy) Filter(data []byte) []byte {
 			}
 			return oc.local, oc.err
 		})
-		if drop {
+		if drop || q == nil {
 			if err != nil {
 				p.logf("graphics: dropped i=%s: %v", c.Seq.Get("i"), err)
 			} else {

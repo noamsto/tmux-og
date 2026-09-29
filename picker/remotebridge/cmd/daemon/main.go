@@ -107,7 +107,7 @@ func sshControlArgs(ctlSock, host, tmpdir, term, colorterm, termProgram, session
 // early would dial with the SAME termname forever, no matter how many times
 // SetDesired ran in between.
 func newSSHDialCmd(sshCmd, host, tmpdir, path, colorterm, termProgram, session string, tmuxArgv []string, view *daemon.Viewing) *exec.Cmd {
-	return exec.Command(sshCmd, sshControlArgs(path, host, tmpdir, view.Desired(), colorterm, termProgram, session, tmuxArgv)...)
+	return exec.Command(sshCmd, sshControlArgs(path, host, tmpdir, view.Desired(), colorterm, termProgram, session, tmuxArgv)...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 }
 
 // localCtlCmdEnv is the --test-local / no-ssh branches' equivalent of
@@ -128,7 +128,7 @@ func localCtlCmdEnv(view *daemon.Viewing) []string {
 // tmux attach, which still answers with a %begin/%error/%exit sequence (#817).
 func testLocalDialArgv(outage, src, session string) []string {
 	if outage != "" {
-		if _, err := os.Stat(outage); err == nil {
+		if _, err := os.Stat(outage); err == nil { //nolint:gosec // path is built from trusted internal roots, not user input
 			return []string{"false"}
 		}
 	}
@@ -249,7 +249,7 @@ func main() {
 	if *testLocal {
 		newCtlCmd = func() (*exec.Cmd, string) {
 			argv := testLocalDialArgv(*testOutage, *srcSocket, *session)
-			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 			cmd.Env = localCtlCmdEnv(view)
 			return cmd, ""
 		}
@@ -261,7 +261,7 @@ func main() {
 		if *sshCmd == "" {
 			newCtlCmd = func() (*exec.Cmd, string) {
 				// exact, as sshControlArgs.
-				cmd := exec.Command(tmuxArgv[0], append(append([]string{}, tmuxArgv[1:]...),
+				cmd := exec.Command(tmuxArgv[0], append(append([]string{}, tmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 					"-C", "attach-session", "-t", "="+*session)...)
 				cmd.Env = localCtlCmdEnv(view)
 				return cmd, ""
@@ -300,7 +300,7 @@ func main() {
 	// os.Exit(1), which skips deferred functions.
 	cleanup := func() {
 		for _, p := range tr.paths() {
-			os.Remove(p)
+			_ = os.Remove(p)
 		}
 	}
 
@@ -336,12 +336,12 @@ func main() {
 	}()
 
 	runLocalTmux := func(args ...string) error {
-		cmd := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), args...)...)
+		cmd := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), args...)...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
 	runLocalTmuxOut := func(args ...string) (string, error) {
-		cmd := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), args...)...)
+		cmd := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), args...)...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		cmd.Stderr = os.Stderr
 		out, err := cmd.Output()
 		return string(out), err
@@ -353,7 +353,7 @@ func main() {
 		if *reflowBin == "" {
 			return
 		}
-		runLocalTmux(reflowRunShellArgs(*reflowBin, *localSess)...)
+		_ = runLocalTmux(reflowRunShellArgs(*reflowBin, *localSess)...)
 	}
 	panes := func() map[string]string { return localPaneMap(localTmuxArgv, *localSess) }
 	// A remote switch-client that moved this client is pinned back; handOff then
@@ -363,7 +363,7 @@ func main() {
 	var handOff func(string)
 	if *remoteOpenBin != "" {
 		handOff = func(sess string) {
-			cmd := exec.Command(*remoteOpenBin, *host, sess)
+			cmd := exec.Command(*remoteOpenBin, *host, sess) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "daemon: hand off %s:%s: %v\n", *host, sess, err)
@@ -384,7 +384,7 @@ func main() {
 				return "", fmt.Errorf("paste: bad extension %q", ext)
 			}
 			args := pasteUploadArgs(*sshCmd, tr.currentPath(), *host, ext)
-			cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+			cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 			cmd.Stdin = bytes.NewReader(data)
 			out, err := cmd.Output()
 			if err != nil {
@@ -544,13 +544,13 @@ func localArea(localTmuxArgv []string, localSess string) (int, int) {
 // itself holds the mapping the agent-status shipper needs to re-key the remote's
 // state onto local pane ids.
 func localPaneMap(localTmuxArgv []string, localSess string) map[string]string {
-	out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...),
+	out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		"list-panes", "-s", "-t", localSess, "-F", "#{@bridge_pane} #{pane_id}")...).Output()
 	if err != nil {
 		return nil
 	}
 	m := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
@@ -616,13 +616,13 @@ func readClients(localTmuxArgv []string, localSess string) []clientDims {
 	if localSess != "" {
 		args = append(args, "-t", localSess)
 	}
-	out, err := exec.Command(localTmuxArgv[0],
+	out, err := exec.Command(localTmuxArgv[0], //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		append(append([]string{}, localTmuxArgv[1:]...), args...)...).Output()
 	if err != nil {
 		return nil
 	}
 	var clients []clientDims
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 4 {
 			continue
@@ -646,7 +646,7 @@ func readClients(localTmuxArgv []string, localSess string) []clientDims {
 // content dims. Returns 0,0 if the session doesn't exist yet or the query
 // fails.
 func sessionWinSize(localTmuxArgv []string, localSess string) (int, int) {
-	out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...),
+	out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 		"display-message", "-p", "-t", localSess, "-F", "#{window_width} #{window_height}")...).Output()
 	if err != nil {
 		return 0, 0
@@ -730,7 +730,7 @@ func (t *transport) start(c *child) error {
 	}
 	t.mu.Unlock()
 	if stopping {
-		c.Close()
+		_ = c.Close()
 	}
 	return nil
 }
@@ -748,7 +748,7 @@ func (t *transport) stop() {
 	cs := append([]*child(nil), t.children...)
 	t.mu.Unlock()
 	for _, c := range cs {
-		c.Close()
+		_ = c.Close()
 	}
 }
 
@@ -866,10 +866,10 @@ func (c *child) Write(p []byte) (int, error) { return c.in.Write(p) }
 // it. Idempotent, because the drop path and teardown both do.
 func (c *child) Close() error {
 	c.once.Do(func() {
-		c.in.Close()
-		c.out.Close()
+		_ = c.in.Close()
+		_ = c.out.Close()
 		if c.path != "" {
-			os.Remove(c.path)
+			_ = os.Remove(c.path) //nolint:gosec // path is built from trusted internal roots, not user input
 		}
 		if c.tr != nil {
 			c.tr.remove(c)
@@ -889,10 +889,10 @@ func (c *child) Close() error {
 // window, since the kill is already scheduled when it starts.
 func (c *child) end() {
 	defer close(c.ended)
-	kill := time.AfterFunc(transportKillGrace, func() { c.cmd.Process.Kill() })
+	kill := time.AfterFunc(transportKillGrace, func() { _ = c.cmd.Process.Kill() })
 	defer kill.Stop()
-	c.cmd.Process.Signal(syscall.SIGTERM)
-	c.cmd.Wait()
+	_ = c.cmd.Process.Signal(syscall.SIGTERM)
+	_ = c.cmd.Wait()
 }
 
 func fatal(err error) {

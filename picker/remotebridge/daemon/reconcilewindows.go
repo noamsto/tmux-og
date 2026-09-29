@@ -69,7 +69,7 @@ func reconcileWindows(cfg Config, send func(string), router *Router, waitHellos 
 	// keeps it from fighting ordinary local window navigation.
 	if added && activeRemote != "" {
 		if mw, ok := reg.byRemoteID(activeRemote); ok {
-			cfg.LocalTmux("select-window", "-t", mw.localWin)
+			_ = cfg.LocalTmux("select-window", "-t", mw.localWin)
 		}
 	}
 }
@@ -91,7 +91,7 @@ func mirrorNewWindow(cfg Config, send func(string), router *Router, waitHellos h
 		reg.remove(rw.id)
 		cv.forget(rw.id)
 		cst.forgetWindow(rw.id)
-		cfg.LocalTmux("kill-window", "-t", localWin)
+		_ = cfg.LocalTmux("kill-window", "-t", localWin)
 		return false
 	}
 	return true
@@ -151,7 +151,7 @@ func mirrorPaneRows(cfg Config) (live, deadRenderer map[string]bool, ok bool) {
 		return nil, nil, false
 	}
 	live, deadRenderer = map[string]bool{}, map[string]bool{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
 		if len(f) != 4 || !strings.HasPrefix(f[0], "@") {
 			continue

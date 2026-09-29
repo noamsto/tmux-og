@@ -24,6 +24,9 @@ type focusDriver struct {
 }
 
 func newFocusDriver(win string, panes ...string) *focusDriver {
+	if len(panes) == 0 {
+		panic("newFocusDriver: no panes")
+	}
 	c := newCtlState()
 	c.setWindowPanes(win, panes)
 	return &focusDriver{c: c, win: win, remote: panes[0], local: panes[0]}
@@ -133,6 +136,9 @@ func TestFocusUnreportedCommandDoesNotLeak(t *testing.T) {
 	}
 
 	f := d.c.focus["@1"]
+	if f == nil {
+		t.Fatal("no focus state for @1")
+	}
 	if len(f.commanded) != 0 {
 		t.Fatalf("commanded = %v, want flushed", f.commanded)
 	}
@@ -150,7 +156,11 @@ func TestFocusUnmatchedReportClearsOutstanding(t *testing.T) {
 	if !d.applyRemote("%3") {
 		t.Fatal("an external change during an outstanding command should apply")
 	}
-	if f := d.c.focus["@1"]; len(f.commanded) != 0 {
+	f := d.c.focus["@1"]
+	if f == nil {
+		t.Fatal("no focus state for @1")
+	}
+	if len(f.commanded) != 0 {
 		t.Errorf("commanded = %v, want cleared", f.commanded)
 	}
 }
@@ -166,7 +176,11 @@ func TestFocusStaleSequenceDropped(t *testing.T) {
 	if _, ok := c.planFocusLocked("@1", "%2", 4); ok {
 		t.Error("an out-of-order older request should be dropped")
 	}
-	if got := c.focus["@1"].localActive; got != "%3" {
+	f := c.focus["@1"]
+	if f == nil {
+		t.Fatal("no focus state for @1")
+	}
+	if got := f.localActive; got != "%3" {
 		t.Errorf("localActive = %q, want %%3 (the newer request)", got)
 	}
 }
@@ -176,14 +190,18 @@ func TestFocusStaleSequenceDropped(t *testing.T) {
 func TestFocusCommandedFIFOBounded(t *testing.T) {
 	c := newCtlState()
 	c.setWindowPanes("@1", []string{"%1", "%2"})
-	for i := 0; i < maxCommandedFocus*3; i++ {
+	for i := range maxCommandedFocus * 3 {
 		pane := "%1"
 		if i%2 == 1 {
 			pane = "%2"
 		}
 		c.planFocusLocked("@1", pane, int64(i+1))
 	}
-	if got := len(c.focus["@1"].commanded); got > maxCommandedFocus {
+	f := c.focus["@1"]
+	if f == nil {
+		t.Fatal("no focus state for @1")
+	}
+	if got := len(f.commanded); got > maxCommandedFocus {
 		t.Errorf("commanded grew to %d, want <= %d", got, maxCommandedFocus)
 	}
 }
@@ -210,7 +228,11 @@ func TestSplitInvalidatesRemoteActiveBelief(t *testing.T) {
 	if _, ok := c.planFocusLocked("@1", "%2", 1); !ok {
 		t.Fatal("first focus should send")
 	}
-	if got := c.focus["@1"].remoteActivePane; got != "%2" {
+	f := c.focus["@1"]
+	if f == nil {
+		t.Fatal("no focus state for @1")
+	}
+	if got := f.remoteActivePane; got != "%2" {
 		t.Fatalf("remoteActivePane = %q, want %%2", got)
 	}
 
@@ -220,7 +242,7 @@ func TestSplitInvalidatesRemoteActiveBelief(t *testing.T) {
 	}
 	c.submit(req, func(...string) bool { return true })
 
-	if got := c.focus["@1"].remoteActivePane; got != "" {
+	if got := f.remoteActivePane; got != "" {
 		t.Errorf("remoteActivePane = %q, want invalidated after a split", got)
 	}
 }

@@ -13,15 +13,15 @@ import (
 // here rather than skip it.
 func testKVGet(text, want string) (string, bool) {
 	val, found := "", false
-	for _, line := range strings.Split(text, "\n") {
-		i := strings.IndexByte(line, '=')
-		if i < 0 {
+	for line := range strings.SplitSeq(text, "\n") {
+		before, after, ok := strings.Cut(line, "=")
+		if !ok {
 			continue
 		}
-		if line[:i] != want {
+		if before != want {
 			continue
 		}
-		val, found = line[i+1:], true
+		val, found = after, true
 	}
 	return val, found
 }

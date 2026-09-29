@@ -195,7 +195,7 @@ func TestAttachEscCancelsCtrlCQuitsWhileCancelling(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("esc returned a Cmd, want nil")
 	}
-	if !nm.attach.cancelling {
+	if nm.attach == nil || !nm.attach.cancelling {
 		t.Fatal("cancelling not set")
 	}
 	if run.ctx.Err() == nil {
@@ -209,7 +209,7 @@ func TestAttachEscCancelsCtrlCQuitsWhileCancelling(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("first ctrl+c returned a Cmd, want cancelling (not tea.Quit)")
 	}
-	if !nm2.attach.cancelling {
+	if nm2.attach == nil || !nm2.attach.cancelling {
 		t.Fatal("cancelling not set by the first ctrl+c")
 	}
 	if run2.ctx.Err() == nil {
@@ -340,6 +340,9 @@ func TestAttachRetryStartsNewAttachWithHigherID(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a Cmd")
 	}
+	if nm.attach == nil {
+		t.Fatal("attach not started")
+	}
 	firstID := nm.attach.id
 
 	next, _ = nm.finishAttach(attachResult{outcome: attachFailed, msg: "boom"})
@@ -397,6 +400,9 @@ func TestAttachStaleMessagesIgnored(t *testing.T) {
 func TestAttachStatusLineRendering(t *testing.T) {
 	m := tuiModel{width: 80}
 	m.beginAttach(listItem{remoteHost: "lab", remoteSess: "mono"}, nil)
+	if m.attach == nil {
+		t.Fatal("attach not started")
+	}
 	id := m.attach.id
 	next, _ := m.Update(attachPhaseMsg{id: id, phase: phaseConnect})
 	m = next.(tuiModel)
