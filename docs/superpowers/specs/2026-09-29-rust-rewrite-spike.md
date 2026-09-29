@@ -32,8 +32,9 @@ the commands are in [Method](#method-reproducing-the-numbers).
 ### 1.1 Shell scripts
 
 `scripts/` holds **60 files / 9 900 lines** [measured, `wc -l scripts/*.sh`]:
-**52 named packaged scripts** plus shared libraries (`lib-*.sh`, 6 files,
-≈2 000 lines) sourced into them at runtime. All are built with
+**53 non-library scripts** — 52 of them the named packaged set `scriptNames` in
+`config/tmux.conf.nix` (`og.sh` is the 53rd, a launcher) — plus **7 shared
+libraries** (`lib-*.sh`, 2 274 lines) sourced into them at runtime. All are built with
 `writeShellScript`/`writeShellScriptBin`; `scriptsWithIcons` additionally get
 `@ICON_MAP@`, `@lib_claude@`, etc. substituted at build time.
 
@@ -91,7 +92,7 @@ busy shared host, so the σ is wide. "extra forks" excludes the process itself.
 | `bash -c 'exit 0'` | 3.5 | 1.2–16.2 | 0 | measured |
 | `tmux-branch-display` (legacy bash 1 s job) | 3.0 | 1.5–9.7 | 0 | measured |
 | `tmux-dir-display` (legacy bash 1 s job) | 3.7 | 1.8–21.2 | 0 | measured |
-| `claude-status` (legacy bash 1 s job) | 5.3 | 3.4–15.7 | 1 | measured |
+| `claude-status` (legacy bash 1 s job) | 5.3 | 3.4–15.7 | 0 | measured |
 | **`tmux-statusline` (Go 1 s job)** | **7.1** | 5.3–13.1 | 1 | measured |
 | **`tmux-update-icons` (bash 1 s job)** | **35.5** | 26.5–59.8 | 5 | measured |
 | `tmux-update-icons` sweep (bash 5 s hook) | 14.5 | 12.0–20.3 | 2 | measured |
@@ -143,9 +144,12 @@ keystroke latency — the reason this spike exists at all.
    A port that keeps the same 3 tmux calls and the same git call saves only
    ~5–8 ms/s ≈ **0.5–0.8 % of a core** [estimated]. **The round-trip collapse,
    not the language, is where the win lives** — and that is available in Go.
-2. **The four bash `-B` pollers** each sit ~4–7 ms above the Go `session-resources`
-   baseline (6.8 ms) [measured]. Folding them into one multicall binary removes
-   4 interpreter starts: ~14 ms per 5 s ≈ **2.8 ms/s** [estimated]. A **resident**
+2. **The four bash `-B` pollers** are 1.2–7.7 ms above the Go `session-resources`
+   baseline (6.8 ms): pr-enrich +1.2, issue-stamp +1.9, agent-usage +2.3, the
+   update-icons sweep +7.7 ms [measured] — the gap is interpreter start plus
+   extra `tmux`/`stat`/`mkdir` forks, not script logic. Folding them into one
+   multicall binary removes 4 interpreter starts: ~4 × 3.5 = ~14 ms per 5 s ≈
+   **2.8 ms/s** [estimated]. A **resident**
    process could additionally batch their tmux reads, but that needs a lifecycle
    (start/stop per server, failure handling) the current `run-shell` hooks do
    not have.
@@ -299,13 +303,27 @@ export TMUX="$sock,$pid,0"
 Wall-time per invocation:
 
 ```bash
+# hot path (1 s + 5 s)
 hyperfine --warmup 5 --min-runs 60 \
   "tmux-update-icons probe '' '' '' latte $pid" \
+  'env OG_TICK_SWEEP=1 tmux-update-icons' \
   'tmux-statusline --session probe' \
   'tmux-session-resources --tick' \
   'tmux-pr-enrich --tick' 'tmux-agent-usage --tick' 'tmux-issue-stamp --backfill' \
-  'tmux-reflow-windows probe 200' \
-  'bash -c "exit 0"' '/tmp/og872-bench/stub/stub'
+  'tmux-reflow-windows probe 200'
+
+# compiled-startup baseline and the legacy bash 1 s jobs
+hyperfine --warmup 5 --min-runs 60 \
+  'true' 'bash -c "exit 0"' '/tmp/og872-bench/stub/stub' \
+  "tmux-branch-display feat/x $PWD" "tmux-dir-display x $PWD $PWD" \
+  'claude-status'
+
+# the primitives the rows decompose into
+hyperfine --warmup 5 --min-runs 60 \
+  'tmux display-message -p "#{start_time}"' \
+  'tmux list-panes -a -F "#{pane_id}|#{session_id}"' \
+  "git -C $PWD branch --show-current" \
+  "timeout 2 git -C $PWD branch --show-current"
 ```
 
 Forks per invocation (count only successful execs; failed PATH probes inflate a
@@ -327,6 +345,7 @@ LOC / sizes:
 ```bash
 wc -l scripts/*.sh
 find picker generator -name '*.go' -not -name '*_test.go' | xargs wc -l | tail -1
+find picker generator -name '*_test.go' | xargs wc -l | tail -1
 ls -la "$(dirname "$(command -v tmux-statusline)")"
 ```
 
