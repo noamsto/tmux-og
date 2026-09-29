@@ -5,7 +5,9 @@
 # change (measured, #663), so the no-op guard and the lock both live here
 # rather than in the hook itself. A theme-toggle run slower than the stale
 # window can let a second job steal the lock; that is fine, because every
-# job re-reads the newest want before applying.
+# job re-reads the newest want before applying. While a theme-toggle runs, the
+# job waits it out first: theme-toggle reloads tmux itself, so the hook's own
+# reload would only overlap it.
 #
 # This handler is tmux-only: it never invokes theme-toggle and never touches
 # theme-state.json — that file is theme-toggle's alone (see CLAUDE.md's
@@ -27,6 +29,17 @@ fi
 # shellcheck source=/dev/null
 source "$lib_log"
 
+# A run-shell -b hook job: tmux paints whatever it prints into the reporting
+# client's pane.
+exec >/dev/null 2>&1
+
+# Pinned like lib_log; the hook job's PATH is the tmux server's, frozen until a
+# restart.
+ps_bin="@ps@"
+if [[ $ps_bin == @* ]]; then
+	ps_bin="ps"
+fi
+
 is_ssh_client() {
 	local v
 	v="$(tmux display-message -c "$1" -p '#{I/e:SSH_CONNECTION}' 2>/dev/null)" || return 1
@@ -45,6 +58,19 @@ any_local_client_attached_besides() {
 	return 1
 }
 
+# True while a theme-toggle process runs: matches the executable (first word,
+# or the script word after an interpreter), not any argv that mentions it.
+# Captured, not piped: under pipefail a `grep -q` that exits early SIGPIPEs ps
+# and the pipeline reports failure.
+theme_toggle_running() {
+	local out line re='^([^[:space:]]+[[:space:]]+)?([^[:space:]]*/)?theme-toggle([[:space:]]|$)'
+	out=$("$ps_bin" -U "$UID" -ww -o args= 2>/dev/null) || return 1
+	while IFS= read -r line; do
+		[[ $line =~ $re ]] && return 0
+	done <<<"$out"
+	return 1
+}
+
 # Per-user, like the lock it guards. acquire_lock never blocks, so retry
 # with a short sleep, bounded by the same staleness window a crashed holder is
 # stolen after — past that, this report is dropped, and the next report or
@@ -56,8 +82,14 @@ if [[ -n $client ]] && is_ssh_client "$client" && any_local_client_attached_besi
 	exit 0
 fi
 
-locked=0
 deadline=$((SECONDS + OG_LOCK_STALE_SECONDS))
+# Before the lock, so a theme-toggle that takes the same lock can't deadlock
+# against a job holding it while waiting.
+while theme_toggle_running && ((SECONDS < deadline)); do
+	sleep 0.2
+done
+
+locked=0
 while :; do
 	acquire_lock "$lock" && {
 		locked=1
@@ -105,9 +137,9 @@ apply() {
 
 applied=""
 while :; do
-	follow="" want="" flavor="" reporter=""
-	IFS='|' read -r follow want flavor reporter < <(tmux display-message -p \
-		'#{@og_follow_client_theme}|#{@og_client_theme_want}|#{@catppuccin_flavor}|#{@og_client_theme_client}')
+	follow="" want="" flavor="" reporter="" bg=""
+	IFS='|' read -r follow want flavor reporter bg < <(tmux display-message -p \
+		'#{@og_follow_client_theme}|#{@og_client_theme_want}|#{@catppuccin_flavor}|#{@og_client_theme_client}|#{@thm_bg}')
 
 	[[ $follow == off ]] && break
 	case $want in
@@ -143,8 +175,10 @@ while :; do
 		wanted_flavor=mocha
 	fi
 
-	# No-op guard: flavor already agrees with the newest want.
-	[[ $flavor == "$wanted_flavor" ]] && break
+	# No-op guard: flavor already agrees with the newest want AND the palette
+	# is loaded — a theme-toggle whose reload failed leaves the wanted flavor
+	# set with an empty @thm_bg, which is not converged.
+	[[ $flavor == "$wanted_flavor" && -n $bg ]] && break
 
 	# Bound: an apply that didn't converge is logged once and never retried
 	# in this loop. The next report or toggle retries it.
@@ -156,3 +190,5 @@ while :; do
 	apply "$wanted_flavor"
 	applied="$want"
 done
+
+exit 0

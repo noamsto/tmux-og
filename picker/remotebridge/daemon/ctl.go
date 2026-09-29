@@ -620,12 +620,15 @@ var verbs = map[string]verb{
 	// remote's own theme state, so a local toggle cannot reach it: this asks the
 	// remote for the same theme.
 	//
-	// run-shell, not a split: nothing should appear on screen. A remote without
-	// theme-toggle (any headless host — it ships from the desktop profile) is
-	// silent per call — Run()'s one-shot themeToggleAvailable probe (daemon.go)
-	// is what reports the absence, once per bridge connect rather than once per
-	// toggle, since this fire-and-forget verb never learns its own exit status
-	// (#545).
+	// run-shell, not a split: nothing should appear on screen. With -t, tmux
+	// prints a job's stdout and, on a non-zero exit, a "returned N" line in view
+	// mode on that pane, and a view-mode overlay on a mirrored pane wedges the
+	// mirror — so the body discards theme-toggle's output and always exits 0.
+	// A remote without theme-toggle (any headless host — it ships from the
+	// desktop profile) is therefore silent per call — Run()'s one-shot
+	// themeToggleAvailable probe (daemon.go) is what reports the absence, once
+	// per bridge connect rather than once per toggle, since this fire-and-forget
+	// verb never learns its own exit status (#545).
 	"theme": {args: 1, build: func(pane, _, _ string, a []string) ([]string, error) {
 		if !remoteThemes[a[0]] {
 			return nil, fmt.Errorf("theme: unknown theme %q", a[0])
@@ -655,7 +658,7 @@ var verbs = map[string]verb{
 // scripts below it must contain zero single-quote characters so double tmuxQuote
 // only wraps. theme is a remoteThemes key, so it needs no quoting of its own.
 func themeApplyScript(theme string) string {
-	return fmt.Sprintf("command -v theme-toggle >/dev/null 2>&1 && exec theme-toggle apply %s", theme)
+	return fmt.Sprintf("command -v theme-toggle >/dev/null 2>&1 || exit 0; theme-toggle apply %s >/dev/null 2>&1; exit 0", theme)
 }
 
 // themeProbeCmd is the display-message line Run() sends once per bridge
