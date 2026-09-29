@@ -41,14 +41,22 @@ for v in "${variants[@]}"; do
 	"${VCMD[@]}" "${OG_ARGS[@]}"
 done
 
-echo "== bench: $runs runs, variants: ${variants[*]}"
+# Five interleaved rounds (A B C D E, then again) instead of one long block per
+# variant, so drifting host load lands on every variant alike.
+rounds=5
+per_round=$(((runs + rounds - 1) / rounds))
+echo "== bench: $((per_round * rounds)) runs ($rounds rounds x $per_round), variants: ${variants[*]}"
 load_report
-hyperfine -N --warmup 10 --runs "$runs" --export-json "$work/hf.json" --style basic \
-	--command-name "" "${cmds[@]}" >/dev/null 2>&1 || {
-	echo "hyperfine failed" >&2
-	exit 1
-}
+for r in $(seq 1 "$rounds"); do
+	hyperfine -N --warmup 5 --runs "$per_round" --export-json "$work/hf.$r.json" --style basic \
+		"${cmds[@]}" >/dev/null 2>&1 || {
+		echo "hyperfine failed" >&2
+		exit 1
+	}
+done
 load_report
+jq -s '{results: [range(0; (.[0].results | length)) as $i | {times: [.[].results[$i].times[]]}]}' \
+	"$work"/hf.*.json >"$work/hf.json"
 
 echo
 printf '%-3s %8s %8s %8s %8s %6s  %s\n' var mean_ms median_ms p95_ms min_ms forks 'exec breakdown'
