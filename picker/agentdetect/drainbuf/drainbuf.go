@@ -20,7 +20,8 @@ type Buffer struct {
 }
 
 func New(maxBytes int) *Buffer {
-	return &Buffer{max: maxBytes, data: make([]byte, 0, maxBytes), notify: make(chan struct{}, 1)}
+	// data grows on demand; a pane's backlog is usually a few KiB.
+	return &Buffer{max: maxBytes, notify: make(chan struct{}, 1)}
 }
 
 // Append copies p into the buffer and never blocks. When the buffered length
@@ -57,7 +58,7 @@ func (b *Buffer) Take() (data []byte, truncated, closed bool) {
 	if n := len(b.data); n > 0 {
 		data = make([]byte, n)
 		copy(data, b.data)
-		b.data = b.data[:0] // reuse the max-cap backing array
+		b.data = b.data[:0] // reuse the grown backing array
 	}
 	truncated, b.trunc = b.trunc, false
 	closed = b.closed
