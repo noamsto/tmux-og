@@ -187,7 +187,7 @@ write_fake_toggle() {
 		t() { TMUX_TMPDIR="$INNER_TMPDIR" "$TMUX_BIN" -L s "\$@"; }
 		clear_thm() {
 			for v in \$(t show-options -g | while read -r name _; do
-				case \$name in @thm_*) echo "\$name" ;; esac
+				case \$name in (@thm_*) echo "\$name" ;; esac
 			done); do
 				t set -gu "\$v"
 			done
