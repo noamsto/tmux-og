@@ -29,7 +29,8 @@ cleanup() {
 	"$SPIKE_DIR/fixture.sh" down "$root" || true
 	rm -rf "$work"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 (cd "$REPO_ROOT/picker" && go build -o "$work/latencyprobe" ./latencyprobe)
 

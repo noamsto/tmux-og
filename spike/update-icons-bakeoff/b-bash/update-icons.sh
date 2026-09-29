@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Variant B: scripts/tmux-update-icons.sh's 1 s window-naming path with two
-# changes and nothing else: the list-sessions and list-panes reads become one
-# tmux call, and `timeout 2 git` becomes a read -t guard on a process
-# substitution (no timeout fork). Same libs, same per-window logic.
+# intended changes: the list-sessions and list-panes reads become one tmux
+# call, and `timeout 2 git` becomes a read -t guard on a process substitution
+# (no timeout fork). Same libs, same per-window naming logic.
+#
+# B is not A plus only those two changes: it also leaves out work A still does
+# in the fixture (the per-pane maps only the excluded paths use, the claude
+# colour/ago computation, the task/name file probes, the arming-sweep call and
+# the claude_pane_ids process substitution). So A->B bundles the two changes
+# with that omitted work; B->C and B->D share it and isolate the language.
 #
 # Out of scope, as in every variant: the 5 s arming sweep, carousel/remux
 # stamping, the cwd-move reconcile, the reflow kick, agent-state file parsing,
@@ -119,6 +125,10 @@ main() {
 
 	# Agent-state files are not parsed in any variant.
 	[[ -z $(claude_pane_ids) ]] || out_of_scope "agent state files"
+	local f
+	for f in "$CLAUDE_TASKS_DIR"/* "$CLAUDE_NAMES_DIR"/*; do
+		[[ -e $f ]] && out_of_scope "task/name files"
+	done
 
 	local tmux_cmds="" wkey_ s idx_ p has_agent clear_needed branch pane_path_ display icon icon_dw
 	declare -A win_icons win_icon_dw win_display

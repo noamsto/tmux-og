@@ -6,7 +6,8 @@
 #   bench.sh [RUNS] [VARIANTS...]     default: 250 runs of A B C D E
 #
 # Prints the load average before and after (rerun when the 1-minute load is
-# above ~4 on this 16-core host), then mean/median/p95/min and forks per run.
+# above ~8 on this 16-core host), then mean/median/p95/min, successful execs
+# and process forks (clone/fork without CLONE_THREAD) per run.
 set -euo pipefail
 
 # shellcheck source=/dev/null  # sibling helper
@@ -45,12 +46,18 @@ done
 # variant, so drifting host load lands on every variant alike.
 rounds=5
 per_round=$(((runs + rounds - 1) / rounds))
+if [[ -n ${FORKS_ONLY:-} ]]; then
+	runs=5
+	rounds=1
+	per_round=5
+fi
 echo "== bench: $((per_round * rounds)) runs ($rounds rounds x $per_round), variants: ${variants[*]}"
 load_report
 for r in $(seq 1 "$rounds"); do
 	hyperfine -N --warmup 5 --runs "$per_round" --export-json "$work/hf.$r.json" --style basic \
-		"${cmds[@]}" >/dev/null 2>&1 || {
-		echo "hyperfine failed" >&2
+		"${cmds[@]}" >/dev/null 2>"$work/hf.err" || {
+		echo "hyperfine failed:" >&2
+		cat "$work/hf.err" >&2
 		exit 1
 	}
 done
@@ -59,18 +66,23 @@ jq -s '{results: [range(0; (.[0].results | length)) as $i | {times: [.[].results
 	"$work"/hf.*.json >"$work/hf.json"
 
 echo
-printf '%-3s %8s %8s %8s %8s %6s  %s\n' var mean_ms median_ms p95_ms min_ms forks 'exec breakdown'
+printf '%-3s %8s %8s %8s %8s %6s %6s  %s\n' var mean_ms median_ms p95_ms min_ms execs forks 'exec breakdown'
 i=0
 for v in "${variants[@]}"; do
 	stats="$(jq -r --argjson i "$i" '.results[$i].times | sort | length as $n |
 		[(add/$n*1000), (.[($n/2|floor)]*1000), (.[(($n*0.95)|floor)]*1000), (.[0]*1000)] |
 		map(.*100|round/100) | @tsv' "$work/hf.json")"
 	variant_cmd "$v"
+	# Two traces: with clone in the set, strace splits execve lines into
+	# unfinished/resumed halves and the exec count below would miss them.
 	strace -f -e trace=execve -o "$work/trace.$v" "${VCMD[@]}" "${OG_ARGS[@]}" >/dev/null 2>&1
-	forks="$(grep -c 'execve(.*) = 0' "$work/trace.$v" || true)"
+	strace -f -e trace=clone,clone3,fork,vfork -o "$work/clone.$v" "${VCMD[@]}" "${OG_ARGS[@]}" >/dev/null 2>&1
+	execs="$(grep -c 'execve(.*) = 0' "$work/trace.$v" || true)"
+	# Process forks (thread creation excluded): bash subshells fork without an exec.
+	forks="$(awk '/(clone3?|fork|vfork)\(/ { pid = $1; if ($0 ~ /CLONE_THREAD/) { is_thread[pid] = 1; next } if ($0 ~ /<unfinished/) { is_thread[pid] = 0; next } if ($0 ~ /= [1-9][0-9]*$/) n++; next } /(clone3?|fork|vfork) resumed/ { pid = $1; if (!is_thread[pid] && $0 ~ /= [1-9][0-9]*$/) n++; is_thread[pid] = 0 } END { print n + 0 }' "$work/clone.$v")"
 	breakdown="$(grep 'execve(.*) = 0' "$work/trace.$v" | sed 's/^[0-9]* execve("\([^"]*\)".*/\1/; s|.*/||' | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')"
 	# shellcheck disable=SC2086  # stats is four tab-separated numbers
-	printf '%-3s %8s %8s %8s %8s %6s  %s\n' "$v" $stats "$forks" "$breakdown"
+	printf '%-3s %8s %8s %8s %8s %6s %6s  %s\n' "$v" $stats "$execs" "$forks" "$breakdown"
 	i=$((i + 1))
 done
 cp "$work/hf.json" "${OG_BENCH_JSON:-/tmp/og-bakeoff-last.json}"

@@ -17,6 +17,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cmd="${1:?usage: fixture.sh up|snapshot|down ROOT}"
 ROOT="${2:?usage: fixture.sh up|snapshot|down ROOT}"
 
+# tmux puts its socket under $ROOT/run/tmux-UID/, and a unix socket path tops
+# out at 108 bytes.
+((${#ROOT} < 60)) || {
+	echo "fixture.sh: ROOT too long for a tmux socket path" >&2
+	exit 2
+}
 unset TMUX
 export TMUX_TMPDIR="$ROOT/run"
 # GIT_CONFIG_GLOBAL/SYSTEM off: the host gitconfig must not change fixture commits.

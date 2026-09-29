@@ -167,6 +167,7 @@ struct Window {
     idx: String,
     path: String,
     cwd: String,
+    cwd_set: bool,
     branch: String,
     task: String,
     ai_name: String,
@@ -213,7 +214,7 @@ fn check_state_dir(server_start: &str, server_pid: &str) {
         Ok(gate) if gate.trim_end_matches('\n') == server_start => {}
         _ => out_of_scope("prune sweep"),
     }
-    for sub in ["panes", "screen"] {
+    for sub in ["panes", "screen", "tasks", "names"] {
         if let Ok(mut entries) = fs::read_dir(format!("{dir}/{sub}")) {
             if entries.next().is_some() {
                 out_of_scope("agent state files");
@@ -225,7 +226,9 @@ fn check_state_dir(server_start: &str, server_pid: &str) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 7 {
-        eprintln!("usage: update-icons SESSION RESUME_CLAUDE START_TIME RESUME_CAROUSEL FLAVOR PID");
+        eprintln!(
+            "usage: update-icons SESSION RESUME_CLAUDE START_TIME RESUME_CAROUSEL FLAVOR PID"
+        );
         exit(2);
     }
     let (invoke_name, server_start, server_pid) = (&args[1], &args[3], &args[6]);
@@ -317,8 +320,9 @@ fn main() {
         if pane_active != "0" && pane_active != "1" {
             w.poison = true;
         }
-        if w.cwd.is_empty() && f[7] != "1" {
+        if !w.cwd_set && f[7] != "1" {
             w.cwd = f[4].to_string();
+            w.cwd_set = true;
         }
         if proc.is_empty() {
             continue;
@@ -337,7 +341,11 @@ fn main() {
     for key in &order {
         let w = &wins[key];
         let mut has_agent = "";
-        if w.bridge != "1" && w.procs.iter().any(|p| ic.agents.contains(normalize_wrapped(p))) {
+        if w.bridge != "1"
+            && w.procs
+                .iter()
+                .any(|p| ic.agents.contains(normalize_wrapped(p)))
+        {
             has_agent = "1";
         }
         if !w.task.is_empty() {
@@ -357,8 +365,8 @@ fn main() {
             set("set -qw", key, "@window_has_agent", "1");
         }
 
-        let invoking = w.sess == invoke_sid
-            && sess.get(invoke_sid).is_some_and(|s| s.active_win == w.idx);
+        let invoking =
+            w.sess == invoke_sid && sess.get(invoke_sid).is_some_and(|s| s.active_win == w.idx);
         if invoking || w.branch.is_empty() {
             let path = if w.cwd.is_empty() { &w.path } else { &w.cwd };
             if current_branch(path) != w.branch {

@@ -126,6 +126,7 @@ type window struct {
 	key                                                                string
 	sess, idx                                                          string
 	path, cwd                                                          string
+	cwdSet                                                             bool
 	branch, task, aiName, display, padded, ago, rename, crew, crewSeen string
 	bridge, hasAgent, manual, namingDirty                              string
 	procs                                                              []string
@@ -164,7 +165,7 @@ func checkStateDir(serverStart, serverPid string) {
 	if err != nil || strings.TrimRight(string(gate), "\n") != serverStart {
 		outOfScope("prune sweep")
 	}
-	for _, sub := range []string{"/panes", "/screen"} {
+	for _, sub := range []string{"/panes", "/screen", "/tasks", "/names"} {
 		entries, err := os.ReadDir(dir + sub)
 		if err == nil && len(entries) > 0 {
 			outOfScope("agent state files")
@@ -233,8 +234,8 @@ func main() {
 		if paneActive != "0" && paneActive != "1" {
 			w.poison = true
 		}
-		if w.cwd == "" && f[7] != "1" {
-			w.cwd = f[4]
+		if !w.cwdSet && f[7] != "1" {
+			w.cwd, w.cwdSet = f[4], true
 		}
 		if windowActive == "1" {
 			s.activeWin = f[2]

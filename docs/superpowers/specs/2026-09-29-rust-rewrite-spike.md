@@ -11,29 +11,31 @@ A Rust rewrite of tmux-og's runtime is **not justified by performance**, but the
 first version of this spike understated what a *compiled* rewrite of
 `tmux-update-icons` buys. The per-second cost of the whole hot path is small
 (~52 ms/s, ≈5 % of one core on a quiet machine), and `tmux-update-icons` is 2/3
-of it. §6 prototypes that script's 1 s path four ways against one fixture and
-measures them identically (load 6–7 on 16 cores, 250 runs each, byte-identical
+of it. §6 prototypes that script's 1 s path four ways (plus a fifth variant) against one
+fixture and measures them identically (load 4.5 on 16 cores, 250 runs each, byte-identical
 output and tmux side effects) **[measured]**:
 
-| variant | mean ms | forks/run |
+| variant | mean ms | process forks/run (execs) |
 | --- | ---: | ---: |
-| A. shipped bash | 39.2 | 11 |
-| B. bash, tmux calls collapsed, no `timeout` | 27.0 | 6 |
-| C. Go, same call pattern as B | 12.6 | 6 |
-| D. Rust, same call pattern as B | 11.2 | 6 |
-| E. Go, reads `.git/HEAD` instead of forking git | 5.6 | 2 |
+| A. shipped bash | 37.2 | 15 (11) |
+| B. bash, tmux calls collapsed, no `timeout` | 25.0 | 6 (6) |
+| C. Go, same call pattern as B | 13.1 | 6 (6) |
+| D. Rust, same call pattern as B | 10.8 | 5 (6) |
+| E. Go, reads `.git/HEAD` instead of forking git | 5.6 | 2 (2) |
 
 Both levers matter and they are about the same size: collapsing round trips and
-dropping `timeout` is A→B (−12 ms); leaving bash is B→C (−14 ms). Go takes both
-in one step (**−27 ms per tick, −68 %**). The Go→Rust step is **−1.5 ms** (≈0.15 %
-of a core) for a second toolchain — not worth it. The earlier "language delta is
-only 2–4 ms" was an estimate; for a script this size (847 lines, 14 panes of
-per-row parsing) the measured bash interpretation cost is ~14 ms.
+dropping `timeout` (with some work B leaves out, §6.1) is A→B (−12 ms); leaving
+bash is B→C (−12 ms). Go takes both in one step (**−24 ms per tick, −65 %**).
+The Go→Rust step is **−2.4 ms** (≈0.24 % of a core; the two interleaved runs
+before the last review round measured −1.4 to −1.5 ms) for a second toolchain —
+not worth it. The earlier "language delta is only 2–4 ms" was an estimate; for a
+script this size (847 lines, 14 panes of per-row parsing) the measured bash
+step is ~12 ms, of which ~4 ms is startup and library sourcing.
 
 Recommendation: **port the `tmux-update-icons` 1 s path to Go with collapsed
 tmux calls and no `timeout` wrapper, in the toolchain the repo already ships.
 Do not adopt Rust.** Reading `.git/HEAD` instead of forking git is a further
-−7 ms and should ride along. See §5.
+−7.6 ms and should ride along. See §5.
 
 Every number below is tagged **[measured]** or **[estimated]**. Measured
 numbers were taken on this machine on 2026-09-29 against a scratch tmux server;
@@ -130,6 +132,12 @@ steady state after the branch cache is seeded]: 3 `tmux` calls (~17–24 ms) +
 1 `timeout git` (~10 ms) + bash startup/parse (~3.5 ms) + script logic. The
 `timeout` wrapper alone costs ~4 ms over the raw `git` call it guards.
 
+> **Superseded in part by §6.** The rows above and the "5 extra forks / 3 tmux
+> calls" breakdown come from a 3-window scratch server with one git poll. On the
+> 10-window fixture of §6 the shipped script forks 2 tmux (the batched write is
+> skipped when nothing changed) and 4 `timeout`+`git` pairs, and takes 37–39 ms
+> rather than 35.5 ms. Read §1.4/§1.5 as the small-server figures.
+
 ### 1.5 Per-second budget
 
 - 1 s path: 35.5 + 7.1 = **42.6 ms/s** [measured].
@@ -152,19 +160,19 @@ keystroke latency — the reason this spike exists at all.
    the 42.6 ms 1 s budget [measured]. A Rust (or Go) rewrite could:
    - remove bash startup/parse: ~3.5 ms [measured against `bash -c exit 0`];
    - drop the `timeout` wrapper: ~4 ms [measured: git 5.6 vs `timeout git` 9.9];
-   - collapse the 3 `tmux` CLI round trips into 1 batched
+   - collapse the tmux CLI round trips (2 on an idle tick, §6.1) into 1 batched
      `display-message`/command list: ~10–16 ms [estimated from the measured
      per-call cost].
    The first draft of this spike estimated that a port keeping the same calls
    saves only ~5–8 ms/s and concluded that the round-trip collapse, not the
    language, is where the win lives. **§6 measured it and the estimate was low:**
-   collapse + no `timeout` saves 12 ms and the language change a further 14 ms
+   collapse + no `timeout` saves 12 ms and the language change a further 12 ms
    [measured]. Both are available in Go.
 2. **The four bash `-B` pollers** are 1.2–7.7 ms above the Go `session-resources`
    baseline (6.8 ms): pr-enrich +1.2, issue-stamp +1.9, agent-usage +2.3, the
    update-icons sweep +7.7 ms [measured] — the gap is interpreter start plus
    extra `tmux`/`stat`/`mkdir` forks, not script logic (§6 found that for the
-   larger `update-icons` script the interpretation itself is ~14 ms, so this
+   larger `update-icons` script the bash step is ~12 ms, so this
    claim holds only for the small pollers). Folding them into one
    multicall binary removes 4 interpreter starts: ~4 × 3.5 = ~14 ms per 5 s ≈
    **2.8 ms/s** [estimated, a floor]. A **resident**
@@ -200,12 +208,12 @@ The floor measurements say a compiled stub starts in 2.0 ms vs bash's 3.5 ms
 load [measured]. Taken alone that reads as "deleting a call beats deleting the
 interpreter". The bake-off (§6) shows the interpreter's *startup* is the small
 part: what a compiled binary really removes is bash **interpreting the script**
-— sourcing three libraries and looping over every pane row — which is ~14 ms for
+— sourcing three libraries and looping over every pane row — which is ~12 ms for
 `tmux-update-icons` [measured, B→C], as much as the round-trip collapse. The
 break-even is therefore a compiled binary that also collapses its tmux round
 trips, and that is **strictly cheaper in Go**: the toolchain, `buildGoModule`,
 the generated-table pipeline, the Go test suites and the CI cross-build for
-`aarch64-darwin` already exist. Rust reaches the same place ~1.5 ms/tick faster
+`aarch64-darwin` already exist. Rust reaches the same place ~1.5–2.4 ms/tick faster
 [measured] with a second toolchain and packaging path.
 
 ---
@@ -272,22 +280,23 @@ bash encodes years of accumulated edge-case fixes.
 **Rust: no. Go: yes, for `tmux-update-icons`.**
 
 1. **Do not rewrite in Rust.** Against the same call pattern, Rust beats Go by
-   1.5 ms per tick (11.2 vs 12.6 ms mean, ≈0.15 % of a core) and shrinks the
+   1.5–2.4 ms per tick (10.8 vs 13.1 ms mean in the latest run, ≈0.24 % of a
+   core; the gap is noisy) and shrinks the
    binary from 2.0 to 0.5 MB [measured]. In exchange the repo gets a second
    toolchain, a second dependency-hash system and a three-way copy of every
    byte-identical table (§3, §4), plus `aarch64-darwin` CI. Nothing measured
    justifies that. The 13–19 MB bridge-daemon RSS remains the only place a Rust
    win is plausible, and it is unmeasured here.
 2. **Port the 1 s path of `tmux-update-icons` to Go, with the collapsed call
-   pattern of variant B and no `timeout` wrapper.** Measured: 39.2 → 12.6 ms per
-   tick (−26.6 ms/s ≈ −2.7 % of a core, −68 %), 11 → 6 forks, and — the reason
+   pattern of variant B and no `timeout` wrapper.** Measured: 37.2 → 13.1 ms per
+   tick (−24.1 ms/s ≈ −2.4 % of a core, −65 %), 15 → 6 process forks, and — the reason
    this matters — the keystroke-latency probe's p95/p99 under the status job
    drops from 2.0–2.4 / 4.0–4.6 ms (A) to 0.3–0.4 / 0.7–1.2 ms (C, D), i.e. to
    the no-job floor (§6.4). The port carries the script's 800 lines of edge-case
    fixes (§4 "Rewrite risk"), so budget candidate A's 5–8 engineer-days (§3; less in Go, which needs none
    of candidate D's toolchain work) and keep the bats suites as the acceptance suite.
-3. **Fold the `.git/HEAD` read into that port** (variant E): a further −7 ms
-   (12.6 → 5.6 ms) and 6 → 2 forks. The fork count is driven by the script's own
+3. **Fold the `.git/HEAD` read into that port** (variant E): a further −7.6 ms
+   (13.1 → 5.6 ms) and 6 → 2 forks. The fork count is driven by the script's own
    polling policy: it re-polls git every tick for the invoking session's active
    window and for **every window whose cached `@branch` is empty** — non-git
    directories and detached HEADs — so the 10-window fixture forks git 4× per
@@ -296,15 +305,16 @@ bash encodes years of accumulated edge-case fixes.
 4. **Interim, if the port waits:** the bash-only change in variant B
    (one tmux read, `read -t` guard instead of `timeout`) saves 12 ms per tick on
    its own and is ~30 lines. It is not a substitute for the port: bash still
-   spends ~14 ms interpreting the rows.
+   spends ~12 ms more than a compiled binary (about 4 ms of it startup and
+   library sourcing, the rest interpreting the rows).
 
 Reach for a resident daemon (candidate C) only if the per-tick exec proves to
 be the bottleneck after the port; do that in Go too.
 
 ### Evidence behind the recommendation (one line each)
 
-- Bake-off, same fixture, ≥200 runs, load 6–7/16: A 39.2, B 27.0, C 12.6,
-  D 11.2, E 5.6 ms mean; forks 11/6/6/6/2 [measured, §6.2].
+- Bake-off, same fixture, ≥200 runs, load 4.5/16: A 37.2, B 25.0, C 13.1,
+  D 10.8, E 5.6 ms mean; process forks 15/6/6/5/2 [measured, §6.2].
 - Outputs and tmux side effects of A–E are byte-identical on the fixture
   [measured, §6.3].
 - Keystroke-echo p95/p99: A 2.0–2.4/4.0–4.6 ms, B 0.9–1.6/3.8–5.0, C/D/E
@@ -330,12 +340,16 @@ config or `nix flake check`, and `scripts/tmux-update-icons.sh` is untouched.
 | | Variant | Source |
 | --- | --- | --- |
 | A | the shipped script, unmodified | the Nix-built `tmux-update-icons` from `nix build .#default` |
-| B | bash, same libs and per-window logic; the `list-sessions` and `list-panes -a` reads become **one** tmux call; `timeout 2 git` becomes a `read -t 2` guard on a process substitution (no `timeout` exec) | `b-bash/update-icons.sh` |
+| B | bash, same libs and per-window naming logic (not A plus only these changes, see below); the `list-sessions` and `list-panes -a` reads become **one** tmux call; `timeout 2 git` becomes a `read -t 2` guard on a process substitution (no `timeout` exec) | `b-bash/update-icons.sh` |
 | C | Go, same call pattern as B | `c-go/` |
 | D | Rust (std only), same call pattern as B | `d-rust/` |
 | E | C with `git branch --show-current` replaced by reading `.git/HEAD` (`-tags head`) | `c-go/branch_head.go` |
 
-B, C and D make the same forks (one tmux read, one guarded git per polled
+B omits work A still does in the fixture (per-pane maps only the excluded paths
+use, the claude colour/ago computation, the task/name file probes, the
+arming-sweep call and one process substitution), so A→B bundles the two
+intended changes with that omitted work; B→C and B→D share it and isolate the
+language. B, C and D make the same forks (one tmux read, one guarded git per polled
 window, one tmux write only when something changed), so the language is the
 only variable between them. E is reported separately because it changes what is
 forked, not the language.
@@ -369,38 +383,48 @@ one more non-git dir → 4 polls). The §1.4 breakdown assumed one git call.
 
 `hyperfine -N --warmup 5`, 250 runs per variant in 5 interleaved rounds so host
 load drifts across variants alike; steady state (a priming run stamps every
-option first). Forks are successful `execve`s of one steady-state run under
-`strace -f`, counting the process itself. Host: 16 cores, x86_64-linux.
+option first). "Execs" are successful `execve`s of one steady-state run under
+`strace -f`, counting the process itself; "forks" are `clone`/`fork`/`vfork`
+calls that create a process (not a thread), which also sees bash subshells that
+fork without exec and the child Go's `os/exec` spawns once to probe pidfd
+support. Host: 16 cores, x86_64-linux.
 
-**Run 3 — load average 6.96 → 6.24 (1 min), the reported run:**
+**Run 4 — load average 4.57 → 4.52 (1 min), after the review fixes, the
+reported run:**
 
-| var | mean ms | median ms | p95 ms | min ms | forks | vs A |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| A shipped bash | 39.21 | 38.19 | 47.75 | 32.83 | 11 (tmux×2, timeout×4, git×4) | — |
-| B collapsed bash | 26.97 | 26.40 | 32.81 | 21.15 | 6 (bash, tmux×1, git×4) | −31 % |
-| C Go | 12.60 | 12.45 | 14.91 | 10.34 | 6 (tmux×1, git×4) | −68 % |
-| D Rust | 11.15 | 10.90 | 13.11 | 9.10 | 6 (tmux×1, git×4) | −72 % |
-| E Go, `.git/HEAD` | 5.60 | 5.47 | 6.52 | 4.65 | 2 (tmux×1) | −86 % |
+| var | mean ms | median ms | p95 ms | min ms | execs | forks | vs A |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A shipped bash | 37.22 | 36.27 | 44.67 | 31.49 | 11 (tmux×2, timeout×4, git×4) | 15 | — |
+| B collapsed bash | 24.96 | 24.57 | 28.85 | 21.05 | 6 (bash, tmux×1, git×4) | 6 | −33 % |
+| C Go | 13.13 | 12.42 | 15.69 | 10.16 | 6 (tmux×1, git×4) | 6 | −65 % |
+| D Rust | 10.75 | 10.52 | 12.83 | 8.23 | 6 (tmux×1, git×4) | 5 | −71 % |
+| E Go, `.git/HEAD` | 5.56 | 5.53 | 6.61 | 4.46 | 2 (tmux×1) | 2 | −85 % |
 
-**Run 2 — load 8.66 → 8.83 (above the ~8 limit; kept as corroboration):**
-A 43.31 / B 29.41 / C 14.84 / D 13.29 / E 6.61 ms mean, same ordering and
-forks; medians 40.08 / 28.91 / 14.24 / 12.36 / 6.18. An earlier non-interleaved
-pass at load 7.5 → 8.5 gave the same ordering with more noise
-(A 40.5, B 35.5, C 14.3, D 18.0, E 6.9). Loads of 30–40 earlier in the day
-inflated every number and were discarded.
+**Earlier interleaved runs (before the review round added two directory
+checks to B, C and D; forks then counted as execs only):**
+run 3, load 6.96 → 6.24: A 39.21 / B 26.97 / C 12.60 / D 11.15 / E 5.60 ms mean
+(medians 38.19 / 26.40 / 12.45 / 10.90 / 5.47); run 2, load 8.66 → 8.83 (above
+the ~8 limit): A 43.31 / B 29.41 / C 14.84 / D 13.29 / E 6.61. The ordering
+A > B > C > D > E held in all three, and the Go–Rust gap was 1.4–2.4 ms mean.
+One still earlier non-interleaved pass at load 7.5 → 8.5 had D (18.0) slower
+than C (14.3) with a 38 ms D p95, so the Go–Rust difference is within noise
+of a loaded shared host; the A > B > C and E ordering was stable in every pass.
+Loads of 30–40 earlier in the day inflated every number and were discarded.
 
-Reading the deltas (run 3):
+Reading the deltas (run 4):
 
-- **A→B −12.2 ms** — one tmux call and four `timeout` execs gone. Primitives on
+- **A→B −12.3 ms** — one tmux call and four `timeout` execs gone, plus the work
+  B leaves out (§6.1), which is not separable here. Primitives on
   the fixture [measured]: `tmux list-sessions` 2.6 ms, `git branch
   --show-current` 1.7 ms, `timeout 2 git …` 3.3 ms, so `timeout` costs 1.6 ms a
   poll × 4.
-- **B→C −14.4 ms** — leaving bash. Starting bash and sourcing the three libs is
-  4.1 ms [measured]; the rest is bash interpreting 14 pane rows × 29 fields and
-  the per-window loops.
-- **C→D −1.5 ms** — Rust vs Go, same forks, same logic: process start and
-  parsing, ~12 % of C.
-- **C→E −7.0 ms** — four git forks (1.7 ms each + fork/wait) replaced by four
+- **B→C −11.8 ms** — leaving bash (run 3: −14.4 ms). Starting bash and sourcing
+  the three libs is 4.1 ms [measured]; most of the rest is bash interpreting
+  14 pane rows × 29 fields and the per-window loops.
+- **C→D −2.4 ms mean, −1.9 ms median** (runs 2–3: −1.4 to −1.5 ms) — Rust vs Go,
+  same forks, same logic: process start and parsing. Go also forks one extra
+  process per run to probe pidfd support (6 forks vs 5).
+- **C→E −7.6 ms** — four git forks (1.7 ms each + fork/wait) replaced by four
   file reads.
 
 ### 6.3 Equivalence check [measured]
@@ -445,20 +469,23 @@ variant, ≈ 25 status-job bursts each). `none` is a status line with no job.
 | D Rust | 0.2 / 0.2 | 0.3 / 0.4 | 0.8 / 1.2 | 2.9 / 3.2 |
 | E Go, `.git/HEAD` | 0.2 / 0.2 | 0.3 / 0.3 | 0.8 / 1.0 | 2.0 / 4.8 |
 
-Load 5.5 → 6.0 (run 1) and 5.5 → 7.0 (run 2). The two bash variants push the
-tail up to 4–5 ms p99 and 11–20 ms max; the three compiled variants sit at the
-no-job floor, and the floor itself is noisy at p95 (0.4 vs 1.4 ms across runs),
-so C, D and E are not distinguishable from each other or from `none`. A
+Load 5.5 → 6.0 (run 1) and 5.5 → 7.0 (run 2), measured before the review round's
+directory-check additions. A pushes the tail to 4.0–4.6 ms p99 and 18–20 ms max in both runs; B's p99 (3.8–5.0)
+and max (10.8–15.1) are elevated in both runs but its p95 (1.6 and 0.9) overlaps
+the no-job floor, which is itself noisy at p95 (0.4 and 1.4 ms across runs) —
+so p95 does not cleanly separate A or B from `none`, only p99/max do. C, D and E
+sit at the floor and are not distinguishable from each other or from `none`. A
 shorter 600-sample pass at 30 ms was too sparse to separate anything (most
-samples miss the once-a-second burst) and is not reported. The bash
-tail is consistent across both runs; this is a 10-window fixture, so absolute
-values on a 40-window server will be larger.
+samples miss the once-a-second burst) and is not reported. Two runs on a
+10-window fixture: read this as "the shipped bash shows a p99/max tail and the
+compiled variants do not", not as precise percentiles; absolute values on a
+40-window server will be larger.
 
 ### 6.5 Build cost [measured unless marked]
 
 | | C Go | D Rust |
 | --- | ---: | ---: |
-| stripped binary | 2 031 778 B (2.0 MB; includes the icon table) | 533 328 B (0.5 MB) |
+| stripped binary | 2 031 778 B (2.0 MB; includes the icon table) | 537 424 B (0.5 MB) |
 | minimal Nix derivation, cold (`buildGoModule` / `buildRustPackage`) | 8.5–10.3 s | 7.0–7.3 s |
 | cargo/go build outside Nix | — | 2.1 s (`cargo build --release`) |
 
@@ -484,13 +511,14 @@ to the flake [estimated]:
 ### 6.6 What this does and does not show
 
 - It shows the language and the round-trip pattern each contribute about
-  half of the bash→Go gain for this script, that Rust adds ~1.5 ms over Go,
+  half of the bash→Go gain for this script, that Rust adds ~1.5–2.4 ms over Go,
   and that the compiled variants remove the bash tail from keystroke latency.
 - It does **not** cover the excluded paths above. A port must also carry the
   agent-state reads, the sweep and the reconcile hooks; those add work to every
   variant, and to bash more than to a compiled binary.
-- One machine, one fixture, three benchmark passes and two latency passes. The
-  ordering was stable across all of them; the absolute values are not portable.
+- One machine, one fixture, four benchmark passes and two latency passes. The
+  A > B > C and E ordering was stable in every pass; the Go–Rust gap was not
+  (one pass reversed it); the absolute values are not portable.
 - The prototypes are deliberately not shippable: they exit 3 on branch
   transitions, agent-state files and untrusted or unpruned state dirs.
 
