@@ -55,6 +55,56 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   `-t` window, and unpinned that defaults to tmux's "best" session rather
   than the client's own.
 
+## First paint and key latency
+
+What the popup does before its first list frame and on every key, and why.
+Measurements are in `performance.md` ("Picker open latency").
+
+- **One tmux invocation reads everything the first frame needs** (`collectStartup`,
+  `picker/startup.go`): `show -g`, the pane snapshot and, in window mode, the window
+  rows and session activity, joined with `\;` and split on a line equal to
+  `@@og-picker-sep@@` (a whole-line match, so an option value carrying the text is
+  not a separator). A failed list falls back to `readTmuxOpts` +
+  `collectPanesSnapshot`. Add a first-paint read to this list rather than as another
+  call; every call is a fork plus a queue behind the server thread.
+- **`currentBranch` never forks git for a repo it can read** (`picker/gitbranch.go`):
+  it reads `HEAD` and declines to git for anything it cannot answer identically. See
+  `performance.md` for the decline list. It backs both the first paint and the window
+  picker's 1 s refresh.
+- **`programOptions` (`picker/tui.go`) sets `tea.WithFPS(120)` and
+  `tea.WithColorProfile(lipgloss.Writer.Profile)`.** The renderer only flushes on its
+  ticker, so the first frame waits up to a period, and `Run` would otherwise fork a
+  second `tmux info` before starting it. Do not drop the profile: without it the
+  picker forks `tmux info` twice before painting.
+- **The window picker's 1 s refresh chains its reads too** (`collectTmux(true, false)`:
+  pane snapshot, window rows, session activity in one call), and the `ctrl+g` regroup
+  runs the same `refreshDataCmd`.
+- **`View()` composes the list frame itself** (`picker/render_frame.go`). Lipgloss'
+  bordered `Style.Render` plus two `JoinVertical`s re-measure every line with grapheme
+  segmentation, ~75% of a 2 ms frame; `composeFrame` measures each line once, pads it
+  to the popup width and reuses the bottom rule `renderSearch` already draws in the
+  same colour. It declines to `composeFrameLipgloss` (the original, kept as the test
+  oracle) for a line wider than the frame or holding a control character other than ESC
+  (tab, CR, VT, NUL, DEL, C1, U+2028/9), which lipgloss would wrap, expand or drop. `TestComposeFrameMatchesLipgloss` holds the two
+  byte-identical across sizes, previews, queries, host badges and wide glyphs. Change
+  the frame's layout in `composeFrameLipgloss` first and make the fast path match.
+- **Preview captures are throttled, not debounced** (`previewThrottle`, `tui.go`). The
+  first request after a quiet spell forks its `capture-pane` at once, so one cursor move
+  previews as fast as before. Requests inside `previewMinGap` (40 ms) wait for it and
+  only the newest still runs, so a held `j`/`k` (~30 Hz) forks at most one capture per
+  gap, and the row it stops on is always previewed. The cmd for a superseded request
+  returns nil.
+- **Async data stays async.** Zoxide, remote hosts, previews and the full resource
+  refresh still arrive through `Init` after the first frame; nothing new is loaded
+  ahead of it.
+- **`OG_PICKER_TRACE=<file>`** (`picker/trace.go`) appends `<event> <µs>` per startup
+  milestone, timed from `OG_PICKER_T0` (unix ns) or process start, and exits 30 ms
+  after the first paint. Unset it is inert. `--dump-first-frame [--windows]`
+  (hidden) prints the first list frame as plain text at `OG_PICKER_DUMP_SIZE`
+  (`WxH`, default 120x40) and runs no `tea.Cmd`; it is what `tests/perf/gotorque-picker.sh`
+  and `TestDumpFirstFrameChainsTmuxReads` (which pins one tmux call and no git fork)
+  drive.
+
 ## Input and filtering
 
 - **A typed key is `printableKeyText`, never `len(key) == 1`** (`picker/tui.go`). bubbletea v2 reports the space key by its NAME — `KeyPressMsg.String()` falls through to `Keystroke()` for it, "the only invisible printable character" — so a length test silently dropped every space typed into a query and no picker filter could express `new window` (#689). The helper returns the literal character, which is what its three consumers need: the session/window picker and which-key append it to the query, and `relayKeyArgs` (`picker/capture.go`) sends it to a pane with `send-keys -l`, where widening the length test alone would have typed the word `space`.

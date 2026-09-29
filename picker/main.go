@@ -6,6 +6,7 @@
 //	tmux-picker-generate --tui --windows    # window picker (add --agent to filter)
 //	tmux-picker-generate --tui --wall       # same, as a grid of live pane captures
 //	tmux-picker-generate --which-key        # which-key keybind popup (#629)
+//	tmux-picker-generate --dump-first-frame # headless: print the first list frame as plain text (add --windows)
 package main
 
 import (
@@ -132,6 +133,8 @@ func main() {
 	var err error
 	if flags["--which-key"] {
 		err = RunWhichKey()
+	} else if flags["--dump-first-frame"] {
+		err = dumpFirstFrame(os.Stdout, flags["--windows"], flags["--agent"], flags["--wall"])
 	} else {
 		err = runTUI(flags["--windows"], flags["--agent"], flags["--wall"], flags["--remote-pick"])
 	}
@@ -177,7 +180,11 @@ func collectPanesSnapshot() panesSnapshot {
 	if err != nil {
 		return nil
 	}
-	return strings.Split(strings.TrimSpace(string(out)), "\n")
+	return parsePanesSnapshot(string(out))
+}
+
+func parsePanesSnapshot(out string) panesSnapshot {
+	return strings.Split(strings.TrimSpace(out), "\n")
 }
 
 // collectSessions is the standalone form, for the async callers that hold no
@@ -254,14 +261,22 @@ func (snap panesSnapshot) sessions() []sessionData {
 	return sessions
 }
 
+// sessionActivityArgv is collectSessionActivity's `list-sessions` argv.
+func sessionActivityArgv() []string {
+	return []string{"list-sessions", "-F", "#{session_name}|#{session_last_attached}"}
+}
+
 func collectSessionActivity() map[string]int64 {
-	out, err := exec.Command("tmux", "list-sessions", "-F",
-		"#{session_name}|#{session_last_attached}").Output()
+	out, err := exec.Command("tmux", sessionActivityArgv()...).Output()
 	if err != nil {
 		return nil
 	}
+	return parseSessionActivity(string(out))
+}
+
+func parseSessionActivity(out string) map[string]int64 {
 	m := make(map[string]int64)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		parts := strings.Split(line, "|")
 		if len(parts) != 2 {
 			continue
@@ -457,16 +472,22 @@ func collectWindows() []windowData {
 	if err != nil {
 		return nil
 	}
+	return windowsFromRows(strings.Split(strings.TrimSpace(string(out)), "\n"))
+}
 
-	order, m := parseWindowPaneRows(strings.Split(strings.TrimSpace(string(out)), "\n"))
+// windowsFromRows turns `list-panes -a` rows (windowsArgv's format) into
+// window records, resolving any missing branch.
+func windowsFromRows(rows []string) []windowData {
+	order, m := parseWindowPaneRows(rows)
 
-	// Fill missing branches by running git in each pane's working directory.
-	// Parallel: one git fork per window, all in flight at once — the picker's
-	// first paint waits on the slowest single call, not their sum. Each goroutine
-	// writes a distinct *winInfo, so no shared-state guard is needed. Skipped on
-	// a mirror row: its cleared branch is the bridge substitution above, not a
-	// gap to fill, and the git call would read the launcher's own repo, not the
-	// remote's (SPEC R5.3).
+	// Fill missing branches from each pane's working directory. currentBranch
+	// reads HEAD in-process and only forks git for a repo it cannot read, so
+	// the picker's first paint no longer waits on a fork per window. Parallel
+	// for that fallback: it waits on the slowest single call, not their sum.
+	// Each goroutine writes a distinct *winInfo, so no shared-state guard is
+	// needed. Skipped on a mirror row: its cleared branch is the bridge
+	// substitution above, not a gap to fill, and the lookup would read the
+	// launcher's own repo, not the remote's (SPEC R5.3).
 	var wg sync.WaitGroup
 	for _, k := range order {
 		wi := m[k]
@@ -474,9 +495,7 @@ func collectWindows() []windowData {
 			wg.Add(1)
 			go func(wi *winInfo) {
 				defer wg.Done()
-				if out, err := exec.Command("git", "-C", wi.path, "branch", "--show-current").Output(); err == nil {
-					wi.branch = strings.TrimSpace(string(out))
-				}
+				wi.branch = currentBranch(wi.path)
 			}(wi)
 		}
 	}
@@ -1387,12 +1406,21 @@ func parseShowOptionsLine(line string) (name, value string, ok bool) {
 // custom -F format, which bypasses the default template's quote-escaping —
 // so an empty-string option comes back empty, not the literal ”.
 func readTmuxOpts() map[string]string {
-	out, err := exec.Command("tmux", "show", "-g", "-F", "#{option_name} #{option_value}").Output()
+	out, err := exec.Command("tmux", showOptionsArgv()...).Output()
 	if err != nil {
 		return nil
 	}
+	return parseTmuxOpts(string(out))
+}
+
+// showOptionsArgv is readTmuxOpts' `show` argv.
+func showOptionsArgv() []string {
+	return []string{"show", "-g", "-F", "#{option_name} #{option_value}"}
+}
+
+func parseTmuxOpts(out string) map[string]string {
 	m := make(map[string]string)
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		if name, value, ok := parseShowOptionsLine(line); ok {
 			m[name] = value
 		}

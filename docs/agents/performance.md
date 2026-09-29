@@ -318,6 +318,181 @@ run completed:
 
 These are not interleaved pairs.
 
+## Picker open latency (#874)
+
+`prefix + s` / `w` used to take 35 ms (session) and 58–60 ms (window) from
+launch to the first painted list frame on the fixture below. Most of it was
+waiting, not work.
+
+**Method.** `tests/perf/picker-open-latency.sh [session|window|forks]` builds a
+scratch server (own `TMUX_TMPDIR`, `CLAUDE_STATUS_DIR`, `ZOXIDE_DATA_DIR` and
+`HOME`) and opens the picker 30+ times per mode:
+- 8 sessions and 24 windows;
+- 6 git repos (no `@branch` stamp, so the picker must find the branch), 4 plain
+  directories;
+- 3 agent panes and 12 zoxide entries.
+
+The picker is launched in a pane of that server with `OG_PICKER_TRACE=<file>`
+(`picker/trace.go`) and a launcher stamp `OG_PICKER_T0=$(date +%s%N)` taken in
+the pane's shell, so the numbers include the `date` fork (~1.5 ms) that a real
+popup does not pay. The trace has one line per milestone: `start` (Go runtime up,
+`initialModel` entered), `tmux` (chained read returned), `agent_panes`, `items`,
+`model`, `run` (before `p.Run`), `init`, `window_size`, `first_frame` (first
+`View()` with the list) and `paint`. `paint` is the first write to the tty after
+`first_frame`: the renderer flushes on a ticker, so `View()` returning is not a
+painted screen. The keypress-to-`display-popup` leg is tmux's and is not
+measured. `forks` counts `execve`s before `paint` with `strace -f`. Record
+`uptime` with every run: the host was at load 5–14 during these, and absolute
+numbers only compare within one reading. Use the raw `tmux-next` binary for the
+server, as a popup does: nixpkgs' `tmux` has no `show -F`, and the wrapper costs
+~2.8 ms a call.
+
+**Where 35 ms went (session mode, before).**
+
+| Segment | ms | What |
+| --- | --- | --- |
+| launch → `start` | 7.1 | `date` stamp (~1.5), exec, and lipgloss' package-init `tmux info` fork |
+| `start` → `tmux` | 7.5 | `tmux show -g`, then `tmux list-panes -a`: two forks, two server round-trips |
+| `run` → `init` | 5 | bubbletea's own `colorprofile.Detect`: a second `tmux info` fork before it starts the renderer |
+| `init` → `first_frame` | 3 | `WindowSizeMsg`, `Update`, `View()` |
+| `first_frame` → `paint` | 14 | waiting for the 60 fps flush tick (16.7 ms period) |
+
+Window mode added `list-sessions` and one `tmux list-panes` more, plus one
+`git branch --show-current` per window with no `@branch` (25 forks on the fixture),
+all before the first frame.
+
+**Fixes.**
+- **One chained read** (`picker/startup.go`). `show -g`, the pane snapshot and, in
+  window mode, the window rows and session activity go out as one tmux command
+  list, split on a `display-message -p` separator line. A failed list falls back to
+  the separate reads, which degrade one call at a time as before.
+- **Branches from `HEAD`, not `git`** (`picker/gitbranch.go`). `headBranch` walks up
+  from the pane's cwd like git's discovery and reads `HEAD`, following a linked
+  worktree's `gitdir:` file. It declines, and `git` is forked exactly as before, for
+  anything it is not sure git would answer identically: a discovery variable
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_CEILING_DIRECTORIES`,
+  `GIT_DISCOVERY_ACROSS_FILESYSTEM`) set, a bare-shaped directory, a repo owned by
+  another user (git's `safe.directory` refuses it; the work tree and the gitdir are both
+  checked), a symlinked directory (git discovers from the physical path), a gitdir without
+  `objects`/`refs` (or a worktree's `commondir`), a symlinked `HEAD`, or `HEAD` naming a
+  ref outside `refs/heads` or unrecognisable (reftable's placeholder included).
+  `TestHeadBranchAgreesWithGit` compares it with real git over worktrees, a
+  detached `HEAD` and subdirectories. The window picker's 1 s refresh calls the same
+  code, so it stops forking git per window every second too.
+- **`tea.WithFPS(120)`**. The first list frame paints at the next flush tick after it
+  is drawn; 120 is bubbletea's cap and halves the wait.
+- **`tea.WithColorProfile(lipgloss.Writer.Profile)`**. `lipgloss.Writer` already ran
+  `colorprofile.Detect(os.Stdout, os.Environ())` at package init; bubbletea repeats it
+  from `Run` with the same inputs, and both fork `tmux info` inside tmux. Passing the
+  first result drops the second fork, and the ticker starts that much sooner.
+
+**Result** (`OPENS=40`, two alternating rounds, ms; raw `tmux-next` 3.9; load
+average at start 5.3 / 6.5 / 6.2 / 5.7 for base / new / base / new):
+
+| | Before median | Before p95 | After median | After p95 |
+| --- | --- | --- | --- | --- |
+| session, first list frame drawn | 20.3–20.4 | 24.8–25.5 | 15.5–20.4 | 19.5–77.2 |
+| session, painted | 35.2 | 39.1–39.4 | 21.3–25.4 | 24.9–91.7 |
+| window, first list frame drawn | 41.1–42.9 | 47.5–50.5 | 16.8–26.6 | 22.6–49.2 |
+| window, painted | 58.1–60.1 | 65.5–68.2 | 23.1–31.5 | 28.1–52.5 |
+
+The "after" spread is round 2, which caught another worker's load spike (the
+`p95` of 77–92 ms is a few slow opens, `min` was 19.0 and 22.6). Round 1 is the
+cleaner pair: session 35.2 → 21.3 median, window 58.1 → 23.1.
+
+| Execs before the first paint (`strace -f`) | Before | After |
+| --- | --- | --- |
+| session mode | 6 (5 tmux) | 4 (3 tmux) |
+| window mode | 34 (8 tmux, 25 git) | 3 (2 tmux, 0 git) |
+
+The three remaining tmux execs in session mode are lipgloss' package-init `tmux
+info`, the chained read and the `list-panes` of the immediate refresh `Init` starts
+(window mode's `Init` starts no tmux read before its first frame).
+
+`--dump-first-frame` output is byte-identical before and after for both modes on the
+fixture (`OG_PICKER_DUMP_SIZE=140x40`), i.e. the same rows in the same order.
+
+### Key latency (keypress → repaint)
+
+`picker/keyprobe` is a control-mode client like `latencyprobe`: it sends `send-keys`
+into the picker's pane and times the first `%output` (`first`, the repaint the key
+caused) and the last one before 80 ms of silence (`settled`, which also covers a
+preview landing later). Samples start after a random 0–20 ms delay so they do not lock
+phase with the renderer's frame ticker. `tests/perf/picker-open-latency.sh keys` runs
+100 samples per scenario per mode, with 40-line previews in the fixture panes:
+`Down`/`Up` moves, typing and erasing a filter, and one toggle (`C-a` agent-only in
+session mode, `C-g` regroup in window mode). Two alternating rounds, ms, load average
+5–7:
+
+| Scenario (first paint of the key) | Before p50 | Before p95 | After p50 | After p95 |
+| --- | --- | --- | --- | --- |
+| session, move | 14.1–14.9 | 19.6–19.7 | 7.6–8.7 | 11.2–15.8 |
+| session, type a filter | 13.7–15.1 | 20.8–21.4 | 7.0–8.2 | 12.0–12.6 |
+| session, toggle | 14.7–16.7 | 19.6–37.7 | 7.2–7.6 | 11.1–11.5 |
+| window, move | 13.5–14.0 | 19.7–19.9 | 7.3–7.9 | 10.7 |
+| window, type a filter | 13.5–15.4 | 19.7–19.8 | 7.0–7.3 | 11.0–11.2 |
+| window, toggle (`settled`, it refetches) | 29.7–30.8 | 35.9–37.6 | 11.2–12.0 | 16.3–17.1 |
+
+A held key (16 moves at 30 Hz) is dominated by the 528 ms of key sends in both
+builds; the pane goes quiet ~10 ms after the last key before and after.
+
+**Where a key's time went.** `Update` for a move or a typed character is 1–3 µs
+(`BenchmarkUpdateDown`, `BenchmarkUpdateTypeAndErase`) and the 1 s refresh message
+3–16 µs; the preview capture is already an async `tea.Cmd`, never on the key loop. The
+cost was `View()`: 2.0 ms per frame, 75% of it lipgloss re-measuring every line of the
+frame (`BenchmarkView`), then the flush tick (up to 16.7 ms at 60 fps).
+
+| | Before | After |
+| --- | --- | --- |
+| `BenchmarkView` session / window | 1.98 / 2.10 ms, 12.8k / 14.2k allocs | 0.47 / 0.48 ms, 2.3k / 2.6k allocs |
+| flush tick | 60 fps | 120 fps |
+| window refresh (1 s tick, `ctrl+g`) | 3 tmux forks + one git per windowless-branch window | 1 tmux fork |
+| `capture-pane` forks in a 16-key burst | 19–20 | 16–17 |
+
+The throttle on preview captures (`previewThrottle`) saves little at a 30 Hz repeat
+(33 ms between keys against a 40 ms gap); it matters when keys arrive faster than a
+capture completes.
+
+**Tried and dropped.** Delaying `Init`'s commands (preview capture, refresh, zoxide,
+remote probe) by 20 ms until after the first paint moved the median by ~0.5 ms, inside
+the noise, so they still start at `Init`.
+
+**What is left, for a follow-up.**
+- lipgloss' package-init `tmux info` (~4 ms) runs before `main` and cannot be skipped
+  from inside the binary: it happens in a dependency's variable initialiser whenever
+  `TMUX` is set and stdout is a tty. Options: a `replace`d `colorprofile` that
+  answers from the already-chained read, or a launcher that hides `TMUX` from the
+  process until `main` and feeds the profile in from `tmux info` inside the chain.
+- The launcher's own `bash` start and `tmux display` (two forks, before the popup)
+  are outside this measurement.
+- Floor: `paint` cannot beat one 8.3 ms tick after the renderer starts.
+
+### Automated Go-level patches (gotorque)
+
+`picker --dump-first-frame [--windows]` is a hidden headless mode: the same data
+collection and model build as `--tui`, then the first list frame as plain text, no
+`tea.Cmd`. It is byte-identical before and after the changes above. It is the
+entrypoint for [gotorque](https://github.com/asaf-shitrit/gotorque) (MIT), whose
+acceptance rule wants deterministic stdout and a CLI it can A/B by wall time.
+`tests/perf/gotorque/picker-manifest.json` is the target manifest (its shape was checked
+against gotorque's schema file; `gotorque manifest validate` has not been run) and
+`tests/perf/gotorque-picker.sh [stub|live|print]` exports the picker module into a scratch
+git repo (this repo's root has no `go.mod`, and gotorque runs `go test ./...` there),
+starts the fixture with no agent panes (their staleness would change the frame
+mid-campaign) and runs `gotorque optimize`. gotorque is not vendored.
+
+**Not run in #874.** The auto-mode classifier denied building gotorque from a fresh
+clone, `OPENROUTER_API_KEY` was unset, and the dispatcher told the worker to skip the
+build. To run it:
+
+```bash
+git clone https://github.com/asaf-shitrit/gotorque && (cd gotorque && go build -o /tmp/gotorque ./cmd/gotorque)
+GOTORQUE=/tmp/gotorque tests/perf/gotorque-picker.sh stub   # pipeline check, no model
+OPENROUTER_API_KEY=... GOTORQUE=/tmp/gotorque tests/perf/gotorque-picker.sh live
+```
+
+The key-replay mode the user suggested as a second target was not added.
+
 ## What did not matter (measured)
 
 | Suspect | Measured |
