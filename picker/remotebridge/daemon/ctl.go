@@ -624,6 +624,8 @@ var verbs = map[string]verb{
 	// prints a job's stdout and, on a non-zero exit, a "returned N" line in view
 	// mode on that pane, and a view-mode overlay on a mirrored pane wedges the
 	// mirror — so the body discards theme-toggle's output and always exits 0.
+	// Nothing is lost by that: theme-toggle records a failed component in the
+	// remote's own theme-state.json (its `failed` list).
 	// A remote without theme-toggle (any headless host — it ships from the
 	// desktop profile) is therefore silent per call — Run()'s one-shot
 	// themeToggleAvailable probe (daemon.go) is what reports the absence, once

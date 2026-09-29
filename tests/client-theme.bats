@@ -174,13 +174,14 @@ no_pane_in_mode() {
 	return 1
 }
 
-# write_fake_toggle burst|fail -- a stand-in for nix-config's theme-toggle,
+# write_fake_toggle burst|fail [name] -- a stand-in for nix-config's
+# theme-toggle (name defaults to that; macOS ships it as theme-apply-macos),
 # which is not a tmux-og script. "burst" clears every @thm_* in a loop for ~3s,
 # sets the flavor and sources the conf with its output captured; "fail" clears,
 # sets the flavor and exits 1 without sourcing. Call after theme_setup: it
 # bakes in INNER_TMPDIR, and it never uses $TMUX.
 write_fake_toggle() {
-	local mode=$1 fake="$BATS_TEST_TMPDIR/bin/theme-toggle"
+	local mode=$1 fake="$BATS_TEST_TMPDIR/bin/${2:-theme-toggle}"
 	cat >"$fake" <<-EOF
 		#!/bin/sh
 		t() { TMUX_TMPDIR="$INNER_TMPDIR" "$TMUX_BIN" -L s "\$@"; }
@@ -375,11 +376,12 @@ write_fake_toggle() {
 	thm_bg_is '#eff1f5'
 }
 
-@test "report during a theme-toggle run: one reload, no overlay, catppuccin never fails" {
-	theme_setup
-	write_fake_toggle burst
+# Runs the fake toggle named $1 in the background, reports light meanwhile,
+# and asserts the deferral held: one reload, no overlay, catppuccin never failed.
+assert_report_deferred_to_toggle() {
+	write_fake_toggle burst "$1"
 
-	"$BATS_TEST_TMPDIR/bin/theme-toggle" &
+	"$BATS_TEST_TMPDIR/bin/$1" &
 	local toggle_pid=$!
 	report "$CLIENT1" light
 	wait "$toggle_pid"
@@ -395,6 +397,16 @@ write_fake_toggle() {
 	[ "$(($(reload_count) - BASELINE))" -eq 1 ]
 	flavor_is latte
 	thm_bg_is '#eff1f5'
+}
+
+@test "report during a theme-toggle run: one reload, no overlay, catppuccin never fails" {
+	theme_setup
+	assert_report_deferred_to_toggle theme-toggle
+}
+
+@test "report during a theme-apply-macos run (macOS name): one reload, no overlay" {
+	theme_setup
+	assert_report_deferred_to_toggle theme-apply-macos
 }
 
 @test "a failed theme-toggle reload is still recovered" {

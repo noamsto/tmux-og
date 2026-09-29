@@ -118,16 +118,17 @@ awaited inside `_run_updates_parallel`), so the hook then sees the wanted
 flavor with a loaded palette and does nothing (R4a covers a failed one).
 Detection lists this user's processes with `ps -U "$UID" -ww -o args=` (`-U` is
 the real-uid filter in both procps-ng and BSD `ps`; `-ww` keeps a long store
-path from being truncated) and matches
-an argv word ending in `theme-toggle` (`(^|[[:space:]/])theme-toggle([[:space:]]|$)`),
-because a shebang script's argv is `<interpreter> <path>/theme-toggle …` on
-Linux and macOS alike while its process name is not portable. `ps` is pinned by
-store path (`@ps@` → `${pkgs.procps}/bin/ps`, substituted in
+path from being truncated) and matches only when the executable is
+`theme-toggle` or `theme-apply-macos` (nix-config ships it under that name on
+macOS), either as argv[0] or as the script argument of a sh-family interpreter
+with optional flags (`bash -e <path>/theme-toggle …`), because a shebang
+script's argv is `<interpreter> <path>/<name> …` while its process name is not
+portable. A command that merely names it (`rg theme-toggle`) does not match.
+`ps` is pinned by store path (`@ps@` → `${pkgs.procps}/bin/ps`, substituted in
 `mkScriptClientTheme` like `@bash@`): the server's PATH is not guaranteed to
-carry one, and nixpkgs' darwin `procps` ships `ps` but no `pgrep`. A false
-match (an editor open on a file named `theme-toggle`) only delays the report
-to the deadline. The wait sits *before* the lock so a future theme-toggle that
-takes the same lock cannot deadlock against a hook job waiting on it.
+carry one, and nixpkgs' darwin `procps` ships `ps` but no `pgrep`. The wait sits
+*before* the lock so a future theme-toggle that takes the same lock cannot
+deadlock against a hook job waiting on it.
 
 - Rejected: a fixed settle delay before applying — timing, not ordering; a slow
   theme-toggle still overlaps.

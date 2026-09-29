@@ -58,12 +58,14 @@ any_local_client_attached_besides() {
 	return 1
 }
 
-# True while a theme-toggle process runs: matches the executable (first word,
-# or the script word after an interpreter), not any argv that mentions it.
+# True while a theme-toggle process runs: the executable is theme-toggle, or
+# theme-apply-macos (nix-config ships it under that name on macOS), either as
+# argv[0] or as the script argument of a sh-family interpreter (a shebang
+# script's argv), not any command that merely names it (`rg theme-toggle`).
 # Captured, not piped: under pipefail a `grep -q` that exits early SIGPIPEs ps
 # and the pipeline reports failure.
 theme_toggle_running() {
-	local out line re='^([^[:space:]]+[[:space:]]+)?([^[:space:]]*/)?theme-toggle([[:space:]]|$)'
+	local out line re='^(([^[:space:]]*/)?(ba|da|z)?sh[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?([^[:space:]]*/)?theme-(toggle|apply-macos)([[:space:]]|$)'
 	out=$("$ps_bin" -U "$UID" -ww -o args= 2>/dev/null) || return 1
 	while IFS= read -r line; do
 		[[ $line =~ $re ]] && return 0
