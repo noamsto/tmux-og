@@ -191,7 +191,9 @@ keystroke latency — the reason this spike exists at all.
   `tmux-window-nav`, `og-remote-*`): one fork per human action; 3 ms of
   interpreter start is invisible.
 - **Go TUI pickers** (`tmux-picker-generate`, splash, enrich card): already
-  compiled; Rust would only re-do them.
+  compiled; Rust would only re-do them. If one were ever ported, the Rust side
+  is rata&#x74;ui + crossterm, and since the Go pickers are Bubble Tea it is a
+  rewrite of the view and input layer, not a translation (§3 candidate E).
 - **`tmux-statusline` / `tmux-session-resources`**: already Go and already at
   the compiled floor (7.1 / 6.8 ms, of which ~6 ms is the one `tmux` round
   trip) [measured]. A Rust port saves on the order of the Go-runtime startup,
@@ -230,7 +232,7 @@ bash encodes years of accumulated edge-case fixes.
 | **B. Four bash `-B` pollers → one Go multicall binary** | `tmux-pr-enrich` (634) + `tmux-issue-stamp` (241) + `tmux-agent-usage` (158) + the `update-icons` sweep | **4–6 d** | Same language the repo already builds. Keeps the provider scripts (`-linear`, `-github`, `-claude`, …). Main work is preserving the per-server stamp suffixes, locks, and backfill caps. |
 | **C. Resident daemon replacing the `#()` + `-B` jobs** | A + B + a lifecycle | **10–15 d** | Real win (no per-tick exec, batched reads over one connection) but a new resident process per tmux server, with start/stop/failure semantics the hooks do not currently own. Independent of language. |
 | **D. Rust multi-toolchain infra (shared by A–C)** | flake + devShell + CI + `nix flake check` | **1.5–3 d** | Add Rust to `devShells.default`, a `cargoHash`ed `buildRustPackage` (or crane), `cargo test` in `nix flake check`, and the `aarch64-darwin` build. |
-| **E. Port all 52 scripts + 13 Go binaries to Rust** | ~10 k shell LOC + ~33 k Go LOC, all tests | **weeks–months** | No measured payoff; the Go binaries are already compiled. Not recommended. |
+| **E. Port all 52 scripts + 13 Go binaries to Rust** | ~10 k shell LOC + ~33 k Go LOC, all tests | **weeks–months** | No measured payoff; the Go binaries are already compiled. The TUIs (pickers, splash, enrich card) would be rebuilt on the Rust TUI stack named in §2.2 rather than translated from Bubble Tea, which is most of the range. Not recommended. |
 
 **Test-porting cost specifically.**
 
