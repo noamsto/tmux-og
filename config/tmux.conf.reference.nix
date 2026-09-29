@@ -341,8 +341,10 @@
   dragStockLines;
 
   dragBindTable = "og-bridge-drag";
+  floatDragTable = "og-float-drag";
   dragStartNote = "Resize or move a pane by its border";
   dragEndNote = "Route a mirror border drag to the remote";
+  floatDragEndNote = "Restamp a hand-resized float";
   # resize-pane -M (MouseDrag1Border) is the only stock drag that can reshape
   # a TILED pane, so it takes the mirror branch for any mirror pane. The
   # move-pane -M binds keep the float-only gate: cmd_join_pane_mouse_update
@@ -357,8 +359,11 @@
   dragStartBindLine = s:
     "bind-key -N '${dragStartNote}' -T ${s.table} ${s.key} if-shell -F -t = '${dragGate s}' { "
     + "set -F @og_bridge_drag '#{pane_id}' ; ${s.cmd} ; switch-client -T ${dragBindTable}"
+    + " } { if-shell -F -t = '#{pane_floating_flag}' { "
+    + "set -F @og_float_drag '#{pane_id}' ; ${s.cmd} ; switch-client -T ${floatDragTable}"
     + " } "
-    + menuQuote s.cmd;
+    + menuQuote s.cmd
+    + " }";
 
   # Same order as drags.go's dragLocations/dragModifiers.
   dragLocations = [
@@ -387,11 +392,13 @@
 
   dragEndBody = "run-shell \"${bridgeCtl} drag #{q:@og_bridge_drag}\"";
   dragEndBindLine = mod: loc: "bind-key -N '${dragEndNote}' -T ${dragBindTable} ${mod}MouseDragEnd1${loc} ${dragEndBody}";
+  floatDragEndBody = "run-shell -b \"${script.tmux-float-nudge}/bin/tmux-float-nudge #{q:@og_float_drag} stamp\"";
+  floatDragEndBindLine = mod: loc: "bind-key -N '${floatDragEndNote}' -T ${floatDragTable} ${mod}MouseDragEnd1${loc} ${floatDragEndBody}";
 
   dragBinds = lib.concatStringsSep "\n" (
     ["%if \"#{==:#{version},next-3.9}\""]
     ++ map dragStartBindLine dragStock
-    ++ lib.concatMap (loc: map (mod: dragEndBindLine mod loc) dragModifiers) dragLocations
+    ++ lib.concatMap (loc: lib.concatMap (mod: [(dragEndBindLine mod loc) (floatDragEndBindLine mod loc)]) dragModifiers) dragLocations
     ++ ["%endif"]
   );
 
@@ -698,11 +705,15 @@
     bind -N 'Copy pane path to clipboard' Y run-shell 'tmux display-message -p #{qs:pane_current_path} | wl-copy'
 
     # Resize panes. In a mirror window the resize lands on the remote pane and the
-    # mirror re-fits from the remote's new layout; -r still repeats.
-    bind -N 'Resize pane up' -r -T prefix M-Up    if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} U 5" } { resize-pane -U 5 }
-    bind -N 'Resize pane down' -r -T prefix M-Down  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} D 5" } { resize-pane -D 5 }
-    bind -N 'Resize pane left' -r -T prefix M-Left  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} L 5" } { resize-pane -L 5 }
-    bind -N 'Resize pane right' -r -T prefix M-Right if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} R 5" } { resize-pane -R 5 }
+    # mirror re-fits from the remote's new layout; -r still repeats. A local float
+    # takes the nudge script instead: upstream resize-pane on a float only grows it
+    # (no shrink flag) and never clamps, and @float_geom must be rewritten or the
+    # next tmux-float-refit reverts the user's size (#864). The tiled path keeps the
+    # stock command verbatim, so ordinary resizes still fork nothing.
+    bind -N 'Resize pane up' -r -T prefix M-Up    if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} U 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "${script.tmux-float-nudge}/bin/tmux-float-nudge #{q:pane_id} U 5" } { resize-pane -U 5 } }
+    bind -N 'Resize pane down' -r -T prefix M-Down  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} D 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "${script.tmux-float-nudge}/bin/tmux-float-nudge #{q:pane_id} D 5" } { resize-pane -D 5 } }
+    bind -N 'Resize pane left' -r -T prefix M-Left  if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} L 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "${script.tmux-float-nudge}/bin/tmux-float-nudge #{q:pane_id} L 5" } { resize-pane -L 5 } }
+    bind -N 'Resize pane right' -r -T prefix M-Right if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} resize #{q:@bridge_pane} R 5" } { if-shell -F '#{pane_floating_flag}' { run-shell -b "${script.tmux-float-nudge}/bin/tmux-float-nudge #{q:pane_id} R 5" } { resize-pane -R 5 } }
 
     # === Remote bridge: keys this config did NOT previously bind ===
     # Gating them means the config now owns them, so each else-branch reproduces

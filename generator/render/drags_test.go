@@ -32,19 +32,18 @@ func TestDragStartBinds(t *testing.T) {
 
 	wideGateCount := 0
 	for i, s := range dragStock {
-		head, word := trailingQuoted(t, rootLines[i])
-		if got, want := unquote(t, word), s.cmd; got != want {
-			t.Fatalf("%s %s: stock branch =\n%q\nwant\n%q", s.table, s.key, got, want)
-		}
 		gate := floatGate
 		if s.cmd == "resize-pane -M" {
 			gate = bridgeGate
 			wideGateCount++
 		}
 		want := "bind-key -N '" + dragStartNote + "' -T " + s.table + " " + s.key + " if-shell -F -t = '" + gate + "' { " +
-			"set -F @og_bridge_drag '#{pane_id}' ; " + s.cmd + " ; switch-client -T " + dragBindTable + " } "
-		if head != want {
-			t.Fatalf("%s %s: mirror branch =\n%q\nwant\n%q", s.table, s.key, head, want)
+			"set -F @og_bridge_drag '#{pane_id}' ; " + s.cmd + " ; switch-client -T " + dragBindTable +
+			" } { if-shell -F -t = '#{pane_floating_flag}' { " +
+			"set -F @og_float_drag '#{pane_id}' ; " + s.cmd + " ; switch-client -T " + floatDragTable +
+			" } " + tmuxDoubleQuote(s.cmd) + " }"
+		if rootLines[i] != want {
+			t.Fatalf("%s %s: bind =\n%q\nwant\n%q", s.table, s.key, rootLines[i], want)
 		}
 	}
 	if wideGateCount != 1 {
@@ -92,6 +91,43 @@ func TestDragEndTableComplete(t *testing.T) {
 	for k := range wantKeys {
 		if !gotKeys[k] {
 			t.Fatalf("missing key %q", k)
+		}
+	}
+}
+
+func TestFloatDragEndTableComplete(t *testing.T) {
+	p := keysPaths()
+	lines := strings.Split(dragBinds(p), "\n")
+	prefix := "bind-key -N '" + floatDragEndNote + "' -T " + floatDragTable + " "
+
+	var endLines []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, prefix) {
+			endLines = append(endLines, l)
+		}
+	}
+	if want := len(dragLocations) * len(dragModifiers); len(endLines) != want {
+		t.Fatalf("%d og-float-drag binds, want %d", len(endLines), want)
+	}
+
+	wantBody := `run-shell -b "` + p.Scripts["tmux-float-nudge"] + ` #{q:@og_float_drag} stamp"`
+	gotKeys := map[string]bool{}
+	for _, l := range endLines {
+		rest := strings.TrimPrefix(l, prefix)
+		key, body, ok := strings.Cut(rest, " ")
+		if !ok {
+			t.Fatalf("malformed og-float-drag bind: %q", l)
+		}
+		if body != wantBody {
+			t.Fatalf("%s: body = %q, want %q", key, body, wantBody)
+		}
+		gotKeys[key] = true
+	}
+	for _, loc := range dragLocations {
+		for _, mod := range dragModifiers {
+			if k := mod + "MouseDragEnd1" + loc; !gotKeys[k] {
+				t.Fatalf("missing key %q", k)
+			}
 		}
 	}
 }

@@ -153,6 +153,10 @@ func listKeysRows() ([]whichKeyRow, error) {
 // shows them, its contract being the verbatim list-keys dump.
 const bridgeDragTable = "og-bridge-drag"
 
+// floatDragTable is drags.go's second drag-end table (#864), same shape: the
+// rows it stashes a local float's id in so a drag end can restamp its geometry.
+const floatDragTable = "og-float-drag"
+
 // parseListKeysRows turns whichKeyListFormat output into rows. Split from the
 // exec so the parsing is testable without a live server.
 func parseListKeysRows(out string) []whichKeyRow {
@@ -167,7 +171,7 @@ func parseListKeysRows(out string) []whichKeyRow {
 		if len(parts) != 5 || parts[4] == "" {
 			continue
 		}
-		if parts[0] == bridgeDragTable {
+		if parts[0] == bridgeDragTable || parts[0] == floatDragTable {
 			continue
 		}
 		// #{key_prefix} renders the prefix key for every table, not just the

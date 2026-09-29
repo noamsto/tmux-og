@@ -69,16 +69,17 @@ func TestParseListKeysRows(t *testing.T) {
 	})
 
 	t.Run("og-bridge-drag table is skipped", func(t *testing.T) {
-		// The generator's drag-end table (#797) is 160 mouse rows no one
+		// The generator's drag-end tables (#797, #864) are mouse rows no one
 		// picks from a menu; only the raw ctrl+r dump (listKeysRaw) still
 		// shows them verbatim.
 		out := strings.Join([]string{
 			"og-bridge-drag|`||run-shell \"og-remote-bridge-ctl drag\"|MouseDragEnd1Pane",
+			"og-float-drag|`||run-shell -b \"tmux-float-nudge stamp\"|MouseDragEnd1Border",
 			`prefix|C-a |1|Pick session|s`,
 		}, "\n")
 		rows := parseListKeysRows(out)
 		if len(rows) != 1 {
-			t.Fatalf("len(rows) = %d, want 1 (og-bridge-drag row skipped)", len(rows))
+			t.Fatalf("len(rows) = %d, want 1 (og-bridge-drag and og-float-drag rows skipped)", len(rows))
 		}
 		if rows[0].table != "prefix" {
 			t.Errorf("rows[0].table = %q, want %q", rows[0].table, "prefix")

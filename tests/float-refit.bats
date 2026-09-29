@@ -142,6 +142,45 @@ make_float() {
 	[ "$before" = "$after" ]
 }
 
+@test "skips a stamped float already current for this window size (no re-stamp)" {
+	make_float
+	tmux set -p -t "$FLOAT" @float_geom '90% 90% 5% 5%'
+	tmux set -p -t "$FLOAT" @float_refit_size '80x24'
+	local before stamp_before
+	before="$(tmux display-message -p -t "$FLOAT" '#{pane_width}x#{pane_height}+#{pane_left}+#{pane_top}')"
+	stamp_before="$(tmux display-message -p -t "$FLOAT" '#{@float_geom}')"
+
+	bash scripts/tmux-float-refit.sh "$WIN"
+
+	# A float the nudge already stamped for this window size is left exactly as
+	# the user left it: geometry and @float_geom byte-identical.
+	[ "$(tmux display-message -p -t "$FLOAT" '#{pane_width}x#{pane_height}+#{pane_left}+#{pane_top}')" = "$before" ]
+	[ "$(tmux display-message -p -t "$FLOAT" '#{@float_geom}')" = "$stamp_before" ]
+	[ "$(tmux display-message -p -t "$FLOAT" '#{@float_refit_size}')" = '80x24' ]
+}
+
+@test "a stale sibling does not refit a current float" {
+	# First float: current for this window size, but its actual geometry does
+	# not match what its stamp would resolve to. A refit must leave it alone.
+	make_float
+	local current="$FLOAT"
+	tmux set -p -t "$current" @float_geom '50% 50% 5% 5%'
+	tmux set -p -t "$current" @float_refit_size '80x24'
+	local before
+	before="$(tmux display-message -p -t "$current" '#{pane_width}x#{pane_height}+#{pane_left}+#{pane_top}')"
+
+	# Second float: stale, so the run forks and would refit every stamped float
+	# without the per-pane skip.
+	make_float
+	local second
+	second="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}' | tail -1)"
+	tmux set -p -t "$second" @float_geom '90% 90% 5% 5%'
+
+	bash scripts/tmux-float-refit.sh "$WIN"
+
+	[ "$(tmux display-message -p -t "$current" '#{pane_width}x#{pane_height}+#{pane_left}+#{pane_top}')" = "$before" ]
+}
+
 @test "window with only tiled panes: exits 0 and does nothing" {
 	tmux split-window -t "$WIN"
 
