@@ -81,8 +81,13 @@ func main() {
 	buf := drainbuf.New(maxBufferedBytes)
 	go readStdin(buf)
 
+	// The sample ticker runs only while the debouncer has a mark pending
+	// (tickC is nil otherwise), so an idle pane costs no wakeups. Ownership is
+	// still checked on the geometry tick while idle.
 	ticker := time.NewTicker(debounceWindow / 2)
+	ticker.Stop()
 	defer ticker.Stop()
+	var tickC <-chan time.Time
 	liveness := time.NewTicker(livenessInterval)
 	defer liveness.Stop()
 	geometry := time.NewTicker(geometryInterval)
@@ -109,14 +114,18 @@ func main() {
 					reseed()
 				}
 				deb.Mark(time.Now())
+				if tickC == nil {
+					ticker.Reset(debounceWindow / 2)
+					tickC = ticker.C
+				}
 			}
 			if closed {
 				emitIfOwner(watcherRegDir, paneID, myPID, scr, m, w) // final snapshot on EOF
 				return
 			}
-		case <-ticker.C:
-			// A local file read, no fork, so this rides the existing hot
-			// ticker rather than waiting on the coarse liveness probe below.
+		case <-tickC:
+			// A local file read, no fork, so this rides the hot ticker rather
+			// than waiting on the coarse liveness probe below.
 			// Neither removes the registry file (by now it's the new
 			// watcher's, not ours — deleting it would make the new watcher
 			// self-evict on its own next check) nor emits (see emitIfOwner).
@@ -125,6 +134,10 @@ func main() {
 			}
 			if deb.Due(time.Now()) {
 				emit(scr, m, w)
+			}
+			if !deb.Pending() {
+				ticker.Stop()
+				tickC = nil
 			}
 		case <-geometry.C:
 			if !stillOwner(watcherRegDir, paneID, myPID) {
