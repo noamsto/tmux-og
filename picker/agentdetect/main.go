@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -42,9 +43,15 @@ const (
 	// the parser (feedSafe re-seeds) or silently clamps the rows where the
 	// idle signal lives (#251).
 	geometryInterval = 5 * time.Second
+	// One watcher runs per agent pane, each with a handful of goroutines.
+	// Left at NumCPU, every watcher gets a P, GC worker and thread per core;
+	// 4 matches NumCPU's throughput on the replay benchmark at less total
+	// CPU, while 2 was measurably slower.
+	maxProcs = 4
 )
 
 func main() {
+	runtime.GOMAXPROCS(maxProcs)
 	if len(os.Args) < 2 {
 		return
 	}
