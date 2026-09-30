@@ -2426,6 +2426,35 @@
               touch $out
             '';
 
+          # The newborn-agent repaint nudge (#883), end to end: the birth-stamp
+          # hooks, the sweep's claim and tmux-agent-repaint, all driven by the
+          # real @og-sweep-tick monitor hook of the built wrapper. Enrich and
+          # agent-usage off for the contention reason rename-bind-integration-
+          # tests spells out above; the sweep is the hook under test.
+          agent-repaint-integration-tests = let
+            agentRepaintTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "agent-repaint-integration-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
+              TMUX_BIN = "${agentRepaintTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/agent-repaint-integration.bats
+              touch $out
+            '';
+
           # A keypress AND a right-click, not the conf text: tmux's own default
           # menus, re-bound on a mirror window (#769), driven for real through
           # the same attached-client + recording-stub harness as

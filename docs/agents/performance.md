@@ -250,6 +250,20 @@ closure: the grid path's only remaining gap is the final stamp
 residual (now narrower) window remains alongside genuine resize-driven
 refits.
 
+## Newborn-agent birth stamp and repaint nudge (#883)
+
+The three creation-time `@og_birth_size`
+stamps (`set -pF` on `after-new-window[30]`, `after-split-window[30]`,
+`after-new-session[30]`) run in-process with no fork, once per pane creation.
+The sweep adds two format fields per row (`@og_birth_size`, `@og_birth_seen`)
+and one tmux call (the claim) per
+newborn agent pane in its life. The nudge forks no refit: its zoom is skipped
+by the grid gate and unzoom restores the exact signature, and the single-pane
+`resize-window` pair hits no gated refit fork (no `@crew_grid`, no floats).
+The sweep also spends one `set -p` per sweep on each stamped non-agent pane
+for at most ~60 s (the `@og_birth_seen` grace counter that drops the stamp),
+so a shell pane costs at most 12 small tmux calls in its life.
+
 ## Daemon window reconcile (#808)
 
 After #793, churn's remaining tail was the Go daemon. A mirrored window add
