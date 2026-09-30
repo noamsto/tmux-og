@@ -26,7 +26,9 @@ done
 # option chain rather than `show -gv` picks the same values. The client's window
 # id rides along: it is needed after the popup to tell "the popup's host window
 # was destroyed" from "the picker failed" (#884), and a separate read before
-# first paint would only add a fork to that queue.
+# first paint would only add a fork to that queue. It is only kept when
+# `--client` pinned the popup's window — without it the popup lands in whatever
+# window tmux resolves for `-t`, which the pre-paint read cannot name.
 HOST_ARGS=()
 [[ -n $CLIENT ]] && HOST_ARGS=(-t "$CLIENT")
 OPTS=$(tmux display -p "${HOST_ARGS[@]}" '#{@thm_overlay_1}|#{@picker_layout}|#{window_id}' 2>/dev/null || true)
@@ -37,9 +39,10 @@ REST=${OPTS#*|}
 # a popup can't be resized after creation, so the height is chosen here.
 HEIGHT=85%
 [[ ${REST%%|*} == list ]] && HEIGHT=60%
-HOST_WINDOW=${REST#*|}
-# No `|` left means tmux gave us fewer fields than asked (it failed, or -t was
-# empty in a client-less context): no host window to check, guard stays off.
+HOST_WINDOW=""
+[[ -n $CLIENT ]] && HOST_WINDOW=${REST#*|}
+# A failed `display` returns fewer fields, so `${REST#*|}` is REST itself and no
+# window was reported: leave the guard off rather than trust a bogus id.
 [[ $HOST_WINDOW == "$REST" ]] && HOST_WINDOW=""
 # Pin the client: unpinned, tmux re-resolves to the session's most-recently-active
 # client, which on a bridged host can be the tty-less control client (#346,
@@ -61,11 +64,12 @@ set -e
 # under it — the picker killing the session it was opened from, or the window
 # closing. That is a completed kill, not a picker failure, and printing
 # `returned 129` on the binding is the bug (#884). Suppress it only when the
-# host window is really gone: a non-zero exit with the window still there is a
-# genuine picker failure and must still reach run-shell. TOCTOU: a real failure
-# that happens to coincide with the window vanishing is swallowed too; telling
-# them apart would need a marker the picker writes, more machinery than the bug
-# is worth.
+# host window is really gone (a `list-windows` that fails because the server
+# itself went away counts as gone): a non-zero exit with the window still there
+# is a genuine picker failure and must still reach run-shell. TOCTOU: a real
+# failure that happens to coincide with the window vanishing is swallowed too;
+# telling them apart would need a marker the picker writes, more machinery than
+# the bug is worth.
 if [[ -n $HOST_WINDOW ]] && ((rc != 0)) &&
 	! tmux list-windows -a -F '#{window_id}' 2>/dev/null | grep -Fqx "$HOST_WINDOW"; then
 	exit 0

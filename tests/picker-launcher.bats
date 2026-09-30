@@ -106,6 +106,12 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	[ "$status" -eq 4 ]
 }
 
+@test "session picker: without --client no exit is suppressed" {
+	launcher="$(mk_launcher tmux-session-picker.sh)"
+	run env FAKE_POPUP_RC=129 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@2' bash "$launcher"
+	[ "$status" -eq 129 ]
+}
+
 @test "session picker: --client foo pins the popup's client and window" {
 	launcher="$(mk_launcher tmux-session-picker.sh)"
 	bash "$launcher" --client foo
