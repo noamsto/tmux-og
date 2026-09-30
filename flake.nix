@@ -2135,6 +2135,9 @@
               # float-refit-tests above (nixpkgs' stock tmux advertises but
               # rejects these new-pane flags at parse time).
               nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              # the drawn-flip test runs the real reflow, which measures display width.
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests

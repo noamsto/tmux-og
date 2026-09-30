@@ -204,10 +204,10 @@ func TestWindowLabelValidation(t *testing.T) {
 			t.Errorf("field %d: markup value = %q, want it stripped and kept", f, got)
 		}
 	}
-	for _, f := range []int{15, 16, 20, 21} {
+	for f, limit := range map[int]int{15: labelTitleMaxRunes, 16: labelTitleMaxRunes, 20: labelTextMaxRunes, 21: labelTitleMaxRunes} {
 		got := []rune(rowField(t, oneRow(t, f, strings.Repeat("x", 300)), f))
-		if len(got) != labelTextMaxRunes {
-			t.Errorf("field %d capped to %d runes, want %d", f, len(got), labelTextMaxRunes)
+		if len(got) != limit {
+			t.Errorf("field %d capped to %d runes, want %d", f, len(got), limit)
 		}
 	}
 

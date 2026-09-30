@@ -157,19 +157,22 @@ has_zoom=0
 # window option in the template, so only the name is pulled here (for width).
 # @window_has_agent (#671) is a closed "1"/"" token, same shape, so it sits
 # right beside @crew_name — it gates the non-bridge crew badge below.
+# @window_label_clipped (#885, the last reflow's stamp, read back only to skip
+# an unchanged write) is the same closed token and follows it.
 # @bridge_win/window_name sit after it: bridge_win is "1" or empty, and a
 # window_name containing '|' is no worse off here than at the very end.
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_label_clipped}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
-declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw
+declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
 crew_colw=0 # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wai bridge bid brest bpr bcrew wname bname wtask; do
+while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wclip wai bridge bid brest bpr bcrew wname bname wtask; do
 	indices+=("$idx")
+	win_clip_prev[$idx]="$wclip"
 	# The zoom marker (" 󰁌", 2 cells) is emitted inline by LABEL_Z on zoomed
 	# windows; carve it from that window's label budget so its grid slot stays
 	# colw wide (mirrors the crew badge). has_zoom reserves the same 2 cells in
@@ -378,7 +381,7 @@ read -ra clipped_rests <<<"$REPLY_RESTS"
 # window's column exactly. The PR segment is padded to its own shared column.
 # Single-line mode renders full names via the global format off @window_label_id
 # / @window_label_rest_*, so it leaves everything here unpadded.
-declare -A win_disp win_pr_glyph win_pr_num win_pr_pad win_id_disp
+declare -A win_disp win_pr_glyph win_pr_num win_pr_pad win_id_disp win_clip
 for pos in "${!indices[@]}"; do
 	idx=${indices[$pos]}
 	if [[ $labels_mode == long ]]; then
@@ -403,6 +406,8 @@ for pos in "${!indices[@]}"; do
 			cur_rest="$REPLY"
 		fi
 		win_disp[$idx]="$cur_rest"
+		win_clip[$idx]=""
+		[[ $cur_rest == "${win_rest_long[$idx]}" ]] || win_clip[$idx]=1
 		continue
 	fi
 
@@ -443,6 +448,8 @@ for pos in "${!indices[@]}"; do
 		truncate_to_width "$cur_rest" "$rest_avail"
 		cur_rest="$REPLY"
 	fi
+	win_clip[$idx]=""
+	[[ ${cur_id}${cur_rest} == "${win_id[$idx]}${win_rest_long[$idx]}" ]] || win_clip[$idx]=1
 	measure_display_width "$cur_rest"
 	pad_to_width "$cur_rest" "$REPLY_DW" "$rest_avail"
 	win_disp[$idx]="$REPLY"
@@ -494,6 +501,14 @@ declare -a tmux_cmds=()
 # global format; @window_label_id_disp is the grid's copy, clipped to the column.
 for idx in "${indices[@]}"; do
 	target="${SESSION}:${idx}"
+	clip_argv=()
+	if [[ ${win_clip[$idx]} != "${win_clip_prev[$idx]}" ]]; then
+		if [[ -n ${win_clip[$idx]} ]]; then
+			clip_argv=(';' set -w -t "$target" @window_label_clipped 1)
+		else
+			clip_argv=(';' set -wu -t "$target" @window_label_clipped)
+		fi
+	fi
 	tmux \
 		set -w -t "$target" @window_label_short "${win_short[$idx]}" ';' \
 		set -w -t "$target" @window_label_id "${win_id[$idx]}" ';' \
@@ -505,7 +520,8 @@ for idx in "${indices[@]}"; do
 		set -w -t "$target" @window_pr_glyph "${win_pr_glyph[$idx]}" ';' \
 		set -w -t "$target" @window_pr_num "${win_pr_num[$idx]}" ';' \
 		set -w -t "$target" @window_pr_pad "${win_pr_pad[$idx]}" ';' \
-		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}"
+		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" \
+		"${clip_argv[@]}"
 done
 
 # Split points and status line count

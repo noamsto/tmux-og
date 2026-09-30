@@ -80,6 +80,9 @@ AEYE='#{||:#{@claude_img_src},#{m:*/bin/aeye *,#{pane_start_command}}}'
 # so it still shows the title; hidden panes in a grid are simply never drawn.
 ANCHOR='#{&&:#{&&:#{pane_at_top},#{pane_at_left}},#{!:#{pane_floating_flag}}}'
 TITLE_RAW='#{@window_label_id}#{@window_label_rest_long}'
+# The status label already spells the title out; the border repeats it only
+# when reflow stamped the label as clipped.
+TITLE_SHOWN="#{?@window_label_clipped,${TITLE_RAW},}"
 CODENAME='#{?@bridge_win,#{@bridge_crew_name},#{?@window_has_agent,#{@crew_name},}}'
 
 WATCHDOG="#{?#{==:#{@crew_source},watchdog}, (watchdog),}"
@@ -101,7 +104,7 @@ W="#{?#{e|<|:${W_RAW},1},1,${W_RAW}}"
 # Segments join with " · ", each present only when non-empty.
 NAME_SEG="#{?${CODENAME},#[bold]${CODENAME}#[nobold],}"
 STATE_SEG="#{?${LEAD_STATE},#{?${CODENAME}, · ,}${LEAD_STATE},}"
-TITLE_SEG="#{?${TITLE_RAW},#{?#{||:${CODENAME},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_RAW}},}"
+TITLE_SEG="#{?${TITLE_SHOWN},#{?#{||:${CODENAME},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_SHOWN}},}"
 
 FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ #{@pane_label} ━━}"
 AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ aeye ━━}"
@@ -110,7 +113,7 @@ ANCHOR_BRANCH="━━ ${NAME_SEG}${STATE_SEG}${TITLE_SEG} ━━"
 PLAIN_BRANCH="#{?#{&&:#{pane_active},#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}"
 
 ROLE_COND="#{&&:#{!=:${ROLE_NAME},},#{!=:${ROLE_NAME},lead}}"
-ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_RAW},},#{!=:${CODENAME},}}}"
+ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_SHOWN},},#{||:#{!=:${CODENAME},},#{&&:#{!=:${TITLE_RAW},},#{!=:${LEAD_STATE},}}}}}"
 
 tmux setw -g pane-border-format \
 	"#{?@pane_label,${FLOAT_BRANCH},#{?${AEYE},${AEYE_BRANCH},#{?${ROLE_COND},${ROLE_BRANCH},#{?${ANCHOR_COND},${ANCHOR_BRANCH},${PLAIN_BRANCH}}}}}"

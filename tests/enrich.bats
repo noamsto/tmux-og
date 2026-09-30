@@ -66,15 +66,23 @@ setup() {
 	[ -z "$REPLY" ]
 }
 
-@test "sanitize_title: strips CR/LF and truncates to 50" {
+@test "sanitize_title: strips CR/LF" {
 	sanitize_title "$(printf 'Add foo\r\nbar baz')"
 	[ "$REPLY" = "Add foobar baz" ]
 }
 
-@test "sanitize_title: hard-truncates long titles to 50 chars" {
-	local long="123456789012345678901234567890123456789012345678901234567890"
+@test "sanitize_title: hard-truncates long titles to 256 chars" {
+	local long
+	printf -v long '%0300d' 0
 	sanitize_title "$long"
-	[ "${#REPLY}" -eq 50 ]
+	[ "${#REPLY}" -eq 256 ]
+}
+
+@test "sanitize_title: keeps a 120-char title whole" {
+	local title
+	printf -v title '%0120d' 0
+	sanitize_title "$title"
+	[ "$REPLY" = "$title" ]
 }
 
 @test "sanitize_title: strips ESC control char" {

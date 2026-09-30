@@ -486,3 +486,87 @@ stamp_mirror() {
 	measure_display_width "$(tmux show -wv -t S:2 @window_label_disp)"
 	[ "$REPLY_DW" -eq "$wide" ]
 }
+
+# @window_label_clipped (#885): the pane border repeats the title only when the
+# status label is trimmed. The border is resolved through the real theme script
+# and the real reflow; @issue_title is set directly, so these tests do not
+# cover the stamp-time title cap.
+#
+# This check runs stock pkgs.tmux, where #{pane_floating_flag} expands empty, so
+# the border's ANCHOR condition still holds for the lone pane.
+#
+# Width arithmetic (MAX_ICONS=5 -> slot_overhead 21; id "G #885" = 6 cells;
+# the 130-char title plus its leading space = 131): S:0 = 6+131+21 = 158 cells.
+# Each extra window with a 60-char branch = 81 cells, plus 3 per separator. A
+# single-line row has width-5 cells available. At 400 (395 available) S:0 alone
+# fits whole; S:0 plus three extras needs 158+3*81+3*3 = 410 and cannot.
+TITLE130="w001-w002-w003-w004-w005-w006-w007-w008-w009-w010-w011-w012-w013-w014-w015-w016-w017-w018-w019-w020-w021-w022-w023-w024-w025-w026-"
+BRANCH60="feat/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+# The border text S:0 draws, with #[...] style directives stripped.
+border_text() {
+	tmux -u display-message -p -t S:0 -F "$BORDER_FMT" | sed -e 's/#\[[^]]*\]//g'
+}
+
+setup_border_title() {
+	local v
+	for v in thm_crust thm_teal thm_yellow thm_surface_1; do
+		tmux set -g "@$v" "#000000"
+	done
+	bash scripts/tmux-apply-theme-colors.sh
+	BORDER_FMT=$(tmux -u show -gv pane-border-format)
+	[ -n "$BORDER_FMT" ]
+}
+
+@test "the border carries the title only while the status label is clipped" {
+	[ "${#TITLE130}" -eq 130 ]
+	[ "${#BRANCH60}" -eq 60 ]
+	setup_border_title
+	tmux set -wq -t S:0 @branch feat/885-x
+	tmux set -wq -t S:0 @issue_branch feat/885-x
+	tmux set -wq -t S:0 @issue_provider github
+	tmux set -wq -t S:0 @issue_id "#885"
+	tmux set -wq -t S:0 @issue_title "$TITLE130"
+
+	# (a) the row fits whole: no stamp, plain bar.
+	bash "$REFLOW" S 400 --force >/dev/null 2>&1
+	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
+	[ "$(border_text)" = "━━━━━" ]
+
+	# (b) same title, narrower row: clipped, and the border holds the whole
+	# title, past the 50 chars the status label can keep here.
+	bash "$REFLOW" S 90 --force >/dev/null 2>&1
+	[ "$(tmux -u show -wv -t S:0 @window_label_clipped)" = 1 ]
+	local border disp
+	border=$(border_text)
+	disp=$(tmux -u show -wv -t S:0 @window_label_disp)
+	[[ $border == *"${TITLE130:50}"* ]]
+	[ "${#border}" -gt "${#disp}" ]
+
+	# (c) back to a fitting width: stamp removed, plain bar again.
+	bash "$REFLOW" S 400 --force >/dev/null 2>&1
+	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
+	[ "$(border_text)" = "━━━━━" ]
+
+	# (d) window-count flip at a constant width.
+	local i
+	for i in 1 2 3; do
+		tmux new-window -d
+		tmux set -wq -t "S:$i" @branch "$BRANCH60-$i"
+	done
+	bash "$REFLOW" S 400 --force >/dev/null 2>&1
+	[ "$(tmux -u show -wv -t S:0 @window_label_clipped)" = 1 ]
+	for i in 1 2 3; do tmux kill-window -t "S:$i"; done
+	bash "$REFLOW" S 400 --force >/dev/null 2>&1
+	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
+}
+
+@test "a mirror window's clipped stamp follows the width" {
+	stamp_mirror 0 "G #9" " $TITLE130" ""
+
+	bash "$REFLOW" S 60 --force >/dev/null 2>&1
+	[ "$(tmux -u show -wv -t S:0 @window_label_clipped)" = 1 ]
+
+	bash "$REFLOW" S 400 --force >/dev/null 2>&1
+	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
+}

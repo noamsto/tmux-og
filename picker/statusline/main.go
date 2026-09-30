@@ -257,9 +257,9 @@ func sessionSegment(a args, prefixActive bool) string {
 			// own leading space in this arm. No separator here would double
 			// either.
 			b.WriteString("#[fg=" + a.thmBlue + ",bold]" + a.bridgeLabelID +
-				"#[fg=" + a.thmText + ",nobold]" + a.bridgeLabelRestLong)
+				"#[fg=" + a.thmText + ",nobold]" + clipRunes(a.bridgeLabelRestLong, line0MirrorRestRunes))
 		case a.bridgeLabelRestLong != "":
-			b.WriteString("#[fg=" + a.thmBlue + ",bold]" + a.iconBranch + " " + a.bridgeLabelRestLong)
+			b.WriteString("#[fg=" + a.thmBlue + ",bold]" + a.iconBranch + " " + clipRunes(a.bridgeLabelRestLong, line0BranchRunes))
 		}
 		return b.String()
 	}
@@ -282,7 +282,7 @@ func sessionSegment(a args, prefixActive bool) string {
 			glyph = a.iconLinear
 		}
 		b.WriteString("#[fg=" + a.thmBlue + ",bold]" + glyph + " " + a.issueID +
-			" #[fg=" + a.thmText + ",nobold]" + a.issueTitle)
+			" #[fg=" + a.thmText + ",nobold]" + clipRunes(a.issueTitle, line0TitleRunes))
 	} else {
 		b.WriteString("#[fg=" + a.thmBlue + ",bold]" + a.iconBranch + " " +
 			branchDisplay(a.branch, a.panePath))
@@ -497,4 +497,19 @@ func main() {
 		writeLastGood(statuslineCacheDir(), a.session, line)
 	}
 	_, _ = os.Stdout.WriteString(line + "\n")
+}
+
+// Line 0 keeps the title widths it had before titles stopped being cut at 50
+// (stamp) and 120 (daemon); the full title now reaches the pane border instead.
+const (
+	line0TitleRunes      = 50
+	line0MirrorRestRunes = line0TitleRunes + 1 // the rest's leading space
+	line0BranchRunes     = 120
+)
+
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
