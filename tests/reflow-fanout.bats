@@ -473,7 +473,7 @@ stamp_mirror() {
 	done
 	tmux set -wq -t S:2 @branch "feat/short"
 
-	bash "$REFLOW" S 200 --force >&3 2>&3
+	bash "$REFLOW" S 160 --force >/dev/null 2>&1
 
 	[ "$(tmux show -v -t S @window_per)" = 2 ]
 	# shellcheck source=/dev/null
