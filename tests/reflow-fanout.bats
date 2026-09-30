@@ -473,7 +473,7 @@ stamp_mirror() {
 	done
 	tmux set -wq -t S:2 @branch "feat/short"
 
-	bash "$REFLOW" S 160 --force >/dev/null 2>&1
+	bash "$REFLOW" S 200 --force >&3 2>&3
 
 	[ "$(tmux show -v -t S @window_per)" = 2 ]
 	# shellcheck source=/dev/null
@@ -568,5 +568,59 @@ setup_border_title() {
 	[ "$(tmux -u show -wv -t S:0 @window_label_clipped)" = 1 ]
 
 	bash "$REFLOW" S 400 --force >/dev/null 2>&1
+	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
+}
+
+@test "the grid stamps the clipped window only when its column cuts the label" {
+	tmux set -wq -t S:0 @branch feat/885-x
+	tmux set -wq -t S:0 @issue_branch feat/885-x
+	tmux set -wq -t S:0 @issue_provider github
+	tmux set -wq -t S:0 @issue_id "#885"
+	tmux set -wq -t S:0 @issue_title "$TITLE130"
+	local i
+	for i in 1 2 3 4 5 6; do
+		tmux new-window -d
+		tmux set -wq -t "S:$i" @branch "feat/s$i"
+	done
+	# Wider than the column the grid gives it, so the column cuts it.
+	tmux set -wq -t S:3 @branch "${BRANCH60}z"
+
+	bash "$REFLOW" S 160 --force >/dev/null 2>&1
+
+	# Long-mode multi-row grid: a short label is never clipped here (short mode
+	# always is), and the split proves the second row exists.
+	[ "$(tmux show -v -t S @labels_mode)" = long ]
+	[ "$(tmux show -v -t S @window_split)" != 999 ]
+	# Title cut by its column, and branch cut by its column.
+	[ "$(tmux -u show -wv -t S:0 @window_label_clipped)" = 1 ]
+	[ "$(tmux -u show -wv -t S:3 @window_label_clipped)" = 1 ]
+	# Full label fits its column.
+	for i in 1 2 4 5 6; do
+		[ -z "$(tmux -u show -wv -t "S:$i" @window_label_clipped)" ]
+	done
+}
+
+@test "the grid stamps a window whose identity alone is clipped by its column" {
+	# No title and no branch: the rest is empty, so only the clipped id differs
+	# from the full label. Columns floor at the id width, so this is reachable
+	# only in the short-mode grid.
+	tmux set -wq -t S:0 @branch x
+	tmux set -wq -t S:0 @issue_branch x
+	tmux set -wq -t S:0 @issue_provider github
+	tmux set -wq -t S:0 @issue_id "#1234567890123456789012345"
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10 11; do
+		tmux new-window -d
+		tmux set -wq -t "S:$i" @branch "feat/some-long-branch-name-number-$i-aaaaaaaaaaaaaaaaaaaaaaaa"
+	done
+
+	bash "$REFLOW" S 120 --force >/dev/null 2>&1
+	[ "$(tmux show -v -t S @labels_mode)" = short ]
+	[ "$(tmux show -v -t S @window_split)" != 999 ]
+	[ "$(tmux -u show -wv -t S:0 @window_label_id_disp)" != "$(tmux -u show -wv -t S:0 @window_label_id)" ]
+	[ "$(tmux -u show -wv -t S:0 @window_label_clipped)" = 1 ]
+
+	bash "$REFLOW" S 160 --force >/dev/null 2>&1
+	[ "$(tmux -u show -wv -t S:0 @window_label_id_disp)" = "$(tmux -u show -wv -t S:0 @window_label_id)" ]
 	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
 }

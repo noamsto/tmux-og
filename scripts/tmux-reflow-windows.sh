@@ -149,6 +149,9 @@ has_zoom=0
 # read drops any extra delimiters into the final field, so nothing after a
 # field can shift the columns before it. @window_task is free-form text that
 # may contain '|' and is NOT sanitized, so it must be last to stay protected.
+# @window_label_clipped (#885, the last reflow's stamp, read back only to skip an
+# unchanged write) is a closed "1"/"" token and sits second, ahead of the
+# free-form @branch/pane_current_path/@issue_title, which can contain '|'.
 # @window_bridge_name is always daemon-sanitized (never contains '|'), so it's
 # safe placed just before @window_task.
 # @window_ai_name is sanitized (kebab, no '|') so it sits safely before that.
@@ -157,20 +160,18 @@ has_zoom=0
 # window option in the template, so only the name is pulled here (for width).
 # @window_has_agent (#671) is a closed "1"/"" token, same shape, so it sits
 # right beside @crew_name — it gates the non-bridge crew badge below.
-# @window_label_clipped (#885, the last reflow's stamp, read back only to skip
-# an unchanged write) is the same closed token and follows it.
 # @bridge_win/window_name sit after it: bridge_win is "1" or empty, and a
 # window_name containing '|' is no worse off here than at the very end.
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_label_clipped}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
 crew_colw=0 # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wclip wai bridge bid brest bpr bcrew wname bname wtask; do
+while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wai bridge bid brest bpr bcrew wname bname wtask; do
 	indices+=("$idx")
 	win_clip_prev[$idx]="$wclip"
 	# The zoom marker (" 󰁌", 2 cells) is emitted inline by LABEL_Z on zoomed
