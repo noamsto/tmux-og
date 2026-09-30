@@ -42,6 +42,11 @@ REFLOW_BIN="${REFLOW_BIN:-@reflow@}"
 # sweep starts below. ${REPAINT_BIN:-...} is the same test-seam shape as
 # AGENT_DETECT_BIN above; an unsubstituted @agent_repaint@ disables the claim.
 REPAINT_BIN="${REPAINT_BIN:-@agent_repaint@}"
+# Sweeps (5 s apart, so ~60 s) a stamped pane may run a non-agent command before
+# the sweep drops its @og_birth_size. Generous on purpose: dispatch types its
+# launch line into a fresh shell, and a slow shell startup (a direnv devshell)
+# must not cost the newborn agent its stamp.
+BIRTH_GRACE_SWEEPS=12
 
 # normalize_wrapped_cmd CMD
 # Strips nix makeWrapper's `.foo-wrapped` shape down to `foo` (what
@@ -100,7 +105,8 @@ arm_agent_detect() {
 	# would then read every live pane's lagging stamp as a dead agent.
 	#
 	# #{window_id}/#{@bridge_win}/#{@window_has_agent}/#{@window_manual_name}/
-	# #{@og_birth_size} (a closed token, so it sits before the free-form fields)
+	# #{@og_birth_size}/#{@og_birth_seen} (closed tokens, so they sit before the
+	# free-form fields)
 	# plus the naming options ride the same roundtrip for the #692 occupancy
 	# pass below — no second call, no separate state. #{window_id} is the row's
 	# canary (only a real window id matches ^@[0-9]+$, and #{pane_current_command}
@@ -113,7 +119,7 @@ arm_agent_detect() {
 	# task/session_name with nothing left to catch it. #{session_name} is last
 	# because it may contain '|'.
 	local rows
-	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}|#{window_id}|#{@bridge_win}|#{@window_has_agent}|#{@window_manual_name}|#{@og_birth_size}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@window_task}|#{session_name}' 2>/dev/null) || return 0
+	rows=$(tmux list-panes -a -F '#{pane_id}|#{pane_current_command}|#{pane_pipe}|#{window_id}|#{@bridge_win}|#{@window_has_agent}|#{@window_manual_name}|#{@og_birth_size}|#{@og_birth_seen}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@window_task}|#{session_name}' 2>/dev/null) || return 0
 	# claude_reap_dead_panes deletes under CLAUDE_STATUS_DIR -- a per-user dir
 	# shared by every tmux server of this uid, which TMUX_TMPDIR/-L isolation
 	# does not touch -- by checking each pane id against THIS CALLER's own
@@ -139,8 +145,8 @@ arm_agent_detect() {
 	# (the old `((arm || stamp)) || return 0` short-circuit is gone) so the sweep
 	# caller can reconcile occupancy from the same rows.
 	local -A win_has=() win_cur=() win_manual=() win_bridge=() win_sess=() win_ai=() win_task=()
-	local pid cmd piped wid bridge ha manual birth ai task sname
-	while IFS='|' read -r pid cmd piped wid bridge ha manual birth ai task sname; do
+	local pid cmd piped wid bridge ha manual birth seen ai task sname
+	while IFS='|' read -r pid cmd piped wid bridge ha manual birth seen ai task sname; do
 		# A here-string of an empty result still yields one blank line.
 		[[ -n $pid ]] || continue
 		# A shifted row (see the format comment above) leaves nothing here, so
@@ -154,7 +160,23 @@ arm_agent_detect() {
 			win_task[$wid]="$task"
 		fi
 		normalize_wrapped_cmd "$cmd"
-		case " $AGENT_COMMANDS " in *" $REPLY "*) ;; *) continue ;; esac
+		case " $AGENT_COMMANDS " in
+		*" $REPLY "*) ;;
+		*)
+			# Sweep only: a stamped pane seen running a non-agent command for
+			# BIRTH_GRACE_SWEEPS sweeps loses its stamp, so an agent started late
+			# in an old, resized pane is not nudged.
+			if [[ -n ${1:-} && -n $birth && $bridge != 1 ]]; then
+				[[ $seen =~ ^[0-9]+$ ]] || seen=0
+				if ((seen + 1 >= BIRTH_GRACE_SWEEPS)); then
+					tmux set -pu -t "$pid" @og_birth_size \; set -pu -t "$pid" @og_birth_seen
+				else
+					tmux set -p -t "$pid" @og_birth_seen $((seen + 1))
+				fi
+			fi
+			continue
+			;;
+		esac
 		[[ $wid =~ ^@[0-9]+$ ]] && win_has[$wid]=1
 		# Sweep caller only: the per-tick caller runs once per attached client in
 		# the same second and would race itself. The claim is one command list
@@ -162,7 +184,7 @@ arm_agent_detect() {
 		# run-shell comes before set -pu because it expands #{q:@og_birth_size}
 		# when it runs.
 		if [[ -n ${1:-} && -n $birth && $bridge != 1 && $REPAINT_BIN != @* ]]; then
-			tmux if -F -t "$pid" '#{@og_birth_size}' "run-shell -b -t $pid '$REPAINT_BIN #{q:pane_id} #{q:@og_birth_size}' ; set -pu -t $pid @og_birth_size"
+			tmux if -F -t "$pid" '#{@og_birth_size}' "run-shell -b -t $pid '$REPAINT_BIN #{q:pane_id} #{q:@og_birth_size}' ; set -pu -t $pid @og_birth_size ; set -pu -t $pid @og_birth_seen"
 		fi
 		((stamp)) && printf '%s\n' "$CLAUDE_NOW" >"$CLAUDE_LIVE_DIR/${pid#%}"
 		[[ $piped == 0 ]] || continue

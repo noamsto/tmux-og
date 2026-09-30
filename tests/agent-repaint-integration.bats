@@ -20,9 +20,13 @@ setup() {
 	TMUX_BIN="${TMUX_BIN:?set TMUX_BIN to the built wrapper}"
 
 	TEST_HOME="$BATS_TEST_TMPDIR/home"
-	mkdir -p "$TEST_HOME" "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/tmux"
+	mkdir -p "$TEST_HOME" "$BATS_TEST_TMPDIR/bin"
 	unset TMUX TMUX_PANE
-	export TMUX_TMPDIR="$BATS_TEST_TMPDIR/tmux"
+	# Short and fixed: $BATS_TEST_TMPDIR/tmux-<uid>/<name> can pass the ~104-byte
+	# AF_UNIX socket path limit (darwin build tmpdir), "File name too long".
+	export TMUX_TMPDIR="/tmp/og883-$$-${BATS_TEST_NUMBER}"
+	rm -rf "$TMUX_TMPDIR"
+	mkdir -p "$TMUX_TMPDIR"
 	export HOME="$TEST_HOME"
 	export XDG_CACHE_HOME="$TEST_HOME/.cache"
 	export XDG_CONFIG_HOME="$TEST_HOME/.config"
@@ -48,6 +52,7 @@ setup() {
 teardown() {
 	inner kill-server 2>/dev/null || true
 	outer kill-server 2>/dev/null || true
+	rm -rf "$TMUX_TMPDIR"
 	return 0
 }
 
@@ -118,6 +123,12 @@ at_least() { [[ $(count "$1") -ge $2 ]]; }
 settled() { [[ -s $1 && "$(tail -n1 "$1")" == *" $(pane_size "$2")" ]]; }
 claimed() { [[ -z "$(inner display-message -p -t "$1" '#{@og_birth_size}')" ]]; }
 stamped() { [[ -n "$(inner display-message -p -t "$1" '#{@og_birth_size}')" ]]; }
+# The sweep's non-agent grace is running: stamp live, counter a number >= 1.
+grace_counting() {
+	local n
+	n="$(inner display-message -p -t "$1" '#{@og_birth_seen}')"
+	stamped "$1" && [[ $n =~ ^[0-9]+$ ]] && ((n >= 1))
+}
 has_line() { grep -qxF "$2" "$1"; }
 
 probe_cmd() { printf 'pi %q %q' "$PROBE" "$1"; }
@@ -288,4 +299,28 @@ attach_client() {
 	[ "$(count "$mlog")" -eq "$n_m" ] || fail "mirror window was nudged: $(cat "$mlog")"
 	[ "$(count "$flog")" -eq "$n_f" ] || fail "float window was nudged: $(cat "$flog")"
 	[ "$(inner display-message -p -t "$float" '#{pane_left} #{pane_top} #{pane_width} #{pane_height}')" = "$geom" ]
+}
+
+@test "late agent in an old resized shell pane: stamp dropped after the grace, no nudge" {
+	local log="$BATS_TEST_TMPDIR/late.log" wid pid n0
+	read -r wid pid < <(inner new-window -d -P -F '#{window_id} #{pane_id}' bash)
+	wait_for 3 stamped "$pid" || fail "shell pane was never stamped"
+	resize_detached "$wid"
+
+	wait_for 15 grace_counting "$pid" || fail "no @og_birth_seen count while the stamp is live: [$(inner display-message -p -t "$pid" '#{@og_birth_seen}')]"
+	# 12 sweeps at 5 s, plus slack.
+	wait_for 75 claimed "$pid" || fail "stamp never dropped: seen=[$(inner display-message -p -t "$pid" '#{@og_birth_seen}')]"
+	[ -z "$(inner display-message -p -t "$pid" '#{@og_birth_seen}')" ]
+
+	# respawn-pane fires no birth hook, so this is an agent started late in the
+	# same old pane.
+	: >"$log"
+	inner respawn-pane -k -t "$pid" "$(probe_cmd "$log")"
+	wait_for 10 booted "$log" || fail "probe never booted"
+	[ "$(inner display-message -p -t "$pid" '#{pane_current_command}')" = pi ]
+	n0="$(count "$log")"
+
+	# sweep 5 s + ready >= 3 s + quiet 1 s, plus slack.
+	sleep 12
+	[ "$(count "$log")" -eq "$n0" ] || fail "late agent was nudged: $(cat "$log")"
 }

@@ -59,15 +59,19 @@ while ((SECONDS < deadline)); do
 		np=$(tmux display -p -t "$pane" '#{window_panes}' 2>/dev/null) || exit 0
 		[[ $np != 1 ]] && continue
 	else
-		# Re-read right before the zoom: a sibling that read these before our
-		# zoom restores the same values after it, since "not zoomed" in the
-		# slot keeps two zooms from overlapping.
-		info=$(tmux display -p -t "$pane" '#{window_panes}|#{P:#{?pane_active,#{pane_id},}}|#{P:#{?pane_last,#{pane_id},}}' 2>/dev/null) || exit 0
-		IFS='|' read -r np act last <<<"$info"
+		np=$(tmux display -p -t "$pane" '#{window_panes}' 2>/dev/null) || exit 0
 		[[ $np == 1 ]] && continue
-		[[ $act =~ ^%[0-9]+$ && ($last == "" || $last =~ ^%[0-9]+$) ]] || exit 0
-		out=$(tmux if -F -t "$pane" "$SLOT" "resize-pane -Z -t $pane" 'display -p no' 2>/dev/null) || exit 0
+		# The focus read, the slot check and the zoom are one command list in
+		# the server, so no sibling's zoom can be observed or interleaved:
+		# act/last are the focus as it stood with no zoom in the window.
+		out=$(tmux if -F -t "$pane" "$SLOT" "display -p -t $pane '#{P:#{?pane_active,#{pane_id},}}|#{P:#{?pane_last,#{pane_id},}}' ; resize-pane -Z -t $pane" 'display -p no' 2>/dev/null) || exit 0
 		if [[ $out != no ]]; then
+			IFS='|' read -r act last <<<"$out"
+			# A malformed read still unzooms, focus left alone, rather than
+			# leaving the window zoomed.
+			if ! [[ $act =~ ^%[0-9]+$ && ($last == "" || $last =~ ^%[0-9]+$) ]]; then
+				act=$pane last=
+			fi
 			sleep 0.3
 			# Unzoom and focus restore are ONE command list, so a phase-aligned
 			# sibling cannot zoom between them. Keep the order: last first, then

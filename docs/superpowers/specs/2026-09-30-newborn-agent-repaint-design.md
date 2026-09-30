@@ -103,7 +103,11 @@ other two are already cleared). Floats (`new-pane`) and the renderer panes
 tmux has no "now" format (`current_time` expands empty), so the stamp holds
 the size only. "Newborn" means *the stamp is still there*: it is consumed at
 the pane's first agent sighting, whatever the outcome, so a pane gets one nudge
-decision in its life.
+decision in its life. A pane that never runs an agent does not keep the stamp
+forever: the sweep counts, in `@og_birth_seen`, the sweeps a stamped pane is
+seen running a non-agent command, and drops the stamp after 12 of them (about
+60 s). Only an agent started within about 60 s of its pane's creation is
+therefore a candidate.
 
 ### 2. Trigger: the existing agent sighting pass, sweep caller only
 
@@ -115,7 +119,8 @@ Only the client-independent `@og-sweep-tick` caller (`$1` non-empty, every
 same second, so it would race itself.
 
 For an agent row with a non-empty stamp on a non-mirror window, the sweep
-**claims the pane atomically inside the tmux server**, in one command:
+**claims the pane atomically inside the tmux server**, in one command (the sweep also keeps the `@og_birth_seen` grace counter
+described in section 1 for stamped panes that are not running an agent):
 
 ```
 tmux if -F -t <pane> '#{@og_birth_size}' "run-shell -b -t <pane> '<repaint> #{q:pane_id} #{q:@og_birth_size}' ; set -pu -t <pane> @og_birth_size"
@@ -166,11 +171,13 @@ The stamp is already consumed when the worker starts (the claim above).
      coalesced no-op. The claim guarantees one worker per pane, and a
      single-pane window has one pane, so no second worker can interleave the
      save/restore.
-   - **Several tiled panes**: record the window's active pane and last pane
-     (`#{P:#{?pane_active,…}}`, `#{P:#{?pane_last,…}}`). Zoom the target, but
-     only if the slot condition still holds, checked atomically in the same
-     command (`if -F '<slot>' { resize-pane -Z -t <pane> }`). If it no longer
-     holds, go back to waiting. Sleep 0.3 s, then unzoom only if the window is
+   - **Several tiled panes**: zoom the target, but only if the slot condition
+     still holds, checked atomically in the same command
+     (`if -F '<slot>' { resize-pane -Z -t <pane> }`). The window's active pane
+     and last pane (`#{P:#{?pane_active,…}}`, `#{P:#{?pane_last,…}}`) are
+     captured inside that same `if -F`, before its zoom, so a sibling's
+     mid-zoom focus is never read as the state to restore. If the slot no
+     longer holds, go back to waiting. Sleep 0.3 s, then unzoom only if the window is
      still zoomed on this pane (`if -F` on `window_zoomed_flag` +
      `pane_active`). When the active pane moved, restore last then active
      (`select-pane -t <last> ; select-pane -t <active>`), so both the active
@@ -188,10 +195,13 @@ The stamp is already consumed when the worker starts (the claim above).
 
 ### Known, accepted over-reach
 
-- The birth reference is pane creation, not app launch. An agent started
-  minutes after its pane's shell, in a pane resized in between (for example by
-  a status-row reflow), is nudged once at its first sighting. That is one full
-  repaint of an agent that just rendered, which is harmless.
+- The birth reference is pane creation, not app launch, bounded by the ~60 s
+  grace (`@og_birth_seen`, 12 sweeps). An agent started within that window, in
+  a pane resized in between (for example by a status-row reflow), is nudged
+  once at its first sighting: a visible 0.3 s zoom, or a one-cell shrink for a
+  single pane, of an agent that just rendered. An agent started later finds
+  the stamp already dropped and is never nudged.
+- A window zoomed (or a slot busy) for the whole 8 s is not nudged.
 - A tmux-remux restore recreates every pane, so each restored agent pane that
   the restore layout resized is nudged, in one burst.
 - A window holding any float (or a modal popup) is never nudged.

@@ -4,6 +4,10 @@ Spec: `docs/superpowers/specs/2026-09-30-newborn-agent-repaint-design.md`
 (spec-critic: accept). Old-behaviour build for the red run:
 `$SP/old-tmux` (the wrapped tmux at `5a3c672`, pinned as a GC root).
 
+`$SP` is the implementing session's scratchpad directory (not committed).
+`$SP/old-tmux` is `nix build .#default` at `5a3c672`. The reproducer's timeline
+is recorded in the spec's "Measured timeline" section.
+
 ## File list
 
 - `config/tmux.conf.tmpl`: add `set-hook -gu after-split-window` to the clear
