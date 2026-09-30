@@ -255,7 +255,8 @@ refits.
 The three creation-time `@og_birth_size`
 stamps (`set -pF` on `after-new-window[30]`, `after-split-window[30]`,
 `after-new-session[30]`) run in-process with no fork, once per pane creation.
-The sweep adds one format field per row and one tmux call (the claim) per
+The sweep adds two format fields per row (`@og_birth_size`, `@og_birth_seen`)
+and one tmux call (the claim) per
 newborn agent pane in its life. The nudge forks no refit: its zoom is skipped
 by the grid gate and unzoom restores the exact signature, and the single-pane
 `resize-window` pair hits no gated refit fork (no `@crew_grid`, no floats).
