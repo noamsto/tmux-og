@@ -10,16 +10,24 @@ setup() {
 	mkdir -p "$FAKEBIN"
 	export ARGS_LOG="$BATS_TEST_TMPDIR/popup-args"
 
-	# Fake tmux: the pickers read border colour and layout in one `display -p`,
-	# the wall still uses `show -gv`; both report $FAKE_LAYOUT. display-popup
-	# records its argv so the test can read back the -h value. /bin/sh, not
-	# /usr/bin/env bash — the nix check sandbox has no /usr/bin/env.
+	# Fake tmux: the pickers read border colour, layout and (for the session
+	# picker) the host window id in one `display -p`; the wall still uses
+	# `show -gv`; both report $FAKE_LAYOUT. display-popup records its argv and
+	# exits $FAKE_POPUP_RC; list-windows reports $FAKE_WINDOWS, the window ids
+	# that still exist after the popup closes. /bin/sh, not /usr/bin/env bash —
+	# the nix check sandbox has no /usr/bin/env.
 	cat >"$FAKEBIN/tmux" <<-'EOF'
 		#!/bin/sh
 		case "$1" in
-		display) printf '%s\n' "#7f849c|${FAKE_LAYOUT:-}"; exit 0 ;;
+		display)
+			case "$*" in
+			*window_id*) printf '%s\n' "#7f849c|${FAKE_LAYOUT:-}|${FAKE_HOST_WINDOW:-}" ;;
+			*) printf '%s\n' "#7f849c|${FAKE_LAYOUT:-}" ;;
+			esac
+			exit 0 ;;
 		show) [ "$3" = "@picker_layout" ] && printf '%s\n' "${FAKE_LAYOUT:-}"; exit 0 ;;
-		display-popup) printf '%s\n' "$*" >"$ARGS_LOG"; exit 0 ;;
+		list-windows) printf '%s\n' "${FAKE_WINDOWS:-}"; exit 0 ;;
+		display-popup) printf '%s\n' "$*" >"$ARGS_LOG"; exit "${FAKE_POPUP_RC:-0}" ;;
 		esac
 		exit 0
 	EOF
@@ -80,6 +88,28 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	FAKE_LAYOUT=preview bash "$launcher"
 	[ "$(width_of)" = "100%" ]
 	[ "$(height_of)" = "100%" ]
+}
+
+# #884: the picker killing the session it was opened from destroys the popup's
+# host window and display-popup exits 129. The launcher suppresses that — but
+# only when the host window is really gone, so a genuine picker failure still
+# reaches run-shell.
+@test "session picker: a display-popup exit with the host window gone exits 0" {
+	launcher="$(mk_launcher tmux-session-picker.sh)"
+	run env FAKE_POPUP_RC=129 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@2' bash "$launcher" --client foo
+	[ "$status" -eq 0 ]
+}
+
+@test "session picker: a genuine picker failure still exits non-zero" {
+	launcher="$(mk_launcher tmux-session-picker.sh)"
+	run env FAKE_POPUP_RC=4 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@1' bash "$launcher" --client foo
+	[ "$status" -eq 4 ]
+}
+
+@test "session picker: without --client no exit is suppressed" {
+	launcher="$(mk_launcher tmux-session-picker.sh)"
+	run env FAKE_POPUP_RC=129 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@2' bash "$launcher"
+	[ "$status" -eq 129 ]
 }
 
 @test "session picker: --client foo pins the popup's client and window" {

@@ -2614,6 +2614,37 @@
               touch $out
             '';
 
+          # The session picker killing its own session (#884): the popup-float
+          # lives in the window it just killed, so display-popup exits 129 and
+          # the launcher must suppress that only when the host window is really
+          # gone. Same attached-client harness and reduced conf as
+          # popup-float-tests above — a key binding fires only for a real
+          # client, and the enrich/agent-usage pollers add run-shell contention
+          # between the signed key and the pop that observes it.
+          picker-session-kill-tests = let
+            pickerKillTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "picker-session-kill-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+              TMUX_BIN = "${pickerKillTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/picker-session-kill.bats
+              touch $out
+            '';
+
           # `qs:` silently degrades to a raw expansion on tmux 3.7, so the
           # shell-word mechanism is exercised only through the pinned wrapper.
           conf-shell-quoting-integration-tests =
