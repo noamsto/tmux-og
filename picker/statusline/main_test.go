@@ -686,3 +686,46 @@ func TestThemeFromFlavor(t *testing.T) {
 		}
 	})
 }
+
+func TestSessionSegmentLocalTitleClippedToLineWidth(t *testing.T) {
+	a := args{
+		session: "work", branch: "feat/x", panePath: "/repo",
+		issueID: "ENG-7", issueBranch: "feat/x", issueProvider: "linear",
+		issueTitle:  strings.Repeat("é", 120),
+		iconSession: "S", iconBranch: "B", iconLinear: "L",
+		thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd",
+	}
+	if got := strings.Count(sessionSegment(a, false), "é"); got != 50 {
+		t.Fatalf("local title rendered %d runes, want 50", got)
+	}
+}
+
+func TestSessionSegmentBridgeRestClips(t *testing.T) {
+	cases := []struct {
+		name, id, rest string
+		want           int
+	}{
+		{"id arm keeps 50-char title and leading space", "L ENG-7", " " + strings.Repeat("é", 50), 50},
+		{"id arm clips 120-char title", "L ENG-7", " " + strings.Repeat("é", 120), 50},
+		{"branch-only keeps 100 runes", "", strings.Repeat("é", 100), 100},
+		{"branch-only clips 200 runes", "", strings.Repeat("é", 200), 120},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := args{
+				session: "work", panePath: "/repo",
+				bridgeWin: "1", bridgeHost: "g6",
+				bridgeLabelID: c.id, bridgeLabelRestLong: c.rest,
+				iconSession: "S", iconRemote: "R", iconBranch: "B",
+				thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd", thmPeach: "#fab",
+			}
+			got := sessionSegment(a, false)
+			if n := strings.Count(got, "é"); n != c.want {
+				t.Fatalf("rendered %d runes, want %d", n, c.want)
+			}
+			if c.id != "" && !strings.Contains(got, "nobold] é") {
+				t.Fatalf("leading space of the rest was lost: %q", got)
+			}
+		})
+	}
+}

@@ -115,6 +115,8 @@ var bridgeLabelOptions = []struct {
 const (
 	crewNameMaxRunes  = 24 // a codename; a cap so one value cannot dominate a column
 	labelTextMaxRunes = 120
+	// A 256-char title (GitHub's limit) plus the label rest's leading space.
+	labelTitleMaxRunes = 257
 
 	// The exact-cleaned identity caps are sized to their own domain rather than
 	// sharing labelTextMaxRunes: a Linear issue URL routinely passes 120, 255 is
@@ -193,13 +195,13 @@ func parseWindowLabels(body string) []labelRow {
 			prDraft:       matching(cleanLabelValueExact(at(12), prDraftMaxRunes), prDraftRe),
 			branch:        matching(cleanLabelValueExact(at(13), branchMaxRunes), branchRe),
 			dir:           matching(cleanLabelValueExact(at(14), dirMaxRunes), dirRe),
-			issueTitle:    cleanLabelValue(at(15), labelTextMaxRunes),
-			prTitle:       cleanLabelValue(at(16), labelTextMaxRunes),
+			issueTitle:    cleanLabelValue(at(15), labelTitleMaxRunes),
+			prTitle:       cleanLabelValue(at(16), labelTitleMaxRunes),
 			prReview:      matching(cleanLabelValueExact(at(17), reviewMaxRunes), reviewRe),
 			prAutoMerge:   matching(cleanLabelValueExact(at(18), prDraftMaxRunes), prDraftRe),
 			prProgress:    matching(cleanLabelValueExact(at(19), progressMaxRunes), progressRe),
 			labelID:       cleanLabelValue(at(20), labelTextMaxRunes),
-			labelRest:     cleanLabelValue(at(21), labelTextMaxRunes),
+			labelRest:     cleanLabelValue(at(21), labelTitleMaxRunes),
 		})
 	}
 	return out
