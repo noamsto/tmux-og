@@ -1097,6 +1097,7 @@
     set-hook -gu client-attached[20]
     set-hook -gu window-resized
     set-hook -gu window-layout-changed
+    set-hook -gu after-split-window
 
     # Also clear hooks from older config versions that may linger
     set-hook -gu window-linked
@@ -1222,6 +1223,14 @@
     # run-shell's sh -c would re-expand the leading $ (e.g. $0 -> "sh").
     set-hook -g after-new-window[10]  'run-shell -b "${script.tmux-reconcile-window}/bin/tmux-reconcile-window #{q:window_id}"'
     set-hook -g after-new-session[10] 'run-shell -b "${script.tmux-reconcile-window}/bin/tmux-reconcile-window #{q:window_id}"'
+
+    # Birth size for tmux-agent-repaint (#883): fork-free, in-process, one per
+    # pane creation. Size only because tmux has no "now" format; the
+    # tmux-update-icons sweep consumes it at the pane's first agent sighting.
+    # Indexed [30] to coexist with [0]/[10]; the bare `set-hook -gu` above clears it.
+    set-hook -g after-new-window[30]   'set -pF @og_birth_size "#{pane_width}x#{pane_height}"'
+    set-hook -g after-split-window[30] 'set -pF @og_birth_size "#{pane_width}x#{pane_height}"'
+    set-hook -g after-new-session[30]  'set -pF @og_birth_size "#{pane_width}x#{pane_height}"'
 
     # Post-#199 (issue #100): after-split-window / pane-focus-in reconcile hooks
     # were considered here and deliberately NOT added. Since #199

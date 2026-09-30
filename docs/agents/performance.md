@@ -126,6 +126,14 @@ one. `scripts.md` has the stamp rules. The signature is not
 - So every change is gated against the stamp as it stood before that
   change.
 
+**Newborn-agent repaint (#883).** The three creation-time `@og_birth_size`
+stamps (`set -pF` on `after-new-window[30]`, `after-split-window[30]`,
+`after-new-session[30]`) run in-process with no fork, once per pane creation.
+The sweep adds one format field per row and one tmux call (the claim) per
+newborn agent pane in its life. The nudge forks no refit: its zoom is skipped
+by the grid gate and unzoom restores the exact signature, and the single-pane
+`resize-window` pair hits no gated refit fork (no `@crew_grid`, no floats).
+
 ### Before / after
 
 Measured with the harness: two rounds per build, 400 samples each.

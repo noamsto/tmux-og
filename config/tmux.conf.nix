@@ -336,6 +336,7 @@
     "og-open"
     "og-notify"
     "og-notify-center"
+    "tmux-agent-repaint"
     "tmux-agent-usage"
     "tmux-agent-usage-claude"
     "tmux-agent-usage-codex"
@@ -362,7 +363,7 @@
   mkScriptIcons = name:
     pkgs.writeShellScriptBin name
     (builtins.replaceStrings
-      (iconSubstFrom ++ ["@reflow@" "@agent_detect_bin@" "@AGENT_COMMANDS@" "@issue_stamp@" "@carousel_restore@" "@reconcile@"])
+      (iconSubstFrom ++ ["@reflow@" "@agent_detect_bin@" "@AGENT_COMMANDS@" "@issue_stamp@" "@carousel_restore@" "@reconcile@" "@agent_repaint@"])
       (iconSubstTo
         ++ [
           "${script.tmux-reflow-windows}/bin/tmux-reflow-windows"
@@ -375,6 +376,7 @@
           )
           carouselRestoreBin
           "${script.tmux-reconcile-window}/bin/tmux-reconcile-window"
+          "${script.tmux-agent-repaint}/bin/tmux-agent-repaint"
         ])
       (builtins.readFile ../scripts/${name}.sh));
 
@@ -754,6 +756,7 @@
   # gets a verb. Recorded here, not just in the design doc, so ogPartitionOk
   # can check the partition.
   ogInternal = [
+    "tmux-agent-repaint"
     "tmux-agent-usage"
     "tmux-agent-usage-claude"
     "tmux-agent-usage-codex"
