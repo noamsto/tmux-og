@@ -1,0 +1,13 @@
+[package]
+name = "update-icons-bakeoff"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "update-icons"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+strip = true
