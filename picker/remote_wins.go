@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -101,8 +102,6 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 }
 
 // sshListRemoteWindows is sshListRemoteSessions for the window probe.
-//
-//nolint:unused // called by the window picker wiring (#902)
 func sshListRemoteWindows(host string) (remoteProbeResult, error) {
 	return sshProbe(host, remoteListWindowsCmd, parseRemoteWindowsOutput)
 }
@@ -163,4 +162,185 @@ func forgetRemoteWindowCache(host, id string) {
 // forgetRemoteSessionWindowsCache drops every cached window of sess on host.
 func forgetRemoteSessionWindowsCache(host, sess string) {
 	forgetRemoteWindowsWhere(host, func(w remoteWindow) bool { return w.Session == sess })
+}
+
+// remoteWindowRowItem renders one remote window as a tree child of its host:
+// the dimmed session name, then "<index>: <name>". note is a dim suffix; dim
+// greys the whole label, for a row no probe just confirmed. Names are made
+// render-safe here; remoteSess and target keep the raw session for actions.
+func remoteWindowRowItem(host string, w remoteWindow, note, cHost, cDim string, dim bool) listItem {
+	reset := "\033[0m"
+	sess := remoteDisplayName(w.Session)
+	name := remoteDisplayName(w.Name)
+	idx := strconv.Itoa(w.Index)
+	body := sess + " " + idx + ": " + name
+	plain := body
+	if note != "" {
+		plain += "  " + note
+	}
+	label := cDim + sess + reset + " " + idx + ": " + name
+	switch {
+	case dim:
+		label = cDim + plain + reset
+	case note != "":
+		label += cDim + "  " + note + reset
+	}
+	return listItem{
+		isRemoteRow:       true,
+		target:            "remote:" + host + ":" + w.Session + ":" + w.ID,
+		remoteHost:        host,
+		remoteSess:        w.Session,
+		remoteWindowID:    w.ID,
+		remoteWindowIndex: w.Index,
+		remoteWindowName:  name,
+		display:           cHost + remoteTreeMid + reset + " " + label,
+		displayEnd:        cHost + remoteTreeEnd + reset + " " + label,
+		plain:             remoteTreeMid + " " + plain,
+		plainEnd:          remoteTreeEnd + " " + plain,
+		searchText:        host + "/" + sess + ":" + idx + " " + host + " " + sess + " " + name,
+	}
+}
+
+// cachedRemoteWindowRows is cachedRemoteSessionRows for the window cache: the
+// unbridged windows, dimmed with the cache's age when stale. A cached row is
+// never live.
+func cachedRemoteWindowRows(c remoteWindowCache, bridges map[string]bool, stale, unreachable bool, now time.Time, cHost, cDim string) []listItem {
+	note := ""
+	if stale {
+		note = "(cached " + formatSnapshotAge(c.SavedAt, now) + ")"
+	}
+	var rows []listItem
+	for _, w := range c.Windows {
+		if w.Session == "" || bridgeSessionPresent(bridges, c.Host, w.Session) {
+			continue
+		}
+		row := remoteWindowRowItem(c.Host, w, note, cHost, cDim, stale)
+		row.remoteUnreachable = unreachable
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// pendingRemoteWindowItems is pendingRemoteItems for window mode: the first
+// paint's Remote section from @remote_bridge_hosts and the window cache alone.
+func pendingRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]bool) []listItem {
+	hosts := configuredHosts(tmuxOpts)
+	if len(hosts) == 0 {
+		return nil
+	}
+	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	hostColor := hostColorFunc(tmuxOpts)
+	now := time.Now()
+	items := make([]listItem, 0, len(hosts)+1)
+	items = append(items, remoteHeaderItem(tmuxOpts))
+	for _, h := range hosts {
+		items = append(items, remoteHostRowItem(tmuxOpts, h, remotePendingNote))
+		if c, ok := readRemoteWindowCache(h); ok {
+			items = append(items, cachedRemoteWindowRows(c, bridges, savedAtStale(c.SavedAt, now), false, now, hostColor(h), cDim)...)
+		}
+	}
+	return items
+}
+
+// remoteWindowsForHost is remoteSessionsForHost for a window probe result:
+// the windows of sessions not already bridged locally, and the probe state.
+func remoteWindowsForHost(host string, bridges map[string]bool, result remoteProbeResult, err error) ([]remoteWindow, remoteProbeState) {
+	if err != nil {
+		return nil, probeStateOf(err)
+	}
+	if len(result.Sessions) == 0 {
+		return nil, remoteProbeNoServer
+	}
+	out := make([]remoteWindow, 0, len(result.Windows))
+	for _, w := range result.Windows {
+		if bridgeSessionPresent(bridges, host, w.Session) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out, remoteProbeOK
+}
+
+// collectRemoteWindowItems is collectRemoteItems for window mode: one probe per
+// host, then the host row and one row per unbridged window. The cache policy
+// is the session picker's; there is no restore probe.
+func collectRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]bool, probe func(string) (remoteProbeResult, error)) []listItem {
+	hosts := parseRemoteHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", ""))
+	if len(hosts) == 0 {
+		return nil
+	}
+	if probe == nil {
+		probe = sshListRemoteWindows
+	}
+	localID := readLocalRemoteIdentity()
+	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	hostColor := hostColorFunc(tmuxOpts)
+
+	type hostResult struct {
+		host         string
+		windows      []remoteWindow
+		state        remoteProbeState
+		drop         bool
+		tailscaleURL string
+		cached       []listItem
+	}
+	now := time.Now()
+	results := make([]hostResult, len(hosts))
+	var wg sync.WaitGroup
+	for i, h := range hosts {
+		wg.Add(1)
+		go func(i int, h string) {
+			defer wg.Done()
+			result, err := probe(h)
+			if isRemoteSelf(localID, result.Identity) {
+				markCachedRemoteSelfAlias(h)
+				results[i] = hostResult{host: h, drop: true}
+				return
+			}
+			if isCachedRemoteSelfAlias(h) && result.Identity.MachineID != "" && result.Identity.User != "" {
+				clearCachedRemoteSelfAlias(h)
+			}
+			windows, state := remoteWindowsForHost(h, bridges, result, err)
+			res := hostResult{host: h, windows: windows, state: state}
+			switch state {
+			case remoteProbeOK:
+				writeRemoteWindowCache(h, result.Windows, now)
+			case remoteProbeNoServer:
+				writeRemoteWindowCache(h, nil, now)
+			case remoteProbeUnreachable:
+				if c, ok := readRemoteWindowCache(h); ok {
+					res.cached = cachedRemoteWindowRows(c, bridges, true, true, now, hostColor(h), cDim)
+				}
+			case remoteProbeTailscaleCheck:
+				res.tailscaleURL = tailscaleCheckURL(err)
+			case remoteProbeNeedsAuth, remoteProbeHostKeyChanged:
+			}
+			results[i] = res
+		}(i, h)
+	}
+	wg.Wait()
+
+	items := make([]listItem, 0, len(hosts)+1)
+	hasHosts := false
+	for _, r := range results {
+		if r.drop {
+			continue
+		}
+		if !hasHosts {
+			items = append(items, remoteHeaderItem(tmuxOpts))
+			hasHosts = true
+		}
+		items = append(items, remoteHostRowForState(tmuxOpts, r.host, r.state, r.tailscaleURL, len(r.windows) > 0))
+		cH := hostColor(r.host)
+		for _, w := range r.windows {
+			row := remoteWindowRowItem(r.host, w, "", cH, cDim, false)
+			row.remoteLive = true
+			items = append(items, row)
+		}
+		items = append(items, r.cached...)
+	}
+	if !hasHosts {
+		return nil
+	}
+	return items
 }

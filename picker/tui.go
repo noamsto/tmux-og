@@ -59,6 +59,10 @@ type listItem struct {
 	remoteTailscaleURL   string // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
 	remoteUnreachable    bool   // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
 	remoteMirrorTarget   string // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
+	remoteWindowID       string // remote window row: tmux @N of the window on the remote
+	remoteWindowIndex    int    // remote window row: window index on the remote
+	remoteWindowName     string // remote window row: render-safe window name (remoteDisplayName)
+	remoteLive           bool   // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
 }
 
 // scopeKind selects which sessions Tab's host scope shows.

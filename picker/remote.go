@@ -392,7 +392,11 @@ func readRemoteSessionCache(host string) (remoteSessionCache, bool) {
 }
 
 func remoteCacheStale(c remoteSessionCache, now time.Time) bool {
-	return now.Sub(time.UnixMilli(c.SavedAt)) > remoteCacheStaleAfter
+	return savedAtStale(c.SavedAt, now)
+}
+
+func savedAtStale(savedAt int64, now time.Time) bool {
+	return now.Sub(time.UnixMilli(savedAt)) > remoteCacheStaleAfter
 }
 
 // firstPaintBridges indexes the mirror sessions already in the list under the
@@ -499,6 +503,23 @@ func collectBridgeMirrors() []bridgeMirror {
 	return parseBridgeMirrors(string(out))
 }
 
+// probeStateOf classifies a probe error; nil is remoteProbeOK.
+func probeStateOf(err error) remoteProbeState {
+	switch {
+	case err == nil:
+		return remoteProbeOK
+	case errors.Is(err, errRemoteNoServer):
+		return remoteProbeNoServer
+	case errors.Is(err, errRemoteNeedsAuth):
+		return remoteProbeNeedsAuth
+	case errors.Is(err, errRemoteHostKeyChanged):
+		return remoteProbeHostKeyChanged
+	case errors.Is(err, errRemoteTailscaleCheck):
+		return remoteProbeTailscaleCheck
+	}
+	return remoteProbeUnreachable
+}
+
 // remoteSessionsForHost probes one host for live tmux session names. On
 // remoteProbeOK the returned list is the remote sessions not already bridged
 // locally (may be empty when every session is already open).
@@ -506,17 +527,7 @@ func collectBridgeMirrors() []bridgeMirror {
 func remoteSessionsForHost(host string, bridges map[string]bool, probe func(string) (remoteProbeResult, error)) ([]string, remoteProbeState) {
 	result, err := probe(host)
 	if err != nil {
-		switch {
-		case errors.Is(err, errRemoteNoServer):
-			return nil, remoteProbeNoServer
-		case errors.Is(err, errRemoteNeedsAuth):
-			return nil, remoteProbeNeedsAuth
-		case errors.Is(err, errRemoteHostKeyChanged):
-			return nil, remoteProbeHostKeyChanged
-		case errors.Is(err, errRemoteTailscaleCheck):
-			return nil, remoteProbeTailscaleCheck
-		}
-		return nil, remoteProbeUnreachable
+		return nil, probeStateOf(err)
 	}
 	if len(result.Sessions) == 0 {
 		return nil, remoteProbeNoServer
@@ -1070,9 +1081,8 @@ func hostColorFunc(tmuxOpts map[string]string) func(string) string {
 
 // sessionDisplayName trims the "${host}-" prefix og-remote-open bakes into
 // a mirror session's name. Session-picker rows only, where the Host column
-// carries the host: window mode and everything outside the picker have no host
-// of their own to read, which is why the session itself is never renamed and
-// the untrimmed name stays the tmux target.
+// carries the host. The session itself is never renamed: the bare name is the
+// tmux target, read outside the picker (window-mode rows carry bridgeHost too).
 func sessionDisplayName(name, bridgeHost string) string {
 	if bridgeHost == "" {
 		return name
@@ -1194,6 +1204,52 @@ func cachedRemoteSessionRows(c remoteSessionCache, bridges map[string]bool, stal
 	return rows
 }
 
+// remoteHostRowForState is a host's row once its probe resolved to state:
+// the state's note and flags. anyRows reports whether the host has rows of
+// its own under it; a live host with none shows "(all open)".
+func remoteHostRowForState(tmuxOpts map[string]string, host string, state remoteProbeState, tailscaleURL string, anyRows bool) listItem {
+	note := ""
+	switch state {
+	case remoteProbeUnreachable:
+		// The host may be back up by the time it is picked.
+		note = "(unreachable — open default)"
+	case remoteProbeNeedsAuth:
+		// ssh wants an answer a batch-mode probe can never give (#357).
+		note = "(auth needed — Enter to connect)"
+	case remoteProbeHostKeyChanged:
+		note = "(host key changed — verify manually)"
+	case remoteProbeTailscaleCheck:
+		// Not ssh auth — tailscaled intercepts and blocks on the remote's ACL
+		// check, which og-remote-auth's ssh-copy-id/ControlMaster flow
+		// can't clear regardless of keys or multiplexing (#486). The one
+		// remedy that reliably works is running ssh interactively yourself.
+		note = "(tailscale check — run: ssh " + host + ")"
+	case remoteProbeNoServer:
+		// The launcher cold-starts the host's own startup session (#287).
+		// The host row itself never restores — it carries no
+		// remoteSess/remoteRestore either way — so its note doesn't
+		// change when restorable child rows exist below it; those rows
+		// carry their own "(restore — saved …)" suffix instead.
+		note = "(no server — Enter starts one)"
+	case remoteProbeOK:
+		if !anyRows {
+			note = "(all open)"
+		}
+	}
+	row := remoteHostRowItem(tmuxOpts, host, note)
+	switch state {
+	case remoteProbeNeedsAuth:
+		row.remoteNeedsAuth = true
+	case remoteProbeHostKeyChanged:
+		row.remoteInert = true
+	case remoteProbeTailscaleCheck:
+		row.remoteTailscaleCheck = true
+		row.remoteTailscaleURL = tailscaleURL
+	case remoteProbeOK, remoteProbeNoServer, remoteProbeUnreachable:
+	}
+	return row
+}
+
 // collectRemoteItems builds the "Remote" suggestion rows (header + hosts /
 // sessions) by probing every configured host over ssh. Runs off the
 // first-paint path; the result merges via remoteMsg, replacing
@@ -1284,45 +1340,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 			items = append(items, remoteHeaderItem(tmuxOpts))
 			hasHosts = true
 		}
-		note := ""
-		switch r.state {
-		case remoteProbeUnreachable:
-			// The host may be back up by the time it is picked.
-			note = "(unreachable — open default)"
-		case remoteProbeNeedsAuth:
-			// ssh wants an answer a batch-mode probe can never give (#357).
-			note = "(auth needed — Enter to connect)"
-		case remoteProbeHostKeyChanged:
-			note = "(host key changed — verify manually)"
-		case remoteProbeTailscaleCheck:
-			// Not ssh auth — tailscaled intercepts and blocks on the remote's ACL
-			// check, which og-remote-auth's ssh-copy-id/ControlMaster flow
-			// can't clear regardless of keys or multiplexing (#486). The one
-			// remedy that reliably works is running ssh interactively yourself.
-			note = "(tailscale check — run: ssh " + r.host + ")"
-		case remoteProbeNoServer:
-			// The launcher cold-starts the host's own startup session (#287).
-			// The host row itself never restores — it carries no
-			// remoteSess/remoteRestore either way — so its note doesn't
-			// change when restorable child rows exist below it; those rows
-			// carry their own "(restore — saved …)" suffix instead.
-			note = "(no server — Enter starts one)"
-		default:
-			if len(r.sess) == 0 {
-				note = "(all open)"
-			}
-		}
-		hostRow := remoteHostRowItem(tmuxOpts, r.host, note)
-		switch r.state {
-		case remoteProbeNeedsAuth:
-			hostRow.remoteNeedsAuth = true
-		case remoteProbeHostKeyChanged:
-			hostRow.remoteInert = true
-		case remoteProbeTailscaleCheck:
-			hostRow.remoteTailscaleCheck = true
-			hostRow.remoteTailscaleURL = r.tailscaleURL
-		case remoteProbeOK, remoteProbeNoServer, remoteProbeUnreachable:
-		}
+		hostRow := remoteHostRowForState(tmuxOpts, r.host, r.state, r.tailscaleURL, len(r.sess) > 0)
 		items = append(items, hostRow)
 		cH := hostColor(r.host)
 		for _, sess := range r.sess {

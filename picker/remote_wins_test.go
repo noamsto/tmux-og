@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -207,5 +209,339 @@ func TestForgetRemoteSessionWindowsCache(t *testing.T) {
 	}
 	if c.SavedAt != savedAt.UnixMilli() {
 		t.Errorf("SavedAt = %d, want the original %d", c.SavedAt, savedAt.UnixMilli())
+	}
+}
+
+func probeWithWindows(id remoteIdentity, wins ...remoteWindow) remoteProbeResult {
+	res := remoteProbeResult{Identity: id, Windows: wins}
+	seen := map[string]bool{}
+	for _, w := range wins {
+		if !seen[w.Session] {
+			seen[w.Session] = true
+			res.Sessions = append(res.Sessions, w.Session)
+		}
+	}
+	return res
+}
+
+func winProbe(res remoteProbeResult, err error) func(string) (remoteProbeResult, error) {
+	return func(string) (remoteProbeResult, error) { return res, err }
+}
+
+func TestRemoteWindowRowItem(t *testing.T) {
+	w := remoteWindow{Session: "api", SessionID: "$1", ID: "@3", Index: 2, Name: "server"}
+	row := remoteWindowRowItem("lab", w, "", "<H>", "<D>", false)
+
+	if want := "<H>" + remoteTreeMid + "\033[0m <D>api\033[0m 2: server"; row.display != want {
+		t.Errorf("display = %q, want %q", row.display, want)
+	}
+	if want := "<H>" + remoteTreeEnd + "\033[0m <D>api\033[0m 2: server"; row.displayEnd != want {
+		t.Errorf("displayEnd = %q, want %q", row.displayEnd, want)
+	}
+	if want := remoteTreeMid + " api 2: server"; row.plain != want {
+		t.Errorf("plain = %q, want %q", row.plain, want)
+	}
+	if want := remoteTreeEnd + " api 2: server"; row.plainEnd != want {
+		t.Errorf("plainEnd = %q, want %q", row.plainEnd, want)
+	}
+	if !row.isRemoteRow || row.target != "remote:lab:api:@3" || row.remoteHost != "lab" || row.remoteSess != "api" {
+		t.Errorf("identity fields wrong: %+v", row)
+	}
+	if row.remoteWindowID != "@3" || row.remoteWindowIndex != 2 || row.remoteWindowName != "server" || row.remoteLive {
+		t.Errorf("window fields wrong: %+v", row)
+	}
+	if want := "lab/api:2 lab api server"; row.searchText != want {
+		t.Errorf("searchText = %q, want %q", row.searchText, want)
+	}
+}
+
+func TestRemoteWindowRowItemNoteAndDim(t *testing.T) {
+	w := remoteWindow{Session: "api", ID: "@3", Index: 1, Name: "server"}
+
+	noted := remoteWindowRowItem("lab", w, "(cached 10m ago)", "", "<D>", false)
+	if want := remoteTreeMid + " api 1: server  (cached 10m ago)"; noted.plain != want {
+		t.Errorf("plain = %q, want %q", noted.plain, want)
+	}
+	if want := "\033[0m <D>api\033[0m 1: server<D>  (cached 10m ago)\033[0m"; !strings.HasSuffix(noted.display, want) {
+		t.Errorf("display = %q, want suffix %q", noted.display, want)
+	}
+
+	dimmed := remoteWindowRowItem("lab", w, "(cached 10m ago)", "", "<D>", true)
+	if want := "\033[0m <D>" + "api 1: server  (cached 10m ago)\033[0m"; !strings.HasSuffix(dimmed.display, want) {
+		t.Errorf("display = %q, want suffix %q", dimmed.display, want)
+	}
+}
+
+func TestRemoteWindowRowItemSanitizesNames(t *testing.T) {
+	w := remoteWindow{
+		Session: "s\x1b[31mess\x07",
+		ID:      "@1", Index: 1,
+		Name: "n\u202eame\x1b]0;x\x07" + strings.Repeat("y", 100),
+	}
+	row := remoteWindowRowItem("lab", w, "", "", "", false)
+
+	for _, s := range []string{row.display, row.displayEnd} {
+		if strings.ContainsRune(strings.ReplaceAll(s, "\033[0m", ""), 0x1b) || strings.Contains(s, "\u202e") || strings.Contains(s, "\x07") {
+			t.Errorf("display %q carries a remote control sequence", s)
+		}
+	}
+	for _, s := range []string{row.plain, row.plainEnd, row.searchText, row.remoteWindowName} {
+		if strings.ContainsAny(s, "\x1b\x07\u202e") {
+			t.Errorf("%q carries a remote control sequence", s)
+		}
+	}
+	if got := visibleWidth(row.remoteWindowName); got > remoteDisplayNameCells {
+		t.Errorf("window name is %d cells, want <= %d", got, remoteDisplayNameCells)
+	}
+	if row.remoteSess != w.Session || row.target != "remote:lab:"+w.Session+":@1" {
+		t.Errorf("raw session must stay in remoteSess/target: %+v", row)
+	}
+}
+
+func windowRowTargets(items []listItem) []string {
+	var out []string
+	for _, it := range items {
+		if it.remoteWindowID != "" {
+			out = append(out, it.target)
+		}
+	}
+	return out
+}
+
+func TestCollectRemoteWindowItems(t *testing.T) {
+	useRemoteCache(t)
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	res := probeWithWindows(remoteIdentity{}, sampleRemoteWindows()...)
+
+	items := collectRemoteWindowItems(opts, nil, winProbe(res, nil))
+
+	if len(items) != 5 {
+		t.Fatalf("want header + host + 3 windows, got %d: %+v", len(items), items)
+	}
+	if !items[0].isRemoteHeader {
+		t.Errorf("first row should be the remote header: %+v", items[0])
+	}
+	host := items[1]
+	if host.remoteHost != "lab" || host.remoteSess != "" || host.plain != iconSession+" lab" {
+		t.Errorf("host row = %+v, want a bare lab row with no note", host)
+	}
+	want := []string{"remote:lab:api:@3", "remote:lab:api:@4", "remote:lab:web:@7"}
+	if got := windowRowTargets(items); !reflect.DeepEqual(got, want) {
+		t.Fatalf("window targets = %v, want %v", got, want)
+	}
+	first := items[2]
+	if first.remoteHost != "lab" || first.remoteSess != "api" || first.remoteWindowID != "@3" || first.remoteWindowIndex != 1 || !first.remoteLive {
+		t.Errorf("first window row = %+v", first)
+	}
+	if first.searchText != "lab/api:1 lab api server" {
+		t.Errorf("searchText = %q", first.searchText)
+	}
+	for _, it := range items[2:] {
+		if !it.remoteLive || it.remoteUnreachable {
+			t.Errorf("probe-OK row must be live and reachable: %+v", it)
+		}
+	}
+	c, ok := readRemoteWindowCache("lab")
+	if !ok || !reflect.DeepEqual(c.Windows, sampleRemoteWindows()) {
+		t.Errorf("probe OK must write the window cache, got %+v ok=%v", c, ok)
+	}
+}
+
+func TestCollectRemoteWindowItemsBridgedSessions(t *testing.T) {
+	useRemoteCache(t)
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	res := probeWithWindows(remoteIdentity{}, sampleRemoteWindows()...)
+
+	items := collectRemoteWindowItems(opts, parseBridgeSessions("lab-api|lab|api\n"), winProbe(res, nil))
+	if got, want := windowRowTargets(items), []string{"remote:lab:web:@7"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("window targets = %v, want only web's %v", got, want)
+	}
+	if strings.Contains(items[1].plain, "all open") {
+		t.Errorf("host row = %q, want no (all open) while web is unbridged", items[1].plain)
+	}
+	c, _ := readRemoteWindowCache("lab")
+	if len(c.Windows) != 3 {
+		t.Errorf("the cache keeps the raw list before bridge suppression, got %+v", c.Windows)
+	}
+
+	both := parseBridgeSessions("lab-api|lab|api\nlab-web|lab|web\n")
+	items = collectRemoteWindowItems(opts, both, winProbe(res, nil))
+	if len(items) != 2 {
+		t.Fatalf("every session bridged: want header + host row, got %d: %+v", len(items), items)
+	}
+	if !strings.Contains(items[1].plain, "(all open)") {
+		t.Errorf("host row = %q, want (all open)", items[1].plain)
+	}
+}
+
+func TestCollectRemoteWindowItemsNoServer(t *testing.T) {
+	useRemoteCache(t)
+	writeRemoteWindowCache("lab", sampleRemoteWindows(), time.Now())
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+
+	items := collectRemoteWindowItems(opts, nil, winProbe(remoteProbeResult{}, errRemoteNoServer))
+	if len(items) != 2 {
+		t.Fatalf("want header + host row, got %d: %+v", len(items), items)
+	}
+	if !strings.Contains(items[1].plain, "(no server — Enter starts one)") || items[1].target == "" {
+		t.Errorf("host row = %+v, want the selectable no-server row", items[1])
+	}
+	if c, ok := readRemoteWindowCache("lab"); !ok || len(c.Windows) != 0 {
+		t.Errorf("no server must overwrite the cache with an empty one, got %+v ok=%v", c, ok)
+	}
+
+	items = collectRemoteWindowItems(opts, nil, winProbe(remoteProbeResult{}, nil))
+	if len(items) != 2 || !strings.Contains(items[1].plain, "no server") {
+		t.Errorf("an empty probe is no server, got %+v", items)
+	}
+}
+
+func TestCollectRemoteWindowItemsUnreachableKeepsCache(t *testing.T) {
+	useRemoteCache(t)
+	writeRemoteWindowCache("lab", sampleRemoteWindows(), time.Now())
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+
+	items := collectRemoteWindowItems(opts, parseBridgeSessions("lab-web|lab|web\n"), winProbe(remoteProbeResult{}, errors.New("ssh down")))
+
+	if !strings.Contains(items[1].plain, "(unreachable — open default)") {
+		t.Errorf("host row = %q, want the unreachable note", items[1].plain)
+	}
+	if got, want := windowRowTargets(items), []string{"remote:lab:api:@3", "remote:lab:api:@4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cached targets = %v, want %v (web is bridged)", got, want)
+	}
+	for _, it := range items[2:] {
+		if !it.remoteUnreachable || it.remoteLive {
+			t.Errorf("cached row of a down host: want remoteUnreachable and not live: %+v", it)
+		}
+		if !strings.Contains(it.plain, "(cached ") {
+			t.Errorf("unreachable rows are always stale and say so: %q", it.plain)
+		}
+	}
+	if c, ok := readRemoteWindowCache("lab"); !ok || len(c.Windows) != 3 {
+		t.Errorf("an unreachable probe must not touch the cache, got %+v ok=%v", c, ok)
+	}
+}
+
+func TestCollectRemoteWindowItemsInteractiveStates(t *testing.T) {
+	cases := []struct {
+		name  string
+		err   error
+		note  string
+		check func(listItem) bool
+	}{
+		{"needs auth", fmt.Errorf("%w: x", errRemoteNeedsAuth), "(auth needed — Enter to connect)", func(r listItem) bool { return r.remoteNeedsAuth }},
+		{"host key", fmt.Errorf("%w: x", errRemoteHostKeyChanged), "(host key changed — verify manually)", func(r listItem) bool { return r.remoteInert }},
+		{"tailscale", &tailscaleCheckErr{url: "https://login.tailscale.com/a/xyz"}, "(tailscale check — run: ssh lab)", func(r listItem) bool {
+			return r.remoteTailscaleCheck && r.remoteTailscaleURL == "https://login.tailscale.com/a/xyz"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useRemoteCache(t)
+			writeRemoteWindowCache("lab", sampleRemoteWindows(), time.Now())
+			opts := map[string]string{"@remote_bridge_hosts": "lab"}
+
+			items := collectRemoteWindowItems(opts, nil, winProbe(remoteProbeResult{}, tc.err))
+			if len(items) != 2 {
+				t.Fatalf("want header + host row only (no cached rows), got %d: %+v", len(items), items)
+			}
+			if !strings.Contains(items[1].plain, tc.note) || !tc.check(items[1]) {
+				t.Errorf("host row = %+v, want note %q and its flag", items[1], tc.note)
+			}
+		})
+	}
+}
+
+func TestCollectRemoteWindowItemsDropsSelfHost(t *testing.T) {
+	const selfID = "test-machine-id-self-windows"
+	local := remoteIdentity{MachineID: selfID, User: "noams"}
+	readLocalRemoteIdentity = func() remoteIdentity { return local }
+	t.Cleanup(func() {
+		readLocalRemoteIdentity = func() remoteIdentity {
+			return remoteIdentity{MachineID: readLocalMachineID(), User: localUsername()}
+		}
+	})
+	useRemoteCache(t)
+
+	opts := map[string]string{"@remote_bridge_hosts": "localhost lab"}
+	probe := func(host string) (remoteProbeResult, error) {
+		if host == "localhost" {
+			return probeWithWindows(local, remoteWindow{Session: "me", ID: "@1", Index: 1, Name: "x"}), nil
+		}
+		return probeWithWindows(remoteIdentity{MachineID: "other", User: "noams"}, remoteWindow{Session: "work", ID: "@2", Index: 1, Name: "y"}), nil
+	}
+
+	items := collectRemoteWindowItems(opts, nil, probe)
+	if len(items) != 3 {
+		t.Fatalf("want header + lab + work window, got %d: %+v", len(items), items)
+	}
+	for _, it := range items {
+		if it.remoteHost == "localhost" {
+			t.Fatalf("self alias must be dropped: %+v", it)
+		}
+	}
+	if !isCachedRemoteSelfAlias("localhost") {
+		t.Error("self alias should be cached after probe")
+	}
+}
+
+func TestCollectRemoteWindowItemsNoHosts(t *testing.T) {
+	probe := func(string) (remoteProbeResult, error) {
+		t.Fatal("probe must not run")
+		return remoteProbeResult{}, nil
+	}
+	if items := collectRemoteWindowItems(map[string]string{}, nil, probe); items != nil {
+		t.Fatalf("no hosts: want nil, got %+v", items)
+	}
+}
+
+func TestPendingRemoteWindowItems(t *testing.T) {
+	useRemoteCache(t)
+	now := time.Now()
+	writeRemoteWindowCache("lab", sampleRemoteWindows(), now)
+	writeRemoteWindowCache("old", sampleRemoteWindows()[:1], now.Add(-10*time.Minute))
+	opts := map[string]string{"@remote_bridge_hosts": "lab old fresh"}
+
+	items := pendingRemoteWindowItems(opts, parseBridgeSessions("lab-web|lab|web\n"))
+
+	if !items[0].isRemoteHeader {
+		t.Fatalf("first row should be the remote header: %+v", items[0])
+	}
+	var hosts []string
+	for _, it := range items {
+		if it.remoteHost != "" && it.remoteSess == "" {
+			hosts = append(hosts, it.remoteHost)
+			if !strings.HasSuffix(it.plain, remotePendingNote) {
+				t.Errorf("host row %q lacks the pending note", it.plain)
+			}
+		}
+	}
+	if !reflect.DeepEqual(hosts, []string{"lab", "old", "fresh"}) {
+		t.Fatalf("host rows = %v", hosts)
+	}
+	want := []string{"remote:lab:api:@3", "remote:lab:api:@4", "remote:old:api:@3"}
+	if got := windowRowTargets(items); !reflect.DeepEqual(got, want) {
+		t.Fatalf("cached targets = %v, want %v (web is bridged)", got, want)
+	}
+	for _, it := range items {
+		if it.remoteWindowID == "" {
+			continue
+		}
+		if it.remoteLive || it.remoteUnreachable {
+			t.Errorf("a first-paint cached row is neither live nor confirmed down: %+v", it)
+		}
+		stale := it.remoteHost == "old"
+		if stale != strings.Contains(it.plain, "(cached 10m ago)") {
+			t.Errorf("row %q: stale = %v mismatch", it.plain, stale)
+		}
+		if stale && !strings.HasSuffix(it.display, "api 1: server  (cached 10m ago)\033[0m") {
+			t.Errorf("stale row %q should be dimmed: %q", it.plain, it.display)
+		}
+	}
+}
+
+func TestPendingRemoteWindowItemsNoHosts(t *testing.T) {
+	if items := pendingRemoteWindowItems(map[string]string{}, nil); items != nil {
+		t.Fatalf("no hosts: want nil, got %+v", items)
 	}
 }
