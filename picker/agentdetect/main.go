@@ -329,7 +329,7 @@ func ownerMatches(registered string, pid int) bool {
 // -t <pane>`: display-message's target lookup is declared CMD_FIND_CANFAIL in
 // tmux's own source (cmd-display-message.c), so it tolerates a missing target
 // and exits 0 even against a dead pane — verified empirically against tmux
-// 3.7b, the exact binary this repo wraps. capture-pane's target flag is not
+// 3.7b (still CANFAIL in next-3.9 source). capture-pane's target flag is not
 // CANFAIL (cmd-capture-pane.c), so it correctly errors "can't find pane" and
 // exits nonzero on a dead one; it's also the pattern seededScreen already uses
 // elsewhere in this file, so no new probing style is introduced.
