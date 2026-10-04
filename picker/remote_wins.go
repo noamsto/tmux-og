@@ -166,16 +166,17 @@ func forgetRemoteSessionWindowsCache(host, sess string) {
 }
 
 // remoteKillWindowBody builds the remote-side tmux command that kills one
-// window. `=` makes the session part an exact name match and `@id` resolves
-// only when that window is linked into that session, so a moved or unknown
-// window fails (exit 1, the gone class) instead of killing another one.
-func remoteKillWindowBody(sess, id string) string {
-	return remoteTmuxCmd(`kill-window -t ` + shellQuote("="+sess+":"+id))
+// window. Both ids are probe-validated ($N, @N), so no remote name reaches the
+// login shell; `$sid:@id` resolves only when that window is linked into that
+// session, so a moved or unknown window fails (exit 1, the gone class) instead
+// of killing another one.
+func remoteKillWindowBody(sessionID, id string) string {
+	return remoteTmuxCmd(`kill-window -t ` + shellQuote(sessionID+":"+id))
 }
 
-// sshKillRemoteWindowCtx kills window id of sess on host over ssh.
-func sshKillRemoteWindowCtx(ctx context.Context, host, sess, id string) error {
-	return sshKillCtx(ctx, host, remoteKillWindowBody(sess, id))
+// sshKillRemoteWindowCtx kills window id of session sessionID on host over ssh.
+func sshKillRemoteWindowCtx(ctx context.Context, host, sessionID, id string) error {
+	return sshKillCtx(ctx, host, remoteKillWindowBody(sessionID, id))
 }
 
 // remoteWindowRowItem renders one remote window as a tree child of its host:
@@ -186,6 +187,7 @@ func remoteWindowRowItem(host string, w remoteWindow, note, cHost, cDim string, 
 	reset := "\033[0m"
 	sess := remoteDisplayName(w.Session)
 	name := remoteDisplayName(w.Name)
+	fullSess, fullName := sanitizeStatusText(w.Session), sanitizeStatusText(w.Name)
 	idx := strconv.Itoa(w.Index)
 	body := sess + " " + idx + ": " + name
 	plain := body
@@ -206,12 +208,13 @@ func remoteWindowRowItem(host string, w remoteWindow, note, cHost, cDim string, 
 		remoteSess:        w.Session,
 		remoteWindowID:    w.ID,
 		remoteWindowIndex: w.Index,
+		remoteSessionID:   w.SessionID,
 		remoteWindowName:  name,
 		display:           cHost + remoteTreeMid + reset + " " + label,
 		displayEnd:        cHost + remoteTreeEnd + reset + " " + label,
 		plain:             remoteTreeMid + " " + plain,
 		plainEnd:          remoteTreeEnd + " " + plain,
-		searchText:        host + "/" + sess + ":" + idx + " " + host + " " + sess + " " + name,
+		searchText:        host + "/" + fullSess + ":" + idx + " " + host + " " + fullSess + " " + fullName,
 	}
 }
 

@@ -90,7 +90,7 @@ func (r *killRun) run() {
 		r.emit(killProgress{index: i, total: total, item: item})
 		var err error
 		if item.remoteWindowID != "" {
-			err = sshKillRemoteWindowCtx(r.ctx, item.remoteHost, item.remoteSess, item.remoteWindowID)
+			err = sshKillRemoteWindowCtx(r.ctx, item.remoteHost, item.remoteSessionID, item.remoteWindowID)
 		} else {
 			err = sshKillRemoteSessionCtx(r.ctx, item.remoteHost, item.remoteSess)
 		}

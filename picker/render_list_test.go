@@ -150,6 +150,13 @@ func TestHintsNameTheRemoteKill(t *testing.T) {
 	if got := stripANSI(m.renderHints()); !strings.Contains(got, "^x:kill") || strings.Contains(got, "kill remote") {
 		t.Errorf("hints on a local row = %q, want a plain ^x:kill", got)
 	}
+
+	// ^x is a no-op on a restore row, so it must not advertise a remote kill.
+	restore := listItem{isRemoteRow: true, remoteHost: "lab", remoteSess: "api", remoteRestore: true}
+	m = tuiModel{width: 200, visible: []listItem{restore}}
+	if got := stripANSI(m.renderHints()); strings.Contains(got, "kill remote") {
+		t.Errorf("hints on a restore row = %q, want no kill remote", got)
+	}
 }
 
 // stickyItems is a session-mode list: column header, sessions, Remote section,

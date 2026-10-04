@@ -2308,9 +2308,12 @@
               # interpreter (no /usr/bin/env in the sandbox). util-linux
               # provides `script`, which remote-auth.bats uses to give the
               # accept-path cases a real pty (same pattern as
-              # remote-bridge-integration-tests below).
+              # remote-bridge-integration-tests below). The raw tmux runs the
+              # launcher's real probe script in remote-cold-start.bats'
+              # "real probe" cases, which skip without one; the fakes stay first
+              # on PATH everywhere else.
               nativeBuildInputs =
-                [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux]
+                [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux (mkTmux pkgs)]
                 # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
                 ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
               # The shell and Go halves of the mirror-name mapping (#783) are

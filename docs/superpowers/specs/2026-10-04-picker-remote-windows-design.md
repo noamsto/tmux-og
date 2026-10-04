@@ -127,6 +127,16 @@ third argument. The launcher forwards it as `OG_BRIDGE_WINDOW`, and the daemon
 already selects the mirror window for that remote index at startup
 (`localWinForRemoteIndex`). Status/hint labels read `<host>/<sess>:<index>`.
 
+**Revised after code review:** the attach spec carries the window **id**
+(`@N`, a string, `""` = none), not the index, and `og-remote-open`'s third
+argument accepts `^@?[0-9]+$`. An index slides under `renumber-windows` between
+the probe and the Enter, and cannot name window 0 where 0 doubles as "none". On
+a plain live-session open the launcher lists `#{window_id} #{window_index}` of
+the exact `=<sess>` and resolves the id (or an index) to its current index; the
+daemon still receives an index. An id that is gone falls back to the active
+window; an `@id` with `OG_REMOTE_RESTORE`, `OG_REMOTE_NEW_DIR` or no session is
+rejected. The text below describes the original index-only design.
+
 **Launcher fix: a caller-given index must not skip the gone-session guard.**
 Today `og-remote-open host sess win` with a non-empty `win` skips the probe's
 active-window lookup and the `[[ -z $win ]]` block — the launcher's only "session
@@ -179,7 +189,12 @@ It reuses the session picker's whole remote-kill flow: stage, the inline
 acts, default No, sized with `visibleWidth`), the off-Update `killRun` with
 cancel, the result classification and the forget-at-once on success / gone.
 
-- **Remote command:** `kill-window -t '=<sess>:@<id>'` through `remoteTmuxCmd`,
+- **Revised after code review:** the target is `'$<sessionID>:@<id>'`
+  (`$N` from the probe's `S|$N|name` line, digit-validated like the window id),
+  not `=<sess>:@<id>`: no remote-controlled name ever reaches the remote login
+  shell, where `shellQuote`'s POSIX escaping is unsafe under fish. The
+  resolution rule below is unchanged for `$N:@M`.
+- **Remote command (original):** `kill-window -t '=<sess>:@<id>'` through `remoteTmuxCmd`,
   the target single-quoted with `shellQuote`. `=` makes the session part an
   exact name match; `@<id>` resolves only when that window is linked into that
   session — on next-3.9 `kill-window -t '=a:@2'` for an `@2` in session `b`

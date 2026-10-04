@@ -353,6 +353,9 @@ func TestCollectRemoteWindowItemsBridgedSessions(t *testing.T) {
 	res := probeWithWindows(remoteIdentity{}, sampleRemoteWindows()...)
 
 	items := collectRemoteWindowItems(opts, parseBridgeSessions("lab-api|lab|api\n"), winProbe(res, nil))
+	if len(items) == 0 {
+		t.Fatal("no items collected")
+	}
 	if got, want := windowRowTargets(items), []string{"remote:lab:web:@7"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("window targets = %v, want only web's %v", got, want)
 	}
@@ -402,7 +405,9 @@ func TestCollectRemoteWindowItemsUnreachableKeepsCache(t *testing.T) {
 	opts := map[string]string{"@remote_bridge_hosts": "lab"}
 
 	items := collectRemoteWindowItems(opts, parseBridgeSessions("lab-web|lab|web\n"), winProbe(remoteProbeResult{}, errors.New("ssh down")))
-
+	if len(items) < 2 {
+		t.Fatalf("items = %d, want a header and a host row", len(items))
+	}
 	if !strings.Contains(items[1].plain, "(unreachable — open default)") {
 		t.Errorf("host row = %q, want the unreachable note", items[1].plain)
 	}
@@ -503,7 +508,9 @@ func TestPendingRemoteWindowItems(t *testing.T) {
 	opts := map[string]string{"@remote_bridge_hosts": "lab old fresh"}
 
 	items := pendingRemoteWindowItems(opts, parseBridgeSessions("lab-web|lab|web\n"))
-
+	if len(items) == 0 {
+		t.Fatal("no pending items")
+	}
 	if !items[0].isRemoteHeader {
 		t.Fatalf("first row should be the remote header: %+v", items[0])
 	}
@@ -543,5 +550,26 @@ func TestPendingRemoteWindowItems(t *testing.T) {
 func TestPendingRemoteWindowItemsNoHosts(t *testing.T) {
 	if items := pendingRemoteWindowItems(map[string]string{}, nil); items != nil {
 		t.Fatalf("no hosts: want nil, got %+v", items)
+	}
+}
+
+// searchText carries the full names: the display truncation must not make the
+// tail of a long name unsearchable.
+func TestRemoteWindowRowItemSearchTextKeepsFullNames(t *testing.T) {
+	name := strings.Repeat("alpha ", 10) + "zebrafinal"
+	w := remoteWindow{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: name}
+	row := remoteWindowRowItem("lab", w, "", "", "", false)
+	if !strings.Contains(row.searchText, "zebrafinal") {
+		t.Errorf("searchText = %q, want the last word of the long name", row.searchText)
+	}
+	if visibleWidth(row.remoteWindowName) > remoteDisplayNameCells {
+		t.Errorf("remoteWindowName must stay truncated, got %q", row.remoteWindowName)
+	}
+}
+
+func TestRemoteWindowRowItemCarriesSessionID(t *testing.T) {
+	w := remoteWindow{Session: "api", SessionID: "$9", ID: "@3", Index: 1, Name: "x"}
+	if got := remoteWindowRowItem("lab", w, "", "", "", false).remoteSessionID; got != "$9" {
+		t.Errorf("remoteSessionID = %q, want $9", got)
 	}
 }

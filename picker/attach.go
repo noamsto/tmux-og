@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -97,7 +96,7 @@ type attachResult struct {
 
 type attachSpec struct {
 	bin, host, sess string
-	window          int // remote window index to focus; 0 = none
+	window          string // remote window id (@N) to focus; "" = none
 	restore         bool
 }
 
@@ -159,8 +158,8 @@ func buildAttachCmd(spec attachSpec, grace time.Duration) *exec.Cmd {
 	if spec.sess != "" {
 		args = append(args, spec.sess)
 	}
-	if spec.window > 0 {
-		args = append(args, strconv.Itoa(spec.window))
+	if spec.window != "" {
+		args = append(args, spec.window)
 	}
 	cmd := exec.Command(spec.bin, args...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	// With no controlling tty (Setsid), ssh must fail a surprise auth prompt

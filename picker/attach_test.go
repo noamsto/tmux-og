@@ -345,9 +345,9 @@ func TestBuildAttachCmd(t *testing.T) {
 	}
 }
 
-func TestBuildAttachCmdWindowIndex(t *testing.T) {
-	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "api", window: 3}, attachKillGrace)
-	if want := []string{"/x/og-remote-open", "lab", "api", "3"}; !slices.Equal(cmd.Args, want) {
+func TestBuildAttachCmdWindowID(t *testing.T) {
+	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "api", window: "@7"}, attachKillGrace)
+	if want := []string{"/x/og-remote-open", "lab", "api", "@7"}; !slices.Equal(cmd.Args, want) {
 		t.Errorf("args = %v, want %v", cmd.Args, want)
 	}
 	cmd = buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "api"}, attachKillGrace)

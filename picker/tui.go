@@ -61,6 +61,7 @@ type listItem struct {
 	remoteMirrorTarget   string // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
 	remoteWindowID       string // remote window row: tmux @N of the window on the remote
 	remoteWindowIndex    int    // remote window row: window index on the remote
+	remoteSessionID      string // remote window row: tmux $N of the owning session — the kill targets it instead of the raw name
 	remoteWindowName     string // remote window row: render-safe window name (remoteDisplayName)
 	remoteLive           bool   // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
 }
@@ -1728,9 +1729,7 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 		sess:    first.remoteSess,
 		restore: first.remoteRestore,
 	}
-	if first.remoteWindowID != "" {
-		spec.window = first.remoteWindowIndex
-	}
+	spec.window = first.remoteWindowID
 	run := newAttachRun(spec)
 	m.attachSup.track(run)
 	m.attach = &attachState{

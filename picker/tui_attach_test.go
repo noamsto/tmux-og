@@ -472,7 +472,7 @@ func windowAttachModel(t *testing.T, bin string) tuiModel {
 	return m
 }
 
-func TestAttachWindowRowPassesIndexToLauncher(t *testing.T) {
+func TestAttachWindowRowPassesIDToLauncher(t *testing.T) {
 	dir := t.TempDir()
 	argv := filepath.Join(dir, "ARGV")
 	bin := fakeLauncher(t, `printf '%s\n' "$@" > `+argv)
@@ -499,8 +499,60 @@ func TestAttachWindowRowPassesIndexToLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "lab\napi\n2\n"; string(got) != want {
+	if want := "lab\napi\n@4\n"; string(got) != want {
 		t.Errorf("launcher argv = %q, want %q", got, want)
+	}
+}
+
+// Index 0 is a real window (base-index 0); passing the index would drop it.
+func TestAttachWindowRowAtIndexZeroPassesID(t *testing.T) {
+	argv := filepath.Join(t.TempDir(), "ARGV")
+	m := windowAttachModel(t, fakeLauncher(t, `printf '%s\n' "$@" > `+argv))
+	first := listItem{
+		isRemoteRow: true, remoteHost: "lab", remoteSess: "api",
+		remoteWindowID: "@0", remoteWindowIndex: 0,
+	}
+
+	cmd := m.beginAttach(first, nil)
+	if m.attach == nil {
+		t.Fatal("beginAttach left no attach")
+	}
+	id := m.attach.id
+	ch := runBatchAsync(cmd)
+	awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+		d, ok := msg.(attachDoneMsg)
+		return ok && d.id == id
+	})
+	got, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "lab\napi\n@0\n"; string(got) != want {
+		t.Errorf("launcher argv = %q, want %q", got, want)
+	}
+}
+
+// Esc on an attach begun from a window row cancels it like any other attach.
+func TestAttachEscCancelsWindowRowAttach(t *testing.T) {
+	m := windowAttachModel(t, fakeLauncher(t, "sleep 30"))
+	next, _ := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	if nm.attach == nil {
+		t.Fatal("enter did not start an attach")
+	}
+	run := nm.attach.run
+	t.Cleanup(run.cancel)
+
+	next, cmd := nm.Update(wallKey("esc"))
+	nm = next.(tuiModel)
+	if cmd != nil {
+		t.Errorf("esc returned a Cmd, want nil")
+	}
+	if nm.attach == nil || !nm.attach.cancelling {
+		t.Fatal("cancelling not set")
+	}
+	if run.ctx.Err() == nil {
+		t.Error("run's ctx not cancelled")
 	}
 }
 
@@ -510,6 +562,9 @@ func TestAttachFailureOnWindowRowOffersRetry(t *testing.T) {
 
 	next, cmd := m.Update(wallKey("enter"))
 	nm := next.(tuiModel)
+	if nm.attach == nil {
+		t.Fatal("enter did not start an attach")
+	}
 	id := nm.attach.id
 	ch := runBatchAsync(cmd)
 	done := awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {

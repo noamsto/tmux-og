@@ -153,18 +153,24 @@ phase() {
 	printf '%s\n' "$1" 2>/dev/null >&"$progress_fd" || true
 }
 
-if [[ -n $win && ! $win =~ ^[0-9]+$ ]]; then
-	echo "og-remote-open: window index must be numeric, got: $win" >&2
+if [[ -n $win && ! $win =~ ^@?[0-9]+$ ]]; then
+	echo "og-remote-open: window must be a numeric index or an @id, got: $win" >&2
 	exit 1
 fi
 
-# A caller-given index on a plain live-session open is a focus hint the probe
+# A caller-given window on a plain live-session open is a focus hint the probe
 # validates; a restore/new-dir open has no live session to validate against,
 # and with no session named there is nothing a stale index could point into.
-caller_win="$win"
 want_mode=""
 if [[ -n $win && -n $sess && -z ${OG_REMOTE_NEW_DIR:-} && -z ${OG_REMOTE_RESTORE:-} ]]; then
 	want_mode=1
+fi
+
+# An @id only means something resolved against a live session's windows, and
+# the daemon takes an index.
+if [[ $win == @* && -z $want_mode ]]; then
+	echo "og-remote-open: a window @id needs a live session to resolve against (not with OG_REMOTE_RESTORE, OG_REMOTE_NEW_DIR, or no session): $win" >&2
+	exit 1
 fi
 
 # Both pre-create a session the caller named, by different means, so honouring
@@ -288,7 +294,8 @@ fi
 
 if [[ -n $want_mode ]]; then
 	# Always the session's active window, against the exact target: empty
-	# means the session isn't there. want is 1 iff the caller's index exists.
+	# means the session isn't there. want is the caller's window (index or @id)
+	# resolved to its current index, empty when it no longer exists.
 	probe_script+="
 want_lit=$(shell_quote "$win")
 want=\"\$want_lit\""
@@ -298,7 +305,7 @@ win=""
 want_ok=""
 if [ -n "$sess" ]; then
 	win=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "=$sess" -F '"'"'#{window_index} #{window_active}'"'"' 2>/dev/null | awk '"'"'$2==1{print $1; exit}'"'"')
-	want_ok=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "=$sess" -F '"'"'#{window_index}'"'"' 2>/dev/null | awk -v w="$want" '"'"'$0==w{f=1} END{if(f)print 1}'"'"')
+	want_ok=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "=$sess" -F '"'"'#{window_id} #{window_index}'"'"' 2>/dev/null | awk -v w="$want" '"'"'$1==w||$2==w{print $2; exit}'"'"')
 fi'
 elif [[ -n $win ]]; then
 	probe_script+="
@@ -341,22 +348,7 @@ done <<<"$probe_out"
 # and comes back canonicalized (or unchanged, on a session that doesn't exist
 # yet) — probe_sess is always what the daemon must attach to.
 [[ -n $probe_sess ]] && sess="$probe_sess"
-if [[ -n $want_mode ]]; then
-	# Empty active window: the session is gone (or was never there), however
-	# fresh the row that named it. A stale index is only a focus hint, so an
-	# absent one falls back to the active window.
-	if [[ -z $probe_win ]]; then
-		echo "og-remote-open: session '$sess' has no window on $host — it is gone or was never there" >&2
-		exit 1
-	fi
-	if [[ $probe_want == 1 ]]; then
-		win="$caller_win"
-	else
-		win="$probe_win"
-	fi
-else
-	[[ -z $win ]] && win="$probe_win"
-fi
+[[ -z $win ]] && win="$probe_win"
 
 # A session already live on the remote (the common case) is named here, by
 # the probe above, not by the caller — so it hasn't run the check above yet.
@@ -365,6 +357,17 @@ require_session_name "$sess"
 if ! valid_remote_path "$remote_tmpdir"; then
 	echo "og-remote-open: unusable remote tmpdir: $remote_tmpdir" >&2
 	exit 1
+fi
+
+if [[ -n $want_mode ]]; then
+	# Empty active window: the session is gone (or was never there), however
+	# fresh the row that named it. A stale window is only a focus hint, so an
+	# absent one falls back to the active window.
+	if [[ -z $probe_win ]]; then
+		echo "og-remote-open: session '$sess' has no window on $host — it is gone or was never there" >&2
+		exit 1
+	fi
+	win="${probe_want:-$probe_win}"
 fi
 
 # Starts the host's OWN startup session — the remote's tmux-startup unit

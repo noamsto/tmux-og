@@ -191,21 +191,17 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 	}
 }
 
-func TestRemoteKillWindowBodyQuotesAndIsFishSafe(t *testing.T) {
-	body := remoteKillWindowBody("my sess", "@4")
-	if !strings.Contains(body, "env TMUX_TMPDIR=") || !strings.Contains(body, "kill-window -t '=my sess:@4'") {
-		t.Fatalf("body = %q, want an exact-match, quoted kill-window under env(1)", body)
+func TestRemoteKillWindowBodyTargetsIDsOnly(t *testing.T) {
+	body := remoteKillWindowBody("$3", "@4")
+	if !strings.Contains(body, "env TMUX_TMPDIR=") || !strings.Contains(body, "kill-window -t '$3:@4'") {
+		t.Fatalf("body = %q, want a quoted id-only kill-window under env(1)", body)
 	}
 	if strings.Contains(body, "td=") || strings.Contains(body, "; t=") {
 		t.Fatalf("body = %q must not use shell assignments (fish-incompatible)", body)
 	}
-	hostile := remoteKillWindowBody(`a'; rm -rf ~; '`, "@4")
-	if want := `'=a'\''; rm -rf ~; '\'':@4'`; !strings.Contains(hostile, want) {
-		t.Errorf("hostile body = %q, want the whole name as one quoted word %q", hostile, want)
-	}
 }
 
-// TestKillRemoteWindowReachesScratchServer proves kill-window -t '=<sess>:@id'
+// TestKillRemoteWindowReachesScratchServer proves kill-window -t '$<sid>:@id'
 // kills exactly that window, and that an id not linked into the named session
 // is the gone class and kills nothing.
 func TestKillRemoteWindowReachesScratchServer(t *testing.T) {
@@ -219,12 +215,17 @@ func TestKillRemoteWindowReachesScratchServer(t *testing.T) {
 		out, _ := s.tmux("list-windows", "-a", "-F", "#{session_name}|#{window_id}")
 		return out
 	}
+	sessionID := func(name string) string {
+		out, _ := s.tmux("display-message", "-p", "-t", "="+name+":", "#{session_id}")
+		return strings.TrimSpace(out)
+	}
+	aID, bID := sessionID(a), sessionID(b)
 	before := listWindows()
 	if want := b + "|@2"; !strings.Contains(before, want) {
 		t.Fatalf("setup: windows = %q, want %q", before, want)
 	}
 
-	err := sshKillRemoteWindowCtx(context.Background(), "lab", a, "@2")
+	err := sshKillRemoteWindowCtx(context.Background(), "lab", aID, "@2")
 	if !errors.Is(err, errRemoteSessionGone) {
 		t.Fatalf("kill of @2 under %s = %v, want the gone class", a, err)
 	}
@@ -233,7 +234,7 @@ func TestKillRemoteWindowReachesScratchServer(t *testing.T) {
 		t.Errorf("a wrong-session kill changed the windows: before %q after %q", before, got)
 	}
 
-	if err := sshKillRemoteWindowCtx(context.Background(), "lab", b, "@2"); err != nil {
+	if err := sshKillRemoteWindowCtx(context.Background(), "lab", bID, "@2"); err != nil {
 		t.Fatalf("kill of @2 under %s: %v", b, err)
 	}
 	after := listWindows()
