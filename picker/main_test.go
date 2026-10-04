@@ -299,7 +299,7 @@ func TestThemeFromOpts(t *testing.T) {
 // windowPaneRow builds one list-panes -a row in parseWindowPaneRows' field
 // order (see collectWindows' -F string), for tests below.
 func windowPaneRow(fields ...string) string {
-	const n = 37
+	const n = 38
 	row := make([]string, n)
 	copy(row, fields)
 	return strings.Join(row, "|")
@@ -514,5 +514,68 @@ func TestEmptyRemoteHostsOptionYieldsNoSection(t *testing.T) {
 	}
 	if got := pendingRemoteItems(map[string]string{"@remote_bridge_hosts": ""}, nil); got != nil {
 		t.Errorf("got %d rows, want no Remote section", len(got))
+	}
+}
+
+func TestParseWindowPaneRowsWindowID(t *testing.T) {
+	row := windowPaneRow("sess", "2", "w", "0", "fish", "1")
+	parts := strings.Split(row, "|")
+	parts[37] = "@7"
+	order, m := parseWindowPaneRows([]string{strings.Join(parts, "|")})
+	if len(order) != 1 {
+		t.Fatalf("parsed %d windows, want 1", len(order))
+	}
+	wi := m[order[0]]
+	if wi == nil || wi.id != "@7" {
+		t.Errorf("window info = %+v, want id @7", wi)
+	}
+}
+
+func currentWindowModel(t *testing.T, currentID string, stateGrouped bool) tuiModel {
+	t.Helper()
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", currentID)
+	ws := []windowData{
+		{session: "a", index: 0, id: "@1", name: "one"},
+		{session: "a", index: 1, id: "@2", name: "two"},
+		{session: "b", index: 0, id: "@3", name: "three"},
+		{session: "b", index: 1, id: "@4", name: "four"},
+	}
+	items := renderWindowItemsWith(ws, map[string]int64{"a": 200, "b": 100}, map[string]string{}, nil, "dark", 0, stateGrouped)
+	return newPickerModel(true, false, false, map[string]string{}, "dark", items, "")
+}
+
+func TestWindowItemsMarkCurrent(t *testing.T) {
+	m := currentWindowModel(t, "@4", false)
+	var marked []string
+	for _, it := range m.sessionItems {
+		if it.current {
+			marked = append(marked, it.target)
+		}
+	}
+	if len(marked) != 1 || marked[0] != "b:1" {
+		t.Fatalf("current rows = %v, want [b:1]", marked)
+	}
+}
+
+func TestWindowCursorOpensOnCurrent(t *testing.T) {
+	for _, grouped := range []bool{false, true} {
+		m := currentWindowModel(t, "@4", grouped)
+		if got := m.visible[m.cursor].target; got != "b:1" {
+			t.Errorf("grouped=%v: cursor on %q, want b:1", grouped, got)
+		}
+	}
+}
+
+func TestWindowCursorFallsBackWithoutCurrent(t *testing.T) {
+	for _, id := range []string{"", "@99"} {
+		m := currentWindowModel(t, id, false)
+		if m.cursor != m.firstSelectable(0) {
+			t.Errorf("id=%q: cursor = %d, want firstSelectable", id, m.cursor)
+		}
+		for _, it := range m.sessionItems {
+			if it.current {
+				t.Errorf("id=%q: %q marked current", id, it.target)
+			}
+		}
 	}
 }

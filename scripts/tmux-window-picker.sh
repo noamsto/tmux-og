@@ -3,10 +3,22 @@
 set -euo pipefail
 
 CLIENT=""
-if [[ ${1:-} == --client ]]; then
-	CLIENT=${2:-}
-	shift 2 || shift
-fi
+CURRENT=""
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--client)
+		CLIENT=${2:-}
+		shift 2 || shift
+		;;
+	--current)
+		CURRENT=${2:-}
+		shift 2 || shift
+		;;
+	*)
+		break
+		;;
+	esac
+done
 
 ARGS="--tui --windows"
 TITLE=" Windows "
@@ -47,8 +59,10 @@ HOST_WINDOW=""
 # session rather than the client's (measured: landed in an unrelated newer session).
 POPUP_CLIENT=()
 [[ -n $CLIENT ]] && POPUP_CLIENT=(-c "$CLIENT" -t "$CLIENT:")
+POPUP_ENV=()
+[[ -n $CURRENT ]] && POPUP_ENV=(-e "OG_PICKER_CURRENT_WINDOW=$CURRENT")
 set +e
-tmux display-popup "${POPUP_CLIENT[@]}" -E -w 90% -h "$HEIGHT" -b rounded -T "$TITLE" \
+tmux display-popup "${POPUP_CLIENT[@]}" "${POPUP_ENV[@]}" -E -w 90% -h "$HEIGHT" -b rounded -T "$TITLE" \
 	-S "fg=$BORDER_FG" "@picker_generate@ $ARGS"
 rc=$?
 set -e

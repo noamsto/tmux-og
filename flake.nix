@@ -530,6 +530,17 @@
               touch $out
             '';
 
+          # The window picker opens on and marks the client's current window
+          # (#903): both of its binds must hand the picker the window id.
+          window-picker-current-conf-assertions =
+            pkgs.runCommand "window-picker-current-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              [ "$(grep -Ec "^bind -N 'Open window picker.*' [wa] run-shell .*tmux-window-picker .*--current #\{q:window_id\}" "$CONF")" -eq 2 ]
+              touch $out
+            '';
+
           # Keep every directional bind's float-presence probe and geometry
           # inputs wired together. Otherwise floats silently disappear from
           # Ctrl-h/j/k/l while native select-pane continues to look plausible.

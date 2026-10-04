@@ -39,7 +39,7 @@ type listItem struct {
 	groupKey    string // window-mode header key this row re-attaches to
 	// when filtering: session name, or agent state
 	bridgeHost           string // @bridge_host — set when this session mirrors a remote host
-	current              bool   // this is the session the invoking tmux client is attached to
+	current              bool   // session mode: the session the client is attached to; window mode: the client's current window
 	bridgePane           string // window row: @bridge_pane — the remote pane whose window this mirrors
 	bridgeSock           string // window row: @bridge_sock — ctl socket of the daemon mirroring it
 	hasActiveAgent       bool   // used for --agent filter
@@ -403,6 +403,9 @@ func newPickerModel(windowMode, agentOnly, wall bool, opts map[string]string, th
 	}
 	m = m.recombine().withFilter()
 	m.cursor = m.firstSelectable(0)
+	if windowMode {
+		m.cursor = m.cursorOnCurrent()
+	}
 	if m.mode == modeWall {
 		m = m.snapWall()
 	}
@@ -1550,6 +1553,17 @@ func (m tuiModel) firstSelectable(from int) int {
 		}
 	}
 	return from
+}
+
+// cursorOnCurrent is the visible row marked current, or firstSelectable(0)
+// when none is (no id passed, unknown id, or filtered out by the view).
+func (m tuiModel) cursorOnCurrent() int {
+	for i, item := range m.visible {
+		if item.current && m.isSelectable(item) {
+			return i
+		}
+	}
+	return m.firstSelectable(0)
 }
 
 func (m tuiModel) currentTarget() string {
@@ -3079,8 +3093,10 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 	hostColor := hostColorFunc(tmuxOpts)
 	rc := newResourceColors(tmuxOpts)
 	home := os.Getenv("HOME")
+	cPeach := ansiFg(thmPeach)
 	reset := "\033[0m"
 	dim := "\033[2m"
+	currentWindow := os.Getenv("OG_PICKER_CURRENT_WINDOW")
 	prCols := prColors{success: cGreen, failure: ansiFg(thmRed), pending: ansiFg(thmPeach), merged: cMauve, closed: ansiFg(thmOverlay0), required: ansiFg(thmOverlay0), underline: "\033[4m", reset: reset}
 
 	var groups []windowGroup
@@ -3368,8 +3384,11 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		for wi, w := range g.windows {
 			r := winRows[fmt.Sprintf("%s:%d", w.session, w.index)]
 
+			isCurrent := currentWindow != "" && w.id == currentWindow
 			activeMarker := " "
-			if w.active && multiWin {
+			if isCurrent {
+				activeMarker = cPeach + "●" + reset
+			} else if w.active && multiWin {
 				activeMarker = cGreen + "▸" + reset
 			}
 
@@ -3449,6 +3468,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 				plain:          plain,
 				searchText:     search,
 				session:        w.session,
+				current:        isCurrent,
 				groupKey:       g.key,
 				bridgeHost:     w.bridgeHost,
 				bridgePane:     w.bridgePane,
