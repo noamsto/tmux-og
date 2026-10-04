@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -162,6 +163,19 @@ func forgetRemoteWindowCache(host, id string) {
 // forgetRemoteSessionWindowsCache drops every cached window of sess on host.
 func forgetRemoteSessionWindowsCache(host, sess string) {
 	forgetRemoteWindowsWhere(host, func(w remoteWindow) bool { return w.Session == sess })
+}
+
+// remoteKillWindowBody builds the remote-side tmux command that kills one
+// window. `=` makes the session part an exact name match and `@id` resolves
+// only when that window is linked into that session, so a moved or unknown
+// window fails (exit 1, the gone class) instead of killing another one.
+func remoteKillWindowBody(sess, id string) string {
+	return remoteTmuxCmd(`kill-window -t ` + shellQuote("="+sess+":"+id))
+}
+
+// sshKillRemoteWindowCtx kills window id of sess on host over ssh.
+func sshKillRemoteWindowCtx(ctx context.Context, host, sess, id string) error {
+	return sshKillCtx(ctx, host, remoteKillWindowBody(sess, id))
 }
 
 // remoteWindowRowItem renders one remote window as a tree child of its host:

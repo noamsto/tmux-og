@@ -275,7 +275,7 @@ func (m tuiModel) renderHints() string {
 	}
 	// ^x is unconfirmed here, so a row whose kill lands on another machine has
 	// to say so before it is pressed.
-	if hasItem && item.bridgePane != "" {
+	if hasItem && (item.bridgePane != "" || item.remoteSess != "") {
 		killLabel = "kill remote"
 	}
 
@@ -405,6 +405,9 @@ func (m tuiModel) renderKillConfirm() string {
 	}
 	warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
 	prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
+	if it := m.killConfirm[0]; it.remoteWindowID != "" {
+		prompt = "kill " + remoteRowLabel(it) + " " + it.remoteWindowName + " on the remote?"
+	}
 	if n := len(m.killConfirm); n > 1 {
 		prompt = "kill " + strconv.Itoa(n) + " remote sessions?"
 	}

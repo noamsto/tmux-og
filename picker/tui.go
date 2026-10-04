@@ -872,6 +872,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.zoxideCmd()
 		}
+		if item.remoteWindowID != "" {
+			if !item.remoteLive {
+				m.statusMsg = remoteRowLabel(item) + ": listed from cache — wait for the probe, then ^x"
+				return m, nil
+			}
+			m.killConfirm = []listItem{item}
+			return m, nil
+		}
 		if isKillableRemoteSession(item) {
 			targets := m.killableMarkedRemoteItems()
 			if len(targets) == 0 {
@@ -1849,9 +1857,15 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// remoteRowLabel is the sanitized "host" or "host/sess" text used to name a
-// remote row in status/hint lines.
+// remoteRowLabel is the sanitized "host", "host/sess" or "host/sess:idx" text
+// used to name a remote row in status/hint lines.
 func remoteRowLabel(it listItem) string {
+	return sanitizeStatusText(rawRemoteRowLabel(it))
+}
+
+// rawRemoteRowLabel is remoteRowLabel before sanitizing, for a caller that
+// sanitizes the whole message it embeds the label in.
+func rawRemoteRowLabel(it listItem) string {
 	label := it.remoteHost
 	if it.remoteSess != "" {
 		label += "/" + it.remoteSess
@@ -1859,7 +1873,7 @@ func remoteRowLabel(it listItem) string {
 	if it.remoteWindowID != "" {
 		label += ":" + strconv.Itoa(it.remoteWindowIndex)
 	}
-	return sanitizeStatusText(label)
+	return label
 }
 
 // beginKill returns the Cmds that drive a new kill batch. The fork happens in
@@ -1896,19 +1910,24 @@ func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
 	var forget []listItem
 	var msgs []string
 	for _, it := range res.results {
+		what := rawRemoteRowLabel(it.item)
+		kind := "kill_remote_session"
+		if it.item.remoteWindowID != "" {
+			kind = "kill_remote_window"
+		}
 		switch {
 		case it.cancelled:
-			msgs = append(msgs, sanitizeStatusText("cancelled killing "+it.item.remoteHost+"/"+it.item.remoteSess))
+			msgs = append(msgs, sanitizeStatusText("cancelled killing "+what))
 		case it.err == nil:
-			logEvent("picker", "event", "kill_remote_session", "host", it.item.remoteHost, "sess", it.item.remoteSess)
+			logEvent("picker", "event", kind, "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID)
 			forget = append(forget, it.item)
 		case errors.Is(it.err, errRemoteSessionGone):
-			logEvent("picker", "event", "kill_remote_session_gone", "host", it.item.remoteHost, "sess", it.item.remoteSess)
-			msgs = append(msgs, sanitizeStatusText(it.item.remoteHost+"/"+it.item.remoteSess+" was already gone"))
+			logEvent("picker", "event", kind+"_gone", "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID)
+			msgs = append(msgs, sanitizeStatusText(what+" was already gone"))
 			forget = append(forget, it.item)
 		default:
-			logEvent("picker", "event", "kill_remote_session_failed", "host", it.item.remoteHost, "sess", it.item.remoteSess, "error", it.err.Error())
-			msgs = append(msgs, sanitizeStatusText(remoteKillFailure(it.item.remoteHost, it.item.remoteSess, it.err)))
+			logEvent("picker", "event", kind+"_failed", "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID, "error", it.err.Error())
+			msgs = append(msgs, sanitizeStatusText(remoteKillFailure(what, it.err)))
 		}
 	}
 	m = m.forgetRemoteRows(forget)
@@ -1944,8 +1963,8 @@ func (m tuiModel) handleKillRunKey(key string) (tea.Model, tea.Cmd) {
 
 // remoteKillFailure is the hint-line wording for a kill ssh that did not
 // complete; the specific ssh state is worth naming over a bare "failed".
-func remoteKillFailure(host, sess string, err error) string {
-	prefix := host + "/" + sess + ": "
+func remoteKillFailure(what string, err error) string {
+	prefix := what + ": "
 	switch {
 	case errors.Is(err, errRemoteNeedsAuth):
 		return prefix + "ssh needs auth"
@@ -1965,16 +1984,34 @@ func forgottenRemoteKey(host, sess string) string {
 	return host + "\x00" + sess
 }
 
-// filterForgottenRemoteRows drops Remote-section rows for sessions killed in
-// this popup and undoes the cache write a late probe may have left behind (#736).
+// forgottenKey keys a killed Remote row for the forgotten set: the session key,
+// plus the window id for a window row so killing one window never forgets its
+// siblings.
+func forgottenKey(it listItem) string {
+	key := forgottenRemoteKey(it.remoteHost, it.remoteSess)
+	if it.remoteWindowID != "" {
+		key += "\x00" + it.remoteWindowID
+	}
+	return key
+}
+
+// filterForgottenRemoteRows drops Remote-section rows for sessions and windows
+// killed in this popup and undoes the cache write a late probe may have left
+// behind (#736). A dropped window row never touches the session cache: its
+// session may have other windows.
 func (m tuiModel) filterForgottenRemoteRows(items []listItem) []listItem {
 	if len(m.forgotten) == 0 {
 		return items
 	}
 	kept := make([]listItem, 0, len(items))
 	for _, it := range items {
-		if it.remoteSess != "" && m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
-			forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		if it.remoteSess != "" && m.forgotten[forgottenKey(it)] {
+			if it.remoteWindowID != "" {
+				forgetRemoteWindowCache(it.remoteHost, it.remoteWindowID)
+			} else {
+				forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+				forgetRemoteSessionWindowsCache(it.remoteHost, it.remoteSess)
+			}
 			continue
 		}
 		kept = append(kept, it)
@@ -1998,11 +2035,13 @@ func (m tuiModel) filterForgottenMirrors(mirrors []bridgeMirror) []bridgeMirror 
 	return kept
 }
 
-// forgetRemoteRows drops killed (or already-gone) remote sessions from the
-// picker at once: the host's cache, the in-memory Remote rows, any local mirror
-// (torn down through stopBridgeDaemon, the same owner the manual mirror close
-// uses), and the multi-select marks. Without the cache rewrite the row would
-// revive from a stale listing on the next launch.
+// forgetRemoteRows drops killed (or already-gone) remote sessions and windows
+// from the picker at once: the host's caches, the in-memory Remote rows, any
+// local mirror of a killed session (torn down through stopBridgeDaemon, the
+// same owner the manual mirror close uses), and the multi-select marks.
+// Without the cache rewrite the row would revive from a stale listing on the
+// next launch. A killed window whose session has no other window row left also
+// drops the session from the session cache.
 func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	if len(targets) == 0 {
 		return m
@@ -2012,24 +2051,38 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 		m.forgotten = make(map[string]bool, len(targets))
 	}
 	for _, it := range targets {
-		killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
-		m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
+		killed[forgottenKey(it)] = true
+		m.forgotten[forgottenKey(it)] = true
+		delete(m.marked, it.target)
+		if it.remoteWindowID != "" {
+			forgetRemoteWindowCache(it.remoteHost, it.remoteWindowID)
+			continue
+		}
 		forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		forgetRemoteSessionWindowsCache(it.remoteHost, it.remoteSess)
 		for _, bm := range m.mirrors {
 			if bm.host == it.remoteHost && bm.sess == it.remoteSess {
 				stopBridgeDaemonFn(bm.target)
 			}
 		}
-		delete(m.marked, it.target)
 	}
 	keptRows := make([]listItem, 0, len(m.remoteItems))
+	windowsLeft := make(map[string]bool)
 	for _, it := range m.remoteItems {
-		if it.remoteSess != "" && killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
+		if it.remoteSess != "" && killed[forgottenKey(it)] {
 			continue
+		}
+		if it.remoteWindowID != "" {
+			windowsLeft[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
 		}
 		keptRows = append(keptRows, it)
 	}
 	m.remoteItems = keptRows
+	for _, it := range targets {
+		if it.remoteWindowID != "" && !windowsLeft[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
+			forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		}
+	}
 	keptMirrors := make([]bridgeMirror, 0, len(m.mirrors))
 	for _, bm := range m.mirrors {
 		if killed[forgottenRemoteKey(bm.host, bm.sess)] {

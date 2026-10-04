@@ -2353,3 +2353,235 @@ func TestWindowModeRefreshKeepsRemoteItems(t *testing.T) {
 		t.Errorf("remoteItems = %d after refreshMsg, want %d untouched", got, before)
 	}
 }
+
+// liveWindowKillModel is a window-mode model whose remote rows came from a
+// probe in this popup (remoteLive), with both caches seeded to match: windows
+// api @3/@4 (indexes 1/2) and web @7.
+func liveWindowKillModel(t *testing.T, wins ...remoteWindow) tuiModel {
+	t.Helper()
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "api", "web")
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	m := newPickerModel(true, false, false, opts, "dark", localWindowItems(false), "")
+	m.remoteItems = collectRemoteWindowItems(opts, nil, winProbe(probeWithWindows(remoteIdentity{}, wins...), nil))
+	m = m.recombine().withFilter()
+	return m
+}
+
+func killTestWindows() []remoteWindow {
+	return []remoteWindow{
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
+		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite"},
+	}
+}
+
+func cursorOnRemoteWindow(t *testing.T, m tuiModel, id string) tuiModel {
+	t.Helper()
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.remoteWindowID == id })
+	return m
+}
+
+func remoteWindowIDs(items []listItem) string {
+	var ids []string
+	for _, it := range items {
+		if it.remoteWindowID != "" {
+			ids = append(ids, it.remoteWindowID)
+		}
+	}
+	return strings.Join(ids, ",")
+}
+
+func cachedWindowIDs(t *testing.T, host string) string {
+	t.Helper()
+	c, _ := readRemoteWindowCache(host)
+	var ids []string
+	for _, w := range c.Windows {
+		ids = append(ids, w.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func cachedSessions(host string) string {
+	c, _ := readRemoteSessionCache(host)
+	return strings.Join(c.Sessions, ",")
+}
+
+func TestCtrlXOnLiveRemoteWindowStagesKillConfirm(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	m := cursorOnRemoteWindow(t, liveWindowKillModel(t, killTestWindows()...), "@4")
+
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatalf("staging a kill must not run a cmd, got %v", cmd)
+	}
+	mm := next.(tuiModel)
+	mm.width = 120
+	if len(mm.killConfirm) != 1 || mm.killConfirm[0].remoteWindowID != "@4" {
+		t.Fatalf("killConfirm = %+v, want the @4 window row", mm.killConfirm)
+	}
+	if got := stripANSI(mm.renderHints()); !strings.Contains(got, "kill lab/api:2 logs on the remote?") || !strings.Contains(got, "(y/N)") {
+		t.Errorf("hints = %q, want the window kill prompt", got)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("staging a kill ran ssh")
+	}
+}
+
+func TestRemoteWindowKillConfirmDefaultIsNo(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	m := cursorOnRemoteWindow(t, liveWindowKillModel(t, killTestWindows()...), "@4")
+	m.killConfirm = []listItem{m.visible[m.cursor]}
+	keys := []tea.KeyPressMsg{{Code: 'n'}, {Code: tea.KeyEscape}, {Code: tea.KeySpace}, {Code: 'x', Mod: tea.ModCtrl}}
+	for _, key := range keys {
+		next, cmd := m.handleKey(key)
+		if cmd != nil || len(next.(tuiModel).killConfirm) != 0 {
+			t.Errorf("key %q did not cancel the prompt", key.String())
+		}
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("a non-y key ran the kill")
+	}
+}
+
+// A cached row's id may belong to a server that has since restarted, so ^x
+// stages nothing until the probe confirms the row.
+func TestCtrlXOnCachedRemoteWindowStagesNothing(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	m := windowAttachModel(t, "unused")
+
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	mm := next.(tuiModel)
+	if cmd != nil || len(mm.killConfirm) != 0 {
+		t.Fatalf("staged a kill for a cached row: confirm=%+v cmd=%v", mm.killConfirm, cmd)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/api:2") || !strings.Contains(mm.statusMsg, "cache") {
+		t.Errorf("statusMsg = %q, want the row label and a cache hint", mm.statusMsg)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("^x on a cached row ran ssh")
+	}
+}
+
+// killLiveWindow stages and confirms a kill of window id against a fake ssh
+// exiting code, returning the model once the kill run has landed.
+func killLiveWindow(t *testing.T, code int, id string, wins ...remoteWindow) tuiModel {
+	t.Helper()
+	fakeKillSSH(t, code)
+	m := cursorOnRemoteWindow(t, liveWindowKillModel(t, wins...), id)
+	m.killConfirm = []listItem{m.visible[m.cursor]}
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	return driveKill(t, next, cmd)
+}
+
+func TestRemoteWindowKillYesKillsAndForgets(t *testing.T) {
+	mm := killLiveWindow(t, 0, "@4", killTestWindows()...)
+
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@7" {
+		t.Errorf("remoteItems windows = %q, want @3,@7", got)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@7" {
+		t.Errorf("window cache = %q, want @3,@7", got)
+	}
+	if !mm.forgotten[forgottenKey(listItem{remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"})] {
+		t.Errorf("the killed window was not recorded as forgotten: %v", mm.forgotten)
+	}
+	if got := cachedSessions("lab"); got != "api,web" {
+		t.Errorf("session cache = %q, want api,web (api still has @3)", got)
+	}
+}
+
+func TestRemoteWindowKillGoneForgetsRow(t *testing.T) {
+	mm := killLiveWindow(t, 1, "@4", killTestWindows()...)
+
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@7" {
+		t.Errorf("remoteItems windows = %q, want @3,@7", got)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/api:2 was already gone") {
+		t.Errorf("statusMsg = %q, want an already-gone hint naming the window", mm.statusMsg)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@7" {
+		t.Errorf("window cache = %q, want @3,@7", got)
+	}
+}
+
+func TestRemoteWindowKillUnreachableKeepsRow(t *testing.T) {
+	mm := killLiveWindow(t, 255, "@4", killTestWindows()...)
+
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@4,@7" {
+		t.Errorf("remoteItems windows = %q, want all three", got)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/api:2: unreachable") {
+		t.Errorf("statusMsg = %q, want an unreachable hint naming the window", mm.statusMsg)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@4,@7" {
+		t.Errorf("window cache = %q, want it untouched", got)
+	}
+}
+
+func TestRemoteWindowKillLastWindowDropsSessionFromSessionCache(t *testing.T) {
+	mm := killLiveWindow(t, 0, "@7", killTestWindows()...)
+
+	if got := cachedSessions("lab"); got != "api" {
+		t.Errorf("session cache = %q, want api only (web lost its last window)", got)
+	}
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@4" {
+		t.Errorf("remoteItems windows = %q, want @3,@4", got)
+	}
+}
+
+// The probe lists (and caches) the window just before the kill lands; a late
+// remoteMsg must neither revive it nor forget the session's other windows.
+func TestRemoteWindowKillLateProbeDoesNotReviveOrForgetSession(t *testing.T) {
+	mm := killLiveWindow(t, 0, "@4", killTestWindows()...)
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	late := collectRemoteWindowItems(opts, nil, winProbe(probeWithWindows(remoteIdentity{}, killTestWindows()...), nil))
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@4,@7" {
+		t.Fatalf("setup: the late probe should have rewritten the cache, got %q", got)
+	}
+
+	next, _ := mm.Update(remoteMsg{items: late})
+	mm = next.(tuiModel)
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@7" {
+		t.Errorf("late remoteMsg revived the killed window: %q", got)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@7" {
+		t.Errorf("window cache = %q, want the late write undone", got)
+	}
+	if got := cachedSessions("lab"); got != "api,web" {
+		t.Errorf("session cache = %q, want api kept while its other windows live", got)
+	}
+}
+
+// Killing a session from the session picker also clears its windows from the
+// window cache, so the next window-picker first paint cannot resurrect them.
+func TestRemoteSessionKillDropsSessionWindowsFromWindowCache(t *testing.T) {
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "mono", "other")
+	writeRemoteWindowCache("lab", []remoteWindow{
+		{Session: "mono", SessionID: "$1", ID: "@1", Index: 1, Name: "a"},
+		{Session: "other", SessionID: "$2", ID: "@2", Index: 1, Name: "b"},
+	}, time.Now())
+	fakeKillSSH(t, 0)
+	mono := killRemoteRow("lab", "mono")
+	m := tuiModel{width: 120, remoteItems: []listItem{mono}, killConfirm: []listItem{mono}}
+	m = m.recombine().withFilter()
+
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	driveKill(t, next, cmd)
+	if got := cachedWindowIDs(t, "lab"); got != "@2" {
+		t.Errorf("window cache = %q, want only other's @2", got)
+	}
+}
+
+func TestRenderHintsKillRemoteLabelOnRemoteSessionAndWindowRows(t *testing.T) {
+	for name, row := range map[string]listItem{
+		"session": {remoteHost: "lab", remoteSess: "api"},
+		"window":  {remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"},
+	} {
+		m := tuiModel{width: 200, visible: []listItem{row}}
+		if got := stripANSI(m.renderHints()); !strings.Contains(got, "^x:kill remote") {
+			t.Errorf("%s row hints = %q, want ^x:kill remote", name, got)
+		}
+	}
+}

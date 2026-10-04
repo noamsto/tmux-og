@@ -722,6 +722,12 @@ func sshKillRemoteSession(host, sess string) error {
 // ctx, so a kill run can bound and cancel an in-flight ssh (killRun in
 // kill.go). It derives its own remoteProbeTimeout deadline from ctx.
 func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
+	return sshKillCtx(ctx, host, remoteKillSessionBody(sess))
+}
+
+// sshKillCtx runs a remote kill command body on host over ssh, classifying a
+// failure with classifyKillErr.
+func sshKillCtx(ctx context.Context, host, body string) error {
 	ctx, cancel := context.WithTimeout(ctx, remoteProbeTimeout)
 	defer cancel()
 
@@ -731,7 +737,7 @@ func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
 		"-T",
 		host,
 		"--",
-		remoteKillSessionBody(sess),
+		body,
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
