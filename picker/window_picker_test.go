@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func windowListModel(items []listItem) tuiModel {
+func windowPickerModel(items []listItem) tuiModel {
 	m := tuiModel{windowMode: true, ready: true, theme: "dark", width: 120, height: 30, sessionItems: items}
 	m = m.recombine().withFilter()
 	m.cursor = m.firstSelectable(0)
@@ -24,7 +24,7 @@ func TestWindowScratchFilter(t *testing.T) {
 		{target: "scratch-x", plain: "scratch-x", isHeader: true, session: "scratch-x"},
 		winRow("scratch-x", 1, true),
 	}
-	m := windowListModel(items)
+	m := windowPickerModel(items)
 	for _, it := range m.visible {
 		if it.session == "scratch-x" {
 			t.Fatalf("scratch window visible by default: %+v", m.visible)
@@ -54,7 +54,7 @@ func TestWindowFooterNoScopeHint(t *testing.T) {
 
 func TestWindowCursorFollowsTarget(t *testing.T) {
 	a, b, c := winRow("main", 1, false), winRow("main", 2, false), winRow("main", 3, false)
-	m := windowListModel([]listItem{a, b, c})
+	m := windowPickerModel([]listItem{a, b, c})
 	m.cursor = 1 // main:2
 	want := m.visible[m.cursor].target
 
@@ -96,7 +96,7 @@ func TestMirrorWindowKillConfirms(t *testing.T) {
 	t.Cleanup(func() { bridgeKillWindow = orig })
 
 	for _, cancel := range []string{"n", "esc"} {
-		m := windowListModel([]listItem{mirror})
+		m := windowPickerModel([]listItem{mirror})
 		next, _ := m.handleKey(wallKey("ctrl+x"))
 		m = next.(tuiModel)
 		if len(m.killConfirm) != 1 || len(killed) != 0 {
@@ -116,7 +116,7 @@ func TestMirrorWindowKillConfirms(t *testing.T) {
 		}
 	}
 
-	m := windowListModel([]listItem{mirror})
+	m := windowPickerModel([]listItem{mirror})
 	next, _ := m.handleKey(wallKey("ctrl+x"))
 	next, _ = next.(tuiModel).handleKey(wallKey("y"))
 	if len(killed) != 1 || killed[0] != "%7" {
