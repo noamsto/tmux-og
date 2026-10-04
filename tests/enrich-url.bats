@@ -24,6 +24,10 @@ setup() {
 		"pr view https://github.com/acme/widgets/pull/42 "*)
 			printf '%s' '{"number":42,"title":"t","url":"https://github.com/acme/widgets/pull/42","state":"MERGED","mergeable":"UNKNOWN","isDraft":false,"reviewDecision":"","autoMergeRequest":null,"statusCheckRollup":[]}'
 			;;
+		"pr view https://github.com/acme/widgets/pull/43 "*) exit 1 ;;
+		"pr view https://github.com/acme/widgets/pull/44 "*)
+			printf '%s' '{"number":44,"title":"t","url":"https://github.com/acme/widgets/pull/44","state":"OPEN","mergeable":"MERGEABLE","isDraft":false,"reviewDecision":"","autoMergeRequest":null,"statusCheckRollup":[]}'
+			;;
 		*) printf '[]' ;;
 		esac
 	EOF
@@ -88,4 +92,46 @@ gone_window() {
 	bash "$PR_ENRICH_SCRIPT" --tick-run
 	bash "$PR_ENRICH_SCRIPT" --tick-run
 	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 1 ]
+}
+
+@test "a failed gh call leaves the last-known options" {
+	gone_window
+	tmux set-option -t "$WIN" -w @pr_url https://github.com/acme/widgets/pull/43
+	run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(tmux show-options -t "$WIN" -wqv @pr_state)" = open ]
+	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 1 ]
+}
+
+@test "an open PR is served from cache inside TTL and refetched after it" {
+	gone_window
+	tmux set-option -t "$WIN" -w @pr_url https://github.com/acme/widgets/pull/44
+	bash "$PR_ENRICH_SCRIPT" --tick-run
+	bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 1 ]
+	find "$OG_ENRICH_CACHE_DIR" -name '*.json' ! -name '*.checks.json' -exec touch -d '-120 seconds' {} +
+	bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 2 ]
+}
+
+@test "url-only windows stay under the 30-entry cap" {
+	gone_window
+	for _ in $(seq 1 34); do
+		tmux new-window -d -t s -c "$BATS_TEST_TMPDIR"
+	done
+	local w n=100
+	for w in $(tmux list-windows -t s -F '#{window_id}'); do
+		tmux set-option -t "$w" -w @worktree "$BATS_TEST_TMPDIR/gone"
+		tmux set-option -t "$w" -w @branch "b$n"
+		tmux set-option -t "$w" -w @pr_url "https://github.com/acme/widgets/pull/$n"
+		n=$((n + 1))
+	done
+	run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 30 ]
+}
+
+@test "the checks-only pending pass makes no url call" {
+	gone_window
+	tmux set-option -t "$WIN" -w @pr_url "$PR_URL"
+	run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
+	[ ! -s "$GH_LOG" ]
 }

@@ -497,7 +497,10 @@ refresh_url_pr() {
 	if [[ $REPLY == fetch ]] && command -v gh >/dev/null 2>&1; then
 		(
 			acquire_lock "$lock" || exit 0
-			json="$(gh pr view "$url" --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null)" || exit 0
+			json="$(gh pr view "$url" --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null)" || {
+				log_enabled && log_event enrich event pr_url_fail url "$url"
+				exit 0
+			}
 			[[ -n $json ]] || exit 0
 			jq -c '[del(.statusCheckRollup)]' <<<"$json" >"$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
 			jq -c '[{statusCheckRollup: (.statusCheckRollup // [])}]' <<<"$json" >"$check_cache.tmp.$$" && mv -f "$check_cache.tmp.$$" "$check_cache"
