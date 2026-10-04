@@ -1693,6 +1693,102 @@ func TestEnrichRefreshVerbGuardsBranchAndDir(t *testing.T) {
 	}
 }
 
+// An enrich-refresh press must not paint the mirrored pane either. The body
+// ends in a poller that can fail — tmux-pr-enrich unresolvable on an older
+// remote — and a `-t` run-shell job's stdout and non-zero exit both land in
+// view mode on the target pane, which wedges the mirror (themeProbeCmd's note).
+// The test pins a pristine tmux and a stub dir as the only PATH entries, so the
+// poller resolves to the stub and no real one can answer in its place (the
+// tmux-og wrapper injects a bin dir carrying the real tmux-pr-enrich).
+func TestEnrichRefreshVerbNeverOverlaysPane(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	tests := []struct {
+		name   string
+		poller bool
+	}{
+		{"no tmux-pr-enrich on PATH", false},
+		{"tmux-pr-enrich prints and exits 1", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			binDir := filepath.Join(dir, "bin")
+			if err := os.Mkdir(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(dir, "ran")
+			if tc.poller {
+				writeStub(t, filepath.Join(binDir, "tmux-pr-enrich"),
+					"#!/bin/sh\n: >\""+marker+"\"\necho noisy\nexit 1\n")
+			}
+
+			tmux := startIsolatedTmux(t, "PATH="+binDir+":"+filepath.Dir(tmuxPath))
+			paneOut, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			pane := strings.TrimSpace(string(paneOut))
+			winOut, err := tmux("display-message", "-p", "-t", "w", "#{window_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			win := strings.TrimSpace(string(winOut))
+
+			// Both guards must pass, or the body exits before the poller and the
+			// assertion below would hold on the unfixed body too.
+			if out, err := tmux("set-option", "-w", "-t", win, "@branch", "b").CombinedOutput(); err != nil {
+				t.Fatalf("set-option @branch: %v\n%s", err, out)
+			}
+			if out, err := tmux("set-option", "-w", "-t", win, "@worktree", dir).CombinedOutput(); err != nil {
+				t.Fatalf("set-option @worktree: %v\n%s", err, out)
+			}
+
+			cmds, err := verbs["enrich-refresh"].build(pane, win, "w", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cmds) != 1 {
+				t.Fatalf("want one command, got %v", cmds)
+			}
+			conf := filepath.Join(dir, "cmd.conf")
+			if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+				t.Fatalf("source-file: %v\n%s", err, out)
+			}
+
+			if !tc.poller {
+				time.Sleep(time.Second)
+			} else {
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(marker); err == nil {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+				if _, err := os.Stat(marker); err != nil {
+					t.Fatal("tmux-pr-enrich stub never ran")
+				}
+				time.Sleep(300 * time.Millisecond)
+			}
+
+			out, err := tmux("display-message", "-p", "-t", pane, "#{pane_in_mode}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			if got := strings.TrimSpace(string(out)); got != "0" {
+				shown, _ := tmux("capture-pane", "-p", "-M", "-t", pane).CombinedOutput()
+				t.Errorf("pane_in_mode = %q, want 0 — the job's output or exit status reached the pane:\n%s", got, shown)
+			}
+		})
+	}
+}
+
 // parseCtl refuses a pane it cannot map to a window, and the refusal reaches the
 // user as a --display-error banner — so a gesture inside a mirrored float has to
 // resolve from the moment the float exists. Two windows in the mapping: the
