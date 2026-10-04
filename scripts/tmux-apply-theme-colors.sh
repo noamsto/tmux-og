@@ -72,9 +72,10 @@ STATE='#{?@bridge_crew_role,#{@bridge_crew_state},#{@crew_state}}'
 STATE_GLYPH="#{?#{==:${STATE},working},#[fg=${thm_green}]●#[default],#{?#{==:${STATE},idle},#[fg=${thm_overlay_1}]○#[default],#{?#{==:${STATE},blocked},#[fg=${thm_peach}]⚠#[default],#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},#[fg=${thm_green}]✓#[default],#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},#[fg=${thm_red}]✗#[default],#{?${STATE},#[fg=${thm_overlay_1}]○#[default],}}}}}}"
 STATE_GLYPH_PLAIN="#{?#{==:${STATE},working},●,#{?#{==:${STATE},idle},○,#{?#{==:${STATE},blocked},⚠,#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},✓,#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},✗,#{?${STATE},○,}}}}}}"
 
-# aeye's own image-carousel pane option, or (a remux-relaunched viewer) its
-# start command — the carousel restore command isn't bin/aeye.
-AEYE='#{||:#{@claude_img_src},#{m:*/bin/aeye *,#{pane_start_command}}}'
+# aeye's own image-carousel pane option, the bridge-shipped marker for a
+# viewer mirrored from a remote, or (a remux-relaunched viewer) its start
+# command — the carousel restore command isn't bin/aeye.
+AEYE='#{||:#{||:#{@claude_img_src},#{@bridge_img_src}},#{m:*/bin/aeye *,#{pane_start_command}}}'
 
 # Anchor: the top-left, non-floating pane. A zoomed pane is at-top/at-left too,
 # so it still shows the title; hidden panes in a grid are simply never drawn.

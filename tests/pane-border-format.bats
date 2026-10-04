@@ -174,6 +174,23 @@ style() {
 	[ "$out" = "━━ aeye ━━" ]
 }
 
+@test "mirror aeye pane detected by @bridge_img_src" {
+	tmux setw -t "$WIN" @bridge_win 1
+	title
+	anchor="$(tmux display-message -p -t "$WIN" -F '#{pane_id}')"
+	tmux split-window -h -d -t "$anchor"
+	aeye_pane="$(tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -v "^${anchor}$")"
+	tmux set -p -t "$aeye_pane" @bridge_img_src 1
+	tmux set -p -t "$aeye_pane" @bridge_crew_role_color colour114
+
+	out="$(render "$aeye_pane")"
+	[ "$out" = "━━ aeye ━━" ]
+
+	style_out="$(style "$aeye_pane" inactive)"
+	[[ $style_out == *"fg=#7f849c"* ]]
+	[[ $style_out != *"colour114"* ]]
+}
+
 @test "mirror role pane renders bold role + glyph + state, no title" {
 	tmux setw -t "$WIN" @bridge_win 1
 	title

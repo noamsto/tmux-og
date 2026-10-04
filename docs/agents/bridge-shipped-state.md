@@ -519,6 +519,17 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   to draw its border. Colour falls back through `@bridge_crew_color` (the
   window's agent tint, already carried for the label) to the theme, which is the
   remote's own precedence.
+- **An aeye carousel viewer crosses as a presence bit** (#866). The border
+  gives the carousel split its own `━━ aeye ━━` label, but a mirror pane's
+  start command is the renderer and the remote viewer's `pane_current_command`
+  is its shell, so only aeye's `@claude_img_src` names it. `agentStatusFormat`
+  carries `#{?@claude_img_src,1,}` — the REMOTE evaluates it, so aeye's
+  `<server pid>-<pane>` key never crosses and there is no free-form value to
+  sanitize; the shipper accepts only the exact `1` — and the shipper stamps it
+  as `@bridge_img_src` alongside the crew trio (unset when the remote option
+  goes away). Never the real name: a local `@claude_img_src` on a mirror pane
+  reads as a local carousel to `tmux-update-icons`, which would stamp
+  `@remux_relaunch` on it.
 - **These are the first carried values a LOCAL format renders**, so they are the
   first that may not merely garble: `cleanLabelValue`'s contract stops at
   `#[…]`, leaving `#{…}` and `#(…)` intact, and `#(cmd)` on a border would run
