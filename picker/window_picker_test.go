@@ -40,11 +40,15 @@ func TestWindowScratchFilter(t *testing.T) {
 	}
 }
 
-func TestWindowFooterNoScopeHint(t *testing.T) {
+func TestScopeHintMatchesTab(t *testing.T) {
 	opts := scopeOpts()
 	wm := tuiModel{windowMode: true, width: 200, tmuxOpts: opts}
-	if got := stripANSI(wm.renderHints()); strings.Contains(got, "⇥:scope") {
-		t.Errorf("window footer = %q, want no ⇥:scope", got)
+	if got := stripANSI(wm.renderHints()); !strings.Contains(got, "⇥:scope") {
+		t.Errorf("window footer = %q, want ⇥:scope (Tab scopes in window mode)", got)
+	}
+	em := tuiModel{windowMode: true, width: 200, tmuxOpts: opts, emitPath: "/tmp/x"}
+	if got := stripANSI(em.renderHints()); strings.Contains(got, "⇥:scope") {
+		t.Errorf("emit footer = %q, want no ⇥:scope (Tab is a no-op in emit mode)", got)
 	}
 	sm := tuiModel{width: 200, tmuxOpts: opts}
 	if got := stripANSI(sm.renderHints()); !strings.Contains(got, "⇥:scope") {

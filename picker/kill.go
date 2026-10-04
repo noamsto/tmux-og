@@ -73,9 +73,9 @@ func (r *killRun) finish(res killResult) {
 }
 
 // run iterates targets in order; before each, a non-nil ctx.Err() stops the
-// loop (killRunCancelled) without attempting it. sshKillRemoteSessionCtx
-// derives its own remoteProbeTimeout deadline from ctx, so a cancel
-// propagates into the in-flight ssh instead of only gating the next target.
+// loop (killRunCancelled) without attempting it. The ssh kill derives its own
+// remoteProbeTimeout deadline from ctx, so a cancel propagates into the
+// in-flight ssh instead of only gating the next target.
 func (r *killRun) run() {
 	if !r.started.CompareAndSwap(false, true) {
 		return
@@ -88,7 +88,12 @@ func (r *killRun) run() {
 			return
 		}
 		r.emit(killProgress{index: i, total: total, item: item})
-		err := sshKillRemoteSessionCtx(r.ctx, item.remoteHost, item.remoteSess)
+		var err error
+		if item.remoteWindowID != "" {
+			err = sshKillRemoteWindowCtx(r.ctx, item.remoteHost, item.remoteSessionID, item.remoteWindowID)
+		} else {
+			err = sshKillRemoteSessionCtx(r.ctx, item.remoteHost, item.remoteSess)
+		}
 		cancelled := err != nil && errors.Is(r.ctx.Err(), context.Canceled)
 		results = append(results, killItemResult{item: item, err: err, cancelled: cancelled})
 	}

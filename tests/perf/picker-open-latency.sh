@@ -15,6 +15,9 @@
 #      KEYS        samples per key scenario (default 100)
 #      FIXTURE_AGENTS  agent panes in the fixture (default 3; agent state goes
 #                  stale with time, so the gotorque fixture uses 0)
+#      REMOTE_HOSTS  remote hosts with cached sessions and windows (default 0 =
+#                  none; each host gets 3 sessions x 4 windows, so N hosts
+#                  add N*12 window rows to window mode)
 #      TMUX_BIN    wrapped tmux under test (default ./result/bin/tmux); its raw
 #                  binary drives the server and sits first on the picker's PATH,
 #                  as it does for a popup (`show -F` needs tmux-next, not stock)
@@ -28,6 +31,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OPENS="${OPENS:-30}"
 KEYS="${KEYS:-100}"
+REMOTE_HOSTS="${REMOTE_HOSTS:-0}"
 TMUX_BIN="$(realpath "${TMUX_BIN:-./result/bin/tmux}")"
 wrapped_marker="$(dirname "$TMUX_BIN")/.tmux-wrapped"
 if [ -e "$wrapped_marker" ]; then
@@ -50,6 +54,7 @@ export TMUX_TMPDIR="$W"
 export CLAUDE_STATUS_DIR="$W/status"
 export ZOXIDE_DATA_DIR="$W/zoxide"
 export HOME="$W/home"
+export XDG_CACHE_HOME="$W/cache"
 export GIT_CONFIG_GLOBAL="$W/gitconfig"
 export GIT_CONFIG_SYSTEM=/dev/null
 unset TMUX TMUX_PANE
@@ -65,6 +70,28 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# Remote caches the picker reads without any ssh: the picker prefers an absolute
+# XDG_CACHE_HOME over HOME/.cache and refuses a cache dir that is not owner-only.
+build_remote_caches() {
+	local h s w now hosts="" windows
+	local root="$XDG_CACHE_HOME/tmux-og"
+	# shellcheck disable=SC2174  # only the leaf dirs must be owner-only
+	mkdir -p -m 700 "$root" "$root/remote" "$root/remote-windows"
+	now=$(date +%s%3N)
+	for h in $(seq 1 "$REMOTE_HOSTS"); do
+		hosts="$hosts og-perf-h$h"
+		windows=""
+		for s in 1 2 3; do
+			for w in 1 2 3 4; do
+				windows="$windows${windows:+,}{\"session\":\"rs$s\",\"session_id\":\"\$$s\",\"id\":\"@$(((s - 1) * 4 + w))\",\"index\":$w,\"name\":\"w$w\"}"
+			done
+		done
+		printf '{"host":"og-perf-h%s","saved_at":%s,"windows":[%s]}\n' "$h" "$now" "$windows" >"$root/remote-windows/og-perf-h$h.json"
+		printf '{"host":"og-perf-h%s","saved_at":%s,"sessions":["rs1","rs2","rs3"]}\n' "$h" "$now" >"$root/remote/og-perf-h$h.json"
+	done
+	tm set -g @remote_bridge_hosts "${hosts# }"
+}
 
 # Fixture: 8 sessions, 24 windows. Half the windows sit in git repos with no
 # @branch stamp (the picker forks git for them), the rest in plain dirs.
@@ -118,6 +145,9 @@ CONTENT
 		pane=$(tm list-panes -t "$sess:" -F '#{pane_id}' | head -1)
 		printf 'state=processing\nsession=%s\ntimestamp=%s\n' "$sess" "$now" >"$CLAUDE_STATUS_DIR/panes/$pane"
 	done
+	if [ "$REMOTE_HOSTS" -gt 0 ]; then
+		build_remote_caches
+	fi
 	sleep 0.5 # let the last new-window settle before anything is timed
 }
 
@@ -268,6 +298,7 @@ for m in "${modes[@]}"; do
 			printf 'export CLAUDE_STATUS_DIR=%q\n' "$CLAUDE_STATUS_DIR"
 			printf 'export ZOXIDE_DATA_DIR=%q\n' "$ZOXIDE_DATA_DIR"
 			printf 'export HOME=%q\n' "$HOME"
+			printf 'export XDG_CACHE_HOME=%q\n' "$XDG_CACHE_HOME"
 			printf 'export GIT_CONFIG_GLOBAL=%q\n' "$GIT_CONFIG_GLOBAL"
 			printf 'export PATH=%q\n' "$PATH"
 			printf 'export TMUX=%q\n' "$(tm display-message -p '#{socket_path},#{pid},0')"

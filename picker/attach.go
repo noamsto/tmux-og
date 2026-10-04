@@ -96,6 +96,7 @@ type attachResult struct {
 
 type attachSpec struct {
 	bin, host, sess string
+	window          string // remote window id (@N) to focus; "" = none
 	restore         bool
 }
 
@@ -156,6 +157,9 @@ func buildAttachCmd(spec attachSpec, grace time.Duration) *exec.Cmd {
 	args := []string{spec.host}
 	if spec.sess != "" {
 		args = append(args, spec.sess)
+	}
+	if spec.window != "" {
+		args = append(args, spec.window)
 	}
 	cmd := exec.Command(spec.bin, args...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	// With no controlling tty (Setsid), ssh must fail a surprise auth prompt

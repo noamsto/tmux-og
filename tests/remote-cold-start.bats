@@ -54,6 +54,7 @@ setup() {
 				kill -TERM "$(cat "$LAUNCHER_PID_FILE")" 2>/dev/null || true
 				exit 0
 			fi
+			[ -n "${FAKE_PROBE_EMPTY:-}" ] && exit 0
 			os="${FAKE_UNAME:-Linux}"
 			uid=1000
 			# Read the launcher's own resolution out of the probe script it
@@ -82,11 +83,25 @@ setup() {
 			*) [ -f "$REMOTE_SERVER" ] && sess="$REMOTE_SESSION" ;;
 			esac
 			win=""
+			want=""
 			case "$cmd" in
+			# A caller-given window on a plain open: win is the session's ACTIVE
+			# window, and want is the caller's window resolved to its current
+			# index (FAKE_WANT_INDEX; an index resolves to itself), empty when
+			# it no longer exists.
+			*"want_lit="*)
+				[ -n "$sess" ] && [ -z "${FAKE_NO_WINDOW:-}" ] && win=1
+				want_lit=$(printf '%s\n' "$cmd" | sed -n "s/.*want_lit='\([^']*\)'.*/\1/p")
+				case "$want_lit" in
+				@*) want="${FAKE_WANT_INDEX:-}" ;;
+				*) want="${FAKE_WANT_INDEX:-$want_lit}" ;;
+				esac
+				{ [ -n "$win" ] && [ -z "${FAKE_WANT_ABSENT:-}" ]; } || want=""
+				;;
 			*"win_lit="*) win=$(printf '%s\n' "$cmd" | sed -n "s/.*win_lit='\([^']*\)'.*/\1/p") ;;
 			*) [ -n "$sess" ] && [ -z "${FAKE_NO_WINDOW:-}" ] && win=1 ;;
 			esac
-			printf 'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\n' "$os" "$uid" /usr/bin/tmux "$tmpdir" "$sess" "$win"
+			printf 'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\nwant=%s\n' "$os" "$uid" /usr/bin/tmux "$tmpdir" "$sess" "$win" "$want"
 			exit 0
 			;;
 		esac
@@ -242,6 +257,10 @@ setup() {
 teardown() {
 	if [[ -n ${DAEMON_PID:-} ]]; then
 		kill "$DAEMON_PID" 2>/dev/null || true
+	fi
+	if [[ -n ${PROBE_TMUX_DIR:-} ]]; then
+		probe_tmux kill-server 2>/dev/null || true
+		rm -rf "$PROBE_TMPDIR"
 	fi
 }
 
@@ -843,8 +862,192 @@ run_launcher_bg() {
 
 	[ "$(grep -c '===SSH-CALL===' "$SSH_LOG")" -eq 1 ]
 	grep -q "sess_lit='workstation'" "$SSH_LOG"
-	grep -q "win_lit='3'" "$SSH_LOG"
+	grep -q "want_lit='3'" "$SSH_LOG"
 	grep -q 'switch-client -t =tp-g6-workstation' "$TMUX_LOG"
+}
+
+# Waits for the backgrounded stub daemon to record the window it was handed.
+wait_for_daemon_window() {
+	local waited=0
+	while [[ ! -s $DAEMON_WINDOW_LOG && $waited -lt 50 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+}
+
+install_window_logging_daemon() {
+	export DAEMON_WINDOW_LOG="$BATS_TEST_TMPDIR/daemon-window.log"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		printf '%s\n' "$OG_BRIDGE_WINDOW" >>"$DAEMON_WINDOW_LOG"
+	EOF
+}
+
+@test "caller-given window: a gone session fails instead of opening a blank mirror" {
+	export FAKE_NO_WINDOW=1
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 1 ]
+	[[ $output == *"session 'workstation' has no window"* ]]
+
+	run grep -c new-session "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "caller-given window: an index that exists in the session is the one the daemon gets" {
+	install_window_logging_daemon
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 0 ]
+
+	wait_for_daemon_window
+	[ "$(cat "$DAEMON_WINDOW_LOG")" = 3 ]
+}
+
+@test "caller-given window: an @id resolves to the index the daemon gets, never the @id" {
+	install_window_logging_daemon
+	export FAKE_WANT_INDEX=9
+
+	run bash "$LAUNCHER" tp-g6 workstation @7
+	[ "$status" -eq 0 ]
+
+	grep -q "want_lit='@7'" "$SSH_LOG"
+	wait_for_daemon_window
+	[ "$(cat "$DAEMON_WINDOW_LOG")" = 9 ]
+}
+
+@test "caller-given window: an index absent from the session falls back to the active window" {
+	install_window_logging_daemon
+	export FAKE_WANT_ABSENT=1
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 0 ]
+
+	wait_for_daemon_window
+	[ "$(cat "$DAEMON_WINDOW_LOG")" = 1 ]
+}
+
+@test "caller-given window: an absent @id falls back to the active window" {
+	install_window_logging_daemon
+	export FAKE_WANT_ABSENT=1
+
+	run bash "$LAUNCHER" tp-g6 workstation @7
+	[ "$status" -eq 0 ]
+
+	wait_for_daemon_window
+	[ "$(cat "$DAEMON_WINDOW_LOG")" = 1 ]
+}
+
+@test "caller-given window: neither an index nor an @id is rejected before any ssh" {
+	run bash "$LAUNCHER" tp-g6 workstation x7
+	[ "$status" -eq 1 ]
+	[[ $output == *"numeric index or an @id"* ]]
+
+	run bash "$LAUNCHER" tp-g6 workstation @
+	[ "$status" -eq 1 ]
+
+	[ ! -s "$SSH_LOG" ]
+}
+
+@test "caller-given window: an @id is rejected where no live session can resolve it" {
+	OG_REMOTE_RESTORE=1 run bash "$LAUNCHER" tp-g6 work @7
+	[ "$status" -eq 1 ]
+	[[ $output == *"needs a live session"* ]]
+
+	OG_REMOTE_NEW_DIR=/srv/proj run bash "$LAUNCHER" tp-g6 proj @7
+	[ "$status" -eq 1 ]
+	[[ $output == *"needs a live session"* ]]
+
+	[ ! -s "$SSH_LOG" ]
+}
+
+@test "caller-given window: a garbled probe reports the unusable tmpdir, not a gone session" {
+	export FAKE_PROBE_EMPTY=1
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 1 ]
+	[[ $output == *"unusable remote tmpdir"* ]]
+}
+
+# The fake ssh never runs the probe it is sent, so the remote half of want_mode
+# (window-id resolution, exact-session targeting) needs the real script run
+# against a real tmux. One scratch server on its own TMUX_TMPDIR; the probe has
+# no -L seam, so the isolation is the socket dir, not the label. api-main has
+# @0 at index 20 (active), @1 at 21, @2 at 9: ids and indexes are disjoint on
+# purpose, whatever base-index the tmux under test starts from.
+# A dev machine's tmux on PATH is the tmux-og wrapper, whose own -f loads the
+# full config despite -f /dev/null, so the server gets a private status dir.
+probe_tmux() {
+	env TMUX_TMPDIR="$PROBE_TMPDIR" CLAUDE_STATUS_DIR="$PROBE_TMPDIR/status" "$PROBE_TMUX_DIR/tmux" "$@"
+}
+
+setup_probe_server() {
+	local real_dir
+	real_dir="$(PATH="${PATH//$FAKEBIN:/}" command -v tmux || true)"
+	[[ -n $real_dir ]] || skip "no real tmux on PATH"
+	PROBE_TMUX_DIR="${real_dir%/tmux}"
+	# Short and fixed: $BATS_TEST_TMPDIR/…/tmux-<uid>/default can pass the
+	# ~104-byte AF_UNIX socket path limit (darwin build tmpdir).
+	PROBE_TMPDIR="/tmp/og902-$$-${BATS_TEST_NUMBER}"
+	rm -rf "$PROBE_TMPDIR"
+	mkdir -p "$PROBE_TMPDIR"
+	export PROBE_TMUX_DIR PROBE_TMPDIR OG_REMOTE_TMPDIR="$PROBE_TMPDIR"
+	unset TMUX
+	probe_tmux -f /dev/null new-session -d -s api-main -x 80 -y 24
+	probe_tmux new-window -d -t api-main
+	probe_tmux new-window -d -t api-main
+	probe_tmux move-window -s @0 -t api-main:20
+	probe_tmux move-window -s @1 -t api-main:21
+	probe_tmux move-window -s @2 -t api-main:9
+	probe_tmux select-window -t @0
+}
+
+# Sends the launcher's real want-mode probe to the fake ssh to capture it, then
+# runs that script under bash against the scratch server. Prints its output.
+run_captured_probe() {
+	bash "$LAUNCHER" tp-g6 "$@" >/dev/null 2>&1 || true
+	awk '/^===SSH-CALL===$/{n++; l=0; next} n==1{l++; if (l>1) print}' "$SSH_LOG" >"$BATS_TEST_TMPDIR/probe.sh"
+	grep -q 'want_lit=' "$BATS_TEST_TMPDIR/probe.sh"
+	PATH="$PROBE_TMUX_DIR:${PATH//$FAKEBIN:/}" bash "$BATS_TEST_TMPDIR/probe.sh"
+}
+
+@test "real probe: an existing window @id resolves to its current index" {
+	setup_probe_server
+	run run_captured_probe api-main @2
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\nsess=api-main\nwin=20\nwant=9' ]]
+}
+
+@test "real probe: an existing index resolves to itself" {
+	setup_probe_server
+	run run_captured_probe api-main 21
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\nwin=20\nwant=21' ]]
+}
+
+@test "real probe: an absent @id, and an id's number used as an index, report no want" {
+	setup_probe_server
+	run run_captured_probe api-main @42
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\nwin=20\nwant=' ]]
+
+	run run_captured_probe api-main 2
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\nwin=20\nwant=' ]]
+}
+
+@test "real probe: a prefix-only session name finds no window" {
+	setup_probe_server
+	run run_captured_probe api 0
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\nsess=api\nwin=\nwant=' ]]
+}
+
+@test "caller-given window: the probe resolves the session exactly, with no prefix fallback" {
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 0 ]
+
+	run ! grep -q sess_canon "$SSH_LOG"
 }
 
 @test "combined probe: OG_REMOTE_TMPDIR unset still resolves in one ssh call" {

@@ -59,6 +59,11 @@ type listItem struct {
 	remoteTailscaleURL   string // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
 	remoteUnreachable    bool   // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
 	remoteMirrorTarget   string // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
+	remoteWindowID       string // remote window row: tmux @N of the window on the remote
+	remoteWindowIndex    int    // remote window row: window index on the remote
+	remoteSessionID      string // remote window row: tmux $N of the owning session — the kill targets it instead of the raw name
+	remoteWindowName     string // remote window row: render-safe window name (remoteDisplayName)
+	remoteLive           bool   // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
 }
 
 // scopeKind selects which sessions Tab's host scope shows.
@@ -392,14 +397,18 @@ func newPickerModel(windowMode, agentOnly, wall bool, opts map[string]string, th
 		wallBad:      map[string]bool{},
 		emitPath:     emitPath,
 	}
-	if !windowMode && emitPath == "" {
-		// Host rows are static config and their sessions come from the on-disk
-		// cache — render them now so the Remote section exists, and is
-		// searchable, from the first paint. remoteCmd's probe (kicked from Init)
-		// replaces them in place via remoteMsg (#312, #631). Emit mode builds
-		// none: it runs on a host we are not attached to, so a Remote section
-		// there would bridge from the wrong side.
-		m.remoteItems = pendingRemoteItems(opts, firstPaintBridges(items))
+	if emitPath == "" {
+		// Host rows are static config and their sessions (or, in window mode,
+		// windows) come from the on-disk cache — render them now so the Remote
+		// section exists, and is searchable, from the first paint. remoteCmd's
+		// probe (kicked from Init) replaces them in place via remoteMsg (#312,
+		// #631). Emit mode builds none: it runs on a host we are not attached
+		// to, so a Remote section there would bridge from the wrong side.
+		if windowMode {
+			m.remoteItems = pendingRemoteWindowItems(opts, firstPaintBridges(items))
+		} else {
+			m.remoteItems = pendingRemoteItems(opts, firstPaintBridges(items))
+		}
 	}
 	m = m.recombine().withFilter()
 	m.cursor = m.firstSelectable(0)
@@ -521,6 +530,8 @@ func (m tuiModel) Init() tea.Cmd {
 			// probe would just be wasted round trips (spec D8).
 			cmds = append(cmds, m.remoteCmd())
 		}
+	} else {
+		cmds = append(cmds, m.remoteCmd())
 	}
 	return tea.Batch(cmds...)
 }
@@ -862,6 +873,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.zoxideCmd()
 		}
+		if item.remoteWindowID != "" {
+			if !item.remoteLive {
+				m.statusMsg = remoteRowLabel(item) + ": listed from cache — wait for the probe, then ^x"
+				return m, nil
+			}
+			m.killConfirm = []listItem{item}
+			return m, nil
+		}
 		if isKillableRemoteSession(item) {
 			targets := m.killableMarkedRemoteItems()
 			if len(targets) == 0 {
@@ -945,10 +964,10 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadPreviewCmd()
 
 	case "tab":
-		// Window mode's rows carry no remote data and emit mode skips the
-		// remote probe, so neither has anything to scope. In wall mode this
-		// case is unreachable — handleWallKey owns tab there.
-		if m.windowMode || m.emitPath != "" {
+		// Emit mode skips the remote probe, so it has nothing to scope. Window
+		// mode cycles hosts like session mode. In wall mode this case is
+		// unreachable — handleWallKey owns tab there.
+		if m.emitPath != "" {
 			return m, nil
 		}
 		hosts := configuredHosts(m.tmuxOpts)
@@ -1510,9 +1529,9 @@ func (m tuiModel) isSelectable(item listItem) bool {
 // markable reports whether item can hold a ^t mark: a resolvable Remote-
 // section session row on a host the probe hasn't ruled out. Host rows,
 // local sessions and zoxide rows are never markable — none of them set
-// remoteSess.
+// remoteSess — and neither are window rows: opening N windows means N mirrors.
 func (m tuiModel) markable(item listItem) bool {
-	return item.isRemoteRow && item.remoteSess != "" &&
+	return item.isRemoteRow && item.remoteSess != "" && item.remoteWindowID == "" &&
 		!item.remoteInert && !item.remoteNeedsAuth && !item.remoteTailscaleCheck && !item.remoteUnreachable &&
 		item.remoteMirrorTarget == ""
 }
@@ -1704,12 +1723,14 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 	id := m.attachSeq
 	label := remoteRowLabel(first)
 
-	run := newAttachRun(attachSpec{
+	spec := attachSpec{
 		bin:     remoteOpenBin(m.tmuxOpts),
 		host:    first.remoteHost,
 		sess:    first.remoteSess,
 		restore: first.remoteRestore,
-	})
+	}
+	spec.window = first.remoteWindowID
+	run := newAttachRun(spec)
 	m.attachSup.track(run)
 	m.attach = &attachState{
 		id:      id,
@@ -1777,9 +1798,10 @@ func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
 
 // isKillableRemoteSession reports whether item is a live session on a remote
 // host that ^x may kill. A restorable snapshot row (remoteRestore) has no
-// remote session yet, and a host row (remoteSess == "") is not a session.
+// remote session yet, a host row (remoteSess == "") is not a session, and a
+// window row names a window, not the session that holds it.
 func isKillableRemoteSession(item listItem) bool {
-	return item.remoteHost != "" && item.remoteSess != "" && !item.remoteRestore
+	return item.remoteHost != "" && item.remoteSess != "" && !item.remoteRestore && item.remoteWindowID == ""
 }
 
 // killableMarkedRemoteItems is markedRemoteItems narrowed to rows ^x can kill,
@@ -1834,14 +1856,23 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// remoteRowLabel is the sanitized "host" or "host/sess" text used to name a
-// remote row in status/hint lines.
+// remoteRowLabel is the sanitized "host", "host/sess" or "host/sess:idx" text
+// used to name a remote row in status/hint lines.
 func remoteRowLabel(it listItem) string {
+	return sanitizeStatusText(rawRemoteRowLabel(it))
+}
+
+// rawRemoteRowLabel is remoteRowLabel before sanitizing, for a caller that
+// sanitizes the whole message it embeds the label in.
+func rawRemoteRowLabel(it listItem) string {
 	label := it.remoteHost
 	if it.remoteSess != "" {
 		label += "/" + it.remoteSess
 	}
-	return sanitizeStatusText(label)
+	if it.remoteWindowID != "" {
+		label += ":" + strconv.Itoa(it.remoteWindowIndex)
+	}
+	return label
 }
 
 // beginKill returns the Cmds that drive a new kill batch. The fork happens in
@@ -1878,19 +1909,24 @@ func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
 	var forget []listItem
 	var msgs []string
 	for _, it := range res.results {
+		what := rawRemoteRowLabel(it.item)
+		kind := "kill_remote_session"
+		if it.item.remoteWindowID != "" {
+			kind = "kill_remote_window"
+		}
 		switch {
 		case it.cancelled:
-			msgs = append(msgs, sanitizeStatusText("cancelled killing "+it.item.remoteHost+"/"+it.item.remoteSess))
+			msgs = append(msgs, sanitizeStatusText("cancelled killing "+what))
 		case it.err == nil:
-			logEvent("picker", "event", "kill_remote_session", "host", it.item.remoteHost, "sess", it.item.remoteSess)
+			logEvent("picker", "event", kind, "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID)
 			forget = append(forget, it.item)
 		case errors.Is(it.err, errRemoteSessionGone):
-			logEvent("picker", "event", "kill_remote_session_gone", "host", it.item.remoteHost, "sess", it.item.remoteSess)
-			msgs = append(msgs, sanitizeStatusText(it.item.remoteHost+"/"+it.item.remoteSess+" was already gone"))
+			logEvent("picker", "event", kind+"_gone", "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID)
+			msgs = append(msgs, sanitizeStatusText(what+" was already gone"))
 			forget = append(forget, it.item)
 		default:
-			logEvent("picker", "event", "kill_remote_session_failed", "host", it.item.remoteHost, "sess", it.item.remoteSess, "error", it.err.Error())
-			msgs = append(msgs, sanitizeStatusText(remoteKillFailure(it.item.remoteHost, it.item.remoteSess, it.err)))
+			logEvent("picker", "event", kind+"_failed", "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID, "error", it.err.Error())
+			msgs = append(msgs, sanitizeStatusText(remoteKillFailure(what, it.err)))
 		}
 	}
 	m = m.forgetRemoteRows(forget)
@@ -1926,8 +1962,8 @@ func (m tuiModel) handleKillRunKey(key string) (tea.Model, tea.Cmd) {
 
 // remoteKillFailure is the hint-line wording for a kill ssh that did not
 // complete; the specific ssh state is worth naming over a bare "failed".
-func remoteKillFailure(host, sess string, err error) string {
-	prefix := host + "/" + sess + ": "
+func remoteKillFailure(what string, err error) string {
+	prefix := what + ": "
 	switch {
 	case errors.Is(err, errRemoteNeedsAuth):
 		return prefix + "ssh needs auth"
@@ -1947,16 +1983,34 @@ func forgottenRemoteKey(host, sess string) string {
 	return host + "\x00" + sess
 }
 
-// filterForgottenRemoteRows drops Remote-section rows for sessions killed in
-// this popup and undoes the cache write a late probe may have left behind (#736).
+// forgottenKey keys a killed Remote row for the forgotten set: the session key,
+// plus the window id for a window row so killing one window never forgets its
+// siblings.
+func forgottenKey(it listItem) string {
+	key := forgottenRemoteKey(it.remoteHost, it.remoteSess)
+	if it.remoteWindowID != "" {
+		key += "\x00" + it.remoteWindowID
+	}
+	return key
+}
+
+// filterForgottenRemoteRows drops Remote-section rows for sessions and windows
+// killed in this popup and undoes the cache write a late probe may have left
+// behind (#736). A dropped window row never touches the session cache: its
+// session may have other windows.
 func (m tuiModel) filterForgottenRemoteRows(items []listItem) []listItem {
 	if len(m.forgotten) == 0 {
 		return items
 	}
 	kept := make([]listItem, 0, len(items))
 	for _, it := range items {
-		if it.remoteSess != "" && m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
-			forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		if it.remoteSess != "" && m.forgotten[forgottenKey(it)] {
+			if it.remoteWindowID != "" {
+				forgetRemoteWindowCache(it.remoteHost, it.remoteWindowID)
+			} else {
+				forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+				forgetRemoteSessionWindowsCache(it.remoteHost, it.remoteSess)
+			}
 			continue
 		}
 		kept = append(kept, it)
@@ -1980,11 +2034,13 @@ func (m tuiModel) filterForgottenMirrors(mirrors []bridgeMirror) []bridgeMirror 
 	return kept
 }
 
-// forgetRemoteRows drops killed (or already-gone) remote sessions from the
-// picker at once: the host's cache, the in-memory Remote rows, any local mirror
-// (torn down through stopBridgeDaemon, the same owner the manual mirror close
-// uses), and the multi-select marks. Without the cache rewrite the row would
-// revive from a stale listing on the next launch.
+// forgetRemoteRows drops killed (or already-gone) remote sessions and windows
+// from the picker at once: the host's caches, the in-memory Remote rows, any
+// local mirror of a killed session (torn down through stopBridgeDaemon, the
+// same owner the manual mirror close uses), and the multi-select marks.
+// Without the cache rewrite the row would revive from a stale listing on the
+// next launch. A killed window whose session has no other window row left also
+// drops the session from the session cache.
 func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 	if len(targets) == 0 {
 		return m
@@ -1994,24 +2050,38 @@ func (m tuiModel) forgetRemoteRows(targets []listItem) tuiModel {
 		m.forgotten = make(map[string]bool, len(targets))
 	}
 	for _, it := range targets {
-		killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
-		m.forgotten[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
+		killed[forgottenKey(it)] = true
+		m.forgotten[forgottenKey(it)] = true
+		delete(m.marked, it.target)
+		if it.remoteWindowID != "" {
+			forgetRemoteWindowCache(it.remoteHost, it.remoteWindowID)
+			continue
+		}
 		forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		forgetRemoteSessionWindowsCache(it.remoteHost, it.remoteSess)
 		for _, bm := range m.mirrors {
 			if bm.host == it.remoteHost && bm.sess == it.remoteSess {
 				stopBridgeDaemonFn(bm.target)
 			}
 		}
-		delete(m.marked, it.target)
 	}
 	keptRows := make([]listItem, 0, len(m.remoteItems))
+	windowsLeft := make(map[string]bool)
 	for _, it := range m.remoteItems {
-		if it.remoteSess != "" && killed[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
+		if it.remoteSess != "" && killed[forgottenKey(it)] {
 			continue
+		}
+		if it.remoteWindowID != "" {
+			windowsLeft[forgottenRemoteKey(it.remoteHost, it.remoteSess)] = true
 		}
 		keptRows = append(keptRows, it)
 	}
 	m.remoteItems = keptRows
+	for _, it := range targets {
+		if it.remoteWindowID != "" && !windowsLeft[forgottenRemoteKey(it.remoteHost, it.remoteSess)] {
+			forgetRemoteSessionCache(it.remoteHost, it.remoteSess)
+		}
+	}
 	keptMirrors := make([]bridgeMirror, 0, len(m.mirrors))
 	for _, bm := range m.mirrors {
 		if killed[forgottenRemoteKey(bm.host, bm.sess)] {
@@ -2219,19 +2289,28 @@ func (m tuiModel) withFilter() tuiModel {
 		sinkCurrentMatchBelowPeer(matches[:sessionEnd])
 	}
 
+	remote := newRemoteMatches(m.allItems)
 	if m.windowMode {
-		// Re-group under headers, ordered by best child score. groupKey is
-		// the session name (session-grouped) or agent state (state-grouped,
-		// #229) — whichever the current render built headers on.
+		// Re-group local windows under headers, ordered by best child score.
+		// groupKey is the session name (session-grouped) or agent state
+		// (state-grouped, #229) — whichever the current render built headers
+		// on. The Remote header is left out of headerMap: its groupKey "" is
+		// the state-grouped "no agent" key, and remote rows never join a local
+		// group anyway.
 		headerMap := make(map[string]listItem)
 		for _, item := range m.allItems {
-			if item.isHeader {
+			if item.isHeader && !item.isRemoteHeader {
 				headerMap[item.groupKey] = item
 			}
 		}
 		seen := make(map[string]bool)
 		out := []listItem{}
 		for _, match := range matches {
+			if match.item.isRemoteRow {
+				out = remote.prefix(out, match.item)
+				out = append(out, match.item)
+				continue
+			}
 			if !seen[match.item.groupKey] {
 				seen[match.item.groupKey] = true
 				if h, ok := headerMap[match.item.groupKey]; ok {
@@ -2240,39 +2319,19 @@ func (m tuiModel) withFilter() tuiModel {
 			}
 			out = append(out, match.item)
 		}
-		m.visible = out
+		m.visible = markRemoteTreeEnds(out)
 	} else {
 		// Re-insert section headers before the first row of each suggestion
 		// block (sessions sort first, remotes next, zoxide last).
-		var remoteHeader, sugHeader *listItem
-		hostRows := make(map[string]listItem)
+		var sugHeader *listItem
 		for i := range m.allItems {
-			if m.allItems[i].isRemoteHeader {
-				remoteHeader = &m.allItems[i]
-			}
 			if m.allItems[i].isZoxideHeader {
 				sugHeader = &m.allItems[i]
 			}
-			if it := m.allItems[i]; it.remoteHost != "" && it.remoteSess == "" {
-				hostRows[it.remoteHost] = it
-			}
 		}
-		seenHost := make(map[string]bool)
 		out := []listItem{}
 		for _, match := range matches {
-			if remoteHeader != nil && match.item.isRemoteRow {
-				out = append(out, *remoteHeader)
-				remoteHeader = nil
-			}
-			// A matching session row pulls its host row in with it, so the
-			// tree prefix never dangles under a host the query dropped.
-			if h := match.item.remoteHost; h != "" && !seenHost[h] {
-				seenHost[h] = true
-				if row, ok := hostRows[h]; ok && match.item.remoteSess != "" {
-					row.remoteContextOnly = true
-					out = append(out, row)
-				}
-			}
+			out = remote.prefix(out, match.item)
 			if sugHeader != nil && match.item.createPath != "" {
 				out = append(out, *sugHeader)
 				sugHeader = nil
@@ -2282,6 +2341,46 @@ func (m tuiModel) withFilter() tuiModel {
 		m.visible = markRemoteTreeEnds(out)
 	}
 	return m
+}
+
+// remoteMatches inserts the Remote section's scaffolding around filtered
+// remote rows: the Remote header before the first one, and a matching child's
+// host row ahead of it.
+type remoteMatches struct {
+	header   *listItem
+	hostRows map[string]listItem
+	seenHost map[string]bool
+}
+
+func newRemoteMatches(items []listItem) *remoteMatches {
+	r := &remoteMatches{hostRows: make(map[string]listItem), seenHost: make(map[string]bool)}
+	for i := range items {
+		if items[i].isRemoteHeader {
+			r.header = &items[i]
+		}
+		if it := items[i]; it.remoteHost != "" && it.remoteSess == "" {
+			r.hostRows[it.remoteHost] = it
+		}
+	}
+	return r
+}
+
+// prefix appends what must precede match: nothing for a local row.
+func (r *remoteMatches) prefix(out []listItem, match listItem) []listItem {
+	if r.header != nil && match.isRemoteRow {
+		out = append(out, *r.header)
+		r.header = nil
+	}
+	// A matching child row pulls its host row in with it, so the tree prefix
+	// never dangles under a host the query dropped.
+	if h := match.remoteHost; h != "" && !r.seenHost[h] {
+		r.seenHost[h] = true
+		if row, ok := r.hostRows[h]; ok && match.remoteSess != "" {
+			row.remoteContextOnly = true
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // markRemoteTreeEnds gives the last visible session row under each host the
@@ -2435,11 +2534,19 @@ func (m tuiModel) zoxideCmd() tea.Cmd {
 	}
 }
 
-// remoteCmd collects remote host/session rows off the first-paint path
-// (session mode only). ssh probes are bounded; the result merges via remoteMsg.
+// collectRemoteWindowItemsFn is seamed for tests.
+var collectRemoteWindowItemsFn = collectRemoteWindowItems
+
+// remoteCmd collects remote host rows and their sessions (windows, in window
+// mode) off the first-paint path. ssh probes are bounded; the result merges
+// via remoteMsg.
 func (m tuiModel) remoteCmd() tea.Cmd {
 	opts := m.tmuxOpts
+	windowMode := m.windowMode
 	return func() tea.Msg {
+		if windowMode {
+			return remoteMsg{items: collectRemoteWindowItemsFn(opts, collectBridgeSessions(), nil)}
+		}
 		return remoteMsg{items: collectRemoteItems(opts, collectBridgeSessions(), nil, nil)}
 	}
 }
@@ -2486,11 +2593,13 @@ func hostSet(hosts []string) map[string]bool {
 // scopedItems builds the list for a host scope: the local sessions that mirror
 // a matching host, then the Remote section assembled one host block at a time.
 // Zoxide rows are local-scope only — a "create a session here" suggestion has
-// no host to be scoped to.
+// no host to be scoped to. Window mode keeps every local header (withFilter
+// prunes the ones left childless) and skips the "(mirrored)" synthesis: the
+// mirror windows are already local rows.
 func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 	out := []listItem{}
 	for _, item := range m.sessionItems {
-		if hostMatches(item.bridgeHost) {
+		if hostMatches(item.bridgeHost) || m.windowMode && (item.isHeader || item.isColumnHeader) {
 			out = append(out, item)
 		}
 	}
@@ -2514,6 +2623,9 @@ func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 			header = true
 		}
 		out = append(out, block...)
+		if m.windowMode {
+			continue
+		}
 		for _, bm := range m.mirrors {
 			if bm.host != host || seen[bm.sess] {
 				continue
@@ -2577,6 +2689,10 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 		inert, needsAuth := item.remoteInert, item.remoteNeedsAuth
 		tailscaleCheck, tailscaleURL := item.remoteTailscaleCheck, item.remoteTailscaleURL
 		mirrorTarget := item.remoteMirrorTarget
+		winCard := ""
+		if item.remoteWindowID != "" {
+			winCard = "/" + remoteDisplayName(sess) + ":" + strconv.Itoa(item.remoteWindowIndex) + " " + item.remoteWindowName
+		}
 		return func() tea.Msg {
 			var msg string
 			switch {
@@ -2608,7 +2724,10 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 					"\nlater probe reuse it without asking again."
 			default:
 				msg = "remote bridge → " + host
-				if sess != "" {
+				switch {
+				case winCard != "":
+					msg += winCard
+				case sess != "":
 					msg += "/" + sess
 				}
 				msg += "\n\nEnter runs og-remote-open (outbound ssh)."

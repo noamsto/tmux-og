@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -459,4 +460,183 @@ func TestAttachMultiOpenDefersRest(t *testing.T) {
 	if len(launched) != 0 {
 		t.Errorf("launchDetached called before the first attach resolved: %v", launched)
 	}
+}
+
+// windowAttachModel is a window-mode model with the cursor on lab's remote
+// window api:2 and the launcher swapped for a fake.
+func windowAttachModel(t *testing.T, bin string) tuiModel {
+	t.Helper()
+	m := windowModeRemoteModel(t, false)
+	m.tmuxOpts["@remote_open_bin"] = bin
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == "remote:lab:api:@4" })
+	return m
+}
+
+func TestAttachWindowRowPassesIDToLauncher(t *testing.T) {
+	dir := t.TempDir()
+	argv := filepath.Join(dir, "ARGV")
+	bin := fakeLauncher(t, `printf '%s\n' "$@" > `+argv)
+	m := windowAttachModel(t, bin)
+
+	next, cmd := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	if nm.attach == nil || cmd == nil {
+		t.Fatalf("enter did not start an attach: attach=%+v cmd=%v", nm.attach, cmd)
+	}
+	if nm.attach.label != "lab/api:2" {
+		t.Errorf("attach.label = %q, want lab/api:2", nm.attach.label)
+	}
+	time.Sleep(200 * time.Millisecond)
+	assertNoFile(t, argv)
+
+	id := nm.attach.id
+	ch := runBatchAsync(cmd)
+	awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+		d, ok := msg.(attachDoneMsg)
+		return ok && d.id == id
+	})
+	got, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "lab\napi\n@4\n"; string(got) != want {
+		t.Errorf("launcher argv = %q, want %q", got, want)
+	}
+}
+
+// Index 0 is a real window (base-index 0); passing the index would drop it.
+func TestAttachWindowRowAtIndexZeroPassesID(t *testing.T) {
+	argv := filepath.Join(t.TempDir(), "ARGV")
+	m := windowAttachModel(t, fakeLauncher(t, `printf '%s\n' "$@" > `+argv))
+	first := listItem{
+		isRemoteRow: true, remoteHost: "lab", remoteSess: "api",
+		remoteWindowID: "@0", remoteWindowIndex: 0,
+	}
+
+	cmd := m.beginAttach(first, nil)
+	if m.attach == nil {
+		t.Fatal("beginAttach left no attach")
+	}
+	id := m.attach.id
+	ch := runBatchAsync(cmd)
+	awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+		d, ok := msg.(attachDoneMsg)
+		return ok && d.id == id
+	})
+	got, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "lab\napi\n@0\n"; string(got) != want {
+		t.Errorf("launcher argv = %q, want %q", got, want)
+	}
+}
+
+// Esc on an attach begun from a window row cancels it like any other attach.
+func TestAttachEscCancelsWindowRowAttach(t *testing.T) {
+	m := windowAttachModel(t, fakeLauncher(t, "sleep 30"))
+	next, _ := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	if nm.attach == nil {
+		t.Fatal("enter did not start an attach")
+	}
+	run := nm.attach.run
+	t.Cleanup(run.cancel)
+
+	next, cmd := nm.Update(wallKey("esc"))
+	nm = next.(tuiModel)
+	if cmd != nil {
+		t.Errorf("esc returned a Cmd, want nil")
+	}
+	if nm.attach == nil || !nm.attach.cancelling {
+		t.Fatal("cancelling not set")
+	}
+	if run.ctx.Err() == nil {
+		t.Error("run's ctx not cancelled")
+	}
+}
+
+func TestAttachFailureOnWindowRowOffersRetry(t *testing.T) {
+	bin := fakeLauncher(t, "echo boom >&2\nexit 1")
+	m := windowAttachModel(t, bin)
+
+	next, cmd := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	if nm.attach == nil {
+		t.Fatal("enter did not start an attach")
+	}
+	id := nm.attach.id
+	ch := runBatchAsync(cmd)
+	done := awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+		d, ok := msg.(attachDoneMsg)
+		return ok && d.id == id
+	})
+	next, _ = nm.Update(done)
+	nm = next.(tuiModel)
+	if !strings.HasPrefix(nm.statusMsg, "lab/api:2: ") || !strings.HasSuffix(nm.statusMsg, "— enter to retry") {
+		t.Errorf("statusMsg = %q, want lab/api:2 prefix and retry suffix", nm.statusMsg)
+	}
+}
+
+func TestWindowRowIsNotMarkable(t *testing.T) {
+	m := windowAttachModel(t, "unused")
+	next, _ := m.handleKey(wallKey("ctrl+t"))
+	if marked := next.(tuiModel).marked; len(marked) != 0 {
+		t.Errorf("^t marked a remote window row: %v", marked)
+	}
+}
+
+// A window row names a window, so ^x must never stage the session kill its
+// session-mode twin would.
+func TestCtrlXOnRemoteWindowRowStagesNoSessionKill(t *testing.T) {
+	m := windowAttachModel(t, "unused")
+	next, _ := m.handleKey(wallKey("ctrl+x"))
+	if confirm := next.(tuiModel).killConfirm; len(confirm) != 0 {
+		t.Errorf("^x staged a kill for a window row: %+v", confirm)
+	}
+}
+
+// A host row keeps the session picker's Enter in window mode: auth runs in the
+// popup's pty, and the inert / tailscale refusals stay put.
+func TestWindowModeHostRowEnterKeepsSessionBehaviour(t *testing.T) {
+	hostModel := func(err error) tuiModel {
+		useRemoteCache(t)
+		opts := map[string]string{"@remote_bridge_hosts": "lab", "@remote_auth_bin": "/nonexistent/og-remote-auth"}
+		probe := func(string) (remoteProbeResult, error) { return remoteProbeResult{}, err }
+		m := newPickerModel(true, false, false, opts, "dark", localWindowItems(false), "")
+		m.remoteItems = collectRemoteWindowItems(opts, nil, probe)
+		m = m.recombine().withFilter()
+		m.cursor = findVisible(t, m, func(it listItem) bool { return it.remoteHost == "lab" && it.remoteSess == "" })
+		return m
+	}
+
+	t.Run("needs auth runs the handshake in the popup", func(t *testing.T) {
+		m := hostModel(fmt.Errorf("%w: exit status 255", errRemoteNeedsAuth))
+		next, cmd := m.activateCurrent()
+		if cmd == nil {
+			t.Fatal("want an ExecProcess cmd")
+		}
+		if got := fmt.Sprintf("%T", cmd()); !strings.HasSuffix(got, "execMsg") {
+			t.Errorf("cmd yields %s, want an exec message", got)
+		}
+		if nm := next.(tuiModel); nm.attach != nil || nm.statusMsg != "" {
+			t.Errorf("needs-auth must not start an attach: attach=%+v status=%q", nm.attach, nm.statusMsg)
+		}
+	})
+
+	t.Run("host key changed refuses", func(t *testing.T) {
+		m := hostModel(fmt.Errorf("%w: x", errRemoteHostKeyChanged))
+		next, cmd := m.activateCurrent()
+		if cmd != nil || !strings.Contains(next.(tuiModel).statusMsg, "host key") {
+			t.Errorf("cmd=%v status=%q, want a host-key refusal", cmd, next.(tuiModel).statusMsg)
+		}
+	})
+
+	t.Run("tailscale check refuses", func(t *testing.T) {
+		m := hostModel(fmt.Errorf("%w: x", errRemoteTailscaleCheck))
+		next, cmd := m.activateCurrent()
+		if got := next.(tuiModel).statusMsg; cmd != nil || !strings.Contains(got, "tailscale check") || !strings.Contains(got, "ssh lab") {
+			t.Errorf("cmd=%v status=%q, want the tailscale refusal", cmd, got)
+		}
+	})
 }

@@ -2170,3 +2170,437 @@ func TestRefreshForgetsKilledMirror(t *testing.T) {
 		t.Errorf("refreshMsg revived a killed remote row: %+v", mm.sessionItems)
 	}
 }
+
+// remoteWinPickerWindows is the cached window set the window-mode tests share.
+func remoteWinPickerWindows() []remoteWindow {
+	return []remoteWindow{
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
+	}
+}
+
+// localWindowItems is a window-mode local list: one header and one window per
+// group, keyed by session (or by agent state when stateGrouped).
+func localWindowItems(stateGrouped bool) []listItem {
+	if stateGrouped {
+		return []listItem{
+			{display: "No agent", isHeader: true, groupKey: "", searchText: "no agent"},
+			{target: "dev:1", session: "dev", groupKey: "", searchText: "dev:1 scratchpad", plain: "scratchpad", display: "scratchpad"},
+		}
+	}
+	return []listItem{
+		{display: "dev", isHeader: true, groupKey: "dev", searchText: "dev"},
+		{target: "dev:1", session: "dev", groupKey: "dev", searchText: "dev:1 scratchpad", plain: "scratchpad", display: "scratchpad"},
+	}
+}
+
+func windowModeRemoteModel(t *testing.T, stateGrouped bool) tuiModel {
+	t.Helper()
+	useRemoteCache(t)
+	writeRemoteWindowCache("lab", remoteWinPickerWindows(), time.Now())
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	m := newPickerModel(true, false, false, opts, "dark", localWindowItems(stateGrouped), "")
+	m.stateGrouped = stateGrouped
+	return m
+}
+
+func visibleTargets(m tuiModel) []string {
+	var out []string
+	for _, it := range m.visible {
+		out = append(out, it.target)
+	}
+	return out
+}
+
+func TestWindowModeFirstPaintListsCachedRemoteWindows(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+
+	headerAt, hostAt, firstWin, localAt := -1, -1, -1, -1
+	for i, it := range m.visible {
+		switch {
+		case it.isRemoteHeader:
+			headerAt = i
+		case it.remoteHost == "lab" && it.remoteSess == "":
+			hostAt = i
+		case it.remoteWindowID != "" && firstWin < 0:
+			firstWin = i
+		case it.target == "dev:1":
+			localAt = i
+		}
+	}
+	if localAt < 0 || headerAt < localAt || hostAt < headerAt || firstWin < hostAt {
+		t.Fatalf("want local windows, then Remote header, host row, cached windows; got %v", visibleTargets(m))
+	}
+	if got := m.visible[m.cursor].target; got != "dev:1" {
+		t.Errorf("cursor on %q, want the first local window", got)
+	}
+}
+
+func TestWindowModeInitProbesRemoteWindows(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+	m.showPreview = false
+
+	want := []listItem{{isRemoteRow: true, target: "remote:lab:api:@3", remoteHost: "lab", remoteSess: "api", remoteWindowID: "@3"}}
+	orig := collectRemoteWindowItemsFn
+	collectRemoteWindowItemsFn = func(map[string]string, map[string]bool, func(string) (remoteProbeResult, error)) []listItem {
+		return want
+	}
+	t.Cleanup(func() { collectRemoteWindowItemsFn = orig })
+
+	ch := runBatchAsync(m.Init())
+	msg := awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(remoteMsg)
+		return ok
+	})
+	if got := msg.(remoteMsg).items; len(got) != 1 || got[0].target != want[0].target {
+		t.Errorf("remoteMsg items = %+v, want the window collector's rows", got)
+	}
+}
+
+func TestWindowModeRemoteMsgReplacesCachedRowsKeepsCursor(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == "remote:lab:api:@4" })
+
+	live := []remoteWindow{
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
+		{Session: "api", SessionID: "$1", ID: "@9", Index: 3, Name: "fresh"},
+	}
+	probe := func(string) (remoteProbeResult, error) { return probeWithWindows(remoteIdentity{}, live...), nil }
+	resolved := collectRemoteWindowItems(m.tmuxOpts, nil, probe)
+
+	next, _ := m.Update(remoteMsg{items: resolved})
+	nm := next.(tuiModel)
+
+	if got := nm.visible[nm.cursor].target; got != "remote:lab:api:@4" {
+		t.Errorf("cursor moved to %q, want it kept on remote:lab:api:@4", got)
+	}
+	var liveRows, cachedGone int
+	for _, it := range nm.visible {
+		if it.remoteWindowID != "" && it.remoteLive {
+			liveRows++
+		}
+		if it.target == "remote:lab:api:@3" {
+			cachedGone++
+		}
+	}
+	if liveRows != 2 || cachedGone != 0 {
+		t.Errorf("live rows = %d, stale cached @3 rows = %d, want 2 and 0: %v", liveRows, cachedGone, visibleTargets(nm))
+	}
+}
+
+func TestWindowModeQueryRoutesRemoteWindowsUnderRemoteHeader(t *testing.T) {
+	for _, stateGrouped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateGrouped=%v", stateGrouped), func(t *testing.T) {
+			m := windowModeRemoteModel(t, stateGrouped)
+
+			m.query = "logs"
+			got := m.withFilter().visible
+			if len(got) != 3 || !got[0].isRemoteHeader || got[1].remoteHost != "lab" || got[1].remoteSess != "" ||
+				!got[1].remoteContextOnly || got[2].remoteWindowID != "@4" {
+				t.Fatalf("query logs: want Remote header, context host row, window @4; got %+v", got)
+			}
+			if got[2].plain != got[2].plainEnd || got[2].display != got[2].displayEnd {
+				t.Errorf("last remote window should take the closing tree glyph: %q", got[2].plain)
+			}
+			for _, it := range got {
+				if it.isHeader && !it.isRemoteHeader {
+					t.Errorf("remote match grew a local group header: %+v", it)
+				}
+			}
+
+			m.query = "scratchpad"
+			got = m.withFilter().visible
+			if len(got) != 2 || !got[0].isHeader || got[0].isRemoteHeader || got[1].target != "dev:1" {
+				t.Fatalf("query scratchpad: want local header + window only; got %+v", got)
+			}
+		})
+	}
+}
+
+func TestWindowModeStateGroupedLocalNoAgentMatchStaysUnderLocalHeader(t *testing.T) {
+	m := windowModeRemoteModel(t, true)
+	m.query = "dev"
+	got := m.withFilter().visible
+	if len(got) < 2 || got[0].isRemoteHeader || got[0].display != "No agent" || got[1].target != "dev:1" {
+		t.Fatalf("local no-agent window must sit under the local \"\" header, got %+v", got)
+	}
+}
+
+func TestWindowModePreviewCardNamesRemoteWindow(t *testing.T) {
+	row := remoteWindowRowItem("lab", remoteWindow{Session: "api", ID: "@4", Index: 2, Name: "logs"}, "", "", "", false)
+	m := tuiModel{width: 100, height: 40, ready: true, showPreview: true, theme: "dark", windowMode: true,
+		visible: []listItem{row}}
+
+	msg, ok := m.loadPreviewCmd()().(previewMsg)
+	if !ok {
+		t.Fatal("expected a previewMsg")
+	}
+	for _, want := range []string{"remote bridge → lab/api:2 logs", "og-remote-open"} {
+		if !strings.Contains(msg.content, want) {
+			t.Errorf("card %q lacks %q", msg.content, want)
+		}
+	}
+}
+
+func TestWindowModeRefreshKeepsRemoteItems(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+	before := len(m.remoteItems)
+	if before == 0 {
+		t.Fatal("setup: no remote items")
+	}
+	next, _ := m.Update(refreshMsg{items: localWindowItems(false)})
+	if got := len(next.(tuiModel).remoteItems); got != before {
+		t.Errorf("remoteItems = %d after refreshMsg, want %d untouched", got, before)
+	}
+}
+
+// liveWindowKillModel is a window-mode model whose remote rows came from a
+// probe in this popup (remoteLive), with both caches seeded to match: windows
+// api @3/@4 (indexes 1/2) and web @7.
+func liveWindowKillModel(t *testing.T, wins ...remoteWindow) tuiModel {
+	t.Helper()
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "api", "web")
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	m := newPickerModel(true, false, false, opts, "dark", localWindowItems(false), "")
+	m.remoteItems = collectRemoteWindowItems(opts, nil, winProbe(probeWithWindows(remoteIdentity{}, wins...), nil))
+	m = m.recombine().withFilter()
+	return m
+}
+
+func killTestWindows() []remoteWindow {
+	return []remoteWindow{
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
+		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite"},
+	}
+}
+
+func cursorOnRemoteWindow(t *testing.T, m tuiModel, id string) tuiModel {
+	t.Helper()
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.remoteWindowID == id })
+	return m
+}
+
+func remoteWindowIDs(items []listItem) string {
+	var ids []string
+	for _, it := range items {
+		if it.remoteWindowID != "" {
+			ids = append(ids, it.remoteWindowID)
+		}
+	}
+	return strings.Join(ids, ",")
+}
+
+func cachedWindowIDs(t *testing.T, host string) string {
+	t.Helper()
+	c, _ := readRemoteWindowCache(host)
+	var ids []string
+	for _, w := range c.Windows {
+		ids = append(ids, w.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
+func cachedSessions(host string) string {
+	c, _ := readRemoteSessionCache(host)
+	return strings.Join(c.Sessions, ",")
+}
+
+func TestCtrlXOnLiveRemoteWindowStagesKillConfirm(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	m := cursorOnRemoteWindow(t, liveWindowKillModel(t, killTestWindows()...), "@4")
+
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatalf("staging a kill must not run a cmd, got %v", cmd)
+	}
+	mm := next.(tuiModel)
+	mm.width = 120
+	if len(mm.killConfirm) != 1 || mm.killConfirm[0].remoteWindowID != "@4" {
+		t.Fatalf("killConfirm = %+v, want the @4 window row", mm.killConfirm)
+	}
+	if got := stripANSI(mm.renderHints()); !strings.Contains(got, "kill lab/api:2 logs on the remote?") || !strings.Contains(got, "(y/N)") {
+		t.Errorf("hints = %q, want the window kill prompt", got)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("staging a kill ran ssh")
+	}
+}
+
+func TestRemoteWindowKillConfirmDefaultIsNo(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	m := cursorOnRemoteWindow(t, liveWindowKillModel(t, killTestWindows()...), "@4")
+	m.killConfirm = []listItem{m.visible[m.cursor]}
+	keys := []tea.KeyPressMsg{{Code: 'n'}, {Code: tea.KeyEscape}, {Code: tea.KeySpace}, {Code: 'x', Mod: tea.ModCtrl}}
+	for _, key := range keys {
+		next, cmd := m.handleKey(key)
+		if cmd != nil || len(next.(tuiModel).killConfirm) != 0 {
+			t.Errorf("key %q did not cancel the prompt", key.String())
+		}
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("a non-y key ran the kill")
+	}
+}
+
+// A cached row's id may belong to a server that has since restarted, so ^x
+// stages nothing until the probe confirms the row.
+func TestCtrlXOnCachedRemoteWindowStagesNothing(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	m := windowAttachModel(t, "unused")
+
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	mm := next.(tuiModel)
+	if cmd != nil || len(mm.killConfirm) != 0 {
+		t.Fatalf("staged a kill for a cached row: confirm=%+v cmd=%v", mm.killConfirm, cmd)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/api:2") || !strings.Contains(mm.statusMsg, "cache") {
+		t.Errorf("statusMsg = %q, want the row label and a cache hint", mm.statusMsg)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("^x on a cached row ran ssh")
+	}
+}
+
+// killLiveWindow stages and confirms a kill of window id against a fake ssh
+// exiting code, returning the model once the kill run has landed.
+func killLiveWindow(t *testing.T, code int, id string, wins ...remoteWindow) tuiModel {
+	t.Helper()
+	fakeKillSSH(t, code)
+	m := cursorOnRemoteWindow(t, liveWindowKillModel(t, wins...), id)
+	m.killConfirm = []listItem{m.visible[m.cursor]}
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	return driveKill(t, next, cmd)
+}
+
+func TestRemoteWindowKillYesKillsAndForgets(t *testing.T) {
+	mm := killLiveWindow(t, 0, "@4", killTestWindows()...)
+
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@7" {
+		t.Errorf("remoteItems windows = %q, want @3,@7", got)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@7" {
+		t.Errorf("window cache = %q, want @3,@7", got)
+	}
+	if !mm.forgotten[forgottenKey(listItem{remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"})] {
+		t.Errorf("the killed window was not recorded as forgotten: %v", mm.forgotten)
+	}
+	if got := cachedSessions("lab"); got != "api,web" {
+		t.Errorf("session cache = %q, want api,web (api still has @3)", got)
+	}
+}
+
+func TestRemoteWindowKillGoneForgetsRow(t *testing.T) {
+	mm := killLiveWindow(t, 1, "@4", killTestWindows()...)
+
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@7" {
+		t.Errorf("remoteItems windows = %q, want @3,@7", got)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/api:2 was already gone") {
+		t.Errorf("statusMsg = %q, want an already-gone hint naming the window", mm.statusMsg)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@7" {
+		t.Errorf("window cache = %q, want @3,@7", got)
+	}
+}
+
+func TestRemoteWindowKillUnreachableKeepsRow(t *testing.T) {
+	mm := killLiveWindow(t, 255, "@4", killTestWindows()...)
+
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@4,@7" {
+		t.Errorf("remoteItems windows = %q, want all three", got)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/api:2: unreachable") {
+		t.Errorf("statusMsg = %q, want an unreachable hint naming the window", mm.statusMsg)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@4,@7" {
+		t.Errorf("window cache = %q, want it untouched", got)
+	}
+}
+
+func TestRemoteWindowKillLastWindowDropsSessionFromSessionCache(t *testing.T) {
+	mm := killLiveWindow(t, 0, "@7", killTestWindows()...)
+
+	if got := cachedSessions("lab"); got != "api" {
+		t.Errorf("session cache = %q, want api only (web lost its last window)", got)
+	}
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@4" {
+		t.Errorf("remoteItems windows = %q, want @3,@4", got)
+	}
+}
+
+// The probe lists (and caches) the window just before the kill lands; a late
+// remoteMsg must neither revive it nor forget the session's other windows.
+func TestRemoteWindowKillLateProbeDoesNotReviveOrForgetSession(t *testing.T) {
+	mm := killLiveWindow(t, 0, "@4", killTestWindows()...)
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	late := collectRemoteWindowItems(opts, nil, winProbe(probeWithWindows(remoteIdentity{}, killTestWindows()...), nil))
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@4,@7" {
+		t.Fatalf("setup: the late probe should have rewritten the cache, got %q", got)
+	}
+
+	next, _ := mm.Update(remoteMsg{items: late})
+	mm = next.(tuiModel)
+	if got := remoteWindowIDs(mm.remoteItems); got != "@3,@7" {
+		t.Errorf("late remoteMsg revived the killed window: %q", got)
+	}
+	if got := cachedWindowIDs(t, "lab"); got != "@3,@7" {
+		t.Errorf("window cache = %q, want the late write undone", got)
+	}
+	if got := cachedSessions("lab"); got != "api,web" {
+		t.Errorf("session cache = %q, want api kept while its other windows live", got)
+	}
+}
+
+// Killing a session from the session picker also clears its windows from the
+// window cache, so the next window-picker first paint cannot resurrect them.
+func TestRemoteSessionKillDropsSessionWindowsFromWindowCache(t *testing.T) {
+	useRemoteCache(t)
+	seedRemoteCache(t, "lab", time.Now(), "mono", "other")
+	writeRemoteWindowCache("lab", []remoteWindow{
+		{Session: "mono", SessionID: "$1", ID: "@1", Index: 1, Name: "a"},
+		{Session: "other", SessionID: "$2", ID: "@2", Index: 1, Name: "b"},
+	}, time.Now())
+	fakeKillSSH(t, 0)
+	mono := killRemoteRow("lab", "mono")
+	m := tuiModel{width: 120, remoteItems: []listItem{mono}, killConfirm: []listItem{mono}}
+	m = m.recombine().withFilter()
+
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y'})
+	driveKill(t, next, cmd)
+	if got := cachedWindowIDs(t, "lab"); got != "@2" {
+		t.Errorf("window cache = %q, want only other's @2", got)
+	}
+}
+
+func TestRenderHintsKillRemoteLabelOnRemoteSessionAndWindowRows(t *testing.T) {
+	for name, row := range map[string]listItem{
+		"session": {remoteHost: "lab", remoteSess: "api"},
+		"window":  {remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"},
+	} {
+		m := tuiModel{width: 200, visible: []listItem{row}}
+		if got := stripANSI(m.renderHints()); !strings.Contains(got, "^x:kill remote") {
+			t.Errorf("%s row hints = %q, want ^x:kill remote", name, got)
+		}
+	}
+}
+
+// Mirror-window and remote-window kills share one y/N mechanism: both stage in
+// killConfirm, render through renderKillConfirm, and default to No.
+func TestMirrorAndRemoteWindowKillShareOneConfirm(t *testing.T) {
+	remote := cursorOnRemoteWindow(t, liveWindowKillModel(t, killTestWindows()...), "@4")
+	mirror := listItem{target: "s:1", session: "s", bridgePane: "%7", bridgeSock: "/tmp/b.sock"}
+	for name, item := range map[string]listItem{"remote window": remote.visible[remote.cursor], "mirror window": mirror} {
+		m := remote
+		m.killConfirm = []listItem{item}
+		m.width = 120
+		if got := stripANSI(m.renderHints()); got != stripANSI(m.renderKillConfirm()) || !strings.Contains(got, "(y/N)") {
+			t.Errorf("%s: hints = %q, want renderKillConfirm's prompt", name, got)
+		}
+		next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'n'})
+		if cmd != nil || len(next.(tuiModel).killConfirm) != 0 {
+			t.Errorf("%s: n must cancel", name)
+		}
+	}
+}

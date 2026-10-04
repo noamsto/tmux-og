@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+	"time"
+)
 
 // zoxide suggestions are local-scope-only: they have no host to be scoped to.
 func TestScopedItemsExcludesZoxideRows(t *testing.T) {
@@ -193,24 +197,172 @@ func TestMirroredRowNeverMarkableInScope(t *testing.T) {
 	}
 }
 
-// Tab is a no-op in window mode and emit mode — neither has remote data to
-// build a scope from (round-3 note).
-func TestTabNoOpInWindowAndEmitMode(t *testing.T) {
-	cases := []struct {
-		name string
-		m    tuiModel
-	}{
-		{"window mode", tuiModel{tmuxOpts: scopeOpts(), windowMode: true}},
-		{"emit mode", tuiModel{tmuxOpts: scopeOpts(), emitPath: "/tmp/emit"}},
+// Emit mode skips the remote probe, so there is nothing to scope.
+func TestTabNoOpInEmitMode(t *testing.T) {
+	m := tuiModel{tmuxOpts: scopeOpts(), emitPath: "/tmp/emit"}
+	next, _ := m.handleKey(wallKey("tab"))
+	if nm := next.(tuiModel); nm.scope != (hostScope{}) {
+		t.Fatalf("scope = %+v, want local", nm.scope)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			next, _ := c.m.handleKey(wallKey("tab"))
-			nm := next.(tuiModel)
-			if nm.scope != (hostScope{}) {
-				t.Fatalf("scope = %+v, want local", nm.scope)
+}
+
+// scopeWindowModel is a window-mode picker over hosts lab and devbox: a plain
+// local group (an orphan header in any host scope) and a lab mirror group.
+// lab's cached remote window is in a session other than the mirrored one,
+// since a bridged session's windows are never listed under Remote.
+func scopeWindowModel(t *testing.T) tuiModel {
+	t.Helper()
+	useRemoteCache(t)
+	now := time.Now()
+	writeRemoteWindowCache("lab", []remoteWindow{
+		{Session: "web", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
+	}, now)
+	writeRemoteWindowCache("devbox", []remoteWindow{
+		{Session: "ci", SessionID: "$2", ID: "@7", Index: 1, Name: "runner"},
+	}, now)
+	items := []listItem{
+		{display: "dev", isHeader: true, groupKey: "dev", searchText: "dev"},
+		{target: "dev:1", session: "dev", groupKey: "dev", searchText: "dev:1 scratchpad", plain: "scratchpad", display: "scratchpad"},
+		{display: "lab-api", isHeader: true, groupKey: "lab-api", searchText: "lab-api"},
+		{target: "lab-api:1", session: "lab-api", groupKey: "lab-api", bridgeHost: "lab", searchText: "lab-api:1 mirrorshell", plain: "mirrorshell", display: "mirrorshell"},
+	}
+	opts := map[string]string{"@remote_bridge_hosts": "lab devbox"}
+	m := newPickerModel(true, false, false, opts, "dark", items, "")
+	m.mirrors = []bridgeMirror{{host: "lab", sess: "api", target: "lab-api"}}
+	return m
+}
+
+func pressTab(t *testing.T, m tuiModel) tuiModel {
+	t.Helper()
+	next, _ := m.handleKey(wallKey("tab"))
+	return next.(tuiModel)
+}
+
+// rowKinds labels each visible row so a failure shows the whole shape.
+func rowKinds(m tuiModel) []string {
+	var out []string
+	for _, it := range m.visible {
+		switch {
+		case it.isRemoteHeader:
+			out = append(out, "remote-header")
+		case it.isHeader:
+			out = append(out, "header:"+it.display)
+		case it.remoteWindowID != "":
+			out = append(out, "rwin:"+it.remoteHost+":"+it.remoteWindowName)
+		case it.remoteHost != "" && it.remoteSess == "":
+			out = append(out, "rhost:"+it.remoteHost)
+		case it.remoteHost != "":
+			out = append(out, "rsess:"+it.remoteHost+":"+it.remoteSess)
+		default:
+			out = append(out, it.target)
+		}
+	}
+	return out
+}
+
+func assertRows(t *testing.T, m tuiModel, want []string) {
+	t.Helper()
+	got := rowKinds(m)
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+}
+
+func TestWindowModeTabHostScope(t *testing.T) {
+	m := scopeWindowModel(t)
+	m = pressTab(t, m)
+	if m.scope != (hostScope{kind: scopeHost, host: "lab"}) {
+		t.Fatalf("scope = %+v, want host lab", m.scope)
+	}
+	for _, it := range m.visible {
+		if it.target == "dev:1" || it.display == "dev" && it.isHeader {
+			t.Fatalf("non-mirror local window or its header leaked into host scope: %+v", it)
+		}
+		if it.remoteHost == "devbox" {
+			t.Fatalf("devbox row in lab scope: %+v", it)
+		}
+		if it.remoteMirrorTarget != "" {
+			t.Fatalf("synthesized (mirrored) row in window mode: %+v", it)
+		}
+	}
+	got := rowKinds(m)
+	if len(got) < 4 || got[0] != "header:lab-api" || got[1] != "lab-api:1" || got[2] != "remote-header" || got[3] != "rhost:lab" {
+		t.Fatalf("rows = %v, want lab mirror group, Remote header, lab block", got)
+	}
+	if !slices.Contains(got, "rwin:lab:server") {
+		t.Fatalf("lab's remote window missing: %v", got)
+	}
+}
+
+func TestWindowModeTabCyclesScope(t *testing.T) {
+	m := scopeWindowModel(t)
+	for _, want := range []hostScope{
+		{kind: scopeHost, host: "lab"},
+		{kind: scopeHost, host: "devbox"},
+		{kind: scopeAll},
+		{},
+	} {
+		m = pressTab(t, m)
+		if m.scope != want {
+			t.Fatalf("scope = %+v, want %+v", m.scope, want)
+		}
+		switch want.kind {
+		case scopeHost:
+			if want.host == "devbox" {
+				assertRows(t, m, []string{"remote-header", "rhost:devbox", "rwin:devbox:runner"})
 			}
-		})
+		case scopeAll:
+			got := rowKinds(m)
+			labAt := slices.Index(got, "rhost:lab")
+			devboxAt := slices.Index(got, "rhost:devbox")
+			if labAt < 0 || devboxAt < labAt {
+				t.Fatalf("all scope must hold lab then devbox blocks: %v", got)
+			}
+			if slices.Contains(got, "dev:1") {
+				t.Fatalf("non-mirror local window in all-hosts scope: %v", got)
+			}
+		default:
+			got := rowKinds(m)
+			if !slices.Contains(got, "dev:1") || !slices.Contains(got, "lab-api:1") || !slices.Contains(got, "rhost:devbox") {
+				t.Fatalf("local scope lost rows: %v", got)
+			}
+		}
+	}
+}
+
+// A query narrows within the host scope: matching mirror windows keep their
+// group header and matching remote windows sit under the Remote header.
+func TestWindowModeHostScopeWithQuery(t *testing.T) {
+	m := scopeWindowModel(t)
+	m = pressTab(t, m)
+	m.query = "s"
+	m = m.withFilter()
+	got := rowKinds(m)
+	if len(got) == 0 || got[0] != "header:lab-api" {
+		t.Fatalf("rows = %v, want the lab mirror group first", got)
+	}
+	if !slices.Contains(got, "lab-api:1") {
+		t.Fatalf("mirror window filtered out: %v", got)
+	}
+	headerAt := slices.Index(got, "remote-header")
+	winAt := slices.Index(got, "rwin:lab:server")
+	if headerAt < 0 || winAt < headerAt {
+		t.Fatalf("remote window must sit under the Remote header: %v", got)
+	}
+	if slices.Contains(got, "dev:1") || slices.Contains(got, "rwin:devbox:runner") {
+		t.Fatalf("out-of-scope row matched: %v", got)
+	}
+}
+
+// A local group with no mirror windows has no rows left in host scope, and
+// its header must not stay behind as an orphan.
+func TestWindowModeHostScopeHidesOrphanHeader(t *testing.T) {
+	m := scopeWindowModel(t)
+	m = pressTab(t, m)
+	for _, it := range m.visible {
+		if it.isHeader && it.display == "dev" {
+			t.Fatalf("orphan header %q visible in host scope", it.display)
+		}
 	}
 }
 
