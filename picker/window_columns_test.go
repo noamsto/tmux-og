@@ -17,9 +17,9 @@ func stubPS(t *testing.T, table string) *int {
 		return []byte(table), nil
 	}
 	reset := func() {
-		windowResourceCache.Lock()
-		windowResourceCache.result, windowResourceCache.ts = nil, time.Time{}
-		windowResourceCache.Unlock()
+		windowPSCache.Lock()
+		windowPSCache.out, windowPSCache.ts = nil, time.Time{}
+		windowPSCache.Unlock()
 	}
 	reset()
 	t.Cleanup(func() { psOutput = orig; reset() })
@@ -44,7 +44,7 @@ func mixedWindows() []windowData {
 			labelID: "L ENG-1", labelRest: " first", prPlain: "  #10", prState: "open", prCheck: "success",
 			cpuPct: 12, memMB: 300, resKnown: true},
 		{session: "proj", index: 2, name: "b", path: "/srv/other", cpuPct: 250, memMB: 2048, resKnown: true},
-		{session: "tp-g6-money", index: 1, name: "m", bridgeHost: "tp-g6", path: "/home/remote/money"},
+		{session: "tp-g6-money", index: 1, name: "m", bridgeHost: "tp-g6", bridgeWin: true, path: "/home/remote/money"},
 	}
 }
 
@@ -186,9 +186,9 @@ func TestWindowResourcesPlaceholderThenFilled(t *testing.T) {
 	windows := []windowData{{session: "s", index: 1, name: "a", procs: []string{"fish"}, panePIDs: []int{100}}}
 
 	// First paint: nothing has called ps, every figure is the placeholder.
-	first := windowRowsOf(renderWindowItemsWith(windows, nil, map[string]string{}, nil, "dark", 0, false))[0]
+	first := windowRowsOf(firstPaintWindowItems([]string{windowPaneRow("s", "1", "a", "0", "fish", "1", "", "/x")}, nil, map[string]string{}, nil, "dark"))[0]
 	if *calls != 0 {
-		t.Fatalf("rendering ran ps %d times; first paint must not block on it", *calls)
+		t.Fatalf("first paint ran ps %d times; it must not block on it", *calls)
 	}
 	if !strings.Contains(first.plain, resourcePlaceholder+" / ") {
 		t.Errorf("first paint should carry the placeholder: %q", first.plain)
@@ -226,8 +226,8 @@ func TestWindowMirrorsKeepPlaceholderAndGainNoAgentCmds(t *testing.T) {
 		"  200     1  2.0 204800 renderer",
 	}, "\n"))
 	windows := []windowData{
-		{session: "h-sess", index: 1, name: "a", bridgeHost: "h", procs: []string{"zsh"}, panePIDs: []int{100}},
-		{session: "h-sess", index: 2, name: "b", bridgeHost: "h", procs: []string{"zsh"}, panePIDs: []int{200}},
+		{session: "h-sess", index: 1, name: "a", bridgeHost: "h", bridgeWin: true, procs: []string{"zsh"}, panePIDs: []int{100}},
+		{session: "h-sess", index: 2, name: "b", bridgeHost: "h", bridgeWin: true, procs: []string{"zsh"}, panePIDs: []int{200}},
 	}
 	mergeWindowResources(windows)
 	for i, w := range windows {
@@ -259,6 +259,11 @@ func TestWindowNarrowWidthDropsColumnsInOrder(t *testing.T) {
 			t.Fatalf("width %d keeps path=%v cpu/mem=%v host=%v: Path must go first, then CPU/Mem, then Host", width, path, res, host)
 		}
 		seen[strings.Join([]string{boolS(path), boolS(res), boolS(host)}, "")] = true
+		for _, r := range windowRowsOf(renderWindowItemsWith(mixedWindows(), nil, map[string]string{}, nil, "dark", width, false)) {
+			if width >= 50 && visibleWidth("  "+r.display) > width {
+				t.Errorf("width %d: list row is %d cells wide: %q", width, visibleWidth("  "+r.display), stripANSI(r.display))
+			}
+		}
 		// Whatever is shown, the identity column keeps at least its floor.
 		row := stripANSI(windowRowsOf(items)[0].display)
 		if !strings.Contains(row, "ENG-1") {
@@ -394,5 +399,106 @@ func TestParseWindowPaneRowsPIDsAndPath(t *testing.T) {
 	}
 	if len(strings.Split(windowsArgv()[len(windowsArgv())-1], "|")) != 37 {
 		t.Error("windowsArgv format must carry 37 fields")
+	}
+}
+
+func TestWindowResourcesFollowCurrentWindowsWithinTTL(t *testing.T) {
+	calls := stubPS(t, strings.Join([]string{
+		"  PID  PPID %CPU   RSS COMMAND",
+		"  100     1  2.0 204800 fish",
+		"  101   100 10.0 102400 claude",
+		"  200     1  1.0 102400 fish",
+	}, "\n"))
+	before := []windowData{
+		{session: "s", index: 1, name: "a", panePIDs: []int{100}},
+		{session: "s", index: 2, name: "b", panePIDs: []int{200}},
+	}
+	mergeWindowResources(before)
+	if before[1].memMB != 100 {
+		t.Fatalf("window 2 mem = %v, want 100", before[1].memMB)
+	}
+	// Window 1 is killed and renumber-windows slides b onto index 1.
+	after := []windowData{{session: "s", index: 1, name: "b", panePIDs: []int{200}}}
+	mergeWindowResources(after)
+	if *calls != 1 {
+		t.Errorf("ps ran %d times, want 1 within the TTL", *calls)
+	}
+	if after[0].memMB != 100 || after[0].cpuPct != 1 || len(after[0].procs) != 0 {
+		t.Errorf("slid window got %+v, want its own 1%% / 100M and no agent", after[0])
+	}
+}
+
+func TestWindowLocalInMirrorSessionGetsResources(t *testing.T) {
+	stubPS(t, strings.Join([]string{
+		"  PID  PPID %CPU   RSS COMMAND",
+		"  100     1  2.0 204800 fish",
+		"  101   100 10.0 102400 claude",
+	}, "\n"))
+	windows := []windowData{{session: "h-sess", index: 1, name: "a", bridgeHost: "h", procs: []string{"fish"}, panePIDs: []int{100}}}
+	mergeWindowResources(windows)
+	if !windows[0].resKnown || windows[0].cpuPct != 12 {
+		t.Fatalf("local window in a mirror session = %+v, want real figures", windows[0])
+	}
+	if !strings.Contains(strings.Join(windows[0].procs, ","), "claude") {
+		t.Errorf("procs %v should gain the tree's agent", windows[0].procs)
+	}
+	row := windowRowsOf(renderWindowItemsWith(windows, nil, map[string]string{}, nil, "dark", 0, false))[0]
+	if !strings.Contains(row.plain, "12%") {
+		t.Errorf("row should show real figures: %q", row.plain)
+	}
+}
+
+func TestWindowHomePathShorteningNeedsBoundary(t *testing.T) {
+	t.Setenv("HOME", "/home/noams")
+	windows := []windowData{
+		{session: "s", index: 1, name: "a", path: "/home/noams"},
+		{session: "s", index: 2, name: "b", path: "/home/noams2/x"},
+		{session: "s", index: 3, name: "c", path: "/home/noams/x"},
+	}
+	rows := windowRowsOf(renderWindowItemsWith(windows, nil, map[string]string{}, nil, "dark", 0, false))
+	for i, want := range []string{" ~", " /home/noams2/x", " ~/x"} {
+		if !strings.HasSuffix(rows[i].plain, want) {
+			t.Errorf("row %d = %q, want suffix %q", i, rows[i].plain, want)
+		}
+	}
+}
+
+func TestWindowGlyphOnlyLabelsKeepIdentityWide(t *testing.T) {
+	windows := []windowData{{session: "s", index: 1, name: "a", labelID: "L ENG-1", labelRest: " " + strings.Repeat("title ", 10), cpuPct: 5, memMB: 9, resKnown: true}}
+	full := renderWindowItemsWith(windows, nil, map[string]string{}, nil, "dark", 0, false)
+	if h := stripANSI(full[0].display); !strings.Contains(h, "Procs") || !strings.Contains(h, "CPU") || !strings.Contains(h, "Mem") {
+		t.Fatalf("unknown width keeps glyph+word labels: %q", h)
+	}
+	fellBack := false
+	for width := 30; width <= 120; width++ {
+		items := renderWindowItemsWith(windows, nil, map[string]string{}, nil, "dark", width, false)
+		h := stripANSI(items[0].display)
+		if strings.Contains(h, " / ") && !strings.Contains(h, "CPU") {
+			fellBack = true
+			if i, j := col(h, " / "), col(stripANSI(windowRowsOf(items)[0].display), " / "); i != j {
+				t.Errorf("width %d: header separator at %d, row at %d", width, i, j)
+			}
+		}
+	}
+	if !fellBack {
+		t.Error("no width falls back to glyph-only Procs/CPU/Mem labels")
+	}
+}
+
+func TestListIndexAtGroupHeaderPinUnderQuery(t *testing.T) {
+	m := windowListModel(120, 8, 0)
+	m.visible = m.visible[1:]
+	m.cursor = len(m.visible) - 1
+	h := m.listHeight()
+	_, start, pin, colPin := m.listLayout(h)
+	if colPin || pin < 0 {
+		t.Skipf("layout has no group pin (colPin=%v pin=%d)", colPin, pin)
+	}
+	top := m.listRowTop()
+	if _, ok := m.listIndexAt(0, top); ok {
+		t.Error("the pinned group header must not be clickable")
+	}
+	if got, ok := m.listIndexAt(0, top+1); !ok || got != start {
+		t.Errorf("first body line mapped to (%d,%v), want %d", got, ok, start)
 	}
 }

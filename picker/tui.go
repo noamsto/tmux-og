@@ -428,7 +428,7 @@ func initialModel(windowMode, agentOnly, wall bool, emitPath string) tuiModel {
 	var items []listItem
 	switch {
 	case windowMode && data.windowRows != nil:
-		items = renderWindowItemsWith(windowsFromRows(data.windowRows), data.activity, opts, panes, theme, 0, false)
+		items = firstPaintWindowItems(data.windowRows, data.activity, opts, panes, theme)
 	case windowMode:
 		items = buildWindowItems(opts, panes, theme, 0, false)
 	default:
@@ -443,6 +443,12 @@ func initialModel(windowMode, agentOnly, wall bool, emitPath string) tuiModel {
 	}
 	trace.mark("model")
 	return m
+}
+
+// firstPaintWindowItems renders window rows without the ps walk: CPU/Mem
+// stay placeholders until the first refresh fills them.
+func firstPaintWindowItems(rows []string, activity map[string]int64, opts map[string]string, panes []agentPaneInfo, theme string) []listItem {
+	return renderWindowItemsWith(windowsFromRows(rows), activity, opts, panes, theme, 0, false)
 }
 
 func runTUI(windowMode, agentOnly, wall, remotePick bool) error {
@@ -501,11 +507,12 @@ func (m tuiModel) Init() tea.Cmd {
 	trace.mark("init")
 	// No wall capture here: the grid is derived from a size this model doesn't
 	// have yet, and nothing paints before the WindowSizeMsg that brings it.
-	cmds := []tea.Cmd{tickCmd(), previewTickCmd(), wallTickCmd(), m.loadPreviewCmd()}
+	// First paint skips the ps -A fork; kick a full refresh right away so
+	// CPU/Mem (and window mode's real-width layout) arrive without waiting for
+	// the 1s tick.
+	cmds := []tea.Cmd{tickCmd(), previewTickCmd(), wallTickCmd(), m.loadPreviewCmd(), m.refreshDataCmd()}
 	if !m.windowMode {
-		// First paint skips the ps -A fork; kick a full refresh right away so
-		// CPU/Mem replace the placeholder without waiting for the 1s tick.
-		cmds = append(cmds, m.zoxideCmd(), m.refreshDataCmd())
+		cmds = append(cmds, m.zoxideCmd())
 		if m.emitPath == "" {
 			// Emit mode never quits to bridge a further-remote host, so its
 			// probe would just be wasted round trips (spec D8).
@@ -2001,19 +2008,20 @@ func (m tuiModel) listIndexAt(x, y int) (int, bool) {
 	if vy < 0 || vy >= h {
 		return 0, false
 	}
-	idx := m.scrollStart(h) + vy
-	if _, start, pin, colPin := m.listLayout(h); colPin {
-		// Window mode pins the column row and (once scrolled) the group row
-		// above the body; neither is a click target.
-		pinned := 1
-		if pin >= 0 {
-			pinned++
-		}
-		if vy < pinned {
-			return 0, false
-		}
-		idx = start + vy - pinned
+	// The pinned lines (column row, governing header) sit above the body and
+	// are not click targets.
+	_, start, pin, colPin := m.listLayout(h)
+	pinned := 0
+	if colPin {
+		pinned++
 	}
+	if pin >= 0 {
+		pinned++
+	}
+	if vy < pinned {
+		return 0, false
+	}
+	idx := start + vy - pinned
 	if idx < 0 || idx >= len(m.visible) || !m.isSelectable(m.visible[idx]) {
 		return 0, false
 	}
@@ -2895,6 +2903,8 @@ const (
 	// layoutGaps: tree(2)+marker(1) glyph cells + 3 inter-field gaps + 1 gap
 	// before the PR badge = 7.
 	layoutGaps = 7
+	// listPrefixDW is the "  " / "▶ " renderList puts before every row.
+	listPrefixDW = 2
 )
 
 // identityCapFor sizes the inline-identity column from the terminal width, so
@@ -3088,7 +3098,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 	winRows := make(map[string]renderedWin, len(windows))
 	maxLeadDW, maxIconDW, maxPrDW, maxZoomDW := 0, 0, 0, 0
 	hostCol, maxPathDW := 0, 0
-	maxCPU, maxMem := max(cpuColWidth(), visibleWidth(lblCPU)), visibleWidth(lblMem)
+	dataCPU, dataMem := cpuColWidth(), 0
 	for i := range windows {
 		w := &windows[i]
 		icons, dw := buildProcIcons(w.procs, maxIconsPicker)
@@ -3134,17 +3144,17 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 
 		// A mirror's local pane PIDs measure the renderer, so it never shows them.
 		cpu, mem := resourcePlaceholder, resourcePlaceholder
-		if w.resKnown && w.bridgeHost == "" {
+		if w.resKnown && !w.bridgeWin {
 			cpu, mem = formatCPU(w.cpuPct), formatMem(w.memMB)
 		}
 		path := w.path
-		if home != "" && strings.HasPrefix(path, home) {
+		if home != "" && (path == home || strings.HasPrefix(path, home+"/")) {
 			path = "~" + path[len(home):]
 		}
 		hostCol = max(hostCol, visibleWidth(w.bridgeHost))
 		maxPathDW = max(maxPathDW, iconCellWidth(path))
-		maxCPU = max(maxCPU, len(cpu))
-		maxMem = max(maxMem, len(mem))
+		dataCPU = max(dataCPU, visibleWidth(cpu))
+		dataMem = max(dataMem, visibleWidth(mem))
 
 		winRows[fmt.Sprintf("%s:%d", w.session, w.index)] = renderedWin{
 			win: w, name: name, icons: icons, iconDW: dw,
@@ -3160,7 +3170,6 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			maxZoomDW = max(maxZoomDW, iconCellWidth(" 󰁌"))
 		}
 	}
-	iconCol := max(maxIconDW+1, 3, visibleWidth(lblProcs))
 	if hostCol > 0 {
 		hostCol = max(hostCol, visibleWidth(lblHost))
 	}
@@ -3169,35 +3178,63 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 	// window's meaning: Path first, then CPU/Mem, then Host, until the identity
 	// keeps minOptionalIdentityCap cells or none are left. An unknown width keeps
 	// all; a path wider than maxPathCostDW is clipped by the line, not budgeted.
-	showHost, showRes, showPath := hostCol > 0, true, maxPathDW > 0
+	// The label floors on Procs/CPU/Mem fall back to glyph-only when they would
+	// shrink the identity column.
+	avail := width
+	if width > 0 {
+		avail = max(width-listPrefixDW, 1)
+	}
 	pathCostDW := min(maxPathDW, maxPathCostDW)
-	optionalDW := func() int {
-		dw := 0
-		if showHost {
-			dw += 1 + hostCol
-		}
-		if showRes {
-			dw += 1 + maxCPU + 3 + maxMem
-		}
-		if showPath {
-			dw += 1 + iconCellWidth(iDir) + 1 + pathCostDW
-		}
-		return dw
+	type columnFit struct {
+		iconCol, maxCPU, maxMem     int
+		showHost, showRes, showPath bool
+		identityCap                 int
 	}
-drop:
-	for width > 0 && identityCapFor(width, maxLeadDW+maxZoomDW, iconCol, maxPrDW+optionalDW()) < minOptionalIdentityCap {
-		switch {
-		case showPath:
-			showPath = false
-		case showRes:
-			showRes = false
-		case showHost:
-			showHost = false
-		default:
-			break drop
+	fit := func(lp, lc, lm string) columnFit {
+		f := columnFit{
+			iconCol:  max(maxIconDW+1, 3, visibleWidth(lp)),
+			maxCPU:   max(dataCPU, visibleWidth(lc)),
+			maxMem:   max(dataMem, visibleWidth(lm)),
+			showHost: hostCol > 0, showRes: true, showPath: maxPathDW > 0,
+		}
+		optionalDW := func() int {
+			dw := 0
+			if f.showHost {
+				dw += 1 + hostCol
+			}
+			if f.showRes {
+				dw += 1 + f.maxCPU + 3 + f.maxMem
+			}
+			if f.showPath {
+				dw += 1 + iconCellWidth(iDir) + 1 + pathCostDW
+			}
+			return dw
+		}
+	drop:
+		for width > 0 && identityCapFor(avail, maxLeadDW+maxZoomDW, f.iconCol, maxPrDW+optionalDW()) < minOptionalIdentityCap {
+			switch {
+			case f.showPath:
+				f.showPath = false
+			case f.showRes:
+				f.showRes = false
+			case f.showHost:
+				f.showHost = false
+			default:
+				break drop
+			}
+		}
+		f.identityCap = identityCapFor(avail, maxLeadDW+maxZoomDW, f.iconCol, maxPrDW+optionalDW())
+		return f
+	}
+	cf := fit(lblProcs, lblCPU, lblMem)
+	if width > 0 {
+		if g := fit(iProcs, iCPU, iMem); g.identityCap > cf.identityCap {
+			cf = g
+			lblProcs, lblCPU, lblMem = iProcs, iCPU, iMem
 		}
 	}
-	identityCap := identityCapFor(width, maxLeadDW+maxZoomDW, iconCol, maxPrDW+optionalDW())
+	iconCol, maxCPU, maxMem := cf.iconCol, cf.maxCPU, cf.maxMem
+	showHost, showRes, showPath, identityCap := cf.showHost, cf.showRes, cf.showPath, cf.identityCap
 	labelCol := maxLeadDW + identityCap + maxZoomDW
 
 	// truncID renders a rawIdentity to (colored, plain) within budget cells.
@@ -3241,8 +3278,8 @@ drop:
 	// Mem right) so the pair reads as one unit and each field keeps the width
 	// the rows give it.
 	hdrRes := strings.Repeat(" ", max(0, maxCPU-visibleWidth(lblCPU))) + lblCPU + " / " + lblMem + strings.Repeat(" ", max(0, maxMem-visibleWidth(lblMem)))
-	hdrDisplay := "     " + cDim + padToWidth(lblWin, len(lblWin), labelCol) + reset + " " + cDim + padToWidth(lblProcs, visibleWidth(lblProcs), iconCol) + reset
-	hdrPlain := "     " + padToWidth(lblWin, len(lblWin), labelCol) + " " + padToWidth(lblProcs, visibleWidth(lblProcs), iconCol)
+	hdrDisplay := "     " + cDim + padToWidth(lblWin, visibleWidth(lblWin), labelCol) + reset + " " + cDim + padToWidth(lblProcs, visibleWidth(lblProcs), iconCol) + reset
+	hdrPlain := "     " + padToWidth(lblWin, visibleWidth(lblWin), labelCol) + " " + padToWidth(lblProcs, visibleWidth(lblProcs), iconCol)
 	if showHost {
 		hdrDisplay += " " + hostCell(lblHost, cDim)
 		hdrPlain += " " + hostCell(lblHost, "")
@@ -3355,8 +3392,8 @@ drop:
 				plain += " " + hostCell(w.bridgeHost, "")
 			}
 			if showRes {
-				cpuPad := strings.Repeat(" ", max(0, maxCPU-len(r.cpu)))
-				memPad := strings.Repeat(" ", max(0, maxMem-len(r.mem)))
+				cpuPad := strings.Repeat(" ", max(0, maxCPU-visibleWidth(r.cpu)))
+				memPad := strings.Repeat(" ", max(0, maxMem-visibleWidth(r.mem)))
 				display += " " + cpuPad + rc.cpuColor(w.cpuPct, 0) + r.cpu + reset + cDim + " / " + reset + memPad + rc.memColor(w.memMB) + r.mem + reset
 				plain += " " + cpuPad + r.cpu + " / " + memPad + r.mem
 			}

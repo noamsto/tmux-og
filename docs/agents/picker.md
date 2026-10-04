@@ -50,10 +50,13 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   (`listLayout`), so the body is `h-2`; `listIndexAt` accounts for both. It passes `itemVisible`
   under `^a`/`^s` and is dropped under a query, like session mode. Session mode is untouched.
 - **CPU/Mem is async, like the session list**: `initialModel` never merges, so the first paint
-  shows `-`; `refreshDataCmd` calls `mergeWindowResources` (own 5 s cache, keyed `sess:idx`, one
-  `ps` walk from every pane pid, in both the chained and fallback branches). The same walk gives a
+  shows `-`; `refreshDataCmd` calls `mergeWindowResources` (one `ps` walk from every pane pid, the raw output cached 5 s and
+  re-aggregated against the *current* windows each refresh, so a renumber never reads a stale
+  `sess:idx`; both the chained and fallback branches; `Init` kicks the first refresh at once). The same walk gives a
   shell-hosted agent its icon (`agentCmds` appended to the window's procs).
-- **Mirror windows never get local figures or tree agents**: their local pane pids measure the
+- **Header labels are glyph+word, falling back to glyph-only** for Procs/CPU/Mem when the word
+  floors would shrink the identity column at a known width.
+- **Mirror windows (`@bridge_win`, not merely an inherited `@bridge_host`) never get local figures or tree agents**: their local pane pids measure the
   renderer and `@bridge_res` is session-scoped, so every mirror window renders `-` and
   `@bridge_proc` alone names its command. Their path is `@bridge_session_path`.
 - **Session-grouped headers** show the session display name (`sessionDisplayName`; target and

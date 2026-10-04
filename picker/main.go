@@ -93,6 +93,7 @@ type windowData struct {
 	bridgePane  string // @bridge_pane — remote pane id this window mirrors, or ""
 	bridgeSock  string // @bridge_sock — ctl socket of the daemon mirroring this session
 	bridgeHost  string // @bridge_host — ssh host the mirror session lives on, or ""
+	bridgeWin   bool   // @bridge_win == "1" — a daemon-owned mirror window
 	prPlain     string // @window_pr_plain   — " <glyph> #<n>" or ""
 	prState     string // @pr_state
 	prCheck     string // @pr_check_state
@@ -545,6 +546,7 @@ func windowsFromRows(rows []string) []windowData {
 			bridgePane:  wi.bridgePane,
 			bridgeSock:  wi.bridgeSock,
 			bridgeHost:  wi.bridgeHost,
+			bridgeWin:   wi.bridgeWin,
 			prPlain:     wi.prPlain,
 			prState:     wi.prState,
 			prCheck:     wi.prCheck,
@@ -667,39 +669,38 @@ var psOutput = func() ([]byte, error) {
 	return exec.Command("ps", psArgs...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 }
 
-// windowResourceCache is collectWindowResources' own 5s cache, keyed
-// "session:index". Separate from resourceCache: window mode and session mode
-// never share a process, but their key spaces would collide if they did.
-var windowResourceCache struct {
+// windowPSCache holds the raw process table for resourceCacheTTL. The walk
+// itself reruns against the current windows' pids on every call: a cache keyed
+// "session:index" would misattribute figures once renumber-windows or a kill
+// slides an index.
+var windowPSCache struct {
 	sync.Mutex
-	result map[string]sessionResources
-	ts     time.Time
+	out []byte
+	ts  time.Time
 }
 
 // collectWindowResources is collectSessionResources keyed per window: one ps
-// walk from every local pane PID, cached for resourceCacheTTL.
+// walk from every local pane PID over a ps read cached for resourceCacheTTL.
 func collectWindowResources(windows []windowData) map[string]sessionResources {
-	windowResourceCache.Lock()
-	defer windowResourceCache.Unlock()
-	if time.Since(windowResourceCache.ts) < resourceCacheTTL && windowResourceCache.result != nil {
-		return windowResourceCache.result
+	windowPSCache.Lock()
+	defer windowPSCache.Unlock()
+	if windowPSCache.out == nil || time.Since(windowPSCache.ts) >= resourceCacheTTL {
+		out, err := psOutput()
+		if err != nil {
+			return nil
+		}
+		windowPSCache.out, windowPSCache.ts = out, time.Now()
 	}
 
 	pids := make(map[string][]int, len(windows))
 	for _, w := range windows {
 		// A mirror's local pane PIDs run the bridge renderer, not the remote
 		// program, so walking them would report the renderer's own figures.
-		if w.bridgeHost == "" && len(w.panePIDs) > 0 {
+		if !w.bridgeWin && len(w.panePIDs) > 0 {
 			pids[windowResourceKey(w)] = w.panePIDs
 		}
 	}
-	psOut, err := psOutput()
-	if err != nil {
-		return nil
-	}
-	windowResourceCache.result = aggregateResources(pids, string(psOut))
-	windowResourceCache.ts = time.Now()
-	return windowResourceCache.result
+	return aggregateResources(pids, string(windowPSCache.out))
 }
 
 func windowResourceKey(w windowData) string {
@@ -714,7 +715,7 @@ func mergeWindowResources(windows []windowData) {
 	res := collectWindowResources(windows)
 	for i := range windows {
 		w := &windows[i]
-		if w.bridgeHost != "" {
+		if w.bridgeWin {
 			continue
 		}
 		r, ok := res[windowResourceKey(*w)]
