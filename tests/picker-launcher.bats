@@ -208,3 +208,16 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	[ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 	[ "$(cat "$BATS_TEST_TMPDIR/seen")" = "$evil" ]
 }
+
+@test "window picker: --current @3 sets the popup's env" {
+	launcher="$(mk_launcher tmux-window-picker.sh)"
+	bash "$launcher" --client foo --current @3 --agent
+	grep -Eq -- '(^| )-e OG_PICKER_CURRENT_WINDOW=@3( |$)' "$ARGS_LOG"
+	grep -q -- '--agent' "$ARGS_LOG"
+}
+
+@test "window picker: no --current logs no -e OG_PICKER_CURRENT_WINDOW" {
+	launcher="$(mk_launcher tmux-window-picker.sh)"
+	bash "$launcher"
+	run ! grep -Eq -- '(^| )-e OG_PICKER_CURRENT_WINDOW' "$ARGS_LOG"
+}

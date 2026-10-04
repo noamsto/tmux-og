@@ -79,6 +79,7 @@ type sessionData struct {
 type windowData struct {
 	session string
 	index   int
+	id      string // tmux window id (@N)
 	name    string
 	zoomed  bool
 	branch  string
@@ -330,6 +331,7 @@ type winKey struct {
 // winInfo is one window's merged state across its panes, as parsed by
 // parseWindowPaneRows. Package-scope so the pure parse is testable.
 type winInfo struct {
+	id          string
 	name        string
 	zoomed      bool
 	active      bool
@@ -372,7 +374,7 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 	}
 	for _, line := range lines {
 		parts := strings.Split(line, "|")
-		if len(parts) != 37 {
+		if len(parts) != 38 {
 			continue
 		}
 		sess := parts[0]
@@ -445,6 +447,7 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 			}
 
 			wi = &winInfo{
+				id:   field(parts, 37),
 				name: wName, zoomed: zoomed, active: active, branch: branch, path: panePath,
 				showPath:    showPath,
 				bridgeWin:   bridgeWin,
@@ -482,7 +485,7 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 // picker/main_test.go can assert notModalFilter is on it.
 func windowsArgv() []string {
 	return []string{"list-panes", "-a", "-f", notModalFilter, "-F",
-		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}|#{pane_pid}|#{@bridge_session_path}"}
+		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}|#{pane_pid}|#{@bridge_session_path}|#{window_id}"}
 }
 
 func collectWindows() []windowData {
@@ -535,6 +538,7 @@ func windowsFromRows(rows []string) []windowData {
 		windows = append(windows, windowData{
 			session:     k.sess,
 			index:       k.idx,
+			id:          wi.id,
 			name:        wi.name,
 			zoomed:      wi.zoomed,
 			active:      wi.active,

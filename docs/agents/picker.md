@@ -107,6 +107,7 @@ Measurements are in `performance.md` ("Picker open latency").
   ticker, so the first frame waits up to a period, and `Run` would otherwise fork a
   second `tmux info` before starting it. Do not drop the profile: without it the
   picker forks `tmux info` twice before painting.
+- **The window picker opens on, and marks, the client's current window** (#903). The `w`/`a` binds pass `--current #{q:window_id}` (a bind-format expansion, no extra fork); `tmux-window-picker.sh` hands it to the popup as `OG_PICKER_CURRENT_WINDOW` and `renderWindowItemsWith` matches it against the `#{window_id}` field (last of `windowsArgv`'s 36) to set `listItem.current` and draw a peach `●` in the active-window `▸` slot (current wins that slot). `cursorOnCurrent` seeds the cursor at first paint (the `^g` toggle still resets to the first row); no id, an unknown id or a filtered-out window falls back to `firstSelectable(0)`. The wall (`W`) passes no id and is unchanged. Pinned by `window-picker-current-conf-assertions` (flake) and `tests/picker-launcher.bats`.
 - **The window picker's 1 s refresh chains its reads too** (`collectTmux(true, false)`:
   pane snapshot, window rows, session activity in one call), and the `ctrl+g` regroup
   runs the same `refreshDataCmd`.
