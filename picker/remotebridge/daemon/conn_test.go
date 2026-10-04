@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -103,31 +106,45 @@ func TestConnHolderCloseEmptiesTheSlotIdempotently(t *testing.T) {
 	h.close() // already empty: still must not panic
 }
 
-// pipeConn is a ctlConn over a net.Pipe whose far end drains the commands the
-// daemon writes. The returned writer feeds the control stream.
-func pipeConn(t *testing.T) (*ctlConn, func(string)) {
+// pipeConn is a ctlConn over a net.Pipe whose far end answers like tmux: each
+// og-fanout barrier with its tag, every other command with the next of replies
+// (nothing once they run out). The returned writer feeds the control stream.
+func pipeConn(t *testing.T, replies ...string) (*ctlConn, func(string)) {
 	t.Helper()
 	near, far := net.Pipe()
 	t.Cleanup(func() { _ = near.Close(); _ = far.Close() })
-	go io.Copy(io.Discard, far) //nolint:errcheck // drain only; ends with the pipe
-	c := newCtlConn(near)
-	return c, func(s string) {
-		if _, err := far.Write([]byte(s)); err != nil {
-			t.Errorf("far write: %v", err)
+	write := func(s string) { _, _ = far.Write([]byte(s)) }
+	go func() {
+		sc := bufio.NewScanner(far)
+		for n := 1; sc.Scan(); n++ {
+			if tag, ok := strings.CutPrefix(sc.Text(), "display-message -p og-fanout-"); ok {
+				write(fmt.Sprintf("%%begin 9 %d 1\nog-fanout-%s\n%%end 9 %d 1\n", n, tag, n))
+				continue
+			}
+			if len(replies) > 0 {
+				write(replies[0])
+				replies = replies[1:]
+			}
 		}
-	}
+	}()
+	return newCtlConn(near), write
 }
 
 // laterBlock writes a block whose only row is a notification after the version
-// switch has been applied, and returns what the pump delivers for it.
-func laterBlock(t *testing.T, c *ctlConn, write func(string)) (first controlmode.Line) {
+// switch has been applied, and returns what the pump delivers for it, past any
+// barrier reply still in flight.
+func laterBlock(t *testing.T, c *ctlConn, write func(string)) controlmode.Line {
 	t.Helper()
 	go write("%begin 2 2 1\n%window-add @7\n%end 2 2 1\n")
-	l, ok := c.pump.Next()
-	if !ok {
-		t.Fatal("pump closed before the later block")
+	for {
+		l, ok := c.pump.Next()
+		if !ok {
+			t.Fatal("pump closed before the later block")
+		}
+		if l.Kind != controlmode.End || !strings.HasPrefix(string(l.Data), "og-fanout-") {
+			return l
+		}
 	}
-	return l
 }
 
 func TestAdoptVersionChoosesLifting(t *testing.T) {
@@ -154,8 +171,7 @@ func TestAdoptVersionChoosesLifting(t *testing.T) {
 }
 
 func TestIdentifyAdoptsVersionFromTheReply(t *testing.T) {
-	c, write := pipeConn(t)
-	go write(newLayoutsFlagAck + "%begin 1 1 1\n2151|1788283304|$1|3.7c\n%end 1 1 1\n")
+	c, write := pipeConn(t, newLayoutsFlagAck, "%begin 1 1 1\n2151|1788283304|$1|3.7c\n%end 1 1 1\n")
 	id, err := c.identify("A")
 	if err != nil {
 		t.Fatalf("identify: %v", err)
@@ -170,8 +186,7 @@ func TestIdentifyAdoptsVersionFromTheReply(t *testing.T) {
 }
 
 func TestIdentifyFailureLeavesLiftingOn(t *testing.T) {
-	c, write := pipeConn(t)
-	go write(newLayoutsFlagAck + "%begin 1 1 1\nboom\n%error 1 1 1\n")
+	c, write := pipeConn(t, newLayoutsFlagAck, "%begin 1 1 1\nboom\n%error 1 1 1\n")
 	if _, err := c.identify("A"); err == nil {
 		t.Fatal("identify err = nil, want the error reply to fail it")
 	}
