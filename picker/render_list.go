@@ -361,6 +361,9 @@ func (m tuiModel) renderKillStatus(dim, key lipgloss.Style) string {
 // renderKillConfirm is the y/N prompt line for a staged kill, shared by the
 // list and wall hint bars.
 func (m tuiModel) renderKillConfirm() string {
+	if len(m.killConfirm) == 0 {
+		return ""
+	}
 	warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
 	prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
 	if n := len(m.killConfirm); n > 1 {
