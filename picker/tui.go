@@ -507,12 +507,11 @@ func (m tuiModel) Init() tea.Cmd {
 	trace.mark("init")
 	// No wall capture here: the grid is derived from a size this model doesn't
 	// have yet, and nothing paints before the WindowSizeMsg that brings it.
-	// First paint skips the ps -A fork; kick a full refresh right away so
-	// CPU/Mem (and window mode's real-width layout) arrive without waiting for
-	// the 1s tick.
-	cmds := []tea.Cmd{tickCmd(), previewTickCmd(), wallTickCmd(), m.loadPreviewCmd(), m.refreshDataCmd()}
+	cmds := []tea.Cmd{tickCmd(), previewTickCmd(), wallTickCmd(), m.loadPreviewCmd()}
 	if !m.windowMode {
-		cmds = append(cmds, m.zoxideCmd())
+		// First paint skips the ps -A fork; kick a full refresh right away so
+		// CPU/Mem replace the placeholder without waiting for the 1s tick.
+		cmds = append(cmds, m.zoxideCmd(), m.refreshDataCmd())
 		if m.emitPath == "" {
 			// Emit mode never quits to bridge a further-remote host, so its
 			// probe would just be wasted round trips (spec D8).

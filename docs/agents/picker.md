@@ -52,7 +52,7 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
 - **CPU/Mem is async, like the session list**: `initialModel` never merges, so the first paint
   shows `-`; `refreshDataCmd` calls `mergeWindowResources` (one `ps` walk from every pane pid, the raw output cached 5 s and
   re-aggregated against the *current* windows each refresh, so a renumber never reads a stale
-  `sess:idx`; both the chained and fallback branches; `Init` kicks the first refresh at once). The same walk gives a
+  `sess:idx`; both the chained and fallback branches; the first `WindowSizeMsg` already starts the refresh, at the real width). The same walk gives a
   shell-hosted agent its icon (`agentCmds` appended to the window's procs).
 - **Header labels are glyph+word, falling back to glyph-only** for Procs/CPU/Mem when the word
   floors would shrink the identity column at a known width.
