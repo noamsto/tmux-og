@@ -95,6 +95,12 @@ setup() {
 	[ "$REPLY" = "Dont fix 123" ]
 }
 
+@test "sanitize_title: strips pipe" {
+	sanitize_title 'a|b'
+	[[ $REPLY != *'|'* ]]
+	[ "$REPLY" = "a b" ]
+}
+
 @test "truncate_ellipsis: short string is unchanged" {
 	truncate_ellipsis "short" 25
 	[ "$REPLY" = "short" ]

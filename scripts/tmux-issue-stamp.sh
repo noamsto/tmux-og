@@ -27,10 +27,10 @@ BACKFILL_SWEEP_CAP=20
 # run_backfill_pass — scan every window for a partial stamp (id set, title or
 # url still empty) and re-run the one-shot path on each, up to BACKFILL_MAX_TRIES
 # per window. Title/url are read as presence-booleans (#{?#{@issue_title},1,}),
-# not their text, since sanitize_title doesn't strip '|' and this format uses
-# '|' as its delimiter — the sweep only needs emptiness, never the text. The
-# remaining fields are still literal text and could themselves contain a '|'
-# (git permits it in a branch name), same as tmux-pr-enrich.sh's -F format.
+# not their text, since sanitize_title now strips '|' — the sweep only needs
+# emptiness, never the text. The remaining fields are still literal text and
+# could themselves contain a '|' (git permits it in a branch name), same as
+# tmux-pr-enrich.sh's -F format.
 run_backfill_pass() {
 	local windows
 	mapfile -t windows < <(tmux list-windows -a -F \
