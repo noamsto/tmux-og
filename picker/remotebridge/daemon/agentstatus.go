@@ -187,6 +187,12 @@ type agentShipper struct {
 	// was untrusted, so their files were never written; they bypass the
 	// unchanged-row skip until a trusted pass writes them. Lazily initialised.
 	unsynced map[string]bool
+
+	// wasWritten marks pane ids this shipper has written a carried value on,
+	// and survives forget(): park's clear() drops every row while the mirror
+	// pane stays alive, and a pane re-seen carrying nothing must still unset an
+	// option the remote cleared (#895). Lazily initialised.
+	wasWritten map[string]bool
 }
 
 // queue records the row a %subscription-changed line carried. Pure: it is
@@ -330,7 +336,12 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		}
 		// Before the agent-less return below: a role pane the dispatcher
 		// decorated still draws a border when no agent ever reported on it.
-		stampPaneOptions(cfg, localPane, r, prev, seen)
+		if stampPaneOptions(cfg, localPane, r, prev, seen, a.wasWritten[id]) {
+			if a.wasWritten == nil {
+				a.wasWritten = map[string]bool{}
+			}
+			a.wasWritten[id] = true
+		}
 		if !trusted {
 			if a.unsynced == nil {
 				a.unsynced = map[string]bool{}
@@ -377,6 +388,21 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		}
 		delete(a.unsynced, id)
 	}
+	// Prune tombstones whose local pane is gone. Against the LOCAL pane set,
+	// not `live`: a remote pane transiently absent from a read must not erase
+	// the tombstone for a pane that still exists (#895). A nil map is a failed
+	// local list-panes, not an empty pane set, so it must not wipe them all.
+	if local != nil {
+		localIDs := make(map[string]bool, len(local))
+		for _, p := range local {
+			localIDs[strings.TrimPrefix(p, "%")] = true
+		}
+		for id := range a.wasWritten {
+			if !localIDs[id] {
+				delete(a.wasWritten, id)
+			}
+		}
+	}
 	return live, true
 }
 
@@ -403,18 +429,23 @@ var bridgePaneOptions = []struct {
 
 // stampPaneOptions writes the carried values that moved onto one mirror pane, as
 // a single argv command sequence so a decorated pane costs one fork rather than
-// one per option.
-func stampPaneOptions(cfg Config, localPane string, r, prev paneStatus, seen bool) {
+// one per option. It reports whether it wrote a non-empty value, which is what
+// records the pane in wasWritten.
+func stampPaneOptions(cfg Config, localPane string, r, prev paneStatus, seen, hadValue bool) bool {
 	var argv []string
+	wroteValue := false
 	for _, o := range bridgePaneOptions {
 		v := o.get(r)
 		if seen && o.get(prev) == v {
 			continue
 		}
 		// A pane first seen carrying nothing has no option to clear, and every
-		// undecorated mirror pane is one of those. bridgeLabelOptions diverges
-		// here: its first-pass burst of `-u` is what forces the first reflow.
-		if !seen && v == "" {
+		// undecorated mirror pane is one of those. Unless a value was written on
+		// this same pane id before and forget() dropped the row since — the
+		// option is still set, and the remote may have cleared it while the
+		// mirror pane survived (#895). bridgeLabelOptions diverges here: its
+		// first-pass burst of `-u` is what forces the first reflow.
+		if !seen && v == "" && !hadValue {
 			continue
 		}
 		if len(argv) > 0 {
@@ -425,11 +456,13 @@ func stampPaneOptions(cfg Config, localPane string, r, prev paneStatus, seen boo
 			continue
 		}
 		argv = append(argv, "set-option", "-p", "-t", localPane, o.opt, v)
+		wroteValue = true
 	}
 	if len(argv) == 0 {
-		return
+		return false
 	}
 	_ = cfg.LocalTmux(argv...)
+	return wroteValue
 }
 
 // clear drops every file this bridge wrote. The shell-side prune collects by

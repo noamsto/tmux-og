@@ -260,7 +260,9 @@ path, which every caller already handles.
   this: they are window/pane options `windowlabels.go`/`agentstatus.go`'s
   stamp path writes, not the agent-status files `clear` removes, so a parked
   mirror keeps showing its last-known role/proc labels frozen until the next
-  reseed overwrites them. The dim is a per-window `window-style` and
+  reseed overwrites them — or, for a carried value the remote cleared during
+  the outage, unsets it (#895: the forgotten row no longer reads as a pane
+  never seen). The dim is a per-window `window-style` and
   `window-active-style` (replacing the inherited global value, since a
   per-window value merges with nothing) painted in the theme's overlay-on-
   mantle colours, restored with `set-option -w -u` on both once `reattach`

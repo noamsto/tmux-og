@@ -157,6 +157,75 @@ func TestAgentShipperStampsCrewDecorations(t *testing.T) {
 	}
 }
 
+// A forget() while the local mirror pane survives — park's clear() drops every
+// row without killing the mirror — must not make the pane read as never seen.
+// The remote may have cleared a crew role or the carousel marker during the
+// outage, and the skip for a first-seen-empty pane would leave the stale
+// @bridge_* option on the local border indefinitely (#895). The shipper
+// remembers it wrote a value on that pane id, so the next empty re-report
+// unsets it.
+func TestAgentShipperClearsAfterForgetWhilePaneSurvives(t *testing.T) {
+	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	// The remote decorates the pane and marks it a carousel viewer.
+	a.apply(cfg, []paneStatus{{pane: "%1", proc: "fish", crewRole: "reviewer", imgSrc: true}})
+	if len(calls) != 2 {
+		t.Fatalf("decorate stamps = %v, want a @bridge_proc call then the crew/marker sequence", calls)
+	}
+
+	// Park: clear() drops the row while the mirror pane survives.
+	a.clear()
+	calls = nil
+
+	// The remote cleared both values during the outage; the pane re-reports
+	// carrying nothing.
+	a.apply(cfg, []paneStatus{{pane: "%1", proc: "fish"}})
+
+	want := []string{
+		"set-option", "-p", "-t", "%7", "-u", "@bridge_crew_role", ";",
+		"set-option", "-p", "-t", "%7", "-u", "@bridge_crew_state", ";",
+		"set-option", "-p", "-t", "%7", "-u", "@bridge_crew_role_color", ";",
+		"set-option", "-p", "-t", "%7", "-u", "@bridge_img_src",
+	}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
+		t.Fatalf("re-seen pane stamps = %v, want one clear sequence %v", calls, want)
+	}
+
+	// A never-decorated pane still costs nothing: no tombstone, so the
+	// first-seen-empty skip holds and only @bridge_proc is stamped.
+	b := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
+	calls = nil
+	b.apply(cfg, []paneStatus{{pane: "%2", proc: "fish"}})
+	if wantProc := []string{"set-option", "-p", "-t", "%8", "@bridge_proc", "fish"}; len(calls) != 1 || !reflect.DeepEqual(calls[0], wantProc) {
+		t.Errorf("undecorated first-seen pane stamps = %v, want only %v", calls, wantProc)
+	}
+}
+
+// A tombstone must not outlive its local pane: the shipper prunes it against
+// the local pane set (not against the rows present), so a remote pane that
+// vanishes from one read while its mirror pane still exists keeps its tombstone
+// and can still be cleared when it reappears.
+func TestAgentShipperPrunesTombstones(t *testing.T) {
+	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+	a.apply(cfg, []paneStatus{{pane: "%1", proc: "fish", crewRole: "reviewer"}})
+	if !a.wasWritten["7"] {
+		t.Fatal("a written crew value should leave a tombstone")
+	}
+
+	// %1's local pane is gone: LocalPanes no longer maps it, so the tombstone
+	// must not survive the pass.
+	gone := mirrorCfg(&calls)
+	gone.LocalPanes = func() map[string]string { return map[string]string{"%2": "%8"} }
+	a.apply(gone, []paneStatus{{pane: "%1", proc: "fish", crewRole: "reviewer"}, {pane: "%2", proc: "fish"}})
+	if a.wasWritten["7"] {
+		t.Errorf("tombstone outlived its local pane: %v", a.wasWritten)
+	}
+}
+
 // mirrorCfg is a Config wired to two mirror panes, capturing the local tmux
 // commands the shipper issues.
 func mirrorCfg(calls *[][]string) Config {

@@ -503,6 +503,14 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   of `unseen` survives until the remote's agent genuinely writes again — and the
   `@bridge_proc` stamp isn't re-asserted, which would be a fork per pane per
   second.
+- **A forgotten row is not a pane that was never seen** (#895). `clear()` (park,
+  teardown) and a reap drop a pane's `written` row without killing the mirror
+  pane, so a re-report must not read as "first seen": the shipper keeps a
+  `wasWritten` tombstone per pane id, pruned only once the local pane is gone,
+  and a re-seen pane carrying nothing still unsets a `@bridge_crew_*`/
+  `@bridge_img_src` the remote cleared during the outage. Without it the
+  first-seen-empty skip in `stampPaneOptions` left the stale option on the
+  border for as long as the daemon lived.
 - Teardown deletes what it wrote — `claude_prune_stale_state` collects by
   server-start mtime and would keep it until a tmux restart.
 - **The dispatcher's pane decorations ride the same row** (#640).
