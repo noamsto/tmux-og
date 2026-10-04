@@ -496,7 +496,7 @@ func TestRenderWindowItemsAlignment(t *testing.T) {
 	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
 	var rows []string
 	for _, it := range items {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			rows = append(rows, it.plain)
 		}
 	}
@@ -522,8 +522,8 @@ func TestRenderWindowItemsLayout(t *testing.T) {
 			crewName: "rust", crewColor: "colour210"},
 	}
 	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
-	if len(items) < 3 {
-		t.Fatalf("got %d items, want at least 3", len(items))
+	if len(items) < 4 {
+		t.Fatalf("got %d items, want at least 4", len(items))
 	}
 
 	var plains []string
@@ -541,7 +541,7 @@ func TestRenderWindowItemsLayout(t *testing.T) {
 	// display (not plain), since plain's active-marker trimming is a separate,
 	// unrelated column-width quirk. Cell column (not byte offset) since row2's
 	// active marker is a multi-byte glyph.
-	d1, d2 := stripANSI(items[1].display), stripANSI(items[2].display)
+	d1, d2 := stripANSI(items[2].display), stripANSI(items[3].display)
 	o1, o2 := strings.Index(d1, "mono"), strings.Index(d2, "L ENG-7290")
 	if o1 < 0 || o2 < 0 {
 		t.Fatalf("identity not found: %q / %q", d1, d2)
@@ -612,7 +612,7 @@ func TestRenderWindowItemsBridgeNameOutrankedByIssueAndBranch(t *testing.T) {
 	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
 	var rows []string
 	for _, it := range items {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			rows = append(rows, it.plain)
 		}
 	}
@@ -781,7 +781,7 @@ func TestRenderWindowItemsZoomAligned(t *testing.T) {
 	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 100, false)
 	var rows []string
 	for _, it := range items {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			rows = append(rows, it.plain)
 		}
 	}
@@ -1107,7 +1107,7 @@ func TestRenderWindowItemsStateGroupedFoldsSession(t *testing.T) {
 
 	var rows []listItem
 	for _, it := range items {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			rows = append(rows, it)
 		}
 	}
@@ -1126,7 +1126,7 @@ func TestRenderWindowItemsStateGroupedFoldsSession(t *testing.T) {
 	sessionGrouped := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
 	var sgRows []listItem
 	for _, it := range sessionGrouped {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			sgRows = append(sgRows, it)
 		}
 	}
@@ -1179,7 +1179,7 @@ func TestRenderWindowItemsSessionGroupedUnaffected(t *testing.T) {
 	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
 	var rows []string
 	for _, it := range items {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			rows = append(rows, it.plain)
 		}
 	}

@@ -93,6 +93,7 @@ type windowData struct {
 	bridgePane  string // @bridge_pane — remote pane id this window mirrors, or ""
 	bridgeSock  string // @bridge_sock — ctl socket of the daemon mirroring this session
 	bridgeHost  string // @bridge_host — ssh host the mirror session lives on, or ""
+	bridgeWin   bool   // @bridge_win == "1" — a daemon-owned mirror window
 	prPlain     string // @window_pr_plain   — " <glyph> #<n>" or ""
 	prState     string // @pr_state
 	prCheck     string // @pr_check_state
@@ -101,6 +102,11 @@ type windowData struct {
 	prAutoMerge string // @pr_auto_merge — "1" or ""
 	crewName    string // @crew_name  — agent codename (fan-out harness) or ""
 	crewColor   string // @crew_color — tmux colour code paired with the codename
+	path        string // pane_current_path; a mirror's @bridge_session_path, "" when unstamped
+	panePIDs    []int  // every pane's shell PID, roots of the resource walk
+	cpuPct      float64
+	memMB       float64
+	resKnown    bool // the resource pass has filled cpuPct/memMB; false renders "-"
 }
 
 type agentCounts struct {
@@ -346,6 +352,8 @@ type winInfo struct {
 	crewColor   string
 	seen        map[string]bool
 	procs       []string
+	panePIDs    []int
+	showPath    string // path column: pane_current_path, or the mirror's @bridge_session_path
 }
 
 // parseWindowPaneRows parses `list-panes -a` rows (one per pane) into
@@ -364,7 +372,7 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 	}
 	for _, line := range lines {
 		parts := strings.Split(line, "|")
-		if len(parts) != 35 {
+		if len(parts) != 37 {
 			continue
 		}
 		sess := parts[0]
@@ -426,8 +434,19 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 				crewColor = ""
 			}
 
+			showPath := panePath
+			// A mirror's own pane path is the launcher's cwd, so an absent
+			// stamp renders no path rather than that one.
+			if bridgeWin {
+				showPath = field(parts, 36)
+			}
+			if home := os.Getenv("HOME"); home != "" {
+				showPath = strings.Replace(showPath, "%h", home, 1)
+			}
+
 			wi = &winInfo{
 				name: wName, zoomed: zoomed, active: active, branch: branch, path: panePath,
+				showPath:    showPath,
 				bridgeWin:   bridgeWin,
 				labelID:     labelID,
 				labelRest:   labelRest,
@@ -452,6 +471,9 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 			wi.seen[proc] = true
 			wi.procs = append(wi.procs, proc)
 		}
+		if pid, err := strconv.Atoi(field(parts, 35)); err == nil && pid > 0 {
+			wi.panePIDs = append(wi.panePIDs, pid)
+		}
 	}
 	return order, m
 }
@@ -460,7 +482,7 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 // picker/main_test.go can assert notModalFilter is on it.
 func windowsArgv() []string {
 	return []string{"list-panes", "-a", "-f", notModalFilter, "-F",
-		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}"}
+		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}|#{pane_pid}|#{@bridge_session_path}"}
 }
 
 func collectWindows() []windowData {
@@ -524,6 +546,7 @@ func windowsFromRows(rows []string) []windowData {
 			bridgePane:  wi.bridgePane,
 			bridgeSock:  wi.bridgeSock,
 			bridgeHost:  wi.bridgeHost,
+			bridgeWin:   wi.bridgeWin,
 			prPlain:     wi.prPlain,
 			prState:     wi.prState,
 			prCheck:     wi.prCheck,
@@ -532,6 +555,8 @@ func windowsFromRows(rows []string) []windowData {
 			prAutoMerge: wi.prAutoMerge,
 			crewName:    wi.crewName,
 			crewColor:   wi.crewColor,
+			path:        wi.showPath,
+			panePIDs:    wi.panePIDs,
 		})
 	}
 	return windows
@@ -626,11 +651,79 @@ func mergeResources(sessions []sessionData, res map[string]sessionResources) {
 // to its proc list, so a relaunched agent still renders its program icon when
 // the pane's foreground command is the shell that launched it.
 func mergeAgentCmds(s *sessionData, cmds []string) {
+	s.procs = withAgentCmds(s.procs, cmds)
+}
+
+func withAgentCmds(procs, cmds []string) []string {
 	for _, c := range cmds {
-		if slices.Contains(s.procs, c) {
+		if !slices.Contains(procs, c) {
+			procs = append(procs, c)
+		}
+	}
+	return procs
+}
+
+// psOutput runs the process-table read; a var so a test can count calls and
+// feed synthetic output.
+var psOutput = func() ([]byte, error) {
+	return exec.Command("ps", psArgs...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
+}
+
+// windowPSCache holds the raw process table for resourceCacheTTL. The walk
+// itself reruns against the current windows' pids on every call: a cache keyed
+// "session:index" would misattribute figures once renumber-windows or a kill
+// slides an index.
+var windowPSCache struct {
+	sync.Mutex
+	out []byte
+	ts  time.Time
+}
+
+// collectWindowResources is collectSessionResources keyed per window: one ps
+// walk from every local pane PID over a ps read cached for resourceCacheTTL.
+func collectWindowResources(windows []windowData) map[string]sessionResources {
+	windowPSCache.Lock()
+	defer windowPSCache.Unlock()
+	if windowPSCache.out == nil || time.Since(windowPSCache.ts) >= resourceCacheTTL {
+		out, err := psOutput()
+		if err != nil {
+			return nil
+		}
+		windowPSCache.out, windowPSCache.ts = out, time.Now()
+	}
+
+	pids := make(map[string][]int, len(windows))
+	for _, w := range windows {
+		// A mirror's local pane PIDs run the bridge renderer, not the remote
+		// program, so walking them would report the renderer's own figures.
+		if !w.bridgeWin && len(w.panePIDs) > 0 {
+			pids[windowResourceKey(w)] = w.panePIDs
+		}
+	}
+	return aggregateResources(pids, string(windowPSCache.out))
+}
+
+func windowResourceKey(w windowData) string {
+	return fmt.Sprintf("%s:%d", w.session, w.index)
+}
+
+// mergeWindowResources fills each local window's CPU/Mem and joins the agent
+// commands found in its process tree to its proc list. Mirror windows keep the
+// "-" placeholder: @bridge_res is session-scoped and @bridge_proc already names
+// the remote pane's command.
+func mergeWindowResources(windows []windowData) {
+	res := collectWindowResources(windows)
+	for i := range windows {
+		w := &windows[i]
+		if w.bridgeWin {
 			continue
 		}
-		s.procs = append(s.procs, c)
+		r, ok := res[windowResourceKey(*w)]
+		if !ok {
+			continue
+		}
+		w.cpuPct, w.memMB, w.resKnown = r.cpuPct, r.memMB, true
+		w.procs = withAgentCmds(w.procs, r.agentCmds)
 	}
 }
 

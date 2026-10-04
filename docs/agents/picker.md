@@ -37,6 +37,31 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   (previously `show -g` printed it as `''`, which is what `unquoteTmuxOptValue`
   used to unwrap; that helper is gone).
 
+## Window list columns (#904)
+
+- **Rows**: `tree marker identity icons [host] [cpu / mem] [pr] [path]`. The identity column
+  (issue/branch/PR/crew) keeps its own width logic; the new columns are optional and
+  `renderWindowItemsWith` drops them to protect it. **Drop order at a known width: Path, then
+  CPU/Mem, then Host**, until the identity cap reaches 24 cells (a path costs at most 24 cells in
+  that budget and the line clips the rest). An unknown width (`<= 0`, the first paint) keeps all.
+  Host exists only when some window is a mirror.
+- **Column-label row** is `items[0]` (`isColumnHeader`, no target, unselectable). In window mode
+  `renderList` pins it on its own first line *and* keeps the group-header pin below it
+  (`listLayout`), so the body is `h-2`; `listIndexAt` accounts for both. It passes `itemVisible`
+  under `^a`/`^s` and is dropped under a query, like session mode. Session mode is untouched.
+- **CPU/Mem is async, like the session list**: `initialModel` never merges, so the first paint
+  shows `-`; `refreshDataCmd` calls `mergeWindowResources` (one `ps` walk from every pane pid, the raw output cached 5 s and
+  re-aggregated against the *current* windows each refresh, so a renumber never reads a stale
+  `sess:idx`; both the chained and fallback branches; the first `WindowSizeMsg` already starts the refresh, at the real width). The same walk gives a
+  shell-hosted agent its icon (`agentCmds` appended to the window's procs).
+- **Header labels are glyph+word, falling back to glyph-only** for Procs/CPU/Mem when the word
+  floors would shrink the identity column at a known width.
+- **Mirror windows (`@bridge_win`, not merely an inherited `@bridge_host`) never get local figures or tree agents**: their local pane pids measure the
+  renderer and `@bridge_res` is session-scoped, so every mirror window renders `-` and
+  `@bridge_proc` alone names its command. Their path is `@bridge_session_path`.
+- **Session-grouped headers** show the session display name (`sessionDisplayName`; target and
+  `groupKey` stay raw), the aggregated agent icon and `N win`; state-grouped headers are
+  unchanged. Host is part of row and header search text.
 
 ## Launch
 

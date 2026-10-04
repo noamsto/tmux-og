@@ -299,7 +299,7 @@ func TestThemeFromOpts(t *testing.T) {
 // windowPaneRow builds one list-panes -a row in parseWindowPaneRows' field
 // order (see collectWindows' -F string), for tests below.
 func windowPaneRow(fields ...string) string {
-	const n = 35
+	const n = 37
 	row := make([]string, n)
 	copy(row, fields)
 	return strings.Join(row, "|")
