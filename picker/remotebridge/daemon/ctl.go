@@ -835,15 +835,24 @@ func carouselResolveScript(pane string) string {
 // (daemon.go), and quoting it through run-shell's expansion, two tmuxQuote
 // layers and sh needs exactly the single quotes this body bans; win is a remote
 // window id (@N), a complete target-window on its own.
+//
+// A `-t` job's stdout and non-zero exit both land in view mode on the target
+// pane, and a view-mode overlay on a mirrored pane wedges the mirror
+// (themeProbeCmd's note). So the body discards every byte it or the poller
+// prints and always exits 0: tmux-pr-enrich unresolvable on an older remote, or
+// any future stdout from it, must not paint the pane. The poller's result still
+// ships home as a %subscription-changed label row, never through this job.
 func enrichRefreshScript(win string) string {
 	return fmt.Sprintf(
-		"p=$(tmux show-environment -g PATH 2>/dev/null); "+
+		"exec >/dev/null 2>&1; "+
+			"p=$(tmux show-environment -g PATH); "+
 			"case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; "+
 			"b=$(tmux show-options -wqv -t %s @branch); "+
 			"d=$(tmux show-options -wqv -t %s @worktree); "+
 			"[ -n \"$d\" ] || d=$(tmux show-options -wqv -t %s @git_root); "+
 			"[ -n \"$b\" ] && [ -n \"$d\" ] || exit 0; "+
-			"exec tmux-pr-enrich --target %s --branch \"$b\" --dir \"$d\" --force",
+			"tmux-pr-enrich --target %s --branch \"$b\" --dir \"$d\" --force; "+
+			"exit 0",
 		win, win, win, win)
 }
 
