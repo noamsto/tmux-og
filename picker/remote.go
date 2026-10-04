@@ -62,12 +62,11 @@ func remoteTmuxCmd(args string) string {
 var remoteListSessionsCmd = remoteIdentityPreamble + `; ` + remoteListSessionsBody
 
 // remoteKillSessionBody builds the remote-side tmux command that kills one
-// session. The `=` prefix makes the target an exact name match (a numeric
-// session name would otherwise also resolve as a window/pane index), and the
-// name is single-quoted by shellQuote so a remote-controlled session name can
-// never inject a second command through the remote login shell.
-func remoteKillSessionBody(sess string) string {
-	return remoteTmuxCmd(`kill-session -t ` + shellQuote("="+sess))
+// session by its probe-reported $N id. No remote-controlled name reaches the
+// login shell, which may be fish, where POSIX single-quote escaping of a name
+// does not hold.
+func remoteKillSessionBody(sessionID string) string {
+	return remoteTmuxCmd(`kill-session -t ` + shellQuote(sessionID))
 }
 
 // remoteSelfCacheDir holds alias→self verdicts so pendingRemoteItems can omit
@@ -103,6 +102,9 @@ var (
 	// could not execute (exit 126/127, or any other non-1 tmux failure). The
 	// session may still exist, so the row is kept rather than forgotten.
 	errRemoteKillUnrunnable = errors.New("remote could not run tmux")
+	// errRemoteKillNoID is a kill target without a probe-validated tmux id; no
+	// ssh is spawned and the row is kept.
+	errRemoteKillNoID = errors.New("remote kill has no probe-validated id")
 )
 
 type remoteProbeState int
@@ -710,19 +712,24 @@ func remoteAuthStartFailure(err error) (string, bool) {
 // past it. A var, not a const, so a test can shrink it.
 var killWaitDelay = 500 * time.Millisecond
 
-// sshKillRemoteSession kills sess on host over ssh. It returns nil on success
-// and a classified error otherwise: errRemoteSessionGone when the remote tmux
-// ran and reported the session already absent, errRemoteUnreachable (or the
-// auth/host-key/tailscale states) when ssh itself could not complete.
-func sshKillRemoteSession(host, sess string) error {
-	return sshKillRemoteSessionCtx(context.Background(), host, sess)
+// sshKillRemoteSession kills the session with id sessionID on host over ssh. It
+// returns nil on success and a classified error otherwise: errRemoteKillNoID
+// when sessionID is not a $N id (no ssh is spawned), errRemoteSessionGone when
+// the remote tmux ran and reported the session already absent,
+// errRemoteUnreachable (or the auth/host-key/tailscale states) when ssh itself
+// could not complete.
+func sshKillRemoteSession(host, sessionID string) error {
+	return sshKillRemoteSessionCtx(context.Background(), host, sessionID)
 }
 
 // sshKillRemoteSessionCtx is sshKillRemoteSession parameterized on a parent
 // ctx, so a kill run can bound and cancel an in-flight ssh (killRun in
 // kill.go). It derives its own remoteProbeTimeout deadline from ctx.
-func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
-	return sshKillCtx(ctx, host, remoteKillSessionBody(sess))
+func sshKillRemoteSessionCtx(ctx context.Context, host, sessionID string) error {
+	if !isTmuxID(sessionID, '$') {
+		return errRemoteKillNoID
+	}
+	return sshKillCtx(ctx, host, remoteKillSessionBody(sessionID))
 }
 
 // sshKillCtx runs a remote kill command body on host over ssh, classifying a

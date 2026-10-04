@@ -176,6 +176,9 @@ func remoteKillWindowBody(sessionID, id string) string {
 
 // sshKillRemoteWindowCtx kills window id of session sessionID on host over ssh.
 func sshKillRemoteWindowCtx(ctx context.Context, host, sessionID, id string) error {
+	if !isTmuxID(sessionID, '$') || !isTmuxID(id, '@') {
+		return errRemoteKillNoID
+	}
 	return sshKillCtx(ctx, host, remoteKillWindowBody(sessionID, id))
 }
 

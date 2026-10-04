@@ -62,32 +62,45 @@ func TestClassifyKillErr(t *testing.T) {
 	}
 }
 
-// A remote-controlled session name must never escape shellQuote: the remote
-// login shell sees one single-quoted literal, so no second command can ride in.
-func TestRemoteKillSessionBodyQuotesHostileName(t *testing.T) {
-	hostile := `x'; rm -rf / #`
-	body := remoteKillSessionBody(hostile)
-	// shellQuote turns `x'; rm -rf / #` into `'x'\''; rm -rf / #'`, so the whole
-	// hostile name is one quoted word.
-	want := `'=` + `x'\''` + `; rm -rf / #'`
-	if !strings.Contains(body, want) {
-		t.Errorf("body = %q, want it to contain the quoted literal %q", body, want)
-	}
-}
-
-// remoteKillSessionBody stays fish-safe like the probe: the remote login shell
-// may be fish, which rejects a bare `var=value` script assignment (the
-// `env TMUX_TMPDIR=...` command prefix is fine).
-func TestRemoteKillSessionBodyFishSafe(t *testing.T) {
-	body := remoteKillSessionBody("mono")
-	if !strings.Contains(body, "env TMUX_TMPDIR=") {
-		t.Fatalf("body = %q, want TMUX_TMPDIR set via env(1)", body)
-	}
-	if !strings.Contains(body, "kill-session -t '=mono'") {
-		t.Fatalf("body = %q, want an exact-match, quoted kill-session", body)
+// The kill targets the probe-validated session id only: no remote-controlled
+// name reaches the login shell, which may be fish, and the command stays
+// fish-safe (no bare `var=value` assignments).
+func TestRemoteKillSessionBodyTargetsIDOnly(t *testing.T) {
+	body := remoteKillSessionBody("$3")
+	if !strings.Contains(body, "kill-session -t '$3'") || !strings.Contains(body, "env TMUX_TMPDIR=") {
+		t.Fatalf("body = %q, want a quoted id-only kill-session under env(1)", body)
 	}
 	if strings.Contains(body, "td=") || strings.Contains(body, "; t=") {
 		t.Fatalf("body = %q must not use shell assignments (fish-incompatible)", body)
+	}
+}
+
+// Anything but a probe-validated $N id is refused before ssh is spawned.
+func TestSSHKillRemoteSessionRefusesNonID(t *testing.T) {
+	for _, s := range []string{`x\';id;#`, `a\b`, "=mono", "", "$", "$3x"} {
+		sentinel := fakeKillSSH(t, 0)
+		err := sshKillRemoteSessionCtx(context.Background(), "lab", s)
+		if !errors.Is(err, errRemoteKillNoID) {
+			t.Errorf("sshKillRemoteSessionCtx(%q) = %v, want errRemoteKillNoID", s, err)
+		}
+		if _, statErr := os.Stat(sentinel); statErr == nil {
+			t.Errorf("sshKillRemoteSessionCtx(%q) spawned ssh", s)
+		}
+	}
+}
+
+// A session row without a probe-validated id spawns no ssh and keeps the row.
+func TestKillRunSessionRowWithoutIDSpawnsNoSSH(t *testing.T) {
+	sentinel := fakeKillSSH(t, 0)
+	r := newKillRun([]listItem{{isRemoteRow: true, remoteHost: "lab", remoteSess: `a\b`}})
+	r.run()
+	<-r.done
+	res := r.result().results
+	if len(res) != 1 || !errors.Is(res[0].err, errRemoteKillNoID) {
+		t.Fatalf("results = %+v, want one errRemoteKillNoID", res)
+	}
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatal("ssh was spawned for a row with no session id")
 	}
 }
 
@@ -152,6 +165,12 @@ func (s *scratchTmux) tmux(args ...string) (string, error) {
 	return string(out), err
 }
 
+// sessionID resolves a session name to its tmux $N id.
+func (s *scratchTmux) sessionID(name string) string {
+	out, _ := s.tmux("display-message", "-p", "-t", "="+name+":", "#{session_id}")
+	return strings.TrimSpace(out)
+}
+
 func (s *scratchTmux) mustTmux(args ...string) {
 	s.t.Helper()
 	if out, err := s.tmux(args...); err != nil {
@@ -178,7 +197,7 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 	s.mustTmux("new-session", "-d", "-s", victim)
 	s.mustTmux("new-session", "-d", "-s", keep)
 
-	if err := sshKillRemoteSession("lab", victim); err != nil {
+	if err := sshKillRemoteSession("lab", s.sessionID(victim)); err != nil {
 		t.Fatalf("sshKillRemoteSession: %v", err)
 	}
 	s.requireShimRan()
@@ -215,11 +234,7 @@ func TestKillRemoteWindowReachesScratchServer(t *testing.T) {
 		out, _ := s.tmux("list-windows", "-a", "-F", "#{session_name}|#{window_id}")
 		return out
 	}
-	sessionID := func(name string) string {
-		out, _ := s.tmux("display-message", "-p", "-t", "="+name+":", "#{session_id}")
-		return strings.TrimSpace(out)
-	}
-	aID, bID := sessionID(a), sessionID(b)
+	aID, bID := s.sessionID(a), s.sessionID(b)
 	before := listWindows()
 	if want := b + "|@2"; !strings.Contains(before, want) {
 		t.Fatalf("setup: windows = %q, want %q", before, want)
@@ -275,7 +290,7 @@ func TestSSHKillRemoteSessionCtxCancelReapsProcessGroup(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- sshKillRemoteSessionCtx(ctx, "lab", "mono") }()
+	go func() { done <- sshKillRemoteSessionCtx(ctx, "lab", "$0") }()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
