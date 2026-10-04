@@ -522,6 +522,9 @@ func TestParseWindowPaneRowsWindowID(t *testing.T) {
 	parts := strings.Split(row, "|")
 	parts[37] = "@7"
 	order, m := parseWindowPaneRows([]string{strings.Join(parts, "|")})
+	if len(order) != 1 {
+		t.Fatalf("parsed %d windows, want 1", len(order))
+	}
 	wi := m[order[0]]
 	if wi == nil || wi.id != "@7" {
 		t.Errorf("window info = %+v, want id @7", wi)

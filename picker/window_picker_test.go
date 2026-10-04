@@ -124,3 +124,14 @@ func TestMirrorWindowKillConfirms(t *testing.T) {
 	}
 	_ = next
 }
+
+func TestSessionPickerIgnoresCurrentForCursor(t *testing.T) {
+	items := []listItem{
+		{target: "a", plain: "a", session: "a"},
+		{target: "b", plain: "b", session: "b", current: true},
+	}
+	m := newPickerModel(false, false, false, map[string]string{}, "dark", items, "")
+	if m.cursor != m.firstSelectable(0) || m.currentTarget() != "a" {
+		t.Fatalf("session picker cursor on %q, want first row", m.currentTarget())
+	}
+}

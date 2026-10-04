@@ -402,7 +402,10 @@ func newPickerModel(windowMode, agentOnly, wall bool, opts map[string]string, th
 		m.remoteItems = pendingRemoteItems(opts, firstPaintBridges(items))
 	}
 	m = m.recombine().withFilter()
-	m.cursor = m.cursorOnCurrent()
+	m.cursor = m.firstSelectable(0)
+	if windowMode {
+		m.cursor = m.cursorOnCurrent()
+	}
 	if m.mode == modeWall {
 		m = m.snapWall()
 	}
