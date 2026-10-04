@@ -261,22 +261,15 @@ func validGuard(fields []string) bool {
 //     an overlong top-level line is Other, an oversized block fails as Error
 //     with ErrReplyTooLarge, and the stream goes on.
 //
-// Only the tmux next-3.8 builds between d29aa121 and 6db5175e write the
-// notifications a command causes inside that command's block (#276); left in
-// the body they read as that command's output. SetLiftInBlock(true) makes Next
-// return each one the moment it is read, ahead of the terminal line. It is off
-// by default: before the identity read a flags-0 remote hook block can carry
-// pane-derived text (display-message -p '#{pane_title}'), and nothing the daemon
-// needs is lifted before that read. With it off, such a line in a body is pane
-// content and stays body, so a row a pane prints cannot drive the mirror.
-// %output and %extended-output are written only from a pane read callback,
-// never inside a block, so they are always body. So are %pause and %continue:
-// tmux writes a genuine in-block one only from this client's own
-// refresh-client -A (synchronous control_pause_pane/control_continue_pane, up to
-// 3.7c and next-3.8 before 6db5175e). The daemon never sends :pause and reads
-// its :continue from that reply, and pause-after's %pause comes from the
-// read/write callbacks, never in a block. Lifting a forged "%pause %N" row from
-// pane N's capture would re-pause and reseed N forever. A body line is only
+// tmux next-3.8 builds between d29aa121 and 6db5175e write the notifications
+// a command causes inside that command's block (#276). SetLiftInBlock(true)
+// returns each such line the moment it is read, ahead of the terminal line. It
+// is off by default: in any other tmux a body line that parses as a verb is
+// pane content (a capture-pane row, a hook's display-message), and acting on it
+// would let a pane drive the mirror. %output, %extended-output, %pause and
+// %continue stay body even when it is on: no tmux writes a genuine %output in a
+// block, and an in-block %pause/%continue only answers this client's own
+// refresh-client -A, whose reply the daemon acts on instead. A body line is only
 // taken for a notification when it parses as a known verb
 // (docs/agents/bridge-daemon.md).
 type Reader struct {
@@ -315,11 +308,9 @@ func (rd *Reader) SetLiftInBlock(lift bool) { rd.liftInBlock.Store(lift) }
 // may write notifications inside a command's block. d29aa121 made notifications
 // synchronous events, written in-block; 6db5175e (merged 9228f97d, 2026-08-03)
 // defers them out of guard blocks again. Every build in between reports
-// next-3.8, so only next-3.8 lifts. Releases up to 3.7c write only the
-// %pause/%continue of a refresh-client -A in its block, and the daemon reads
-// its continue from that reply instead. A string that is
-// neither a release (X.Y, an optional letter, an optional -rc or -rcN) nor next-X.Y
-// cannot be ruled out and lifts too.
+// next-3.8, so only next-3.8 lifts. A string that is neither a release (X.Y, an
+// optional letter, an optional -rc or -rcN) nor next-X.Y cannot be ruled out
+// and lifts too.
 func LiftsInBlock(version string) bool {
 	rest, next := strings.CutPrefix(version, "next-")
 	major, rest, ok := cutDigits(rest)

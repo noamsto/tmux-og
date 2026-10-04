@@ -2120,9 +2120,8 @@ func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *
 // and reseed from that command's reply. tmux resumes the pane synchronously
 // inside the command; up to 3.7c it writes %continue inside the reply's block,
 // where the reader leaves it as body, so the reseed follows the reply and not
-// the notification. This is a blocking round-trip on the main loop, the same
-// cost class as the reseed itself. Any reply Kind (End or Error) reseeds and
-// resumes; only a lost reply leaves the sink paused.
+// the notification. Any reply Kind (End or Error) reseeds and resumes; only a
+// lost reply leaves the sink paused.
 func handlePause(router *Router, rt roundTrip, paneID string) {
 	s := router.sink(paneID)
 	if s == nil {

@@ -2,6 +2,8 @@
 
 Spec: `docs/superpowers/specs/2026-10-04-bridge-in-block-notifications-design.md`.
 
+Revised after code review round 1. In-block lifting defaults off, so the daemon turns it on only for a `next-3.8` or unclassifiable remote. `%pause` and `%continue` are always body. Bare `-rc` versions count as releases. A second live test pins the cross-pane `%output` spoof. The steps below are as originally planned.
+
 Gate commands (run from the worktree root inside the devshell):
 
 - `cd picker && go test -race ./remotebridge/...`
