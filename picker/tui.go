@@ -2599,7 +2599,7 @@ func hostSet(hosts []string) map[string]bool {
 func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 	out := []listItem{}
 	for _, item := range m.sessionItems {
-		if hostMatches(item.bridgeHost) || m.windowMode && item.isHeader {
+		if hostMatches(item.bridgeHost) || m.windowMode && (item.isHeader || item.isColumnHeader) {
 			out = append(out, item)
 		}
 	}

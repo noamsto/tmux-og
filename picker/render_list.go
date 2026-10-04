@@ -274,8 +274,8 @@ func (m tuiModel) renderHints() string {
 		killLabel = "forget"
 	}
 	// A row whose kill lands on another machine has to say so before it is
-	// pressed. Remote session and window kills are y/N confirmed; the mirror
-	// window kill is not.
+	// pressed. Remote session, remote window and mirror window kills are all
+	// y/N confirmed.
 	if hasItem && (item.bridgePane != "" || isKillableRemoteSession(item) || item.remoteWindowID != "") {
 		killLabel = "kill remote"
 	}
