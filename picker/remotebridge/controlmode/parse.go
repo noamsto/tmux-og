@@ -246,11 +246,7 @@ func validGuard(fields []string) bool {
 // %begin…%end/%error block into a single terminal Line (Kind End or Error, Args
 // = the %begin's time, Data = the command output alone).
 //
-// Framing follows what tmux can actually write, so a raw newline in a remote
-// value or a pane row cannot forge a non-matching guard, a %begin, an %exit
-// (unless end-of-stream follows) or a %subscription-changed inside a block
-// (#860). Other notification verbs in a body are still lifted (#276) and pane
-// content can forge them; see docs/agents/bridge-daemon.md:
+// Framing follows only what tmux itself can write (#860):
 //   - tmux writes %begin and its %end/%error synchronously with the same three
 //     fields (cmdq_fire_command, cmdq_guard), so only a guard repeating the
 //     %begin's fields closes a block, blocks never nest, and a guard outside a
@@ -267,7 +263,8 @@ func validGuard(fields []string) bool {
 // command's block (#276); left in the body they read as that command's output,
 // so Next returns each one the moment it is read, ahead of the terminal line. A
 // body line is only taken for a notification when it parses as a known verb, so
-// pane content that merely starts with '%' stays body.
+// pane content that merely starts with '%' stays body — but a row that does
+// parse as one is lifted too (docs/agents/bridge-daemon.md).
 type Reader struct {
 	br *bufio.Reader
 	// long accumulates a line too long for br's buffer; reused across lines.

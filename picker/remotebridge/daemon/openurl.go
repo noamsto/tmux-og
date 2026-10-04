@@ -36,8 +36,7 @@ const (
 )
 
 // openURLFormat is the log bounded remote-side: tmux sends option values raw,
-// and the bound keeps a value small there (a 12288-byte log is what the
-// shipper wants, not a 1 MiB line the reader would drop). The test is "fits",
+// so the size cap has to run where the value lives. The test is "fits",
 // not "too big", so a tmux that cannot evaluate e|<= reads every value as
 // oversized — the feature off, never unbounded.
 var openURLFormat = "#{?#{e|<=:#{n:" + openURLOpt + "}," + strconv.Itoa(openValueMaxLen) + "},#{" + openURLOpt + "}," + openOversized + "}"
