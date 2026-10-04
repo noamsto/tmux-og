@@ -397,8 +397,8 @@ func TestParseWindowPaneRowsPIDsAndPath(t *testing.T) {
 	if windows[2].path != "" {
 		t.Errorf("an unstamped mirror renders no path, got %q", windows[2].path)
 	}
-	if len(strings.Split(windowsArgv()[len(windowsArgv())-1], "|")) != 37 {
-		t.Error("windowsArgv format must carry 37 fields")
+	if len(strings.Split(windowsArgv()[len(windowsArgv())-1], "|")) != 38 {
+		t.Error("windowsArgv format must carry 38 fields")
 	}
 }
 
