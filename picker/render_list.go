@@ -205,19 +205,7 @@ func (m tuiModel) renderHints() string {
 	}
 
 	if len(m.killConfirm) > 0 {
-		warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
-		prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
-		if n := len(m.killConfirm); n > 1 {
-			prompt = "kill " + strconv.Itoa(n) + " remote sessions?"
-		}
-		if isMirrorWindowKill(m.killConfirm[0]) {
-			prompt = "kill " + sanitizeStatusText(m.killConfirm[0].target) + " on the remote?"
-		}
-		// The (y/N) answer is the one part that must never be truncated away,
-		// so reserve its cells and clip only the name/question to the rest.
-		suffix := warn.Render("  (y/N)")
-		headWidth := max(m.width-visibleWidth("  (y/N)"), 0)
-		return fitVisibleWidth(warn.Render("  "+prompt), headWidth) + suffix
+		return m.renderKillConfirm()
 	}
 
 	if m.statusMsg != "" {
@@ -368,4 +356,23 @@ func (m tuiModel) renderKillStatus(dim, key lipgloss.Style) string {
 		return fitVisibleWidth("  "+head+suffix, m.width)
 	}
 	return fitVisibleWidth("  "+head, m.width-suffixWidth) + suffix
+}
+
+// renderKillConfirm is the y/N prompt line for a staged kill, shared by the
+// list and wall hint bars.
+func (m tuiModel) renderKillConfirm() string {
+	warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
+	prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
+	if n := len(m.killConfirm); n > 1 {
+		prompt = "kill " + strconv.Itoa(n) + " remote sessions?"
+	}
+	if isMirrorWindowKill(m.killConfirm[0]) {
+		prompt = "kill " + sanitizeStatusText(m.killConfirm[0].target) + " on the remote?"
+	}
+	// The (y/N) answer is the one part that must never be truncated away,
+	// so reserve its cells and clip only the name/question to the rest.
+	suffix := warn.Render("  (y/N)")
+	headWidth := max(m.width-visibleWidth("  (y/N)"), 0)
+	return fitVisibleWidth(warn.Render("  "+prompt), headWidth) + suffix
+
 }

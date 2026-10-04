@@ -200,6 +200,10 @@ func (m tuiModel) renderWallHints() string {
 	dim := lipgloss.NewStyle().Foreground(m.thmColor("@thm_surface_2", "#585b70", "#9ca0b0"))
 	key := lipgloss.NewStyle().Foreground(m.thmColor("@thm_lavender", "#b4befe", "#7287fd"))
 
+	if len(m.killConfirm) > 0 {
+		return m.renderKillConfirm()
+	}
+
 	if m.statusMsg != "" {
 		red := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
 		return fitVisibleWidth(red.Render("  "+m.statusMsg), m.width)

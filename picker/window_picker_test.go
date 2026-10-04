@@ -71,6 +71,17 @@ func TestWindowCursorFollowsTarget(t *testing.T) {
 	if gm.currentTarget() != want {
 		t.Errorf("^g moved cursor to %q, want %q", gm.currentTarget(), want)
 	}
+	next, _ = gm.Update(refreshMsg{items: []listItem{b, c, a}})
+	if gm = next.(tuiModel); gm.currentTarget() != want {
+		t.Errorf("regrouped refresh moved cursor to %q, want %q", gm.currentTarget(), want)
+	}
+
+	// A vanished target lands on its neighbour, not the top.
+	gm.cursor = 1
+	next, _ = gm.Update(refreshMsg{items: []listItem{a, c}})
+	if gm = next.(tuiModel); gm.cursor != 1 {
+		t.Errorf("cursor after target vanished = %d, want 1", gm.cursor)
+	}
 }
 
 func TestMirrorWindowKillConfirms(t *testing.T) {
@@ -91,8 +102,13 @@ func TestMirrorWindowKillConfirms(t *testing.T) {
 		if len(m.killConfirm) != 1 || len(killed) != 0 {
 			t.Fatalf("^x: confirm=%d kills=%v, want staged and no kill", len(m.killConfirm), killed)
 		}
-		if got := stripANSI(m.renderHints()); !strings.Contains(got, "(y/N)") {
-			t.Errorf("prompt = %q, want (y/N)", got)
+		if got := stripANSI(m.renderHints()); !strings.Contains(got, "kill main:1 on the remote?") || !strings.Contains(got, "(y/N)") {
+			t.Errorf("prompt = %q, want the mirror kill prompt", got)
+		}
+		wall := m
+		wall.mode = modeWall
+		if got := stripANSI(wall.renderWallHints()); !strings.Contains(got, "(y/N)") {
+			t.Errorf("wall prompt = %q, want (y/N)", got)
 		}
 		next, _ = m.handleKey(wallKey(cancel))
 		if m = next.(tuiModel); len(m.killConfirm) != 0 || len(killed) != 0 {

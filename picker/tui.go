@@ -128,7 +128,8 @@ type tuiModel struct {
 
 	// Transient error shown in the hint line (e.g. session-create failure)
 	statusMsg string
-	// killConfirm holds the remote session rows staged for a y/N confirmation;
+	// killConfirm holds the remote session rows (or one mirror window row)
+	// staged for a y/N confirmation;
 	// non-empty means the next key answers the prompt (see handleKillConfirm).
 	killConfirm []listItem
 	// forgotten records every (host,sess) killed in this popup. The initial
@@ -572,7 +573,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mirrors = m.filterForgottenMirrors(msg.mirrors)
 		m = m.recombine().withFilter()
 		if m.windowMode && m.mode != modeWall {
+			// A vanished target lands on its neighbour, not the top.
+			old := m.cursor
 			m = m.restoreCursor(keep)
+			if keep != "" && m.currentTarget() != keep && len(m.visible) > 0 {
+				m.cursor = min(old, len(m.visible)-1)
+			}
 		}
 		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
@@ -1778,7 +1784,7 @@ func isMirrorWindowKill(item listItem) bool {
 	return !item.isRemoteRow && item.bridgePane != "" && item.bridgeSock != ""
 }
 
-// handleKillConfirm answers a staged remote-kill prompt. Only y/Y acts; every
+// handleKillConfirm answers a staged remote session / mirror window kill prompt. Only y/Y acts; every
 // other key — n, esc, space, an unmapped chord — cancels, so the destructive
 // default is NO.
 func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
@@ -2046,15 +2052,11 @@ func (m tuiModel) itemVisible(item listItem) bool {
 	if item.isRemoteRow {
 		return true
 	}
-	// Window-mode headers carry no scratch-ness of their own (a state header
-	// spans sessions); pruneOrphanHeaders drops the ones left childless.
-	if !m.windowMode || !item.isHeader {
-		if m.scratchOnly && !item.isScratch {
-			return false
-		}
-		if !m.scratchOnly && item.isScratch {
-			return false
-		}
+	if m.scratchOnly && !item.isScratch {
+		return false
+	}
+	if !m.scratchOnly && item.isScratch {
+		return false
 	}
 	if m.agentOnly && !item.hasActiveAgent {
 		return false
