@@ -95,6 +95,16 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 			layout:  "@1",
 		},
 		{
+			// Breaking a pane out creates a NEW remote window and makes it active,
+			// and reshapes the source window — the same three reconciles kill-pane
+			// needs. The target is -s: break-pane's -t names the DESTINATION window.
+			name:    "break-pane pulls the pane into a new remote window",
+			argv:    []string{wire.CtlProtocolVersion, "break-pane", "%3"},
+			want:    []string{"break-pane -s %3"},
+			windows: true,
+			layout:  "@1",
+		},
+		{
 			name:   "resize maps the direction and amount",
 			argv:   []string{wire.CtlProtocolVersion, "resize", "%3", "U", "5"},
 			want:   []string{"resize-pane -t %3 -U 5"},
@@ -331,6 +341,8 @@ func TestParseCtlRejects(t *testing.T) {
 	}{
 		{"unknown verb", []string{wire.CtlProtocolVersion, "detach-client", "%3"}, "unknown verb"},
 		{"unmirrored pane", []string{wire.CtlProtocolVersion, "split-h", "%99"}, "not mirrored"},
+		{"break-pane refuses an unmirrored pane", []string{wire.CtlProtocolVersion, "break-pane", "%99"}, "not mirrored"},
+		{"break-pane takes no argument", []string{wire.CtlProtocolVersion, "break-pane", "%3", "x"}, "wants 0 argument"},
 		{"bad resize direction", []string{wire.CtlProtocolVersion, "resize", "%3", "X", "5"}, "bad direction"},
 		{"bad resize amount", []string{wire.CtlProtocolVersion, "resize", "%3", "U", "abc"}, "bad amount"},
 		{"resize amount out of range", []string{wire.CtlProtocolVersion, "resize", "%3", "U", "0"}, "bad amount"},
@@ -405,6 +417,34 @@ func TestParseCtlRotateInvalidatesActiveBelief(t *testing.T) {
 		if req.wantLayout != "@1" {
 			t.Errorf("layout %s wantLayout = %q, want @1", name, req.wantLayout)
 		}
+	}
+}
+
+// break-pane creates and selects a NEW remote window and re-activates a pane
+// in the source window, so it must invalidate the active-pane belief as well as
+// schedule both reconciles. Its target is -s (the source pane); -t would name
+// the destination window.
+func TestParseCtlBreakPaneInvalidatesActiveBelief(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "break-pane", "%3"}, "rem")
+	if err != nil {
+		t.Fatalf("parseCtl break-pane: %v", err)
+	}
+	if req.invalidate != "@1" {
+		t.Errorf("break-pane invalidate = %q, want @1", req.invalidate)
+	}
+	if req.wantLayout != "@1" {
+		t.Errorf("break-pane wantLayout = %q, want @1", req.wantLayout)
+	}
+	if !req.wantWindows {
+		t.Errorf("break-pane wantWindows = false, want true")
+	}
+	if req.wantReseed != "" {
+		t.Errorf("break-pane wantReseed = %q, want none", req.wantReseed)
+	}
+	if !reflect.DeepEqual(req.cmds, []string{"break-pane -s %3"}) {
+		t.Errorf("break-pane cmds = %q, want the -s form", req.cmds)
 	}
 }
 

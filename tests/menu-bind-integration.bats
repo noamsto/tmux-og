@@ -583,3 +583,115 @@ assert_wire_argv() { # payload_file verb [arg...]
 	grep -qF '"float-geom": {' "$CTL_GO"
 	grep -qF '"tile-layout": {' "$CTL_GO"
 }
+
+# --- 11: pane keybinds (#922) ---------------------------------------------
+#
+# The same #769 rule the menus obey, for the stock prefix keys that change the
+# remote's pane set: `!` (break-pane) must route to the remote, and `@` (the
+# float/tile toggle) has no faithful ctl verb, so on a mirror it must no-op
+# instead of floating or tiling the local renderer pane.
+
+@test "prefix ! on a mirror routes to ctl break-pane and never breaks locally" {
+	attach_client
+	# The verb exists on the daemon side too, or the frame below is a dead end.
+	grep -qF '"break-pane": {' "$CTL_GO"
+
+	local wins_before panes_before
+	wins_before="$(inner list-windows -t s -F '#{window_id}' | wc -l)"
+	panes_before="$(inner list-panes -t "$WIN" -F '#{pane_id}' | wc -l)"
+
+	press_prefix_key '!'
+	wait_for_frame
+	assert_wire_argv "$(sole_payload)" break-pane
+
+	# The local mirror is untouched: no new local window, no pane moved out.
+	[ "$(inner list-windows -t s -F '#{window_id}' | wc -l)" -eq "$wins_before" ]
+	[ "$(inner list-panes -t "$WIN" -F '#{pane_id}' | wc -l)" -eq "$panes_before" ]
+}
+
+# picker/whichkey.go's replayBind reads the picked bind's own line back and runs
+# it with `run-shell -b -d 0.1 -t <origin pane> -C <command>`. This pins that the
+# guard's #{@bridge_win}/#{@bridge_pane} still evaluate against the origin pane
+# under that targeted replay, so the which-key route reaches ctl too.
+@test "the which-key replay of prefix ! routes to ctl from the origin pane" {
+	local line command
+	line="$(inner list-keys -T prefix '!')"
+	[ -n "$line" ]
+	command="$(printf '%s' "$line" | sed -E 's/^bind-key[[:space:]]+-T[[:space:]]+prefix[[:space:]]+![[:space:]]+//')"
+	[ -n "$command" ]
+	case "$command" in
+	if-shell*) ;;
+	*)
+		printf 'unexpected prefix ! command: %s\n' "$command" >&2
+		return 1
+		;;
+	esac
+
+	local wins_before
+	wins_before="$(inner list-windows -t s -F '#{window_id}' | wc -l)"
+
+	# Exactly replayBind's argv shape, against the real binary.
+	inner run-shell -b -d 0.1 -t "$PANE" -C "$command"
+	wait_for_frame
+	assert_wire_argv "$(sole_payload)" break-pane
+
+	[ "$(inner list-windows -t s -F '#{window_id}' | wc -l)" -eq "$wins_before" ]
+}
+
+@test "prefix @ on a mirror no-ops and never floats or tiles locally" {
+	attach_client
+	# The message would otherwise flash before the poll sees it.
+	inner set-option -g display-time 10000
+
+	local float_before wins_before panes_before
+	float_before="$(inner display-message -p -t "$PANE" -F '#{pane_floating_flag}')"
+	wins_before="$(inner list-windows -t s -F '#{window_id}' | wc -l)"
+	panes_before="$(inner list-panes -t "$WIN" -F '#{pane_id}' | wc -l)"
+
+	press_prefix_key '@'
+	wait_for_screen 'float/tile: not mirrored'
+
+	# Neither branch of the stock toggle ran: the pane is neither floating nor
+	# tiled into another window.
+	[ "$(inner display-message -p -t "$PANE" -F '#{pane_floating_flag}')" = "$float_before" ]
+	[ "$(inner list-windows -t s -F '#{window_id}' | wc -l)" -eq "$wins_before" ]
+	[ "$(inner list-panes -t "$WIN" -F '#{pane_id}' | wc -l)" -eq "$panes_before" ]
+
+	# ...and no ctl frame was sent: the #769 rule for "no faithful verb" is a
+	# no-op, not a guess at a remote command.
+	sleep 1
+	if compgen -G "$REC_DIR/frame.*/payload" >/dev/null; then
+		printf 'prefix @ sent a ctl frame on a mirror window\n' >&2
+		return 1
+	fi
+}
+
+@test "prefix ! on a plain window still runs the local stock break-pane" {
+	# The gate is @bridge_win AND @bridge_pane; clear both, then give the window
+	# a second pane so the stock break-pane really creates a new window (with a
+	# single pane tmux relinks the same window at a new index instead).
+	inner set-option -uw -t "$WIN" @bridge_win
+	inner set-option -up -t "$PANE" @bridge_pane
+	[ -z "$(inner display-message -p -t "$PANE" -F '#{@bridge_win}#{@bridge_pane}')" ]
+	inner split-window -d -t "$WIN"
+
+	attach_client
+	local wins_before
+	wins_before="$(inner list-windows -t s -F '#{window_id}' | wc -l)"
+
+	press_prefix_key '!'
+
+	local wins_after="$wins_before" deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)); do
+		wins_after="$(inner list-windows -t s -F '#{window_id}' | wc -l)"
+		[ "$wins_after" -gt "$wins_before" ] && break
+		sleep 0.1
+	done
+	[ "$wins_after" -eq $((wins_before + 1)) ]
+
+	sleep 0.5
+	if compgen -G "$REC_DIR/frame.*/payload" >/dev/null; then
+		printf 'prefix ! on a plain window sent a ctl frame\n' >&2
+		return 1
+	fi
+}

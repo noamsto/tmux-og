@@ -2217,6 +2217,57 @@ remote_pane_of() {
 	[ "$src_map" = "$dst_map" ]
 }
 
+@test "ctl break-pane moves the REMOTE pane to a new window and the mirror follows" {
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 150 -y 40
+	bridge_up 2 c6
+
+	victim="$(remote_pane_of 0)"
+
+	run "$CTL" --sock "$sock" break-pane "$victim"
+	[ "$status" -eq 0 ]
+
+	for _ in $(seq 1 60); do
+		src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
+		dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+		[ "$src_w" -eq 2 ] && [ "$dst_w" -eq 2 ] && break
+		sleep 0.15
+	done
+	src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
+	dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+
+	# The moved pane maps to exactly ONE local mirror pane, and that pane still
+	# paints remote output: the source window's layout reconcile unregistered the
+	# pane, so a router clobber would freeze the new mirror pane here.
+	marker="CTL_BREAK_$$"
+	$SRC send-keys -t "$victim" "printf '$marker\\n'" Enter
+	mapped=0
+	painted=0
+	for _ in $(seq 1 60); do
+		mapped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' | grep -cx "$victim" || true)"
+		painted=0
+		if [ "$mapped" -eq 1 ]; then
+			vp="$($DST list-panes -s -t host-sess -F '#{@bridge_pane} #{pane_id}' | awk -v v="$victim" '$1 == v { print $2 }')"
+			$DST capture-pane -p -t "$vp" 2>/dev/null | grep -q "$marker" && painted=1
+		fi
+		[ "$mapped" -eq 1 ] && [ "$painted" -eq 1 ] && break
+		sleep 0.15
+	done
+
+	# No orphaned non-mirror local window was left in the mirror session.
+	stranding="$($DST list-windows -t host-sess -F '#{@bridge_win}' | grep -vc '^1$' || true)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$src_w" -eq 2 ]
+	[ "$dst_w" -eq 2 ]
+	[ "$mapped" -eq 1 ]
+	[ "$painted" -eq 1 ]
+	[ "$stranding" -eq 0 ]
+}
+
 @test "ctl new-window creates a REMOTE window and the mirror gains one" {
 	$SRC new-session -d -s rem -x 150 -y 40
 	$DST new-session -d -s host-sess -x 150 -y 40
