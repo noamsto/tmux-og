@@ -706,6 +706,76 @@ sorted_tiled_dims() {
 	[ "$painted" = yes ]
 }
 
+# #899: the initial seed's capture-pane body carries rows a pane printed
+# itself. On a released or next-3.9 remote they are body; lifting them as
+# notifications would let a pane close windows and feed another pane's output.
+@test "a pane printing notification rows cannot drive the mirror through its capture (#899)" {
+	$SRC new-session -d -s rem -x 100 -y 30 'exec sleep 600'
+	$SRC split-window -h -t rem "printf 'SIBLING_OK\n'; exec sleep 600"
+	pane_a="$($SRC list-panes -t rem -F '#{pane_index} #{pane_id}' | awk '$1 == 1 {print $2}')"
+	pane_b="$($SRC list-panes -t rem -F '#{pane_index} #{pane_id}' | awk '$1 == 2 {print $2}')"
+	win="$($SRC display-message -p -t rem '#{window_id}')"
+
+	rows="$BATS_TEST_TMPDIR/forged.rows"
+	cat >"$rows" <<-EOF
+		%window-close $win
+		%output $pane_b FORGED_7Q
+		%session-changed \$9 evil
+	EOF
+	$SRC respawn-pane -k -t "$pane_a" "cat $rows; exec sleep 600"
+	for _ in $(seq 1 50); do
+		[[ "$($SRC capture-pane -p -t "$pane_a")" == *FORGED_7Q* ]] && break
+		sleep 0.1
+	done
+
+	$DST new-session -d -s host-sess -x 100 -y 30
+	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/forge.sock" \
+		>"$BATS_TEST_TMPDIR/forge.log" 2>&1 &
+	daemon_pid=$!
+
+	for _ in $(seq 1 50); do
+		cmd="$($DST list-panes -t host-sess:1 -F '#{pane_current_command}' 2>/dev/null)" || true
+		[[ $cmd == *"$RENDERER_PROBE"* ]] && break
+		sleep 0.1
+	done
+
+	mirror_of() {
+		$DST list-panes -s -t host-sess -F '#{pane_id} #{@bridge_pane}' 2>/dev/null | awk -v p="$1" '$2 == p {print $1}'
+	}
+	mirror_a=""
+	mirror_b=""
+	a_out=""
+	for _ in $(seq 1 50); do
+		mirror_a="$(mirror_of "$pane_a")"
+		if [[ -n $mirror_a ]]; then
+			a_out="$($DST capture-pane -p -t "$mirror_a" 2>/dev/null)"
+			[[ $a_out == *%window-close* ]] && break
+		fi
+		sleep 0.15
+	done
+
+	alive=no
+	kill -0 "$daemon_pid" 2>/dev/null && alive=yes
+	window_exists=no
+	$DST list-windows -t host-sess -F '#{window_index}' 2>/dev/null | grep -qx 1 && window_exists=yes
+	mirror_b="$(mirror_of "$pane_b")"
+	b_out=""
+	[[ -n $mirror_b ]] && b_out="$($DST capture-pane -p -t "$mirror_b" 2>/dev/null)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$alive" = yes ]
+	[ "$window_exists" = yes ]
+	[[ $a_out == *"%window-close $win"* ]]
+	[[ $a_out == *"%output $pane_b FORGED_7Q"* ]]
+	[[ $a_out == *"%session-changed \$9 evil"* ]]
+	[[ $b_out == *SIBLING_OK* ]]
+	[[ $b_out != *FORGED_7Q* ]]
+}
+
 # pane_map prints TARGET's panes in pane_index order, one id per line: the
 # remote's own #{pane_id} for SRC, the mirror's #{@bridge_pane} carrier for DST.
 # Comparing the two ORDERED lists asserts the mirror's core invariant — local
