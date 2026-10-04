@@ -46,6 +46,17 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   noticed only by the slow check refresh, up to `prCheckRefreshSeconds` later,
   because the identity batch carries no head SHA — adding `headRefOid` to it is
   the follow-up.
+- **Checkout gone:** a window whose `@worktree` and `@git_root` both fail to
+  resolve a repo (a merged PR's worktree was removed, the window stayed open)
+  but which carries a well-formed `@pr_url` is refreshed by that url —
+  `gh pr view <url>`, no cwd — and written through the same
+  `apply_cache_to_target` path. Cache key is derived from `url|<url>` so it
+  can't collide with a `repo|branch` key; TTLs are the usual ones (merged/closed
+  `TTL_TERMINAL`, open `TTL`). These windows count against the same 30-entry cap
+  and are skipped in the checks-only pending pass. No `@pr_url` (or a url that
+  isn't `https://github.com/<owner>/<repo>/pull/<N>`) still means skipped, and
+  `@bridge_win` mirrors stay skipped. Without this the badge stayed `open`
+  forever (#921).
 - **Icons:** override the 9 glyphs (linear/github/pending/success/failure/
   merged/closed/conflict/draft) via `enrich.icons`; defaults are nerd-font
   glyphs. The `#` escape: Nix replaces `#` with `##` in icon values for tmux
