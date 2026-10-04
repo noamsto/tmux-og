@@ -54,7 +54,10 @@ func (m tuiModel) composeFrame() (string, bool) {
 	}
 	search := strings.Split(m.renderSearch(), "\n")
 	rule := search[len(search)-1]
-	bodyLines := strings.Split(strings.Join(m.frameBlocks(), "\n"), "\n")
+	var bodyLines []string
+	for _, block := range m.frameBlocks() {
+		bodyLines = append(bodyLines, strings.Split(block, "\n")...)
+	}
 	hintLines := strings.Split(m.renderHints(), "\n")
 
 	out := make([]string, 0, len(search)+len(bodyLines)+len(hintLines)+1)
@@ -84,17 +87,22 @@ func (m tuiModel) composeFrame() (string, bool) {
 // Unicode line/paragraph separators.
 func padFrameLine(line string, w int) (string, bool) {
 	multibyte := false
+	hasESC := false
 	for i := 0; i < len(line); i++ {
 		c := line[i]
 		if (c < 0x20 && c != 0x1b) || c == 0x7f {
 			return "", false
 		}
+		hasESC = hasESC || c == 0x1b
 		multibyte = multibyte || c >= 0x80
 	}
 	if multibyte && hasSpecialRune(line) {
 		return "", false
 	}
-	sw := lipgloss.Width(line)
+	sw := len(line)
+	if multibyte || hasESC {
+		sw = lipgloss.Width(line)
+	}
 	if sw > w {
 		return "", false
 	}
