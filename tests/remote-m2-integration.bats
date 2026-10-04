@@ -6034,14 +6034,13 @@ mirror_of_remote() {
 	$SRC set-option -g @og900evil2 "$(printf 'x\n%%begin 999998 999998 1')"
 	$SRC refresh-client -t "$cc" -B 'og900evil2::#{@og900evil2}'
 
-	# Gone by name (what #680's probe reads) while the round trip is still
-	# waiting: the probe only gets a turn again once the wait is bounded.
-	$DST rename-session -t host-sess mirror-gone
-
 	# Provoke the round trip that the forged block will hold: each option
 	# change re-reports, the settle beat lets that report land at top level,
-	# and the split's layout read is then the wait the deadline must end.
-	wedged=no
+	# and the split's layout read is then the wait the deadline must end. The
+	# session goes away (by name, what #680's probe reads) only once the
+	# mirror has stopped following the remote: an idle daemon's probe would
+	# otherwise end it before any wedge.
+	parked=no
 	i=0
 	deadline=$((SECONDS + 40))
 	while [ "$SECONDS" -lt "$deadline" ]; do
@@ -6049,16 +6048,20 @@ mirror_of_remote() {
 		$SRC set-option -g @og900evil2 "x$i$(printf '\n%%begin 999998 999998 1')"
 		sleep 1
 		$SRC split-window -d -t rem 2>/dev/null || true
-		if grep -Eq 'reply deadline|write deadline' "$log"; then
-			wedged=yes
+		sleep 1
+		src_n="$($SRC list-panes -t rem -F x | wc -l)"
+		dst_n="$($DST list-panes -t host-sess:1 -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+		if [ "$src_n" -ne "$dst_n" ]; then
+			parked=yes
 			break
 		fi
 	done
-	[ "$wedged" = yes ] || {
+	[ "$parked" = yes ] || {
 		printf -- '--- daemon log ---\n' >&3
 		cat "$log" >&3
 		false
 	}
+	$DST rename-session -t host-sess mirror-gone
 
 	# The deadline ends the wait; the next ticks see the session gone and the
 	# daemon exits, instead of outliving its session forever.
