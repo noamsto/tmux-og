@@ -84,14 +84,14 @@ func remoteFixture() []listItem {
 		{isRemoteRow: true, target: "remote:lab", remoteHost: "lab", searchText: "lab", plain: "lab"},
 		{
 			isRemoteRow: true,
-			target:      "remote:lab:mono", remoteHost: "lab", remoteSess: "mono",
+			target:      "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteSessionID: "$1",
 			searchText: "lab/mono lab mono",
 			plain:      remoteTreeMid + " mono", plainEnd: remoteTreeEnd + " mono",
 			display: remoteTreeMid + " mono", displayEnd: remoteTreeEnd + " mono",
 		},
 		{
 			isRemoteRow: true,
-			target:      "remote:lab:other", remoteHost: "lab", remoteSess: "other",
+			target:      "remote:lab:other", remoteHost: "lab", remoteSess: "other", remoteSessionID: "$2",
 			searchText: "lab/other lab other",
 			plain:      remoteTreeMid + " other", plainEnd: remoteTreeEnd + " other",
 			display: remoteTreeMid + " other", displayEnd: remoteTreeEnd + " other",
@@ -1797,12 +1797,13 @@ func TestPrintableKeyText(t *testing.T) {
 // tests. display/plain are left minimal — nothing here renders the row.
 func killRemoteRow(host, sess string) listItem {
 	return listItem{
-		isRemoteRow: true,
-		target:      "remote:" + host + ":" + sess,
-		remoteHost:  host,
-		remoteSess:  sess,
-		searchText:  host + "/" + sess + " " + host + " " + sess,
-		plain:       sess,
+		isRemoteRow:     true,
+		target:          "remote:" + host + ":" + sess,
+		remoteHost:      host,
+		remoteSess:      sess,
+		remoteSessionID: "$0",
+		searchText:      host + "/" + sess + " " + host + " " + sess,
+		plain:           sess,
 	}
 }
 
@@ -2602,5 +2603,112 @@ func TestMirrorAndRemoteWindowKillShareOneConfirm(t *testing.T) {
 		if cmd != nil || len(next.(tuiModel).killConfirm) != 0 {
 			t.Errorf("%s: n must cancel", name)
 		}
+	}
+}
+
+func ctrlX(t *testing.T, m tuiModel) tuiModel {
+	t.Helper()
+	next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatalf("staging a kill must not run a cmd, got %v", cmd)
+	}
+	return next.(tuiModel)
+}
+
+func cursorOn(t *testing.T, m tuiModel, target string) tuiModel {
+	t.Helper()
+	for i, it := range m.visible {
+		if it.target == target {
+			m.cursor = i
+			return m
+		}
+	}
+	t.Fatalf("no visible row %q", target)
+	return m
+}
+
+// A session row without a probe id (cached, or the probe not answered yet)
+// must refuse: the name is never a kill target.
+func TestCtrlXRefusesRemoteSessionWithoutID(t *testing.T) {
+	useRemoteCache(t)
+	row := killRemoteRow("lab", "mono")
+	row.remoteSessionID = ""
+	m := tuiModel{width: 120, remoteItems: []listItem{row}}
+	mm := ctrlX(t, cursorOn(t, m.recombine().withFilter(), row.target))
+	if len(mm.killConfirm) != 0 {
+		t.Fatalf("staged a kill without an id: %+v", mm.killConfirm)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/mono") || !strings.Contains(mm.statusMsg, "wait for the probe") {
+		t.Errorf("statusMsg = %q, want the row label and a wait hint", mm.statusMsg)
+	}
+}
+
+func TestCtrlXStagesRemoteSessionWithID(t *testing.T) {
+	useRemoteCache(t)
+	row := killRemoteRow("lab", "mono")
+	row.remoteSessionID = "$3"
+	m := tuiModel{width: 120, remoteItems: []listItem{row}}
+	mm := ctrlX(t, cursorOn(t, m.recombine().withFilter(), row.target))
+	if len(mm.killConfirm) != 1 || mm.killConfirm[0].remoteSessionID != "$3" {
+		t.Fatalf("killConfirm = %+v, want the mono row with $3", mm.killConfirm)
+	}
+}
+
+// One id-less mark refuses the whole batch, and the cursor row (which has an
+// id) is not substituted for it.
+func TestCtrlXRefusesMarksWhenAnyLacksID(t *testing.T) {
+	useRemoteCache(t)
+	mono := killRemoteRow("lab", "mono")
+	other := killRemoteRow("lab", "other")
+	other.remoteSessionID = ""
+	m := tuiModel{
+		width:       120,
+		remoteItems: []listItem{mono, other},
+		marked:      map[string]bool{other.target: true},
+	}
+	mm := ctrlX(t, cursorOn(t, m.recombine().withFilter(), mono.target))
+	if len(mm.killConfirm) != 0 {
+		t.Fatalf("staged %+v, want nothing", mm.killConfirm)
+	}
+	if !strings.Contains(mm.statusMsg, "lab/other") || !strings.Contains(mm.statusMsg, "wait for the probe") {
+		t.Errorf("statusMsg = %q, want the id-less row's label and a wait hint", mm.statusMsg)
+	}
+}
+
+// A mirror row has no probe row of its own; it takes the id from its host row.
+func TestCtrlXOnMirrorRowUsesHostRowID(t *testing.T) {
+	useRemoteCache(t)
+	for _, tc := range []struct {
+		name string
+		ids  map[string]string
+		want string
+	}{
+		{"id known", map[string]string{"build": "$5"}, "$5"},
+		{"id unknown", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := scopeModel()
+			m.remoteItems[1].remoteHostSessionIDs = tc.ids
+			m.scope = hostScope{kind: scopeHost, host: "alpha"}
+			m = m.recombine().withFilter()
+			m.cursor = findVisible(t, m, func(it listItem) bool { return it.remoteMirrorTarget != "" })
+
+			mm := ctrlX(t, m)
+			if tc.want == "" {
+				if len(mm.killConfirm) != 0 {
+					t.Fatalf("staged %+v, want nothing", mm.killConfirm)
+				}
+				return
+			}
+			if len(mm.killConfirm) != 1 || mm.killConfirm[0].remoteSessionID != tc.want {
+				t.Fatalf("killConfirm = %+v, want the mirror row with %s", mm.killConfirm, tc.want)
+			}
+		})
+	}
+}
+
+func TestRemoteKillFailureNoID(t *testing.T) {
+	if got := remoteKillFailure("kill lab/mono", errRemoteKillNoID); !strings.Contains(got, "no live session id") {
+		t.Errorf("got %q, want the no-id wording", got)
 	}
 }

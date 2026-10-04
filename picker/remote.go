@@ -35,8 +35,8 @@ const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n ker
 
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full
 // command begins with the identity preamble (machine-id line, username line),
-// then session names.
-var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F '#{session_name}'`)
+// then one S|$N|name line per session — the id is what a kill targets.
+var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_name}'`)
 
 // remoteTmuxBin resolves the remote's tmux without a shell assignment: PATH
 // first, then the nix per-user profile a non-interactive ssh does not see.
@@ -61,13 +61,24 @@ func remoteTmuxCmd(args string) string {
 
 var remoteListSessionsCmd = remoteIdentityPreamble + `; ` + remoteListSessionsBody
 
-// remoteKillSessionBody builds the remote-side tmux command that kills one
-// session. The `=` prefix makes the target an exact name match (a numeric
-// session name would otherwise also resolve as a window/pane index), and the
-// name is single-quoted by shellQuote so a remote-controlled session name can
-// never inject a second command through the remote login shell.
-func remoteKillSessionBody(sess string) string {
-	return remoteTmuxCmd(`kill-session -t ` + shellQuote("="+sess))
+// remoteKillScript runs one tmux subcommand ($1) on target ($2) against the
+// first of /run/user/<uid>, /tmp whose server answers list-sessions — the
+// probe's own selection rule — and nowhere else. remoteTmuxCmd's `||` would
+// retry a failed kill on the second server and hit an unrelated id there. No
+// quote or backslash: the login shell may be fish, which escapes both inside
+// single quotes. One line, so no newline reaches the ssh command.
+const remoteKillScript = `t=$(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux); [ -x "$t" ] || exit 127; for d in /run/user/$(id -u) /tmp; do if env TMUX_TMPDIR=$d "$t" list-sessions >/dev/null 2>&1; then exec env TMUX_TMPDIR=$d "$t" "$1" -t "$2"; fi; done; exit 1`
+
+// remoteKillBody wraps remoteKillScript with its probe-validated arguments.
+func remoteKillBody(subcmd, target string) string {
+	return `sh -c ` + shellQuote(remoteKillScript) + ` _ ` + subcmd + ` ` + shellQuote(target)
+}
+
+// remoteKillSessionBody builds the remote-side command that kills one session
+// by its probe-reported $N id, so no remote-controlled name reaches the login
+// shell.
+func remoteKillSessionBody(sessionID string) string {
+	return remoteKillBody("kill-session", sessionID)
 }
 
 // remoteSelfCacheDir holds alias→self verdicts so pendingRemoteItems can omit
@@ -103,6 +114,9 @@ var (
 	// could not execute (exit 126/127, or any other non-1 tmux failure). The
 	// session may still exist, so the row is kept rather than forgotten.
 	errRemoteKillUnrunnable = errors.New("remote could not run tmux")
+	// errRemoteKillNoID is a kill target without a probe-validated tmux id; no
+	// ssh is spawned and the row is kept.
+	errRemoteKillNoID = errors.New("remote kill has no probe-validated id")
 )
 
 type remoteProbeState int
@@ -157,11 +171,13 @@ type remoteIdentity struct {
 
 // remoteProbeResult is stdout from remoteListSessionsCmd or
 // remoteListWindowsCmd: identity on the first two lines, then session names
-// (and, for the window probe, their windows).
+// (and, for the window probe, their windows). SessionIDs maps each name to its
+// tmux $N id.
 type remoteProbeResult struct {
-	Identity remoteIdentity
-	Sessions []string
-	Windows  []remoteWindow
+	Identity   remoteIdentity
+	Sessions   []string
+	SessionIDs map[string]string
+	Windows    []remoteWindow
 }
 
 // readLocalRemoteIdentity returns this machine's identity using the same
@@ -196,27 +212,10 @@ func localUsername() string {
 	return u.Username
 }
 
-// parseRemoteProbeOutput splits probe stdout into identity and session names.
+// parseRemoteProbeOutput splits probe stdout into identity, session names and
+// their ids. Both probes share one line format.
 func parseRemoteProbeOutput(stdout string) remoteProbeResult {
-	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	var res remoteProbeResult
-	if len(lines) >= 1 {
-		res.Identity.MachineID = strings.TrimSpace(lines[0])
-	}
-	if len(lines) >= 2 {
-		res.Identity.User = strings.TrimSpace(lines[1])
-	}
-	// A failed probe still lands here with whatever stdout it managed, which
-	// for an unreachable host is nothing at all.
-	if len(lines) > 2 {
-		for _, line := range lines[2:] {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				res.Sessions = append(res.Sessions, line)
-			}
-		}
-	}
-	return res
+	return parseRemoteWindowsOutput(stdout)
 }
 
 // isRemoteSelf reports whether remote resolved to this machine as the same user.
@@ -710,19 +709,24 @@ func remoteAuthStartFailure(err error) (string, bool) {
 // past it. A var, not a const, so a test can shrink it.
 var killWaitDelay = 500 * time.Millisecond
 
-// sshKillRemoteSession kills sess on host over ssh. It returns nil on success
-// and a classified error otherwise: errRemoteSessionGone when the remote tmux
-// ran and reported the session already absent, errRemoteUnreachable (or the
-// auth/host-key/tailscale states) when ssh itself could not complete.
-func sshKillRemoteSession(host, sess string) error {
-	return sshKillRemoteSessionCtx(context.Background(), host, sess)
+// sshKillRemoteSession kills the session with id sessionID on host over ssh. It
+// returns nil on success and a classified error otherwise: errRemoteKillNoID
+// when sessionID is not a $N id (no ssh is spawned), errRemoteSessionGone when
+// the remote tmux ran and reported the session already absent,
+// errRemoteUnreachable (or the auth/host-key/tailscale states) when ssh itself
+// could not complete.
+func sshKillRemoteSession(host, sessionID string) error {
+	return sshKillRemoteSessionCtx(context.Background(), host, sessionID)
 }
 
 // sshKillRemoteSessionCtx is sshKillRemoteSession parameterized on a parent
 // ctx, so a kill run can bound and cancel an in-flight ssh (killRun in
 // kill.go). It derives its own remoteProbeTimeout deadline from ctx.
-func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
-	return sshKillCtx(ctx, host, remoteKillSessionBody(sess))
+func sshKillRemoteSessionCtx(ctx context.Context, host, sessionID string) error {
+	if !isTmuxID(sessionID, '$') {
+		return errRemoteKillNoID
+	}
+	return sshKillCtx(ctx, host, remoteKillSessionBody(sessionID))
 }
 
 // sshKillCtx runs a remote kill command body on host over ssh, classifying a
@@ -1279,6 +1283,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 	type hostResult struct {
 		host            string
 		sess            []string
+		sessionIDs      map[string]string
 		state           remoteProbeState
 		restorable      []remuxManifestSession
 		manifestSavedAt int64
@@ -1308,7 +1313,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 				}
 				return result, nil
 			})
-			res := hostResult{host: h, sess: sess, state: state}
+			res := hostResult{host: h, sess: sess, sessionIDs: result.SessionIDs, state: state}
 			switch state {
 			case remoteProbeOK:
 				writeRemoteSessionCache(h, result.Sessions, now)
@@ -1347,10 +1352,13 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 			hasHosts = true
 		}
 		hostRow := remoteHostRowForState(tmuxOpts, r.host, r.state, r.tailscaleURL, len(r.sess) > 0)
+		hostRow.remoteHostSessionIDs = r.sessionIDs
 		items = append(items, hostRow)
 		cH := hostColor(r.host)
 		for _, sess := range r.sess {
-			items = append(items, remoteSessionRowItem(r.host, sess, "", cH, cDim, false))
+			row := remoteSessionRowItem(r.host, sess, "", cH, cDim, false)
+			row.remoteSessionID = r.sessionIDs[sess]
+			items = append(items, row)
 		}
 		for _, s := range r.restorable {
 			row := remoteSessionRowItem(r.host, s.Name, "(restore — saved "+formatSnapshotAge(r.manifestSavedAt, now)+")", cH, cDim, false)

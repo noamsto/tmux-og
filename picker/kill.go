@@ -92,7 +92,7 @@ func (r *killRun) run() {
 		if item.remoteWindowID != "" {
 			err = sshKillRemoteWindowCtx(r.ctx, item.remoteHost, item.remoteSessionID, item.remoteWindowID)
 		} else {
-			err = sshKillRemoteSessionCtx(r.ctx, item.remoteHost, item.remoteSess)
+			err = sshKillRemoteSessionCtx(r.ctx, item.remoteHost, item.remoteSessionID)
 		}
 		cancelled := err != nil && errors.Is(r.ctx.Err(), context.Canceled)
 		results = append(results, killItemResult{item: item, err: err, cancelled: cancelled})

@@ -41,6 +41,30 @@ func TestFetcherWritesBytesToCacheAndReturnsLocalPath(t *testing.T) {
 	}
 }
 
+// A backslash in a remote-derived path or key is refused before ssh: POSIX
+// quoting does not hold under a fish login shell.
+func TestFetcherRefusesBackslashWithoutRunningSSH(t *testing.T) {
+	var runs int
+	reply := "1700000000 5\nHELLO"
+	f := &SSHFetcher{Host: "g6", CacheDir: t.TempDir(), MaxBytes: 1 << 20,
+		Run: func(context.Context, ...string) ([]byte, error) {
+			runs++
+			return []byte(reply), nil
+		}}
+	if _, err := f.Localize(context.Background(), `x\';echo INJECTED;#`); err == nil || runs != 0 {
+		t.Fatalf("path with a backslash: err=%v runs=%d", err, runs)
+	}
+	if _, err := f.Localize(context.Background(), "/tmp/a.png"); err != nil || runs != 1 {
+		t.Fatalf("normal path: err=%v runs=%d", err, runs)
+	}
+	f.mu.Lock()
+	f.keys["/tmp/a.png"] = `1\' 2`
+	f.mu.Unlock()
+	if _, err := f.Localize(context.Background(), "/tmp/a.png"); err == nil || runs != 1 {
+		t.Fatalf("key with a backslash: err=%v runs=%d", err, runs)
+	}
+}
+
 // CtlSock is read fresh inside fetch on every call, never snapshotted at
 // construction: a Proxy (and the *SSHFetcher it holds) can be built before a
 // transport replacement completes, so a cached value could keep dialling
