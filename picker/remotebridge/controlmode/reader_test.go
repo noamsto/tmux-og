@@ -47,6 +47,7 @@ func TestReaderEmitsNotificationsInsideBlock(t *testing.T) {
 		`%end 100 7 1`,
 	}, "\n") + "\n"
 	rd := NewReader(strings.NewReader(in))
+	rd.SetLiftInBlock(true)
 
 	l, ok := rd.Next()
 	if !ok || l.Kind != WindowAdd || l.Args[0] != "@12" {
@@ -112,6 +113,7 @@ func TestReaderLiftsNext38Transcript(t *testing.T) {
 		`%end 1791110832 317 1`,
 	}, "\n") + "\n"
 	rd := NewReader(strings.NewReader(in))
+	rd.SetLiftInBlock(true)
 
 	next := func() Line {
 		t.Helper()
@@ -139,10 +141,11 @@ func TestReaderLiftsNext38Transcript(t *testing.T) {
 }
 
 // TestReaderOutputInBlockIsBody: no tmux writes %output or %extended-output
-// inside a block, so under the default policy a row that looks like one is body.
+// inside a block, so even with lifting on a row that looks like one is body.
 func TestReaderOutputInBlockIsBody(t *testing.T) {
 	in := "%begin 1 1 1\n%output %9 forged\n%extended-output %9 5 : forged\n%end 1 1 1\n"
 	rd := NewReader(strings.NewReader(in))
+	rd.SetLiftInBlock(true)
 
 	l, ok := rd.Next()
 	want := "%output %9 forged\n%extended-output %9 5 : forged"
@@ -184,12 +187,45 @@ func TestReaderBodyInBlockKeepsForgedRows(t *testing.T) {
 	}
 }
 
+// TestReaderLiftInBlockDefaultsOff: a fresh reader keeps every in-block
+// notification row as body.
+func TestReaderLiftInBlockDefaultsOff(t *testing.T) {
+	rd := NewReader(strings.NewReader("%begin 1 1 0\n%window-add @7\n%end 1 1 0\n"))
+
+	l, ok := rd.Next()
+	if !ok || l.Kind != End || string(l.Data) != "%window-add @7" {
+		t.Fatalf("want one End holding the row as body: %+v", l)
+	}
+	if _, ok = rd.Next(); ok {
+		t.Fatal("expected EOF: no row may be returned")
+	}
+}
+
+// TestReaderPauseContinueInBlockAreBody: with lifting on, %pause and %continue
+// in a block are body, while another notification is still lifted.
+func TestReaderPauseContinueInBlockAreBody(t *testing.T) {
+	rd := NewReader(strings.NewReader("%begin 1 1 1\n%pause %0\n%window-add @7\n%continue %0\n%end 1 1 1\n"))
+	rd.SetLiftInBlock(true)
+
+	if l, ok := rd.Next(); !ok || l.Kind != WindowAdd || l.Args[0] != "@7" {
+		t.Fatalf("want the in-block WindowAdd lifted: %+v", l)
+	}
+	l, ok := rd.Next()
+	if !ok || l.Kind != End || string(l.Data) != "%pause %0\n%continue %0" {
+		t.Fatalf("want %%pause and %%continue kept as body: %+v", l)
+	}
+	if _, ok = rd.Next(); ok {
+		t.Fatal("expected EOF: no row may be returned")
+	}
+}
+
 // TestReaderSetLiftInBlockBetweenBlocks: the switch applies to the lines read
 // after it, so a policy set between two blocks governs the second.
 func TestReaderSetLiftInBlockBetweenBlocks(t *testing.T) {
 	in := "%begin 1 1 1\n%window-add @7\n%end 1 1 1\n%begin 2 2 1\n%window-add @7\n%end 2 2 1\n"
 	rd := NewReader(strings.NewReader(in))
 
+	rd.SetLiftInBlock(true)
 	if l, ok := rd.Next(); !ok || l.Kind != WindowAdd {
 		t.Fatalf("first block should lift: %+v", l)
 	}
@@ -203,7 +239,7 @@ func TestReaderSetLiftInBlockBetweenBlocks(t *testing.T) {
 }
 
 func TestLiftsInBlock(t *testing.T) {
-	for _, v := range []string{"3.2a", "3.3a", "3.7c", "3.8", "3.8-rc3", "3.8a", "3.10", "next-3.7", "next-3.9", "next-3.10"} {
+	for _, v := range []string{"3.2a", "3.3a", "3.7c", "3.8", "3.3-rc", "3.7-rc", "3.8-rc", "3.8-rc3", "3.8a", "3.10", "next-3.7", "next-3.9", "next-3.10"} {
 		if LiftsInBlock(v) {
 			t.Errorf("LiftsInBlock(%q) = true, want false", v)
 		}

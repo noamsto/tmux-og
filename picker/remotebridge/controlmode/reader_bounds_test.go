@@ -145,8 +145,8 @@ func TestReaderOverlongBodyLineFailsOnlyThatReply(t *testing.T) {
 // TestReaderForgedLinesInBodyStayBody pins #860: inside a block only a guard
 // repeating the %begin's three fields closes it; every other guard, a %begin,
 // %subscription-changed and a non-final %exit are body, so pane content cannot
-// forge those. Other notification verbs are lifted only under the next-3.8
-// policy, which is the default here (#276, #899).
+// forge those, with lifting on or off. Other notification verbs are lifted only
+// when SetLiftInBlock(true) (#276, #899).
 func TestReaderForgedLinesInBodyStayBody(t *testing.T) {
 	body := []string{
 		"%end 1 2 1",
@@ -243,6 +243,7 @@ func TestReaderStreamsNotificationsFromOpenBlock(t *testing.T) {
 	go func() { _, _ = pw.Write([]byte("%begin 1 1 1\n%window-add @1\n")) }()
 
 	rd := NewReader(pr)
+	rd.SetLiftInBlock(true)
 	got := make(chan Line, 1)
 	go func() {
 		l, _ := rd.Next()
@@ -294,6 +295,7 @@ func TestReaderBoundsMemoryStreamedNotifications(t *testing.T) {
 		&repeat{chunk: []byte(line), n: lines},
 		strings.NewReader("%end 1 7 1\n"),
 	))
+	rd.SetLiftInBlock(true)
 
 	var (
 		peak   uint64

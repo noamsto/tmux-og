@@ -185,12 +185,21 @@ func TestIdentifyAdoptsVersionFromTheReply(t *testing.T) {
 	}
 }
 
-func TestIdentifyFailureLeavesLiftingOn(t *testing.T) {
+func TestIdentifyFailureLeavesLiftingOff(t *testing.T) {
 	c, write := pipeConn(t, newLayoutsFlagAck, "%begin 1 1 1\nboom\n%error 1 1 1\n")
 	if _, err := c.identify("A"); err == nil {
 		t.Fatal("identify err = nil, want the error reply to fail it")
 	}
-	if l := laterBlock(t, c, write); l.Kind != controlmode.WindowAdd {
-		t.Fatalf("kind = %v, want WindowAdd: a failed read must not switch lifting off", l.Kind)
+	l := laterBlock(t, c, write)
+	if l.Kind != controlmode.End || string(l.Data) != "%window-add @7" {
+		t.Fatalf("line = %+v, want End holding the row: a failed read must leave lifting off", l)
+	}
+}
+
+func TestFreshConnKeepsInBlockNotificationAsBody(t *testing.T) {
+	c, write := pipeConn(t)
+	l := laterBlock(t, c, write)
+	if l.Kind != controlmode.End || string(l.Data) != "%window-add @7" {
+		t.Fatalf("line = %+v, want End holding the row: lifting is off until adoptVersion", l)
 	}
 }

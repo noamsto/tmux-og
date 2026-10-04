@@ -102,19 +102,28 @@ notifications because of that build window. On every released version, only
 1. **`%output` / `%extended-output` inside a block are always body**, whatever
    the remote's version. No tmux version writes a genuine one there, so this
    closes the cross-pane spoof unconditionally, before anything is known about
-   the remote.
+   the remote. **`%pause` / `%continue` inside a block are body on every
+   version too.** A genuine in-block one comes only from this client's own
+   `refresh-client -A`: the daemon never sends `:pause` and reads its
+   `:continue` from the reply (rule 4). A lifted forged `%pause %N` would loop:
+   pause, reseed, capture, lift again.
 2. **In-block lifting becomes a per-connection switch on the Reader**,
    `Reader.SetLiftInBlock(bool)`. It is safe to call from another goroutine,
    because the pump goroutine calls `Next` while the main loop sets the switch.
-   It defaults to `true` (today's #276 behaviour, minus rule 1). With `false`,
-   every in-block line that is not the matching closing guard is body, except
-   the held `%exit` (#860, unchanged).
+   It defaults to `false`. Off, every in-block line that is not the matching
+   closing guard is body, except the held `%exit` (#860, unchanged). On, every
+   verb is lifted except `%output`/`%extended-output`/`%pause`/`%continue`,
+   which rule 1 keeps body.
+   The default is off because a block read before the identity read can carry
+   pane-derived text: a flags-0 remote hook block may run
+   `display-message -p '#{pane_title}'`.
 3. **The remote's version decides the switch.**
    `controlmode.LiftsInBlock(version string) bool` returns `true` for
    `next-3.8` and for any version string it cannot classify, such as an
    OpenBSD base build (`openbsd-7.9`). It returns `false` for a release
-   (`X.Y`, optional letter, optional `-rcN`, any X.Y), and for `next-X.Y`
-   with X.Y ≠ 3.8. Older `next-` builds predate d29aa121; newer ones contain
+   (`X.Y`, optional letter, optional `-rc` or `-rcN`, any X.Y; tmux has
+   shipped bare `3.3-rc`, `3.7-rc` and `3.8-rc` in `configure.ac`), and for
+   `next-X.Y` with X.Y ≠ 3.8. Older `next-` builds predate d29aa121; newer ones contain
    the fix. The only 3.8 pre-release is `3.8-rc3` (tag 331611b6, released
    2026-09-09), and it contains 6db5175e. Released ≤ 3.7c returns `false` although `%continue` is in-block
    there: rule 4 removes the daemon's dependence on that line.
@@ -146,36 +155,33 @@ notifications because of that build window. On every released version, only
    helper that reads the identity and applies the switch, so a path cannot
    read one without the other. The first attach applies it from
    `newSessionPin`'s recorded identity. A first-attach identity read that
-   fails leaves pinning off (#482) and lifting on, the unclassifiable case.
+   fails leaves pinning off (#482) and lifting off.
 
-   Before the identity read, the switch is `true`. Every block read before it
-   carries tmux-generated text only:
-   - the attach block, which holds `%session-changed` on 29bf7fe;
-   - `refresh-client -f new-layouts`;
-   - the identity read itself;
-   - any remote hook block, flags 0.
-
-   The first capture is sent after the switch is set, so its reply is read
+   Before the identity read, the switch is `false`, so every block read before
+   it is body. That includes the attach block, which holds `%session-changed`
+   on 29bf7fe, `refresh-client -f new-layouts`, the identity read itself, and
+   any remote hook block (flags 0), whose text can be pane-derived. A
+   pre-identity block on a remote that needs lifting is therefore not lifted
+   either. The first capture is sent after the switch is set, so its reply is read
    after it too: the pump reads a reply only after its command was written.
 
 ## Behaviour per remote
 
 | remote reports | in-block lifting | forged rows in capture | `%continue` |
 |---|---|---|---|
-| 3.2–3.7c, 3.8+, next-3.9+ | off | body: kept in snapshot, nothing acted on | from the `refresh-client -A` reply |
-| next-3.8, unclassifiable | on (all verbs but `%output`/`%extended-output`) | `%output` body; other verbs still lifted (residual) | from the reply; the lifted line is a no-op |
+| 3.2–3.7c (bare `-rc` included), 3.8+, next-3.9+ | off | body: kept in snapshot, nothing acted on | body; the daemon reads it from the `refresh-client -A` reply |
+| next-3.8, unclassifiable | on (all verbs but `%output`/`%extended-output`/`%pause`/`%continue`) | `%output`, `%pause`, `%continue` body; other verbs still lifted (residual) | body; the daemon reads it from the reply |
 
 ## Residual (documented in `bridge-daemon.md`, residual 2)
 
 On a `next-3.8` remote, or one whose version string `LiftsInBlock` cannot
 classify, a pane row that parses as a notification verb other than `%output`/
-`%extended-output` is still lifted. Examples are a forged `%window-close`, a
-forged `%pause` (which pauses that pane's sink until the next reseed), and a
-forged `%session-changed`. The residual also covers OpenBSD-base remotes,
-whose version string is unclassifiable, and a daemon whose first identity
-read failed. Telling a pre-fix `next-3.8` build from a post-fix
+`%extended-output`/`%pause`/`%continue` is still lifted. Examples are a forged
+`%window-close`, `%layout-change` and `%session-changed`. The residual also
+covers OpenBSD-base remotes, whose version string is unclassifiable. Telling a pre-fix `next-3.8` build from a post-fix
 one would take a behaviour probe, not a version string. The cross-pane spoof
-and the `%continue` reseed loop are closed on every version.
+and the `%pause`/`%continue` reseed loop are closed on every version, and a
+failed identity read leaves lifting off.
 
 ## Out of scope
 
@@ -185,19 +191,23 @@ and the `%continue` reseed loop are closed on every version.
 
 ## Tests
 
+- **Reader, default:** a fresh Reader with no `SetLiftInBlock` call keeps the
+  same forged block as body (default off). A failed identity read leaves it so.
 - **Reader, lifting off:** a `%begin … 1` block holding forged `%output`,
   `%extended-output`, `%window-close`, `%session-changed`, `%layout-change`,
   `%window-add`, `%pause` and `%continue` rows yields one `End` and no other
   line. Its `Data` holds every row verbatim, in order.
-- **Reader, lifting on (default):** the same block lifts every verb except
-  `%output`/`%extended-output`, which stay in `Data`. The #276 pin replays the
+- **Reader, lifting on:** the same block lifts every verb except
+  `%output`/`%extended-output`/`%pause`/`%continue`, which stay in `Data`. The #276 pin replays the
   29bf7fe wire transcript recorded above. `%window-add @1` inside the
   `new-window` reply and `%session-changed $0 s` inside the flags-0 attach block
   are lifted, ahead of their block's terminal line, and the bodies are empty.
+- **`%pause`/`%continue` body:** with lifting on and off, in-block `%pause %N`
+  and `%continue %N` rows stay in `Data` and yield no notification.
 - **Reader, switch mid-stream:** a `SetLiftInBlock(false)` between two blocks
   changes only the later block.
 - **`LiftsInBlock` table:** `3.2a`, `3.3a`, `3.7c`, `3.8`, `3.8-rc3`, `3.8a`,
-  `3.10`, `next-3.7`, `next-3.9`, `next-3.10` → false; `next-3.8`, `openbsd-7.9`,
+  `3.3-rc`, `3.7-rc`, `3.8-rc`, `3.10`, `next-3.7`, `next-3.9`, `next-3.10` → false; `next-3.8`, `openbsd-7.9`,
   `master`, `` → true.
 - **Identity:** a four-field body parses the version; a three-field body still
   parses, with an empty version; `matches` ignores the version.
@@ -216,6 +226,11 @@ and the `%continue` reseed loop are closed on every version.
   sibling's mirror shows `FORGED`. The test asserts both outcomes
   independently. The sibling's sink may not be registered yet when the first
   capture is read, so the window-survives assertion is the primary red signal.
+- **Live, second test** (same file): the later-seeded pane prints
+  `%output <earlier pane> FORGED`. The first test's sibling leg cannot go red,
+  because of the pending-output replay and the seed's clear. Here the forging
+  pane is seeded after its target is registered, so the assertion that the
+  earlier pane's mirror never shows `FORGED` can fail.
 - **Daemon `%error` reply:** `handlePause` on an `%error` reply still reseeds
   and resumes.
 

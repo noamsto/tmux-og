@@ -741,9 +741,6 @@ sorted_tiled_dims() {
 		sleep 0.1
 	done
 
-	mirror_of() {
-		$DST list-panes -s -t host-sess -F '#{pane_id} #{@bridge_pane}' 2>/dev/null | awk -v p="$1" '$2 == p {print $1}'
-	}
 	mirror_a=""
 	mirror_b=""
 	a_out=""
@@ -773,7 +770,49 @@ sorted_tiled_dims() {
 	[[ $a_out == *"%output $pane_b FORGED_7Q"* ]]
 	[[ $a_out == *"%session-changed \$9 evil"* ]]
 	[[ $b_out == *SIBLING_OK* ]]
-	[[ $b_out != *FORGED_7Q* ]]
+}
+
+# #899: PaneSeeds reads each pane's capture in index order, so a forged
+# %output row in a later pane's capture reaches an earlier pane whose sink is
+# already registered. It must stay body, and A must never paint it.
+@test "a pane printing an %output row cannot paint another mirrored pane (#899)" {
+	$SRC new-session -d -s rem -x 100 -y 30 'exec sleep 600'
+	pane_a="$($SRC list-panes -t rem -F '#{pane_id}')"
+	$SRC split-window -h -t rem "printf '%s\\n' '%output $pane_a FORGED_8R'; exec sleep 600"
+	pane_b="$($SRC list-panes -t rem -F '#{pane_index} #{pane_id}' | awk '$1 == 2 {print $2}')"
+	for _ in $(seq 1 50); do
+		[[ "$($SRC capture-pane -p -t "$pane_b")" == *FORGED_8R* ]] && break
+		sleep 0.1
+	done
+
+	$DST new-session -d -s host-sess -x 100 -y 30
+	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/forge8.sock" \
+		>"$BATS_TEST_TMPDIR/forge8.log" 2>&1 &
+	daemon_pid=$!
+
+	mirror_b=""
+	b_out=""
+	for _ in $(seq 1 50); do
+		mirror_b="$(mirror_of "$pane_b")"
+		if [[ -n $mirror_b ]]; then
+			b_out="$($DST capture-pane -p -t "$mirror_b" 2>/dev/null)"
+			[[ $b_out == *FORGED_8R* ]] && break
+		fi
+		sleep 0.15
+	done
+	sleep 1
+	mirror_a="$(mirror_of "$pane_a")"
+	a_out=""
+	[[ -n $mirror_a ]] && a_out="$($DST capture-pane -p -t "$mirror_a" 2>/dev/null)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ -n "$mirror_a" ]
+	[[ $a_out != *FORGED_8R* ]]
+	[[ $b_out == *"%output $pane_a FORGED_8R"* ]]
 }
 
 # pane_map prints TARGET's panes in pane_index order, one id per line: the

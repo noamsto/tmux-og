@@ -51,15 +51,18 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 	return c
 }
 
-// adoptVersion applies the remote's tmux version to the reader. The identity
-// read is the connection's first round-trip, so every reply body before it is
-// tmux-generated, and the first capture goes out after it.
+// adoptVersion applies the remote's tmux version to the reader. In-block
+// notification lifting is off until the identity read proves the remote needs
+// it, so a connection whose identity read fails keeps every in-block line as
+// body. The identity read is the connection's first round-trip, so every reply
+// body before it is tmux-generated, and the first capture goes out after it.
 func (c *ctlConn) adoptVersion(v string) {
 	c.rd.SetLiftInBlock(controlmode.LiftsInBlock(v))
 }
 
 // identify reads the identity and adopts its version on success, so no path
-// can read an identity without applying the switch.
+// can read an identity without applying the switch. On failure lifting stays
+// off.
 func (c *ctlConn) identify(session string) (remoteIdentity, error) {
 	id, err := readIdentity(c.rt, session)
 	if err == nil {

@@ -846,6 +846,8 @@ func runMirror(cfg Config) error {
 		c.close()
 		return fmt.Errorf("daemon: identity read for %s timed out", cfg.RemoteSession)
 	}
+	// Lifting stays off unless this identity read proves the remote needs it, so
+	// a failed first read leaves every in-block line as body.
 	if pin.identityKnown {
 		c.adoptVersion(pin.identity.version)
 	}

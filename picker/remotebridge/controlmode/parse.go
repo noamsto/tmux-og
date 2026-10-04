@@ -263,13 +263,22 @@ func validGuard(fields []string) bool {
 //
 // Only the tmux next-3.8 builds between d29aa121 and 6db5175e write the
 // notifications a command causes inside that command's block (#276); left in
-// the body they read as that command's output, so by default Next returns each
-// one the moment it is read, ahead of the terminal line. SetLiftInBlock(false)
-// turns that off for every other tmux, where such a line in a body is pane
-// content: it stays body, so a row a pane prints cannot drive the mirror. %output
-// and %extended-output are written only from a pane read callback, never inside
-// a block, so they are always body. A body line is only taken for a
-// notification when it parses as a known verb (docs/agents/bridge-daemon.md).
+// the body they read as that command's output. SetLiftInBlock(true) makes Next
+// return each one the moment it is read, ahead of the terminal line. It is off
+// by default: before the identity read a flags-0 remote hook block can carry
+// pane-derived text (display-message -p '#{pane_title}'), and nothing the daemon
+// needs is lifted before that read. With it off, such a line in a body is pane
+// content and stays body, so a row a pane prints cannot drive the mirror.
+// %output and %extended-output are written only from a pane read callback,
+// never inside a block, so they are always body. So are %pause and %continue:
+// tmux writes a genuine in-block one only from this client's own
+// refresh-client -A (synchronous control_pause_pane/control_continue_pane, up to
+// 3.7c and next-3.8 before 6db5175e). The daemon never sends :pause and reads
+// its :continue from that reply, and pause-after's %pause comes from the
+// read/write callbacks, never in a block. Lifting a forged "%pause %N" row from
+// pane N's capture would re-pause and reseed N forever. A body line is only
+// taken for a notification when it parses as a known verb
+// (docs/agents/bridge-daemon.md).
 type Reader struct {
 	br *bufio.Reader
 	// long accumulates a line too long for br's buffer; reused across lines.
@@ -287,19 +296,20 @@ type Reader struct {
 	// heldExit is an owned copy of an in-block %exit awaiting the next read.
 	heldExit []byte
 
-	// bodyInBlock keeps in-block notifications other than %output as body; its
-	// zero value lifts them. Set from another goroutine, see SetLiftInBlock.
-	bodyInBlock atomic.Bool
+	// liftInBlock returns in-block notifications other than %output, %pause and
+	// %continue; its zero value keeps them as body. Set from another goroutine,
+	// see SetLiftInBlock.
+	liftInBlock atomic.Bool
 }
 
 func NewReader(r io.Reader) *Reader {
 	return &Reader{br: bufio.NewReaderSize(r, 64<<10)}
 }
 
-// SetLiftInBlock chooses whether an in-block notification is returned (true,
-// the default) or kept in the reply body (false). It is safe to call
-// concurrently with Next and takes effect from the next line read.
-func (rd *Reader) SetLiftInBlock(lift bool) { rd.bodyInBlock.Store(!lift) }
+// SetLiftInBlock chooses whether an in-block notification is returned (true) or
+// kept in the reply body (false, the default). It is safe to call concurrently
+// with Next and takes effect from the next line read.
+func (rd *Reader) SetLiftInBlock(lift bool) { rd.liftInBlock.Store(lift) }
 
 // LiftsInBlock reports whether a remote tmux reporting #{version} == version
 // may write notifications inside a command's block. d29aa121 made notifications
@@ -308,7 +318,7 @@ func (rd *Reader) SetLiftInBlock(lift bool) { rd.bodyInBlock.Store(!lift) }
 // next-3.8, so only next-3.8 lifts. Releases up to 3.7c write only the
 // %pause/%continue of a refresh-client -A in its block, and the daemon reads
 // its continue from that reply instead. A string that is
-// neither a release (X.Y, an optional letter, an optional -rcN) nor next-X.Y
+// neither a release (X.Y, an optional letter, an optional -rc or -rcN) nor next-X.Y
 // cannot be ruled out and lifts too.
 func LiftsInBlock(version string) bool {
 	rest, next := strings.CutPrefix(version, "next-")
@@ -324,9 +334,7 @@ func LiftsInBlock(version string) bool {
 		rest = rest[1:]
 	}
 	if tail, found := strings.CutPrefix(rest, "-rc"); found {
-		if _, rest, ok = cutDigits(tail); !ok {
-			return true
-		}
+		_, rest, _ = cutDigits(tail)
 	}
 	if rest != "" {
 		return true
@@ -401,10 +409,10 @@ func (rd *Reader) inBlock(raw []byte, tooLong bool) (Line, bool) {
 		rd.appendBody(raw)
 	case Exit:
 		rd.heldExit = bytes.Clone(raw)
-	case Begin, SubscriptionChanged, Output, Other:
+	case Begin, SubscriptionChanged, Output, Pause, Continue, Other:
 		rd.appendBody(raw)
 	default:
-		if !rd.bodyInBlock.Load() {
+		if rd.liftInBlock.Load() {
 			return l, true
 		}
 		rd.appendBody(raw)

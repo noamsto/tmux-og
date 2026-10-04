@@ -522,9 +522,9 @@ const pauseSeedBlocks = "%begin 1 2 1\n0 0 0 0 0 0 0 0 0\n%end 1 2 1\n" +
 
 // TestPauseReseedsFromRefreshReplyWithContinueAsBody pins the <= 3.7c shape:
 // tmux writes %continue inside the refresh-client reply block, so it is body.
-// The stream is literal text with no in-block lifting involved, which keeps the
-// test independent of the reader's lift setting; the Continue branch of the
-// loop is a no-op either way, so the reseed must still happen exactly once.
+// The reader keeps in-block lines as body (its default, set explicitly here so
+// the shape does not depend on that default); the Continue branch of the loop
+// is a no-op either way, so the reseed must still happen exactly once.
 func TestPauseReseedsFromRefreshReplyWithContinueAsBody(t *testing.T) {
 	s, peer := pausedSink(t)
 	router := NewRouter()
@@ -534,6 +534,12 @@ func TestPauseReseedsFromRefreshReplyWithContinueAsBody(t *testing.T) {
 		"%begin 1 1 1\n%continue %1\n%end 1 1 1\n" +
 		pauseSeedBlocks +
 		"%exit\n")
+	reader.SetLiftInBlock(false)
+	probe := rawTestReader("%begin 1 1 1\n%continue %1\n%end 1 1 1\n")
+	probe.SetLiftInBlock(false)
+	if l, ok := probe.Next(); !ok || l.Kind != controlmode.End || string(l.Data) != "%continue %1" {
+		t.Fatalf("refresh reply = %+v, %v; want End with Data exactly %%continue %%1", l, ok)
+	}
 	drivePause(router, reader)
 
 	assertSeedThenResumed(t, s, peer)
