@@ -54,8 +54,8 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 // adoptVersion applies the remote's tmux version to the reader. In-block
 // notification lifting is off until the identity read proves the remote needs
 // it, so a connection whose identity read fails keeps every in-block line as
-// body. The identity read is the connection's first round-trip, so every reply
-// body before it is tmux-generated, and the first capture goes out after it.
+// body. Before the identity read a flags-0 hook block can carry pane-derived
+// text, which is why lifting starts off; the first capture goes out after it.
 func (c *ctlConn) adoptVersion(v string) {
 	c.rd.SetLiftInBlock(controlmode.LiftsInBlock(v))
 }
