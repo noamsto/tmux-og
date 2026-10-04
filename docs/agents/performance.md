@@ -488,16 +488,28 @@ collection and model build as `--tui`, then the first list frame as plain text, 
 `tea.Cmd`. It is byte-identical before and after the changes above. It is the
 entrypoint for [gotorque](https://github.com/asaf-shitrit/gotorque) (MIT), whose
 acceptance rule wants deterministic stdout and a CLI it can A/B by wall time.
-`tests/perf/gotorque/picker-manifest.json` is the target manifest (its shape was checked
-against gotorque's schema file; `gotorque manifest validate` has not been run) and
+`tests/perf/gotorque/picker-manifest.json` is the target manifest (`gotorque manifest
+validate` passes) and
 `tests/perf/gotorque-picker.sh [stub|live|print]` exports the picker module into a scratch
 git repo (this repo's root has no `go.mod`, and gotorque runs `go test ./...` there),
 starts the fixture with no agent panes (their staleness would change the frame
 mid-campaign) and runs `gotorque optimize`. gotorque is not vendored.
 
-**Not run in #874.** The auto-mode classifier denied building gotorque from a fresh
-clone, `OPENROUTER_API_KEY` was unset, and the dispatcher told the worker to skip the
-build. To run it:
+**Campaign (#881).** Built from source, run with `--adk` (default role models, paid
+OpenRouter slugs), key injected only via `op run`. 4 candidates: 1 accepted, 2
+inconclusive, 1 rejected before build (malformed diff). The accepted patch
+(`render_frame.go`: build body lines per block instead of join-then-split, and take
+`len(line)` instead of `lipgloss.Width` for ASCII, ESC-free lines) measured
+`session-first-frame` wall -5.65% (supported), `window-first-frame` -0.79% (not
+supported), no memory/CPU guardrail regression, binary +0.06%. gotorque's own reviewer
+and informational PGO lane did not corroborate it (session +1.7% under PGO), so treat
+the win as small. It is applied; behaviour is unchanged (`TestComposeFrameMatchesLipgloss`
+and the full suite pass). After applying it, open `paint` medians (`OPENS=40`, load ~4)
+were session 20.2 ms (p95 22.4) and window 21.8 ms (p95 23.7), key latency unchanged
+(window move 7.4 / 11.0 ms): within the noise of the #874 "after" numbers, which were
+taken at higher load.
+
+To rerun:
 
 ```bash
 git clone https://github.com/asaf-shitrit/gotorque && (cd gotorque && go build -o /tmp/gotorque ./cmd/gotorque)
