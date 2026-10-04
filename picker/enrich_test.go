@@ -44,7 +44,7 @@ func TestRenderWindowItemsEnriched(t *testing.T) {
 
 	var rows []listItem
 	for _, it := range items {
-		if !it.isHeader {
+		if !it.isHeader && !it.isColumnHeader {
 			rows = append(rows, it)
 		}
 	}

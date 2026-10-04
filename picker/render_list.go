@@ -27,25 +27,12 @@ func (m tuiModel) renderList() string {
 		Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b")).
 		Render("✓")
 
-	// One pinned line carries whichever header governs the rows beneath it: the
-	// column glyphs through the session list, the divider once inside Remote or
-	// New session, the group row in window mode.
-	bodyH, start := h, m.scrollStart(h)
-	pin := -1
-	if h > 1 {
-		if governingHeaderIdx(m.visible, start) >= 0 {
-			bodyH = h - 1
-			start = m.scrollStart(bodyH)
-			pin = governingHeaderIdx(m.visible, start)
-			// At the top of the list the pinned row IS visible[start]; advance
-			// past it rather than drawing it twice and wasting the line.
-			if pin == start {
-				start++
-			}
-		}
-	}
+	bodyH, start, pin, colPin := m.listLayout(h)
 
 	lines := make([]string, 0, h)
+	if colPin {
+		lines = append(lines, fitVisibleWidth("  "+m.visible[0].display, w))
+	}
 	if pin >= 0 {
 		lines = append(lines, fitVisibleWidth("  "+m.renderHeaderItem(m.visible[pin], w), w))
 	}
@@ -75,6 +62,58 @@ func (m tuiModel) renderList() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// listLayout splits the h list lines into pinned lines and body: bodyH rows
+// from visible[start], with the governing header at visible[pin] (-1 for none)
+// on the line above them. One pinned line carries whichever header governs the
+// rows beneath it: the column glyphs through the session list, the divider once
+// inside Remote or New session, the group row in window mode. Window mode adds
+// a second, permanent line above that one for its column labels (colPin).
+func (m tuiModel) listLayout(h int) (bodyH, start, pin int, colPin bool) {
+	bodyH, start, pin = h, m.scrollStart(h), -1
+	if m.windowMode && h > 2 && len(m.visible) > 0 && m.visible[0].isColumnHeader {
+		colPin = true
+		bodyH = h - 1
+		start = m.scrollStart(bodyH)
+		if governingGroupIdx(m.visible, start) >= 0 {
+			bodyH = h - 2
+			start = m.scrollStart(bodyH)
+			pin = governingGroupIdx(m.visible, start)
+		}
+		// The pinned rows are drawn above the body: never draw one twice.
+		if start == pin || start == 0 {
+			start++
+		}
+		return bodyH, start, pin, colPin
+	}
+	if h > 1 {
+		if governingHeaderIdx(m.visible, start) >= 0 {
+			bodyH = h - 1
+			start = m.scrollStart(bodyH)
+			pin = governingHeaderIdx(m.visible, start)
+			// At the top of the list the pinned row IS visible[start]; advance
+			// past it rather than drawing it twice and wasting the line.
+			if pin == start {
+				start++
+			}
+		}
+	}
+	return bodyH, start, pin, colPin
+}
+
+// governingGroupIdx is governingHeaderIdx for window mode, where the column row
+// at index 0 is pinned on its own line and so never counts as the group header.
+func governingGroupIdx(items []listItem, start int) int {
+	if start >= len(items) {
+		start = len(items) - 1
+	}
+	for i := start; i > 0; i-- {
+		if items[i].isHeader {
+			return i
+		}
+	}
+	return -1
 }
 
 // governingHeaderIdx returns the index of the header that labels the rows at

@@ -2002,6 +2002,18 @@ func (m tuiModel) listIndexAt(x, y int) (int, bool) {
 		return 0, false
 	}
 	idx := m.scrollStart(h) + vy
+	if _, start, pin, colPin := m.listLayout(h); colPin {
+		// Window mode pins the column row and (once scrolled) the group row
+		// above the body; neither is a click target.
+		pinned := 1
+		if pin >= 0 {
+			pinned++
+		}
+		if vy < pinned {
+			return 0, false
+		}
+		idx = start + vy - pinned
+	}
 	if idx < 0 || idx >= len(m.visible) || !m.isSelectable(m.visible[idx]) {
 		return 0, false
 	}
@@ -2024,9 +2036,9 @@ func (m tuiModel) inPreview(x, y int) bool {
 // Zoxide suggestion rows are intentionally hidden by both modes: a dir
 // has no agent activity and is never a scratch session. Remote bridge rows
 // are exempt instead — they are the only way to reach a host from here, so
-// neither mode may drop the section.
+// neither mode may drop the section. So is the window list's pinned column row.
 func (m tuiModel) itemVisible(item listItem) bool {
-	if item.isRemoteRow {
+	if item.isRemoteRow || (item.isColumnHeader && m.windowMode) {
 		return true
 	}
 	if m.scratchOnly && !item.isScratch {
@@ -2342,10 +2354,16 @@ func (m tuiModel) refreshDataCmd() tea.Cmd {
 		if wm {
 			// One tmux call for the three reads a window refresh makes, every
 			// second; the separate calls only if the chained list failed.
+			// CPU/Mem and shell-hosted agents come from a cached ps walk, so
+			// they arrive here and never on the first paint.
 			if data, ok := collectTmux(true, false); ok {
-				items = renderWindowItemsWith(windowsFromRows(data.windowRows), data.activity, opts, collectAgentPanes(data.snap), theme, lw, sg)
+				windows := windowsFromRows(data.windowRows)
+				mergeWindowResources(windows)
+				items = renderWindowItemsWith(windows, data.activity, opts, collectAgentPanes(data.snap), theme, lw, sg)
 			} else {
-				items = buildWindowItems(opts, collectAgentPanes(collectPanesSnapshot()), theme, lw, sg)
+				windows := collectWindows()
+				mergeWindowResources(windows)
+				items = renderWindowItems(windows, opts, collectAgentPanes(collectPanesSnapshot()), theme, lw, sg)
 			}
 		} else {
 			snap := collectPanesSnapshot()
@@ -2870,6 +2888,10 @@ const (
 	defaultIdentityCap = 32
 	minIdentityCap     = 12
 	maxIdentityCap     = 48
+	// minOptionalIdentityCap is the identity width at which the optional
+	// columns (Path, CPU/Mem, Host) stop being dropped.
+	minOptionalIdentityCap = 24
+	maxPathCostDW          = 24
 	// layoutGaps: tree(2)+marker(1) glyph cells + 3 inter-field gaps + 1 gap
 	// before the PR badge = 7.
 	layoutGaps = 7
@@ -3001,11 +3023,30 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 	thmOverlay0 := envOrMap("THM_OVERLAY_0", tmuxOpts, "@thm_overlay_0", "#6c7086")
 	iSess := envOrMap("PICKER_ICON_SESSION", tmuxOpts, "@icon_session", iconSession)
 	iBranch := envOrMap("PICKER_ICON_BRANCH", tmuxOpts, "@icon_branch", iconBranch)
+	iDir := envOrMap("PICKER_ICON_DIR", tmuxOpts, "@icon_dir", iconDir)
+	iHost := envOrMap("PICKER_ICON_HOST", tmuxOpts, "@icon_host", iconHost)
+	iProcs := envOrMap("PICKER_ICON_PROCS", tmuxOpts, "@icon_procs", iconProcs)
+	iCPU := envOrMap("PICKER_ICON_CPU", tmuxOpts, "@icon_cpu", iconCPU)
+	iMem := envOrMap("PICKER_ICON_MEM", tmuxOpts, "@icon_mem", iconMem)
+
+	// Column labels are glyph + word; each sets a floor under its column's
+	// width so a label wider than its data cannot push later columns right in
+	// the header only.
+	lblWin := "Window"
+	lblHost := iHost + " Host"
+	lblProcs := iProcs + " Procs"
+	lblCPU := iCPU + " CPU"
+	lblMem := iMem + " Mem"
+	lblPath := "Path"
 
 	cMauve := ansiFg(thmMauve)
 	cGreen := ansiFg(thmGreen)
+	cBlue := ansiFg(envOrMap("THM_BLUE", tmuxOpts, "@thm_blue", "#89b4fa"))
 	cDim := ansiFg(thmSubtext0)
 	cFaint := ansiFg(thmOverlay1)
+	hostColor := hostColorFunc(tmuxOpts)
+	rc := newResourceColors(tmuxOpts)
+	home := os.Getenv("HOME")
 	reset := "\033[0m"
 	dim := "\033[2m"
 	prCols := prColors{success: cGreen, failure: ansiFg(thmRed), pending: ansiFg(thmPeach), merged: cMauve, closed: ansiFg(thmOverlay0), required: ansiFg(thmOverlay0), underline: "\033[4m", reset: reset}
@@ -3041,9 +3082,13 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		prBadge     string
 		prPlain     string
 		crewName    string
+		cpu, mem    string
+		path        string
 	}
 	winRows := make(map[string]renderedWin, len(windows))
 	maxLeadDW, maxIconDW, maxPrDW, maxZoomDW := 0, 0, 0, 0
+	hostCol, maxPathDW := 0, 0
+	maxCPU, maxMem := max(cpuColWidth(), visibleWidth(lblCPU)), visibleWidth(lblMem)
 	for i := range windows {
 		w := &windows[i]
 		icons, dw := buildProcIcons(w.procs, maxIconsPicker)
@@ -3087,11 +3132,26 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		prPlain := strings.TrimSpace(w.prPlain)
 		prDW := iconCellWidth(prPlain)
 
+		// A mirror's local pane PIDs measure the renderer, so it never shows them.
+		cpu, mem := resourcePlaceholder, resourcePlaceholder
+		if w.resKnown && w.bridgeHost == "" {
+			cpu, mem = formatCPU(w.cpuPct), formatMem(w.memMB)
+		}
+		path := w.path
+		if home != "" && strings.HasPrefix(path, home) {
+			path = "~" + path[len(home):]
+		}
+		hostCol = max(hostCol, visibleWidth(w.bridgeHost))
+		maxPathDW = max(maxPathDW, iconCellWidth(path))
+		maxCPU = max(maxCPU, len(cpu))
+		maxMem = max(maxMem, len(mem))
+
 		winRows[fmt.Sprintf("%s:%d", w.session, w.index)] = renderedWin{
 			win: w, name: name, icons: icons, iconDW: dw,
 			leadPlain: leadPlain, leadColored: leadColored, leadDW: leadDW,
 			ident: ri, identSearch: idSearch,
 			prBadge: prBadge, prPlain: prPlain, crewName: w.crewName,
+			cpu: cpu, mem: mem, path: path,
 		}
 		maxLeadDW = max(maxLeadDW, leadDW)
 		maxIconDW = max(maxIconDW, dw)
@@ -3100,8 +3160,44 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			maxZoomDW = max(maxZoomDW, iconCellWidth(" 󰁌"))
 		}
 	}
-	iconCol := max(maxIconDW+1, 3)
-	identityCap := identityCapFor(width, maxLeadDW+maxZoomDW, iconCol, maxPrDW)
+	iconCol := max(maxIconDW+1, 3, visibleWidth(lblProcs))
+	if hostCol > 0 {
+		hostCol = max(hostCol, visibleWidth(lblHost))
+	}
+
+	// Optional columns give way to the identity column, which holds the
+	// window's meaning: Path first, then CPU/Mem, then Host, until the identity
+	// keeps minOptionalIdentityCap cells or none are left. An unknown width keeps
+	// all; a path wider than maxPathCostDW is clipped by the line, not budgeted.
+	showHost, showRes, showPath := hostCol > 0, true, maxPathDW > 0
+	pathCostDW := min(maxPathDW, maxPathCostDW)
+	optionalDW := func() int {
+		dw := 0
+		if showHost {
+			dw += 1 + hostCol
+		}
+		if showRes {
+			dw += 1 + maxCPU + 3 + maxMem
+		}
+		if showPath {
+			dw += 1 + iconCellWidth(iDir) + 1 + pathCostDW
+		}
+		return dw
+	}
+drop:
+	for width > 0 && identityCapFor(width, maxLeadDW+maxZoomDW, iconCol, maxPrDW+optionalDW()) < minOptionalIdentityCap {
+		switch {
+		case showPath:
+			showPath = false
+		case showRes:
+			showRes = false
+		case showHost:
+			showHost = false
+		default:
+			break drop
+		}
+	}
+	identityCap := identityCapFor(width, maxLeadDW+maxZoomDW, iconCol, maxPrDW+optionalDW())
 	labelCol := maxLeadDW + identityCap + maxZoomDW
 
 	// truncID renders a rawIdentity to (colored, plain) within budget cells.
@@ -3133,8 +3229,41 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		}
 	}
 
-	var items []listItem
+	hostCell := func(host, color string) string {
+		pad := strings.Repeat(" ", max(0, hostCol-visibleWidth(host)))
+		if host == "" || color == "" {
+			return host + pad
+		}
+		return color + host + reset + pad
+	}
+
+	// The CPU and Mem labels mirror each other around " / " (CPU padded left,
+	// Mem right) so the pair reads as one unit and each field keeps the width
+	// the rows give it.
+	hdrRes := strings.Repeat(" ", max(0, maxCPU-visibleWidth(lblCPU))) + lblCPU + " / " + lblMem + strings.Repeat(" ", max(0, maxMem-visibleWidth(lblMem)))
+	hdrDisplay := "     " + cDim + padToWidth(lblWin, len(lblWin), labelCol) + reset + " " + cDim + padToWidth(lblProcs, visibleWidth(lblProcs), iconCol) + reset
+	hdrPlain := "     " + padToWidth(lblWin, len(lblWin), labelCol) + " " + padToWidth(lblProcs, visibleWidth(lblProcs), iconCol)
+	if showHost {
+		hdrDisplay += " " + hostCell(lblHost, cDim)
+		hdrPlain += " " + hostCell(lblHost, "")
+	}
+	if showRes {
+		hdrDisplay += " " + cDim + hdrRes + reset
+		hdrPlain += " " + hdrRes
+	}
+	if showPath {
+		prPad := ""
+		if maxPrDW > 0 {
+			prPad = " " + strings.Repeat(" ", maxPrDW)
+		}
+		hdrDisplay += prPad + " " + cDim + iDir + " " + lblPath + reset
+		hdrPlain += prPad + " " + iDir + " " + lblPath
+	}
+	items := []listItem{{display: hdrDisplay, plain: hdrPlain, isColumnHeader: true}}
+
+	agentBySession := aggregateAgentBySession(agentPanes)
 	for _, g := range groups {
+		headerSearch := g.key
 		var headerDisplay, headerPlain, headerSession string
 		var headerHasAgent bool
 		if stateGrouped {
@@ -3149,16 +3278,27 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 					break
 				}
 			}
-			headerDisplay = fmt.Sprintf("%s %s", cMauve+iSess+reset, cMauve+g.key+reset)
-			headerPlain = fmt.Sprintf("%s %s", iSess, g.key)
+			// A mirror session is named "<host>-<name>"; its windows carry the host.
+			host := g.windows[0].bridgeHost
+			icons := ""
+			if cc, ok := agentBySession[g.key]; ok {
+				icons, _ = appendAgentIcon("", 0, *cc, theme, dim, reset)
+			}
+			name := sessionDisplayName(g.key, host)
+			count := fmt.Sprintf("%d win", len(g.windows))
+			headerDisplay = fmt.Sprintf("%s %s  %s%s", cMauve+iSess+reset, cMauve+name+reset, icons, cDim+count+reset)
+			headerPlain = fmt.Sprintf("%s %s  %s%s", iSess, name, stripANSI(icons), count)
 			headerSession = g.key
 			headerHasAgent = sessHasAgent
+			if host != "" && !strings.HasPrefix(g.key, host+"-") {
+				headerSearch += " " + host
+			}
 		}
 		items = append(items, listItem{
 			target:         g.key,
 			display:        headerDisplay,
 			plain:          headerPlain,
-			searchText:     g.key,
+			searchText:     headerSearch,
 			isHeader:       true,
 			session:        headerSession,
 			groupKey:       g.key,
@@ -3210,9 +3350,23 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 				cDim+tree+reset, activeMarker, labelColored, icons)
 			plain := fmt.Sprintf("%s %s %s %s",
 				tree, strings.TrimSpace(stripANSI(activeMarker)), labelPlain, stripANSI(icons))
-			if r.prBadge != "" {
-				display += " " + r.prBadge
-				plain += " " + r.prPlain
+			if showHost {
+				display += " " + hostCell(w.bridgeHost, hostColor(w.bridgeHost))
+				plain += " " + hostCell(w.bridgeHost, "")
+			}
+			if showRes {
+				cpuPad := strings.Repeat(" ", max(0, maxCPU-len(r.cpu)))
+				memPad := strings.Repeat(" ", max(0, maxMem-len(r.mem)))
+				display += " " + cpuPad + rc.cpuColor(w.cpuPct, 0) + r.cpu + reset + cDim + " / " + reset + memPad + rc.memColor(w.memMB) + r.mem + reset
+				plain += " " + cpuPad + r.cpu + " / " + memPad + r.mem
+			}
+			if maxPrDW > 0 {
+				display += " " + padToWidth(r.prBadge, iconCellWidth(r.prPlain), maxPrDW)
+				plain += " " + padToWidth(r.prPlain, iconCellWidth(r.prPlain), maxPrDW)
+			}
+			if showPath && r.path != "" {
+				display += " " + cBlue + iDir + reset + " " + cDim + r.path + reset
+				plain += " " + iDir + " " + r.path
 			}
 			display = strings.TrimRight(display, " ")
 			plain = strings.TrimRight(plain, " ")
@@ -3226,6 +3380,9 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			}
 			if r.crewName != "" {
 				search += " " + r.crewName
+			}
+			if h := w.bridgeHost; h != "" && !strings.HasPrefix(w.session, h+"-") {
+				search += " " + h
 			}
 			items = append(items, listItem{
 				target:         fmt.Sprintf("%s:%d", w.session, w.index),
