@@ -260,6 +260,7 @@ teardown() {
 	fi
 	if [[ -n ${PROBE_TMUX_DIR:-} ]]; then
 		probe_tmux kill-server 2>/dev/null || true
+		rm -rf "$PROBE_TMPDIR"
 	fi
 }
 
@@ -974,8 +975,10 @@ install_window_logging_daemon() {
 # no -L seam, so the isolation is the socket dir, not the label. api-main has
 # @0 at index 20 (active), @1 at 21, @2 at 9: ids and indexes are disjoint on
 # purpose, whatever base-index the tmux under test starts from.
+# A dev machine's tmux on PATH is the tmux-og wrapper, whose own -f loads the
+# full config despite -f /dev/null, so the server gets a private status dir.
 probe_tmux() {
-	env TMUX_TMPDIR="$PROBE_TMPDIR" "$PROBE_TMUX_DIR/tmux" "$@"
+	env TMUX_TMPDIR="$PROBE_TMPDIR" CLAUDE_STATUS_DIR="$PROBE_TMPDIR/status" "$PROBE_TMUX_DIR/tmux" "$@"
 }
 
 setup_probe_server() {
@@ -983,7 +986,10 @@ setup_probe_server() {
 	real_dir="$(PATH="${PATH//$FAKEBIN:/}" command -v tmux || true)"
 	[[ -n $real_dir ]] || skip "no real tmux on PATH"
 	PROBE_TMUX_DIR="${real_dir%/tmux}"
-	PROBE_TMPDIR="$BATS_TEST_TMPDIR/probe-tmux"
+	# Short and fixed: $BATS_TEST_TMPDIR/…/tmux-<uid>/default can pass the
+	# ~104-byte AF_UNIX socket path limit (darwin build tmpdir).
+	PROBE_TMPDIR="/tmp/og902-$$-${BATS_TEST_NUMBER}"
+	rm -rf "$PROBE_TMPDIR"
 	mkdir -p "$PROBE_TMPDIR"
 	export PROBE_TMUX_DIR PROBE_TMPDIR OG_REMOTE_TMPDIR="$PROBE_TMPDIR"
 	unset TMUX
