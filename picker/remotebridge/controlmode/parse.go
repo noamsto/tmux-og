@@ -7,6 +7,8 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"strings"
+	"sync/atomic"
 )
 
 // ClientCommandFlag is the third field of %begin/%end/%error for a block that a
@@ -259,12 +261,17 @@ func validGuard(fields []string) bool {
 //     an overlong top-level line is Other, an oversized block fails as Error
 //     with ErrReplyTooLarge, and the stream goes on.
 //
-// tmux 3.3a–3.8 also emit the notifications a command causes inside that
-// command's block (#276); left in the body they read as that command's output,
-// so Next returns each one the moment it is read, ahead of the terminal line. A
-// body line is only taken for a notification when it parses as a known verb, so
-// pane content that merely starts with '%' stays body — but a row that does
-// parse as one is lifted too (docs/agents/bridge-daemon.md).
+// tmux next-3.8 builds between d29aa121 and 6db5175e write the notifications
+// a command causes inside that command's block (#276). SetLiftInBlock(true)
+// returns each such line the moment it is read, ahead of the terminal line. It
+// is off by default: in any other tmux a body line that parses as a verb is
+// pane content (a capture-pane row, a hook's display-message), and acting on it
+// would let a pane drive the mirror. %output, %extended-output, %pause and
+// %continue stay body even when it is on: no tmux writes a genuine %output in a
+// block, and an in-block %pause/%continue only answers this client's own
+// refresh-client -A, whose reply the daemon acts on instead. A body line is only
+// taken for a notification when it parses as a known verb
+// (docs/agents/bridge-daemon.md).
 type Reader struct {
 	br *bufio.Reader
 	// long accumulates a line too long for br's buffer; reused across lines.
@@ -281,10 +288,59 @@ type Reader struct {
 	overflow bool
 	// heldExit is an owned copy of an in-block %exit awaiting the next read.
 	heldExit []byte
+
+	// liftInBlock returns in-block notifications other than %output, %pause and
+	// %continue; its zero value keeps them as body. Set from another goroutine,
+	// see SetLiftInBlock.
+	liftInBlock atomic.Bool
 }
 
 func NewReader(r io.Reader) *Reader {
 	return &Reader{br: bufio.NewReaderSize(r, 64<<10)}
+}
+
+// SetLiftInBlock chooses whether an in-block notification is returned (true) or
+// kept in the reply body (false, the default). It is safe to call concurrently
+// with Next and takes effect from the next line read.
+func (rd *Reader) SetLiftInBlock(lift bool) { rd.liftInBlock.Store(lift) }
+
+// LiftsInBlock reports whether a remote tmux reporting #{version} == version
+// may write notifications inside a command's block. d29aa121 made notifications
+// synchronous events, written in-block; 6db5175e (merged 9228f97d, 2026-08-03)
+// defers them out of guard blocks again. Every build in between reports
+// next-3.8, so only next-3.8 lifts. A string that is neither a release (X.Y, an
+// optional letter, an optional -rc or -rcN) nor next-X.Y cannot be ruled out
+// and lifts too.
+func LiftsInBlock(version string) bool {
+	rest, next := strings.CutPrefix(version, "next-")
+	major, rest, ok := cutDigits(rest)
+	if !ok || !strings.HasPrefix(rest, ".") {
+		return true
+	}
+	minor, rest, ok := cutDigits(rest[1:])
+	if !ok {
+		return true
+	}
+	if len(rest) > 0 && rest[0] >= 'a' && rest[0] <= 'z' {
+		rest = rest[1:]
+	}
+	if tail, found := strings.CutPrefix(rest, "-rc"); found {
+		_, rest, _ = cutDigits(tail)
+	}
+	if rest != "" {
+		return true
+	}
+	return next && major == "3" && minor == "8"
+}
+
+// cutDigits splits s after its leading run of ASCII digits; ok is false when
+// there is none.
+func cutDigits(s string) (digits, rest string, ok bool) {
+	n := 0
+	for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+		n++
+	}
+	return s[:n], s[n:], n > 0
 }
 
 // Next returns the next line, or false once the stream has ended. A Line never
@@ -344,10 +400,13 @@ func (rd *Reader) inBlock(raw []byte, tooLong bool) (Line, bool) {
 		rd.appendBody(raw)
 	case Exit:
 		rd.heldExit = bytes.Clone(raw)
-	case Begin, SubscriptionChanged, Other:
+	case Begin, SubscriptionChanged, Output, Pause, Continue, Other:
 		rd.appendBody(raw)
 	default:
-		return l, true
+		if rd.liftInBlock.Load() {
+			return l, true
+		}
+		rd.appendBody(raw)
 	}
 	return Line{}, false
 }

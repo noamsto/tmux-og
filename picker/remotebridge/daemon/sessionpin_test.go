@@ -226,6 +226,7 @@ func TestRemoteIdentityMatches(t *testing.T) {
 		{"session_id mismatch", mustIdentity(t, "A", "2151|1788283304|$1"), mustIdentity(t, "A", "2151|1788283304|$2"), false},
 		{"start_time mismatch, both present", mustIdentity(t, "A", "2151|1788283304|$1"), mustIdentity(t, "A", "2151|1|$1"), false},
 		{"start_time absent on one side", mustIdentity(t, "A", "2151|1788283304|$1"), mustIdentity(t, "A", "2151||$1"), true},
+		{"version differs", mustIdentity(t, "A", "2151|1788283304|$1|3.7c"), mustIdentity(t, "A", "2151|1788283304|$1|next-3.9"), true},
 		{"start_time absent on both sides", mustIdentity(t, "A", "2151||$1"), mustIdentity(t, "A", "2151||$1"), true},
 	}
 	for _, tt := range tests {
@@ -271,6 +272,15 @@ func TestReadIdentityDistinguishesRetryFromTeardown(t *testing.T) {
 	}
 }
 
+func TestParseIdentityVersion(t *testing.T) {
+	if got := mustIdentity(t, "A", "2151|1788283304|$1|next-3.9\n").version; got != "next-3.9" {
+		t.Errorf("version = %q, want next-3.9", got)
+	}
+	if got := mustIdentity(t, "A", "2151|1788283304|$1").version; got != "" {
+		t.Errorf("version = %q, want empty from a 3-field body", got)
+	}
+}
+
 func TestReadIdentityWellFormed(t *testing.T) {
 	rt, sent := scriptedRT(newLayoutsFlagAck + "%begin 1 1 1\n2151|1788283304|$1\n%end 1 1 1\n")
 	id, err := readIdentity(rt, "my proj")
@@ -284,7 +294,7 @@ func TestReadIdentityWellFormed(t *testing.T) {
 	if !strings.Contains(sent.String(), "-t 'my proj'") {
 		t.Errorf("sent %q, want the session name quoted as one token", sent.String())
 	}
-	if !strings.Contains(sent.String(), "#{pid}|#{start_time}|#{session_id}") {
+	if !strings.Contains(sent.String(), "#{pid}|#{start_time}|#{session_id}|#{version}") {
 		t.Errorf("sent %q, want the pipe-delimited identity format", sent.String())
 	}
 	// The flag leads every attach: a reattach or replacement that sent it

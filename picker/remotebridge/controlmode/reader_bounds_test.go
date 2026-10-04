@@ -145,7 +145,8 @@ func TestReaderOverlongBodyLineFailsOnlyThatReply(t *testing.T) {
 // TestReaderForgedLinesInBodyStayBody pins #860: inside a block only a guard
 // repeating the %begin's three fields closes it; every other guard, a %begin,
 // %subscription-changed and a non-final %exit are body, so pane content cannot
-// forge those. Other notification verbs are still lifted (#276).
+// forge those, with lifting on or off. Other notification verbs are lifted only
+// when SetLiftInBlock(true) (#276, #899).
 func TestReaderForgedLinesInBodyStayBody(t *testing.T) {
 	body := []string{
 		"%end 1 2 1",
@@ -239,9 +240,10 @@ func TestReaderTopLevelStrayGuardsAreOther(t *testing.T) {
 func TestReaderStreamsNotificationsFromOpenBlock(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
-	go func() { _, _ = pw.Write([]byte("%begin 1 1 1\n%output %1 a\n")) }()
+	go func() { _, _ = pw.Write([]byte("%begin 1 1 1\n%window-add @1\n")) }()
 
 	rd := NewReader(pr)
+	rd.SetLiftInBlock(true)
 	got := make(chan Line, 1)
 	go func() {
 		l, _ := rd.Next()
@@ -250,8 +252,8 @@ func TestReaderStreamsNotificationsFromOpenBlock(t *testing.T) {
 
 	select {
 	case l := <-got:
-		if l.Kind != Output || string(l.Data) != "a" {
-			t.Fatalf("want in-block Output a: %+v", l)
+		if l.Kind != WindowAdd || l.Args[0] != "@1" {
+			t.Fatalf("want in-block WindowAdd @1: %+v", l)
 		}
 	case <-time.After(time.Second):
 		_ = pw.Close()
@@ -283,22 +285,23 @@ func TestReaderBoundsMemoryOverflowedReply(t *testing.T) {
 }
 
 // TestReaderBoundsMemoryStreamedNotifications pins #860: notifications inside a
-// block are handed out one at a time, so a block of large %output lines never
+// block are handed out one at a time, so a block of large lifted lines never
 // sits in memory all at once.
 func TestReaderBoundsMemoryStreamedNotifications(t *testing.T) {
 	const lines = 64
-	line := "%output %1 " + strings.Repeat("y", mib-64) + "\n"
+	line := "%layout-change @1 " + strings.Repeat("y", mib-64) + "\n"
 	rd := NewReader(io.MultiReader(
 		strings.NewReader("%begin 1 7 1\n"),
 		&repeat{chunk: []byte(line), n: lines},
 		strings.NewReader("%end 1 7 1\n"),
 	))
+	rd.SetLiftInBlock(true)
 
 	var (
-		peak    uint64
-		outputs int
-		ends    int
-		ms      runtime.MemStats
+		peak   uint64
+		lifted int
+		ends   int
+		ms     runtime.MemStats
 	)
 	for {
 		l, ok := rd.Next()
@@ -306,8 +309,8 @@ func TestReaderBoundsMemoryStreamedNotifications(t *testing.T) {
 			break
 		}
 		switch l.Kind {
-		case Output:
-			outputs++
+		case LayoutChange:
+			lifted++
 		case End:
 			ends++
 		default:
@@ -320,7 +323,7 @@ func TestReaderBoundsMemoryStreamedNotifications(t *testing.T) {
 	if peak >= 24*mib {
 		t.Errorf("peak HeapInuse %d MiB, want < 24", peak/mib)
 	}
-	if outputs != lines || ends != 1 {
-		t.Errorf("got %d Output and %d End lines, want %d and 1", outputs, ends, lines)
+	if lifted != lines || ends != 1 {
+		t.Errorf("got %d LayoutChange and %d End lines, want %d and 1", lifted, ends, lines)
 	}
 }
