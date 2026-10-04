@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -26,6 +27,13 @@ type ctlConn struct {
 	async  *asyncQueue
 	rt     roundTrip
 	router *Router
+	// dead is set at the top of close(), before the transport is touched, so
+	// live() can never read a closing connection as usable. The two timeouts
+	// are this connection's reply deadlines (0 = unbounded); bind hands them
+	// to the stream.
+	dead         atomic.Bool
+	replyTimeout time.Duration
+	seedTimeout  time.Duration
 }
 
 // newCtlConn builds a connection whose output goes nowhere. readReplyRouting
@@ -137,7 +145,17 @@ func (c *ctlConn) attachRefusal(d time.Duration) (string, bool) {
 // Called on the main-loop goroutine before the connection is published, so rt —
 // read by every later round-trip through connHolder — is never written while
 // another goroutine can reach it.
+//
+// This is also where every reply wait gets its deadline. The two pre-bind
+// waiters each carry their own: readIdentity runs under armIdentityDeadline,
+// whose 30s also covers the ssh handshake preceding it, and primeClient (the
+// replace path, which never binds before it) arms its own c.armStall — so
+// nothing before bind is unbounded, and everything after it is bounded from
+// here.
 func (c *ctlConn) bind(router *Router) {
+	c.st.guard = c.armStall
+	c.st.replyTimeout = c.replyTimeout
+	c.st.seedTimeout = c.seedTimeout
 	c.rt = newRoundTrip(c.pump, router, c.async, c.st)
 	c.router = router
 }
@@ -149,14 +167,20 @@ func (c *ctlConn) routeWhile(fn func()) {
 	routeWhile(c.pump.lines, c.router, c.async, c.st, fn)
 }
 
-// close ends this connection. The stream goes first, so every later send fails
-// closed deterministically rather than waiting for some write to hit EPIPE and
-// latch closed inside stampAll's flush; then the transport, whose Close must
-// unpark a reader blocked on it — see cmd/daemon's child.Close, since closing
-// only the write half leaves a silent far end holding the pump forever.
+// close ends this connection. The dead flag goes first, so live() can never
+// read a closing connection as usable.
+//
+// The transport goes before the stream because a stall guard may fire while
+// stampAll holds stream.mu blocked in its flush: taking that mutex first would
+// wait for the very flush the close exists to unpark. A racing send then errors
+// on the closed transport and latches stream.closed itself. The transport's
+// Close must unpark a reader blocked on it too — see cmd/daemon's child.Close,
+// since closing only the write half leaves a silent far end holding the pump
+// forever.
 func (c *ctlConn) close() {
-	c.st.close()
+	c.dead.Store(true)
 	_ = c.rwc.Close()
+	c.st.close()
 }
 
 // connHolder is the one indirection between the daemon's long-lived goroutines
@@ -229,13 +253,54 @@ func dialConn(cfg Config) (*ctlConn, error) {
 		if cfg.Ctl == nil {
 			return nil, fmt.Errorf("daemon: Config needs one of Ctl or Dial")
 		}
-		return newCtlConn(cfg.Ctl), nil
+		return withTimeouts(newCtlConn(cfg.Ctl), cfg), nil
 	}
 	rwc, err := cfg.Dial()
 	if err != nil {
 		return nil, err
 	}
-	return newCtlConn(rwc), nil
+	return withTimeouts(newCtlConn(rwc), cfg), nil
+}
+
+// withTimeouts records the reply deadlines on the connection. They are only
+// handed to the stream at bind, so the unbound identity phase keeps
+// armIdentityDeadline's single budget. Direct newCtlConn constructors (the
+// scripted tests) get none, so their waits stay unbounded.
+func withTimeouts(c *ctlConn, cfg Config) *ctlConn {
+	c.replyTimeout = cfg.replyTimeout()
+	c.seedTimeout = cfg.seedTimeout()
+	return c
+}
+
+// armStall closes this connection unless the returned disarm is called within
+// d. It bounds one wait on the control stream — a reply read, a batch write, or
+// the spot in the replace path where a newly verified connection is primed —
+// and closing is the whole mechanism: the connection is discarded, so no reply
+// ordinal can be mispaired and the next dial builds a fresh stream. d <= 0
+// means no deadline and the disarm is a no-op.
+//
+// The close runs on the timer goroutine; ctlConn.close is idempotent and safe
+// from any goroutine.
+func (c *ctlConn) armStall(d time.Duration, what string) (disarm func()) {
+	if d <= 0 {
+		return func() {}
+	}
+	t := time.AfterFunc(d, func() {
+		fmt.Fprintf(os.Stderr, "daemon: %s; dropping the control connection\n", what)
+		// Marked before the close: EOF makes controlmode synthesize a terminal
+		// End for a block left open, and the read wrapper must not deliver it.
+		c.st.markStalled()
+		c.close()
+	})
+	return func() { t.Stop() }
+}
+
+// live reports whether this connection can still carry a command: close() has
+// not started, no write has failed, and the pump's reader is still running.
+// Used at the attach boundary (repair, priming), where a poisoned connection
+// must not be reported as connected — never in a hot path.
+func (c *ctlConn) live() bool {
+	return !c.dead.Load() && !c.st.isClosed() && c.pump.alive()
 }
 
 // armIdentityDeadline closes c unless the returned disarm is called within d.
@@ -504,6 +569,18 @@ func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdent
 		if !repair() {
 			return nil, cycleTerminal
 		}
+		if !next.live() {
+			// Repair reported the mirror standing, but the connection died under
+			// it — a reply deadline fired, or the far end dropped. It must not
+			// count as connected: reattach builds a fresh schedule per call, so
+			// returning here would reset the retry budget on every drop, and a
+			// remote that wedges each newly attached client would dial forever.
+			// Continue on the same schedule instead: this is one failed attempt,
+			// and the loop advances toward exhaustion and park.
+			fmt.Fprintf(os.Stderr, "daemon: %s: connection poisoned during repair; retrying\n", cfg.RemoteHost)
+			hold.close()
+			continue
+		}
 		// Cleared once the panes show live content again, not on the bare
 		// re-attach: a stale screen the user knows is stale is a paused
 		// mirror, one they don't is a lie.
@@ -609,7 +686,14 @@ func replaceConn(cfg Config, router *Router, hold *connHolder, want remoteIdenti
 			cfg.RemoteSession, id.pid, id.sessionID, want.pid, want.sessionID)
 		return nil, notReplaced
 	}
-	primeClient(cfg, next, reg)
+	if !primeClient(cfg, next, reg) {
+		// The new connection died while it was being primed. Nothing of the old
+		// connection has been touched yet, so this is the same verdict as a
+		// failed dial or identity read: keep the current backend.
+		next.close()
+		fmt.Fprintf(os.Stderr, "daemon: replacement dial for %s: priming failed; keeping the current connection\n", cfg.RemoteHost)
+		return nil, notReplaced
+	}
 	// The first and only close, reached only with a verified replacement in
 	// hand. It leads the bind because a window in which both connections are
 	// bound routes duplicate %output into one sink; the gap is the two
@@ -621,6 +705,13 @@ func replaceConn(cfg Config, router *Router, hold *connHolder, want remoteIdenti
 	cfg.View.setAdvertised(term)
 	if !repair() {
 		return nil, mirrorGone
+	}
+	if !next.live() {
+		// The swap landed but the replacement died under repair. The old
+		// connection is already gone, so the caller's runConn must adopt this one
+		// and take the drop path to a reattach; mirrorGone would tear the mirror
+		// down instead.
+		fmt.Fprintf(os.Stderr, "daemon: replacement for %s: connection poisoned during repair; reattaching\n", cfg.RemoteHost)
 	}
 	return next, replaced
 }
@@ -643,19 +734,34 @@ func replaceConn(cfg Config, router *Router, hold *connHolder, want remoteIdenti
 // Deliberately not recorded in the converger: repair() resets it wholesale and
 // re-sends both anyway, so that stays the single authoritative record and these
 // are idempotent asserts of a size already in force.
-func primeClient(cfg Config, c *ctlConn, reg *registry) {
+//
+// Reports whether the batch completed on a still-live connection. Nothing else
+// drains an unbound connection's pump, so a reply that never arrives would
+// otherwise park the replacement forever; a false here keeps the current
+// connection instead. An unset LocalArea is not a failure: there is nothing to
+// assert, and the replacement may proceed.
+func primeClient(cfg Config, c *ctlConn, reg *registry) bool {
 	w, h := cfg.LocalArea()
 	if w <= 0 || h <= 0 {
-		return
+		return c.live()
 	}
 	cmds := []string{ClientSizeCmd(w, h)}
 	for _, remoteID := range reg.remoteIDs() {
 		cmds = append(cmds, ConvergeCmd(remoteID, w, h))
 	}
+	// One deadline for the whole batch, write included: every command here is a
+	// small size assert on an unbound connection. A fired guard closes c, the
+	// reads below then fail closed, and this reports false.
+	d := cfg.replyTimeout()
+	disarm := c.armStall(d, fmt.Sprintf("reply deadline %v exceeded during client priming", d))
+	defer disarm()
 	reply := c.rt(cmds...)
 	for range cmds {
-		reply()
+		if _, ok := reply(); !ok {
+			return false
+		}
 	}
+	return c.live()
 }
 
 // connVerdict is how one connection's main loop ended. Only connDrop is a
