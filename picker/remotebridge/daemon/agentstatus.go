@@ -79,9 +79,7 @@ type paneStatus struct {
 	crewRole  string
 	crewState string
 	crewColor string
-	// An aeye carousel viewer runs on the remote pane. The remote reduces
-	// @claude_img_src to a presence bit, so its key never crosses.
-	imgSrc bool
+	imgSrc    bool // an aeye carousel viewer runs on the remote pane
 
 	// screenState/screenTS/screenFlags mirror agent-detect's screen/<pane_id>
 	// file for a non-Claude agent (#635). screenFlags holds the raw
