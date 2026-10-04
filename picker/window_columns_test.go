@@ -27,7 +27,7 @@ func stubPS(t *testing.T, table string) *int {
 }
 
 func windowRowsOf(items []listItem) []listItem {
-	var rows []listItem
+	rows := []listItem{}
 	for _, it := range items {
 		if it.target != "" && !it.isHeader {
 			rows = append(rows, it)
