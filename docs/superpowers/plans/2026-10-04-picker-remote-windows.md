@@ -15,8 +15,8 @@ Gate commands (used by every step; run from the worktree root inside the devshel
 | --- | --- |
 | `scripts/og-remote-open.sh` | D4 launcher fix: a caller-given window index is validated by the probe (gone session → exit 1; absent index → active window; exact session match only) |
 | `tests/remote-cold-start.bats` | fake-ssh probe learns the new `want_lit`/`want=` fields; three new cases |
-| `picker/remote_windows.go` (new) | window probe command + parser, ssh probe, window cache (read/write/forget), row builders (pending, cached, collected), remote kill-window body + ssh call |
-| `picker/remote_windows_test.go` (new) | tests for everything in `remote_windows.go` |
+| `picker/remote_wins.go` (new) | window probe command + parser, ssh probe, window cache (read/write/forget), row builders (pending, cached, collected), remote kill-window body + ssh call |
+| `picker/remote_wins_test.go` (new) | tests for everything in `remote_wins.go` |
 | `picker/remote.go` | `remoteProbeResult.Windows`; shared `probeStateOf(err)`, shared host-row builder for a resolved probe state, shared `sshRun` helper for probe/kill ssh; stale `sessionDisplayName` comment fixed |
 | `picker/tui.go` | `listItem` fields; window-mode first paint / Init / `remoteCmd` / auth re-probe; `withFilter` window-mode remote handling; preview card; attach with window index; kill staging/dispatch/forget for window rows; session kill also forgets window cache; window-mode Tab scope |
 | `picker/kill.go` | `killRun.run` dispatches window rows to the window kill |
@@ -68,7 +68,7 @@ Gate commands (used by every step; run from the worktree root inside the devshel
 
 ### Go data layer
 
-- [ ] **Step 3: red tests for the window probe parser and cache** (`picker/remote_windows_test.go`).
+- [ ] **Step 3: red tests for the window probe parser and cache** (`picker/remote_wins_test.go`).
   - `TestParseRemoteWindowsOutput`: identity lines 1–2; `S|$1|api`, `S|$2|web`,
     `W|$1|@3|1|server`, `W|$1|@4|2|logs|with|pipes` (name keeps its `|`), `W|$2|@7|1|vite`;
     junk lines dropped: `W|$9|@8|1|orphan` (no S line), `W|1|@3|1|x` (bad session id),
@@ -87,7 +87,7 @@ Gate commands (used by every step; run from the worktree root inside the devshel
     a group/world-writable dir rejected; `forgetRemoteWindowCache(host, "@4")` keeps
     `SavedAt`; `forgetRemoteSessionWindowsCache(host, "api")` drops every `api` window.
   Proof: `G-go` fails to compile (red) on the missing symbols.
-- [ ] **Step 4: implement the data layer** (`picker/remote_windows.go`, `picker/remote.go`).
+- [ ] **Step 4: implement the data layer** (`picker/remote_wins.go`, `picker/remote.go`).
   - `type remoteWindow struct { Session, SessionID, ID string; Index int; Name string }`
     with json tags; `remoteProbeResult` gains `Windows []remoteWindow`.
   - `remoteListWindowsBody = remoteTmuxCmd("list-sessions -F 'S|#{session_id}|#{session_name}' \\; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'")`,
@@ -110,7 +110,7 @@ Gate commands (used by every step; run from the worktree root inside the devshel
     than copying the Lstat/uid/rename code).
   Proof: `G-go` green, including every pre-existing `remote_cache_test.go` case.
 
-- [ ] **Step 5: red tests for row building** (`picker/remote_windows_test.go`).
+- [ ] **Step 5: red tests for row building** (`picker/remote_wins_test.go`).
   With injected probes (no ssh), mirror `collectRemoteItems`' existing table tests:
   - `collectRemoteWindowItems` for each probe state: OK (host row with no note, window
     rows in probe order with `remoteLive`, `remoteHost`, `remoteSess` (raw),
@@ -131,7 +131,7 @@ Gate commands (used by every step; run from the worktree root inside the devshel
   - Regression: `collectRemoteItems` (session mode) output for each state is unchanged —
     the existing tests cover it; run them.
   Proof: `G-go` red on missing symbols.
-- [ ] **Step 6: implement row building** (`picker/remote_windows.go`, `picker/remote.go`, `picker/tui.go` listItem only).
+- [ ] **Step 6: implement row building** (`picker/remote_wins.go`, `picker/remote.go`, `picker/tui.go` listItem only).
   - `listItem` gains `remoteWindowID string`, `remoteWindowIndex int`,
     `remoteWindowName string` (already `remoteDisplayName`d), `remoteLive bool` (comments in
     the existing style). `remoteWindowRowItem` sets all four (`remoteLive` false; the
@@ -210,7 +210,7 @@ Gate commands (used by every step; run from the worktree root inside the devshel
   `remoteWindowID != ""`.
   Proof: `G-go` green.
 
-- [ ] **Step 11: red tests for remote window kill** (`picker/remote_windows_test.go`, `picker/tui_test.go`).
+- [ ] **Step 11: red tests for remote window kill** (`picker/remote_wins_test.go`, `picker/tui_test.go`).
   - `remoteKillWindowBody("my sess", "@4")` contains `kill-window -t '=my sess:@4'`
     (shellQuoted), a hostile session name `a'; rm -rf ~; '` is quoted inert, fish-safe
     like `TestRemoteKillSessionBodyFishSafe`.
@@ -231,7 +231,7 @@ Gate commands (used by every step; run from the worktree root inside the devshel
     `lab`'s window cache (seed both caches).
   - `^t` on a window row marks nothing.
   Proof: `G-go` red.
-- [ ] **Step 12: implement remote window kill** (`picker/remote_windows.go`, `picker/kill.go`, `picker/tui.go`, `picker/render_list.go`).
+- [ ] **Step 12: implement remote window kill** (`picker/remote_wins.go`, `picker/kill.go`, `picker/tui.go`, `picker/render_list.go`).
   - `remoteKillWindowBody`, `sshKillRemoteWindowCtx(ctx, host, sess, id)` sharing the
     `sshKillRemoteSessionCtx` runner (factor `sshKillCtx(ctx, host, body)`; session path
     unchanged), same `classifyKillErr`.

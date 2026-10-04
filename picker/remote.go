@@ -155,11 +155,13 @@ type remoteIdentity struct {
 	User      string
 }
 
-// remoteProbeResult is stdout from remoteListSessionsCmd: identity on the first
-// two lines, session names after.
+// remoteProbeResult is stdout from remoteListSessionsCmd or
+// remoteListWindowsCmd: identity on the first two lines, then session names
+// (and, for the window probe, their windows).
 type remoteProbeResult struct {
 	Identity remoteIdentity
 	Sessions []string
+	Windows  []remoteWindow
 }
 
 // readLocalRemoteIdentity returns this machine's identity using the same
@@ -314,11 +316,17 @@ func remoteSessionCacheDir() string {
 }
 
 func writeRemoteSessionCache(host string, sessions []string, now time.Time) {
-	dir := remoteSessionCacheDir()
+	writeOwnerOnlyJSON(remoteSessionCacheDir(), hostFileName(host)+".json",
+		remoteSessionCache{Host: host, SavedAt: now.UnixMilli(), Sessions: sessions})
+}
+
+// writeOwnerOnlyJSON atomically writes v as dir/name, creating dir 0700. A
+// dir that is not owner-only is never written into.
+func writeOwnerOnlyJSON(dir, name string, v any) {
 	if dir == "" || os.MkdirAll(dir, 0o700) != nil || !ownerdir.OwnerOnly(dir) {
 		return
 	}
-	data, err := json.Marshal(remoteSessionCache{Host: host, SavedAt: now.UnixMilli(), Sessions: sessions})
+	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
@@ -332,9 +340,30 @@ func writeRemoteSessionCache(host string, sessions []string, now time.Time) {
 		return
 	}
 	// Rename, so a picker reading concurrently never sees a torn file.
-	if os.Rename(f.Name(), filepath.Join(dir, hostFileName(host)+".json")) != nil {
+	if os.Rename(f.Name(), filepath.Join(dir, name)) != nil {
 		_ = os.Remove(f.Name())
 	}
+}
+
+// readOwnerOnlyJSON decodes dir/name into v, trusting it only when dir is
+// owner-only and the entry is a regular file owned by this uid.
+func readOwnerOnlyJSON(dir, name string, v any) bool {
+	if dir == "" || !ownerdir.OwnerOnly(dir) {
+		return false
+	}
+	path := filepath.Join(dir, name)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) { //nolint:gosec // G115: value is non-negative and fits uint32
+		return false
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, v) == nil
 }
 
 // forgetRemoteSessionCache drops sess from host's cached listing, preserving
@@ -355,24 +384,8 @@ func forgetRemoteSessionCache(host, sess string) {
 }
 
 func readRemoteSessionCache(host string) (remoteSessionCache, bool) {
-	dir := remoteSessionCacheDir()
-	if dir == "" || !ownerdir.OwnerOnly(dir) {
-		return remoteSessionCache{}, false
-	}
-	path := filepath.Join(dir, hostFileName(host)+".json")
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return remoteSessionCache{}, false
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) { //nolint:gosec // G115: value is non-negative and fits uint32
-		return remoteSessionCache{}, false
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
-	if err != nil {
-		return remoteSessionCache{}, false
-	}
 	var c remoteSessionCache
-	if json.Unmarshal(data, &c) != nil || c.Host != host {
+	if !readOwnerOnlyJSON(remoteSessionCacheDir(), hostFileName(host)+".json", &c) || c.Host != host {
 		return remoteSessionCache{}, false
 	}
 	return c, true
@@ -736,6 +749,12 @@ func sshKillRemoteSessionCtx(ctx context.Context, host, sess string) error {
 // lists. Returns session names, or an error wrapping errRemoteUnreachable /
 // errRemoteNoServer.
 func sshListRemoteSessions(host string) (remoteProbeResult, error) {
+	return sshProbe(host, remoteListSessionsCmd, parseRemoteProbeOutput)
+}
+
+// sshProbe runs remoteCmd on host under the probe bounds and parses whatever
+// stdout it produced, even on failure, alongside the classified error.
+func sshProbe(host, remoteCmd string, parse func(string) remoteProbeResult) (remoteProbeResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
 	defer cancel()
 
@@ -745,13 +764,13 @@ func sshListRemoteSessions(host string) (remoteProbeResult, error) {
 		"-T",
 		host,
 		"--",
-		remoteListSessionsCmd,
+		remoteCmd,
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	parsed := parseRemoteProbeOutput(stdout.String())
+	parsed := parse(stdout.String())
 	if err != nil {
 		return parsed, classifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
 	}

@@ -256,7 +256,7 @@ apply.
 
 | Area | Change | Session-picker effect |
 | --- | --- | --- |
-| `picker/remote_windows.go` (new) | window probe cmd + parse, cache read/write/forget, pending/collected row builders, kill body | none |
+| `picker/remote_wins.go` (new) | window probe cmd + parse, cache read/write/forget, pending/collected row builders, kill body | none |
 | `picker/remote.go` | host-row note/flag switch shared by both collectors; stale "window mode has no host" comment fixed | identical rows (existing tests) |
 | `listItem` | `remoteWindowID`, `remoteWindowIndex`, `remoteLive`; window rows' target `remote:<host>:<sess>:@<id>` | session rows unchanged |
 | `isKillableRemoteSession`, `markable`, `remoteRowLabel`, forgotten key, `forgetRemoteRows`, `filterForgottenRemoteRows` | branch on `remoteWindowID` | unchanged for rows without it |

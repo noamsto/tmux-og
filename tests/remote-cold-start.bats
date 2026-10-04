@@ -82,11 +82,18 @@ setup() {
 			*) [ -f "$REMOTE_SERVER" ] && sess="$REMOTE_SESSION" ;;
 			esac
 			win=""
+			want=""
 			case "$cmd" in
+			# A caller-given index on a plain open: win is the session's ACTIVE
+			# window, and want reports whether that index exists in it.
+			*"want_lit="*)
+				[ -n "$sess" ] && [ -z "${FAKE_NO_WINDOW:-}" ] && win=1
+				[ -n "$win" ] && [ -z "${FAKE_WANT_ABSENT:-}" ] && want=1
+				;;
 			*"win_lit="*) win=$(printf '%s\n' "$cmd" | sed -n "s/.*win_lit='\([^']*\)'.*/\1/p") ;;
 			*) [ -n "$sess" ] && [ -z "${FAKE_NO_WINDOW:-}" ] && win=1 ;;
 			esac
-			printf 'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\n' "$os" "$uid" /usr/bin/tmux "$tmpdir" "$sess" "$win"
+			printf 'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\nwant=%s\n' "$os" "$uid" /usr/bin/tmux "$tmpdir" "$sess" "$win" "$want"
 			exit 0
 			;;
 		esac
@@ -843,8 +850,64 @@ run_launcher_bg() {
 
 	[ "$(grep -c '===SSH-CALL===' "$SSH_LOG")" -eq 1 ]
 	grep -q "sess_lit='workstation'" "$SSH_LOG"
-	grep -q "win_lit='3'" "$SSH_LOG"
+	grep -q "want_lit='3'" "$SSH_LOG"
 	grep -q 'switch-client -t =tp-g6-workstation' "$TMUX_LOG"
+}
+
+# Waits for the backgrounded stub daemon to record the window it was handed.
+wait_for_daemon_window() {
+	local waited=0
+	while [[ ! -s $DAEMON_WINDOW_LOG && $waited -lt 50 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+}
+
+install_window_logging_daemon() {
+	export DAEMON_WINDOW_LOG="$BATS_TEST_TMPDIR/daemon-window.log"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		printf '%s\n' "$OG_BRIDGE_WINDOW" >>"$DAEMON_WINDOW_LOG"
+	EOF
+}
+
+@test "caller-given window: a gone session fails instead of opening a blank mirror" {
+	export FAKE_NO_WINDOW=1
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 1 ]
+	[[ $output == *"session 'workstation' has no window"* ]]
+
+	run grep -c new-session "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "caller-given window: an index that exists in the session is the one the daemon gets" {
+	install_window_logging_daemon
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 0 ]
+
+	wait_for_daemon_window
+	[ "$(cat "$DAEMON_WINDOW_LOG")" = 3 ]
+}
+
+@test "caller-given window: an index absent from the session falls back to the active window" {
+	install_window_logging_daemon
+	export FAKE_WANT_ABSENT=1
+
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 0 ]
+
+	wait_for_daemon_window
+	[ "$(cat "$DAEMON_WINDOW_LOG")" = 1 ]
+}
+
+@test "caller-given window: the probe resolves the session exactly, with no prefix fallback" {
+	run bash "$LAUNCHER" tp-g6 workstation 3
+	[ "$status" -eq 0 ]
+
+	run ! grep -q sess_canon "$SSH_LOG"
 }
 
 @test "combined probe: OG_REMOTE_TMPDIR unset still resolves in one ssh call" {
