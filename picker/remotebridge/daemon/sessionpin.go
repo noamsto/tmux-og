@@ -28,6 +28,10 @@ type remoteIdentity struct {
 	// #{start_time} must not fail the read over it.
 	startTime    int
 	hasStartTime bool
+	// version is the remote's #{version}, empty from a remote that predates the
+	// field. It stays out of matches: a tmux upgrade restarts the server, so the
+	// pid already differs.
+	version string
 }
 
 // matches reports whether two identity reads name the same server. pid and
@@ -56,7 +60,7 @@ func (e *identityReadErr) Error() string { return e.err.Error() }
 // opposed to a reply that arrived and was wrong or malformed (teardown).
 func (e *identityReadErr) Retry() bool { return e.retry }
 
-// readIdentity fetches #{pid}|#{start_time}|#{session_id} for session in one
+// readIdentity fetches #{pid}|#{start_time}|#{session_id}|#{version} for session in one
 // round-trip and parses it strictly: pid and session_id are required, the
 // same posture sessionIDRe and parseWindowID already take for anything
 // interpolated into a later command — malformed is rejected, never coerced.
@@ -69,7 +73,7 @@ func (e *identityReadErr) Retry() bool { return e.retry }
 func readIdentity(rt roundTrip, session string) (remoteIdentity, error) {
 	next := rt(
 		"refresh-client -f new-layouts",
-		fmt.Sprintf("display-message -p -t %s -F '#{pid}|#{start_time}|#{session_id}'", tmuxQuote(session)),
+		fmt.Sprintf("display-message -p -t %s -F '#{pid}|#{start_time}|#{session_id}|#{version}'", tmuxQuote(session)),
 	)
 	flagReply, ok := next()
 	if !ok {
@@ -94,10 +98,10 @@ func readIdentity(rt roundTrip, session string) (remoteIdentity, error) {
 	return parseIdentity(session, string(l.Data))
 }
 
-// parseIdentity parses one pid|start_time|session_id reply body.
+// parseIdentity parses one pid|start_time|session_id[|version] reply body.
 func parseIdentity(session, body string) (remoteIdentity, error) {
-	fields := strings.SplitN(strings.TrimSpace(body), "|", 3)
-	if len(fields) != 3 {
+	fields := strings.SplitN(strings.TrimSpace(body), "|", 4)
+	if len(fields) < 3 {
 		return remoteIdentity{}, &identityReadErr{err: fmt.Errorf("daemon: identity reply for %s (%q) is not pid|start_time|session_id", session, body)}
 	}
 	pid, err := strconv.Atoi(fields[0])
@@ -109,6 +113,9 @@ func parseIdentity(session, body string) (remoteIdentity, error) {
 		return remoteIdentity{}, &identityReadErr{err: fmt.Errorf("daemon: identity reply for %s (%q) is not a session id (%q)", session, body, sessionID)}
 	}
 	id := remoteIdentity{pid: pid, sessionID: sessionID}
+	if len(fields) == 4 {
+		id.version = strings.TrimSpace(fields[3])
+	}
 	// Absent or unparsable start_time just means the field goes unrecorded —
 	// it's belt-and-braces, not required, unlike pid and session_id above.
 	if st := strings.TrimSpace(fields[1]); st != "" {

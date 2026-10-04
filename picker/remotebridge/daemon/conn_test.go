@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"testing"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
 // TestDialConnNilDialUsesCtl pins the mechanism "Dial == nil stays
@@ -99,4 +101,81 @@ func TestConnHolderCloseEmptiesTheSlotIdempotently(t *testing.T) {
 		t.Error("close should empty the slot")
 	}
 	h.close() // already empty: still must not panic
+}
+
+// pipeConn is a ctlConn over a net.Pipe whose far end drains the commands the
+// daemon writes. The returned writer feeds the control stream.
+func pipeConn(t *testing.T) (*ctlConn, func(string)) {
+	t.Helper()
+	near, far := net.Pipe()
+	t.Cleanup(func() { _ = near.Close(); _ = far.Close() })
+	go io.Copy(io.Discard, far) //nolint:errcheck // drain only; ends with the pipe
+	c := newCtlConn(near)
+	return c, func(s string) {
+		if _, err := far.Write([]byte(s)); err != nil {
+			t.Errorf("far write: %v", err)
+		}
+	}
+}
+
+// laterBlock writes a block whose only row is a notification after the version
+// switch has been applied, and returns what the pump delivers for it.
+func laterBlock(t *testing.T, c *ctlConn, write func(string)) (first controlmode.Line) {
+	t.Helper()
+	go write("%begin 2 2 1\n%window-add @7\n%end 2 2 1\n")
+	l, ok := c.pump.Next()
+	if !ok {
+		t.Fatal("pump closed before the later block")
+	}
+	return l
+}
+
+func TestAdoptVersionChoosesLifting(t *testing.T) {
+	tests := []struct {
+		version  string
+		wantKind controlmode.Kind
+	}{
+		{"next-3.9", controlmode.End},
+		{"next-3.8", controlmode.WindowAdd},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			c, write := pipeConn(t)
+			c.adoptVersion(tt.version)
+			l := laterBlock(t, c, write)
+			if l.Kind != tt.wantKind {
+				t.Fatalf("kind = %v, want %v", l.Kind, tt.wantKind)
+			}
+			if tt.wantKind == controlmode.End && string(l.Data) != "%window-add @7" {
+				t.Errorf("body = %q, want the row kept as reply body", l.Data)
+			}
+		})
+	}
+}
+
+func TestIdentifyAdoptsVersionFromTheReply(t *testing.T) {
+	c, write := pipeConn(t)
+	go write(newLayoutsFlagAck + "%begin 1 1 1\n2151|1788283304|$1|3.7c\n%end 1 1 1\n")
+	id, err := c.identify("A")
+	if err != nil {
+		t.Fatalf("identify: %v", err)
+	}
+	if id.version != "3.7c" {
+		t.Errorf("version = %q, want 3.7c", id.version)
+	}
+	l := laterBlock(t, c, write)
+	if l.Kind != controlmode.End || string(l.Data) != "%window-add @7" {
+		t.Fatalf("line = %+v, want one End holding the row: lifting should be off for 3.7c", l)
+	}
+}
+
+func TestIdentifyFailureLeavesLiftingOn(t *testing.T) {
+	c, write := pipeConn(t)
+	go write(newLayoutsFlagAck + "%begin 1 1 1\nboom\n%error 1 1 1\n")
+	if _, err := c.identify("A"); err == nil {
+		t.Fatal("identify err = nil, want the error reply to fail it")
+	}
+	if l := laterBlock(t, c, write); l.Kind != controlmode.WindowAdd {
+		t.Fatalf("kind = %v, want WindowAdd: a failed read must not switch lifting off", l.Kind)
+	}
 }

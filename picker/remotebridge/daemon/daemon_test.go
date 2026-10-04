@@ -335,20 +335,22 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 	var two capBuf
 	router.Register("%2", &two)
 
-	// PaneSeed issues two commands (cursor display-message + capture-pane), so
-	// the %continue round-trip carries two reply blocks; the sibling %output
-	// lands mid-round-trip, exercising the routing-aware reply reader.
+	// handlePause sends refresh-client -A :continue, then PaneSeed issues two
+	// commands (cursor display-message + capture-pane), so the round-trips carry
+	// three reply blocks; the sibling %output lands mid-round-trip, exercising
+	// the routing-aware reply reader.
 	s := strings.Join([]string{
 		"%pause %1",
 		"%output %1 dropped-while-paused", // paused: must never reach %1's conn
-		"%continue %1",
-		"%output %2 sibling", // routed by readReplyRouting during the round-trip
-		"%begin 1 1 1",
-		"0 0 0 0 0 0 0 0 0",
+		"%begin 1 1 1",                    // refresh-client -A :continue reply
 		"%end 1 1 1",
+		"%output %2 sibling", // routed by readReplyRouting during the round-trip
 		"%begin 1 2 1",
-		"FRESH-CAPTURE",
+		"0 0 0 0 0 0 0 0 0",
 		"%end 1 2 1",
+		"%begin 1 3 1",
+		"FRESH-CAPTURE",
+		"%end 1 3 1",
 		"%output %1 after-continue", // must arrive AFTER the seed frame
 		"%exit",
 	}, "\n") + "\n"
@@ -357,7 +359,6 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 	st := newStream(io.Discard)
 	async := &asyncQueue{}
 	rt := newRoundTrip(reader, router, async, st)
-	send := func(string) {}
 	for {
 		l, ok := reader.Next()
 		if !ok {
@@ -367,9 +368,7 @@ func TestPauseContinueReseedsBeforeResumingOutput(t *testing.T) {
 		case controlmode.Output:
 			router.Route(l.Pane, l.Data)
 		case controlmode.Pause:
-			handlePause(router, send, l.Args[0])
-		case controlmode.Continue:
-			handleContinue(router, rt, l.Args[0])
+			handlePause(router, rt, l.Args[0])
 		case controlmode.Exit:
 			// stop below
 		default:
@@ -421,13 +420,14 @@ func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	s := strings.Join([]string{
 		"%output %1 " + string(testKittyStore("9")),
 		"%pause %1",
-		"%continue %1",
-		"%begin 1 1 1",
-		"0 0 0 0 0 0 0 0 0",
+		"%begin 1 1 1", // refresh-client -A :continue reply
 		"%end 1 1 1",
 		"%begin 1 2 1",
-		"FRESH-CAPTURE",
+		"0 0 0 0 0 0 0 0 0",
 		"%end 1 2 1",
+		"%begin 1 3 1",
+		"FRESH-CAPTURE",
+		"%end 1 3 1",
 		"%exit",
 	}, "\n") + "\n"
 
@@ -443,9 +443,7 @@ func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 		case controlmode.Output:
 			router.Route(l.Pane, l.Data)
 		case controlmode.Pause:
-			handlePause(router, func(string) {}, l.Args[0])
-		case controlmode.Continue:
-			handleContinue(router, rt, l.Args[0])
+			handlePause(router, rt, l.Args[0])
 		default:
 		}
 		if l.Kind == controlmode.Exit {
@@ -474,6 +472,113 @@ func TestPauseContinueReplaysRetainedKittyStoreBeforeSeed(t *testing.T) {
 	if !bytes.Contains(seed.Payload, []byte("FRESH-CAPTURE")) {
 		t.Fatalf("seed = %q, want FRESH-CAPTURE", seed.Payload)
 	}
+}
+
+// drivePause feeds a scripted stream through the same Pause handling dispatch
+// uses (Continue is a no-op there) until the stream ends or %exit.
+func drivePause(router *Router, reader *controlmode.Reader) {
+	rt := newRoundTrip(reader, router, &asyncQueue{}, testStream())
+	for {
+		l, ok := reader.Next()
+		if !ok || l.Kind == controlmode.Exit {
+			return
+		}
+		switch l.Kind {
+		case controlmode.Output:
+			router.Route(l.Pane, l.Data)
+		case controlmode.Pause:
+			handlePause(router, rt, l.Args[0])
+		default:
+		}
+	}
+}
+
+func pausedSink(t *testing.T) (*outputSink, net.Conn) {
+	t.Helper()
+	local, peer := net.Pipe()
+	t.Cleanup(func() { _ = local.Close(); _ = peer.Close() })
+	return newOutputSink(local, nil), peer
+}
+
+func assertSeedThenResumed(t *testing.T, s *outputSink, peer net.Conn) {
+	t.Helper()
+	f, err := wire.ReadFrame(peer)
+	if err != nil {
+		t.Fatalf("read seed frame: %v", err)
+	}
+	if f.Type != wire.FrameSeed || !bytes.Contains(f.Payload, []byte("FRESH-CAPTURE")) {
+		t.Fatalf("frame = %v %q, want FrameSeed with FRESH-CAPTURE", f.Type, f.Payload)
+	}
+	s.mu.Lock()
+	paused := s.paused
+	s.mu.Unlock()
+	if paused {
+		t.Fatal("sink still paused after the reseed")
+	}
+}
+
+const pauseSeedBlocks = "%begin 1 2 1\n0 0 0 0 0 0 0 0 0\n%end 1 2 1\n" +
+	"%begin 1 3 1\nFRESH-CAPTURE\n%end 1 3 1\n"
+
+// TestPauseReseedsFromRefreshReplyWithContinueAsBody pins the <= 3.7c shape:
+// tmux writes %continue inside the refresh-client reply block, so it is body.
+// The stream is literal text with no in-block lifting involved, which keeps the
+// test independent of the reader's lift setting; the Continue branch of the
+// loop is a no-op either way, so the reseed must still happen exactly once.
+func TestPauseReseedsFromRefreshReplyWithContinueAsBody(t *testing.T) {
+	s, peer := pausedSink(t)
+	router := NewRouter()
+	router.Register("%1", s)
+
+	reader := newTestReader("%pause %1\n" +
+		"%begin 1 1 1\n%continue %1\n%end 1 1 1\n" +
+		pauseSeedBlocks +
+		"%exit\n")
+	drivePause(router, reader)
+
+	assertSeedThenResumed(t, s, peer)
+	if err := peer.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := wire.ReadFrame(peer); err == nil {
+		t.Fatalf("second frame %v %q: reseeded more than once", f.Type, f.Payload)
+	}
+}
+
+// TestPauseStaysPausedWhenStreamEndsBeforeRefreshReply: a lost reply must not
+// resume the pane or enqueue a seed.
+func TestPauseStaysPausedWhenStreamEndsBeforeRefreshReply(t *testing.T) {
+	s, _ := pausedSink(t)
+	router := NewRouter()
+	router.Register("%1", s)
+
+	drivePause(router, newTestReader("%pause %1\n"))
+
+	s.mu.Lock()
+	paused, queued := s.paused, len(s.ch)
+	s.mu.Unlock()
+	if !paused {
+		t.Fatal("sink resumed without a refresh-client reply")
+	}
+	if queued != 0 {
+		t.Fatalf("%d frames enqueued without a refresh-client reply", queued)
+	}
+}
+
+// TestPauseErrorReplyStillReseedsAndResumes: handlePause ignores the reply's
+// Kind, so an %error to the refresh-client still repaints and resumes.
+func TestPauseErrorReplyStillReseedsAndResumes(t *testing.T) {
+	s, peer := pausedSink(t)
+	router := NewRouter()
+	router.Register("%1", s)
+
+	reader := newTestReader("%pause %1\n" +
+		"%begin 1 1 1\nno such pane\n%error 1 1 1\n" +
+		pauseSeedBlocks +
+		"%exit\n")
+	drivePause(router, reader)
+
+	assertSeedThenResumed(t, s, peer)
 }
 
 // TestOutputSinkCloseDiscardsReplayState: retained stores live on the sink's

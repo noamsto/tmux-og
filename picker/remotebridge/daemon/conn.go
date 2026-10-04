@@ -19,6 +19,7 @@ import (
 // one unit — a half-swapped set desyncs every round-trip (#482).
 type ctlConn struct {
 	rwc    io.ReadWriteCloser
+	rd     *controlmode.Reader
 	pump   *ctlPump
 	watch  *attachWatch
 	st     *stream
@@ -36,9 +37,11 @@ type ctlConn struct {
 // bind opens the connection onto the real router once, after the identity read.
 func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 	router := NewRouter()
+	rd := controlmode.NewReader(rwc)
 	c := &ctlConn{
 		rwc:    rwc,
-		pump:   startCtlPump(controlmode.NewReader(rwc)),
+		rd:     rd,
+		pump:   startCtlPump(rd),
 		st:     newStream(rwc),
 		async:  &asyncQueue{},
 		router: router,
@@ -46,6 +49,23 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 	c.watch = &attachWatch{rd: c.pump}
 	c.rt = newRoundTrip(c.watch, router, c.async, c.st)
 	return c
+}
+
+// adoptVersion applies the remote's tmux version to the reader. The identity
+// read is the connection's first round-trip, so every reply body before it is
+// tmux-generated, and the first capture goes out after it.
+func (c *ctlConn) adoptVersion(v string) {
+	c.rd.SetLiftInBlock(controlmode.LiftsInBlock(v))
+}
+
+// identify reads the identity and adopts its version on success, so no path
+// can read an identity without applying the switch.
+func (c *ctlConn) identify(session string) (remoteIdentity, error) {
+	id, err := readIdentity(c.rt, session)
+	if err == nil {
+		c.adoptVersion(id.version)
+	}
+	return id, err
 }
 
 // attachWatch is the lineReader an unverified connection reads through, and
@@ -431,7 +451,7 @@ func attemptCycle(cfg Config, router *Router, hold *connHolder, want remoteIdent
 		// the user believes are their shells, and an unpublished connection
 		// cannot carry a renderer's keystroke there either.
 		disarm := armIdentityDeadline(next, cfg.identityTimeout())
-		id, err := readIdentity(next.rt, cfg.RemoteSession)
+		id, err := next.identify(cfg.RemoteSession)
 		live := disarm()
 		if err != nil {
 			var ire *identityReadErr
@@ -563,7 +583,7 @@ func replaceConn(cfg Config, router *Router, hold *connHolder, want remoteIdenti
 	// since both connections stream the same remote panes, a verified one must
 	// not route alongside the live one either.
 	disarm := armIdentityDeadline(next, cfg.identityTimeout())
-	id, err := readIdentity(next.rt, cfg.RemoteSession)
+	id, err := next.identify(cfg.RemoteSession)
 	live := disarm()
 	if err != nil {
 		if live {

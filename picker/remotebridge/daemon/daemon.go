@@ -846,6 +846,9 @@ func runMirror(cfg Config) error {
 		c.close()
 		return fmt.Errorf("daemon: identity read for %s timed out", cfg.RemoteSession)
 	}
+	if pin.identityKnown {
+		c.adoptVersion(pin.identity.version)
+	}
 	c.bind(router)
 	// A dial publishes the term it dialled (reattach's rule). Seed covered only
 	// a process's first dial; a re-opened run's raise guard would otherwise
@@ -1310,12 +1313,12 @@ func runMirror(cfg Config) error {
 			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
-				handlePause(router, send, l.Args[0])
+				handlePause(router, rt, l.Args[0])
 			}
 		case controlmode.Continue:
-			if len(l.Args) > 0 {
-				handleContinue(router, rt, l.Args[0])
-			}
+			// tmux writes %continue only in answer to the refresh-client -A
+			// :continue that handlePause sent, and handlePause reseeds from that
+			// reply. Acting here too would reseed twice.
 		case controlmode.Exit:
 			return true
 		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error:
@@ -2111,19 +2114,30 @@ func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *
 }
 
 // handlePause answers a %pause %N: mark the pane's sink paused (Write drops
-// output while paused) and ask tmux to unblock it with a paired %continue,
-// which the main loop turns into a full-repaint re-seed.
-func handlePause(router *Router, send func(string), paneID string) {
-	if s := router.sink(paneID); s != nil {
-		s.pause()
-		send(fmt.Sprintf("refresh-client -A '%s:continue'", paneID))
+// output while paused), ask tmux to unblock it with refresh-client -A :continue,
+// and reseed from that command's reply. tmux resumes the pane synchronously
+// inside the command; up to 3.7c it writes %continue inside the reply's block,
+// where the reader leaves it as body, so the reseed follows the reply and not
+// the notification. This is a blocking round-trip on the main loop, the same
+// cost class as the reseed itself. Any reply Kind (End or Error) reseeds and
+// resumes; only a lost reply leaves the sink paused.
+func handlePause(router *Router, rt roundTrip, paneID string) {
+	s := router.sink(paneID)
+	if s == nil {
+		return
 	}
+	s.pause()
+	if _, ok := one(rt, fmt.Sprintf("refresh-client -A '%s:continue'", paneID)); !ok {
+		return
+	}
+	handleContinue(router, rt, paneID)
 }
 
-// handleContinue answers a %continue %N: capture a fresh screen (routing-aware,
-// so sibling panes keep streaming during the round-trip — B3) and enqueue it as
+// handleContinue captures a fresh screen (routing-aware,
+// so sibling panes keep streaming during the round-trip — B3) and enqueues it as
 // a FrameSeed BEFORE resuming, so the full repaint lands ahead of any resumed
-// output and closes the %pause gap.
+// output and closes the %pause gap. handlePause calls it once the
+// refresh-client reply has arrived.
 func handleContinue(router *Router, rt roundTrip, paneID string) {
 	s := router.sink(paneID)
 	if s == nil {
