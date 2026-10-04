@@ -298,6 +298,7 @@ for m in "${modes[@]}"; do
 			printf 'export CLAUDE_STATUS_DIR=%q\n' "$CLAUDE_STATUS_DIR"
 			printf 'export ZOXIDE_DATA_DIR=%q\n' "$ZOXIDE_DATA_DIR"
 			printf 'export HOME=%q\n' "$HOME"
+			printf 'export XDG_CACHE_HOME=%q\n' "$XDG_CACHE_HOME"
 			printf 'export GIT_CONFIG_GLOBAL=%q\n' "$GIT_CONFIG_GLOBAL"
 			printf 'export PATH=%q\n' "$PATH"
 			printf 'export TMUX=%q\n' "$(tm display-message -p '#{socket_path},#{pid},0')"
