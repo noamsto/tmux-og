@@ -75,9 +75,8 @@ func remoteKillBody(subcmd, target string) string {
 }
 
 // remoteKillSessionBody builds the remote-side command that kills one session
-// by its probe-reported $N id, only on the server the probe would list. No
-// remote-controlled name reaches the login shell, which may be fish, where
-// POSIX single-quote escaping of a name does not hold.
+// by its probe-reported $N id, so no remote-controlled name reaches the login
+// shell.
 func remoteKillSessionBody(sessionID string) string {
 	return remoteKillBody("kill-session", sessionID)
 }
