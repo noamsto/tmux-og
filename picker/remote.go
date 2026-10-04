@@ -61,12 +61,25 @@ func remoteTmuxCmd(args string) string {
 
 var remoteListSessionsCmd = remoteIdentityPreamble + `; ` + remoteListSessionsBody
 
-// remoteKillSessionBody builds the remote-side tmux command that kills one
-// session by its probe-reported $N id. No remote-controlled name reaches the
-// login shell, which may be fish, where POSIX single-quote escaping of a name
-// does not hold.
+// remoteKillScript runs one tmux subcommand ($1) on target ($2) against the
+// first of /run/user/<uid>, /tmp whose server answers list-sessions — the
+// probe's own selection rule — and nowhere else. remoteTmuxCmd's `||` would
+// retry a failed kill on the second server and hit an unrelated id there. No
+// quote or backslash: the login shell may be fish, which escapes both inside
+// single quotes. One line, so no newline reaches the ssh command.
+const remoteKillScript = `t=$(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux); [ -x "$t" ] || exit 127; for d in /run/user/$(id -u) /tmp; do if env TMUX_TMPDIR=$d "$t" list-sessions >/dev/null 2>&1; then exec env TMUX_TMPDIR=$d "$t" "$1" -t "$2"; fi; done; exit 1`
+
+// remoteKillBody wraps remoteKillScript with its probe-validated arguments.
+func remoteKillBody(subcmd, target string) string {
+	return `sh -c ` + shellQuote(remoteKillScript) + ` _ ` + subcmd + ` ` + shellQuote(target)
+}
+
+// remoteKillSessionBody builds the remote-side command that kills one session
+// by its probe-reported $N id, only on the server the probe would list. No
+// remote-controlled name reaches the login shell, which may be fish, where
+// POSIX single-quote escaping of a name does not hold.
 func remoteKillSessionBody(sessionID string) string {
-	return remoteTmuxCmd(`kill-session -t ` + shellQuote(sessionID))
+	return remoteKillBody("kill-session", sessionID)
 }
 
 // remoteSelfCacheDir holds alias→self verdicts so pendingRemoteItems can omit

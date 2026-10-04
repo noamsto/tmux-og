@@ -63,15 +63,60 @@ func TestClassifyKillErr(t *testing.T) {
 }
 
 // The kill targets the probe-validated session id only: no remote-controlled
-// name reaches the login shell, which may be fish, and the command stays
-// fish-safe (no bare `var=value` assignments).
+// name reaches the login shell, which may be fish.
 func TestRemoteKillSessionBodyTargetsIDOnly(t *testing.T) {
 	body := remoteKillSessionBody("$3")
-	if !strings.Contains(body, "kill-session -t '$3'") || !strings.Contains(body, "env TMUX_TMPDIR=") {
-		t.Fatalf("body = %q, want a quoted id-only kill-session under env(1)", body)
+	if !strings.HasSuffix(body, " _ kill-session '$3'") {
+		t.Fatalf("body = %q, want the id passed as a quoted positional arg", body)
 	}
-	if strings.Contains(body, "td=") || strings.Contains(body, "; t=") {
-		t.Fatalf("body = %q must not use shell assignments (fish-incompatible)", body)
+	assertFishSafeKillBody(t, body)
+}
+
+// assertFishSafeKillBody checks the body survives a fish login shell: the
+// quoted script has no quote or backslash (fish escapes both inside single
+// quotes) and nothing outside it is a var=value assignment.
+func assertFishSafeKillBody(t *testing.T, body string) {
+	t.Helper()
+	if strings.ContainsAny(remoteKillScript, `'\`) {
+		t.Errorf("kill script contains a quote or backslash: %q", remoteKillScript)
+	}
+	outside := strings.Replace(body, shellQuote(remoteKillScript), "", 1)
+	if strings.Contains(outside, "=") {
+		t.Errorf("body outside the script = %q, must not use shell assignments (fish-incompatible)", outside)
+	}
+}
+
+// The kill runs on exactly the server the probe lists: when the first leg's
+// kill fails (id gone), it must not fall through to the /tmp server.
+func TestRemoteKillStopsAtFirstAnsweringServer(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	shim := "#!/bin/sh\nprintf '%s %s\\n' \"$TMUX_TMPDIR\" \"$*\" >>" + log + "\n" +
+		"case \"$1\" in kill-session) exit 1 ;; esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeSSH := "#!/bin/sh\n" +
+		"while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -T) shift ;; --) shift; break ;; *) shift ;; esac; done\n" +
+		"export PATH=\"" + dir + ":$PATH\"\nexec bash -c \"$*\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	err := sshKillRemoteSessionCtx(context.Background(), "lab", "$7")
+	if !errors.Is(err, errRemoteSessionGone) {
+		t.Fatalf("kill = %v, want the gone class", err)
+	}
+	raw, _ := os.ReadFile(log)
+	var kills []string
+	for l := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+		if strings.Contains(l, "kill-session") {
+			kills = append(kills, l)
+		}
+	}
+	if len(kills) != 1 || !strings.HasPrefix(kills[0], "/run/user/") || !strings.HasSuffix(kills[0], "kill-session -t $7") {
+		t.Fatalf("kills = %q, want exactly one on the first leg\nlog:\n%s", kills, raw)
 	}
 }
 
@@ -212,12 +257,10 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 
 func TestRemoteKillWindowBodyTargetsIDsOnly(t *testing.T) {
 	body := remoteKillWindowBody("$3", "@4")
-	if !strings.Contains(body, "env TMUX_TMPDIR=") || !strings.Contains(body, "kill-window -t '$3:@4'") {
-		t.Fatalf("body = %q, want a quoted id-only kill-window under env(1)", body)
+	if !strings.HasSuffix(body, " _ kill-window '$3:@4'") {
+		t.Fatalf("body = %q, want the ids passed as one quoted positional arg", body)
 	}
-	if strings.Contains(body, "td=") || strings.Contains(body, "; t=") {
-		t.Fatalf("body = %q must not use shell assignments (fish-incompatible)", body)
-	}
+	assertFishSafeKillBody(t, body)
 }
 
 // TestKillRemoteWindowReachesScratchServer proves kill-window -t '$<sid>:@id'

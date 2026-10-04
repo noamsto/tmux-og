@@ -169,13 +169,13 @@ func forgetRemoteSessionWindowsCache(host, sess string) {
 	forgetRemoteWindowsWhere(host, func(w remoteWindow) bool { return w.Session == sess })
 }
 
-// remoteKillWindowBody builds the remote-side tmux command that kills one
-// window. Both ids are probe-validated ($N, @N), so no remote name reaches the
-// login shell; `$sid:@id` resolves only when that window is linked into that
-// session, so a moved or unknown window fails (exit 1, the gone class) instead
-// of killing another one.
+// remoteKillWindowBody builds the remote-side command that kills one window,
+// only on the server the probe would list. Both ids are probe-validated ($N,
+// @N), so no remote name reaches the login shell; `$sid:@id` resolves only when
+// that window is linked into that session, so a moved or unknown window fails
+// (exit 1, the gone class) instead of killing another one.
 func remoteKillWindowBody(sessionID, id string) string {
-	return remoteTmuxCmd(`kill-window -t ` + shellQuote(sessionID+":"+id))
+	return remoteKillBody("kill-window", sessionID+":"+id)
 }
 
 // sshKillRemoteWindowCtx kills window id of session sessionID on host over ssh.
