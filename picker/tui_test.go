@@ -2170,3 +2170,186 @@ func TestRefreshForgetsKilledMirror(t *testing.T) {
 		t.Errorf("refreshMsg revived a killed remote row: %+v", mm.sessionItems)
 	}
 }
+
+// remoteWinPickerWindows is the cached window set the window-mode tests share.
+func remoteWinPickerWindows() []remoteWindow {
+	return []remoteWindow{
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
+	}
+}
+
+// localWindowItems is a window-mode local list: one header and one window per
+// group, keyed by session (or by agent state when stateGrouped).
+func localWindowItems(stateGrouped bool) []listItem {
+	if stateGrouped {
+		return []listItem{
+			{display: "No agent", isHeader: true, groupKey: "", searchText: "no agent"},
+			{target: "dev:1", session: "dev", groupKey: "", searchText: "dev:1 scratchpad", plain: "scratchpad", display: "scratchpad"},
+		}
+	}
+	return []listItem{
+		{display: "dev", isHeader: true, groupKey: "dev", searchText: "dev"},
+		{target: "dev:1", session: "dev", groupKey: "dev", searchText: "dev:1 scratchpad", plain: "scratchpad", display: "scratchpad"},
+	}
+}
+
+func windowModeRemoteModel(t *testing.T, stateGrouped bool) tuiModel {
+	t.Helper()
+	useRemoteCache(t)
+	writeRemoteWindowCache("lab", remoteWinPickerWindows(), time.Now())
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	m := newPickerModel(true, false, false, opts, "dark", localWindowItems(stateGrouped), "")
+	m.stateGrouped = stateGrouped
+	return m
+}
+
+func visibleTargets(m tuiModel) []string {
+	var out []string
+	for _, it := range m.visible {
+		out = append(out, it.target)
+	}
+	return out
+}
+
+func TestWindowModeFirstPaintListsCachedRemoteWindows(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+
+	headerAt, hostAt, firstWin, localAt := -1, -1, -1, -1
+	for i, it := range m.visible {
+		switch {
+		case it.isRemoteHeader:
+			headerAt = i
+		case it.remoteHost == "lab" && it.remoteSess == "":
+			hostAt = i
+		case it.remoteWindowID != "" && firstWin < 0:
+			firstWin = i
+		case it.target == "dev:1":
+			localAt = i
+		}
+	}
+	if localAt < 0 || headerAt < localAt || hostAt < headerAt || firstWin < hostAt {
+		t.Fatalf("want local windows, then Remote header, host row, cached windows; got %v", visibleTargets(m))
+	}
+	if got := m.visible[m.cursor].target; got != "dev:1" {
+		t.Errorf("cursor on %q, want the first local window", got)
+	}
+}
+
+func TestWindowModeInitProbesRemoteWindows(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+	m.showPreview = false
+
+	want := []listItem{{isRemoteRow: true, target: "remote:lab:api:@3", remoteHost: "lab", remoteSess: "api", remoteWindowID: "@3"}}
+	orig := collectRemoteWindowItemsFn
+	collectRemoteWindowItemsFn = func(map[string]string, map[string]bool, func(string) (remoteProbeResult, error)) []listItem {
+		return want
+	}
+	t.Cleanup(func() { collectRemoteWindowItemsFn = orig })
+
+	ch := runBatchAsync(m.Init())
+	msg := awaitAttachMsg(t, ch, 5*time.Second, func(msg tea.Msg) bool {
+		_, ok := msg.(remoteMsg)
+		return ok
+	})
+	if got := msg.(remoteMsg).items; len(got) != 1 || got[0].target != want[0].target {
+		t.Errorf("remoteMsg items = %+v, want the window collector's rows", got)
+	}
+}
+
+func TestWindowModeRemoteMsgReplacesCachedRowsKeepsCursor(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == "remote:lab:api:@4" })
+
+	live := []remoteWindow{
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
+		{Session: "api", SessionID: "$1", ID: "@9", Index: 3, Name: "fresh"},
+	}
+	probe := func(string) (remoteProbeResult, error) { return probeWithWindows(remoteIdentity{}, live...), nil }
+	resolved := collectRemoteWindowItems(m.tmuxOpts, nil, probe)
+
+	next, _ := m.Update(remoteMsg{items: resolved})
+	nm := next.(tuiModel)
+
+	if got := nm.visible[nm.cursor].target; got != "remote:lab:api:@4" {
+		t.Errorf("cursor moved to %q, want it kept on remote:lab:api:@4", got)
+	}
+	var liveRows, cachedGone int
+	for _, it := range nm.visible {
+		if it.remoteWindowID != "" && it.remoteLive {
+			liveRows++
+		}
+		if it.target == "remote:lab:api:@3" {
+			cachedGone++
+		}
+	}
+	if liveRows != 2 || cachedGone != 0 {
+		t.Errorf("live rows = %d, stale cached @3 rows = %d, want 2 and 0: %v", liveRows, cachedGone, visibleTargets(nm))
+	}
+}
+
+func TestWindowModeQueryRoutesRemoteWindowsUnderRemoteHeader(t *testing.T) {
+	for _, stateGrouped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stateGrouped=%v", stateGrouped), func(t *testing.T) {
+			m := windowModeRemoteModel(t, stateGrouped)
+
+			m.query = "logs"
+			got := m.withFilter().visible
+			if len(got) != 3 || !got[0].isRemoteHeader || got[1].remoteHost != "lab" || got[1].remoteSess != "" ||
+				!got[1].remoteContextOnly || got[2].remoteWindowID != "@4" {
+				t.Fatalf("query logs: want Remote header, context host row, window @4; got %+v", got)
+			}
+			if got[2].plain != got[2].plainEnd || got[2].display != got[2].displayEnd {
+				t.Errorf("last remote window should take the closing tree glyph: %q", got[2].plain)
+			}
+			for _, it := range got {
+				if it.isHeader && !it.isRemoteHeader {
+					t.Errorf("remote match grew a local group header: %+v", it)
+				}
+			}
+
+			m.query = "scratchpad"
+			got = m.withFilter().visible
+			if len(got) != 2 || !got[0].isHeader || got[0].isRemoteHeader || got[1].target != "dev:1" {
+				t.Fatalf("query scratchpad: want local header + window only; got %+v", got)
+			}
+		})
+	}
+}
+
+func TestWindowModeStateGroupedLocalNoAgentMatchStaysUnderLocalHeader(t *testing.T) {
+	m := windowModeRemoteModel(t, true)
+	m.query = "dev"
+	got := m.withFilter().visible
+	if len(got) < 2 || got[0].isRemoteHeader || got[0].display != "No agent" || got[1].target != "dev:1" {
+		t.Fatalf("local no-agent window must sit under the local \"\" header, got %+v", got)
+	}
+}
+
+func TestWindowModePreviewCardNamesRemoteWindow(t *testing.T) {
+	row := remoteWindowRowItem("lab", remoteWindow{Session: "api", ID: "@4", Index: 2, Name: "logs"}, "", "", "", false)
+	m := tuiModel{width: 100, height: 40, ready: true, showPreview: true, theme: "dark", windowMode: true,
+		visible: []listItem{row}}
+
+	msg, ok := m.loadPreviewCmd()().(previewMsg)
+	if !ok {
+		t.Fatal("expected a previewMsg")
+	}
+	for _, want := range []string{"remote bridge → lab/api:2 logs", "og-remote-open"} {
+		if !strings.Contains(msg.content, want) {
+			t.Errorf("card %q lacks %q", msg.content, want)
+		}
+	}
+}
+
+func TestWindowModeRefreshKeepsRemoteItems(t *testing.T) {
+	m := windowModeRemoteModel(t, false)
+	before := len(m.remoteItems)
+	if before == 0 {
+		t.Fatal("setup: no remote items")
+	}
+	next, _ := m.Update(refreshMsg{items: localWindowItems(false)})
+	if got := len(next.(tuiModel).remoteItems); got != before {
+		t.Errorf("remoteItems = %d after refreshMsg, want %d untouched", got, before)
+	}
+}

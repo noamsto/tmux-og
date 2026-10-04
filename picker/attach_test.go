@@ -345,6 +345,17 @@ func TestBuildAttachCmd(t *testing.T) {
 	}
 }
 
+func TestBuildAttachCmdWindowIndex(t *testing.T) {
+	cmd := buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "api", window: 3}, attachKillGrace)
+	if want := []string{"/x/og-remote-open", "lab", "api", "3"}; !slices.Equal(cmd.Args, want) {
+		t.Errorf("args = %v, want %v", cmd.Args, want)
+	}
+	cmd = buildAttachCmd(attachSpec{bin: "/x/og-remote-open", host: "lab", sess: "api"}, attachKillGrace)
+	if want := []string{"/x/og-remote-open", "lab", "api"}; !slices.Equal(cmd.Args, want) {
+		t.Errorf("args without window = %v, want %v", cmd.Args, want)
+	}
+}
+
 // The launcher never reaches PATH, so only @remote_open_bin resolves it.
 func TestRemoteOpenBinUsesOption(t *testing.T) {
 	t.Setenv("REMOTE_OPEN_BIN", "")
