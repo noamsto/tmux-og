@@ -11,7 +11,7 @@ Provides a fully configured tmux binary via a Nix flake — no dotfile managemen
 `nix run github:noamsto/tmux-og` drops you into a ready-to-use tmux environment.
 
 [![Nix Flake](https://img.shields.io/badge/nix-flake-blue?logo=nixos)](https://nixos.org)
-[![tmux next-3.8](https://img.shields.io/badge/tmux-next--3.8-green)](https://github.com/tmux/tmux)
+[![tmux next-3.9](https://img.shields.io/badge/tmux-next--3.9-green)](https://github.com/tmux/tmux)
 [![Catppuccin Mocha](https://img.shields.io/badge/theme-catppuccin%20mocha-mauve?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMiIgZmlsbD0iI2NiYTZmNyIvPjwvc3ZnPg==)](https://github.com/catppuccin/tmux)
 
 </div>
@@ -141,7 +141,7 @@ back when there is room.
 ## Requirements
 
 - **Nerd Font terminal** — any terminal with a Nerd Font renders window icons correctly (Kitty, Alacritty, WezTerm, etc.)
-- Nothing else — the Nix package bundles tmux (upstream, pinned at next-3.8); your own `~/.tmux.conf` and system tmux are not used
+- Nothing else — the Nix package bundles tmux (upstream, pinned at next-3.9); your own `~/.tmux.conf` and system tmux are not used
 
 ---
 

@@ -234,7 +234,7 @@ assert_wire_argv() { # payload_file name
 # tmux 3.7b that modifier silently returns the value RAW and unquoted -- not an
 # error, not empty (an unknown modifier like #{zz:} is what returns empty), so a
 # qs:-based bind provides zero quoting there and every assertion below would pass
-# while proving nothing. Production ships the pinned next-3.8, and this test binds
+# while proving nothing. Production ships the pinned next-3.9, and this test binds
 # TMUX_BIN to that same wrapped binary; this guard is what keeps a future pin
 # downgrade -- or a copy of this file pointed at pkgs.tmux -- from reading green.
 @test "the tmux under test really wraps #{qs:} (guards a silent no-op)" {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# The bell producer's MECHANISM, on the pinned next-3.8 tmux (mkTmux in
+# The bell producer's MECHANISM, on the pinned next-3.9 tmux (mkTmux in
 # flake.nix, never pkgs.tmux), on a private -L socket with -f /dev/null. This is
 # what makes "bell notifies" verified rather than assumed: the generated-conf
 # check asserts the hook is wired, this asserts that a real bell fires it.

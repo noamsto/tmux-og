@@ -10,7 +10,7 @@
 # Runs the real script against a private, config-less tmux server (like
 # tests/worktree-match-integration.bats) so its bare `tmux` calls hit real
 # windows/panes, not fakes, and so the real upstream clamp is what runs on
-# resize-window, not a stand-in for it. This needs the pinned next-3.8 tmux
+# resize-window, not a stand-in for it. This needs the pinned next-3.9 tmux
 # (mkTmux in flake.nix's float-refit-tests check) — `list-commands new-pane`
 # on nixpkgs' stock tmux advertises -A/-B/-X/-Y but its parser rejects them,
 # so a plain `pkgs.tmux` would make every float-creating test skip rather than

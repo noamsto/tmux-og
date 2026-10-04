@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Headless readiness smoke for the shipped next-3.8 tmux wrapper.
+# Headless readiness smoke for the shipped next-3.9 tmux wrapper.
 
 setup() {
 	TMUX_BIN="${TMUX_BIN:?set TMUX_BIN to the built wrapper}"
@@ -283,7 +283,7 @@ wait_for_client() {
 }
 
 # M2.3 made the config own three keys tmux used to own (`,`, `{`, `}`). Their
-# non-bridge behavior must stay byte-identical to next-3.8's default, so assert
+# non-bridge behavior must stay byte-identical to next-3.8's default (unchanged in next-3.9), so assert
 # the else-branch command and the -N note against the pinned upstream text. This
 # turns a hand transcription into a claim that fails loudly on the next tmux bump.
 #
