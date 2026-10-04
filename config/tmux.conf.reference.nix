@@ -717,7 +717,7 @@
 
     # === Remote bridge: keys this config did NOT previously bind ===
     # Gating them means the config now owns them, so each else-branch reproduces
-    # next-3.9's default verbatim, -N note included (the note feeds which-key).
+    # next-3.8's default verbatim (unchanged in next-3.9), -N note included (the note feeds which-key).
     # The rename prompt seeds from @window_bridge_name, not #W: on a mirror window
     # #W is the label reflow derived, while the option holds the remote's own name.
     # That seed is remote-derived, so the prompt result is untrusted and reaches
