@@ -223,7 +223,7 @@ func (a *agentShipper) flush(cfg Config, rt roundTrip, gen uint64, drained bool)
 		return
 	}
 	a.lastPoll, a.lastGen = time.Now(), gen
-	l, ok := one(rt, fmt.Sprintf("list-panes -s -t %s -F %s", tmuxQuote(cfg.RemoteSession), tmuxQuote(agentStatusFormat)))
+	l, ok := one(rt, fmt.Sprintf("list-panes -s -t %s -F %s", tmuxQuote(cfg.RemoteSession), tmuxQuote(ctlSafe(agentStatusFormat))))
 	if !ok || l.Kind == controlmode.Error {
 		return
 	}

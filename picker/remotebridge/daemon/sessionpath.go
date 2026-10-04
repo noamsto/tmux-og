@@ -17,7 +17,7 @@ var sessionPathRe = regexp.MustCompile(`^/[^|]*$`)
 // mirror's is og-remote-open's cwd, since the remote directory need not exist
 // here to pass as -c. An unusable reply is "".
 func readSessionPath(rt roundTrip, sess string) string {
-	l, ok := one(rt, fmt.Sprintf("display-message -p -t %s -F '#{session_path}'", tmuxQuote(sess)))
+	l, ok := one(rt, fmt.Sprintf("display-message -p -t %s -F %s", tmuxQuote(sess), tmuxQuote(ctlSafe("#{session_path}"))))
 	if !ok || l.Kind == controlmode.Error {
 		return ""
 	}

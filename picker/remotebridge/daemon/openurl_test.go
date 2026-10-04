@@ -265,8 +265,8 @@ func TestURLOpenerIgnoresForeignSession(t *testing.T) {
 
 func connectCmds(target string) []string {
 	return []string{
-		"display-message -p" + target + " '#{?#{e|<=:#{n:@og_open_url},12288},#{@og_open_url},!oversized}'",
-		"refresh-client -B 'og_open::#{?#{e|<=:#{n:@og_open_url},12288},#{@og_open_url},!oversized}'",
+		"display-message -p" + target + " " + tmuxQuote(ctlSafe(openURLFormat)),
+		"refresh-client -B " + tmuxQuote("og_open::"+ctlSafe(openURLFormat)),
 		"set-option -F" + target + " @og_open_client '#{client_name}'",
 	}
 }

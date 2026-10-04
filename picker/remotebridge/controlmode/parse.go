@@ -3,9 +3,10 @@ package controlmode
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
+	"slices"
 	"strconv"
-	"strings"
 )
 
 // ClientCommandFlag is the third field of %begin/%end/%error for a block that a
@@ -16,6 +17,19 @@ import (
 // new-window. Matching replies without this flag takes a hook's empty block as
 // our reply and desynchronises every later round-trip (#276).
 const ClientCommandFlag = 1
+
+const (
+	// MaxLine is the longest line the Reader keeps, newline excluded: at least
+	// 20× the largest genuine line (a ~32 KiB %output, a ~50 KiB capture row).
+	MaxLine = 1 << 20
+	// MaxBody is the most reply body the Reader retains for one block: enough
+	// for an extreme 1000×300 dense-truecolor capture-pane -e (~15 MB).
+	MaxBody = 16 << 20
+)
+
+// ErrReplyTooLarge is the Err of a reply whose body exceeded MaxBody or held a
+// line longer than MaxLine; the Reader read it through and kept none of it.
+var ErrReplyTooLarge = errors.New("controlmode: reply body exceeds MaxBody")
 
 // Unescape decodes tmux control-mode %output data: bytes below 0x20 and the
 // backslash are written as three-digit octal (\NNN); all else is literal.
@@ -68,11 +82,13 @@ type Line struct {
 	// Flags is the guard flags field, set on Begin/End/Error only; see
 	// ClientCommandFlag.
 	Flags int
+	// Err is set on a reply that failed in the reader itself; see
+	// ErrReplyTooLarge.
+	Err error
 }
 
-// ParseLine is the string-based entry point, kept for the readBlock retained-
-// line path (which already owns a string via sc.Text()) and for callers
-// outside the hot %output loop. It's a thin wrapper over parseLine.
+// ParseLine is the string-based entry point for callers outside the Reader's
+// hot %output loop. It's a thin wrapper over parseLine.
 func ParseLine(raw string) Line {
 	return parseLine([]byte(raw))
 }
@@ -117,8 +133,8 @@ func fieldsToStrings(fields [][]byte) []string {
 // string. Every retained field is either a small string(...) conversion (verb,
 // pane id, Fields), Unescape's freshly allocated output, or an explicit
 // bytes.Clone — raw itself (and any slice of it) must never be retained
-// beyond this call, since callers may pass a scanner buffer valid only until
-// the next Scan().
+// beyond this call, since the Reader passes its read buffer, valid only until
+// the next read.
 func parseLine(raw []byte) Line {
 	if len(raw) == 0 || raw[0] != '%' {
 		return Line{Kind: Other}
@@ -156,7 +172,7 @@ func parseLine(raw []byte) Line {
 	case "%window-renamed":
 		// name may contain spaces: id is the first token, the rest is the
 		// whole name (kept in Data, not Fields-split). Data must be an owned
-		// copy — it must not alias the scanner's reused buffer.
+		// copy — it must not alias the Reader's reused buffer.
 		id, name, _ := cutSpace(rest)
 		return Line{Kind: WindowRenamed, Args: []string{string(id)}, Data: bytes.Clone(name)}
 	case "%session-changed":
@@ -207,68 +223,229 @@ func guardFlags(fields []string) int {
 	return n
 }
 
+// validGuard reports whether a %begin's fields are the shape tmux writes: time,
+// command number and flags, all unsigned decimal, flags 0 or 1.
+func validGuard(fields []string) bool {
+	if len(fields) != 3 || (fields[2] != "0" && fields[2] != "1") {
+		return false
+	}
+	for _, f := range fields {
+		if f == "" {
+			return false
+		}
+		for i := range len(f) {
+			if f[i] < '0' || f[i] > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Reader yields a control-mode stream one Line at a time, folding each guarded
+// %begin…%end/%error block into a single terminal Line (Kind End or Error, Args
+// = the %begin's time, Data = the command output alone).
+//
+// Framing follows only what tmux itself can write (#860):
+//   - tmux writes %begin and its %end/%error synchronously with the same three
+//     fields (cmdq_fire_command, cmdq_guard), so only a guard repeating the
+//     %begin's fields closes a block, blocks never nest, and a guard outside a
+//     block — or a malformed %begin — is Other.
+//   - %subscription-changed is written only from a timer, which cannot fire
+//     inside a block, so in a block it is body.
+//   - %exit is printed by the exiting client, so it is always the last line: in
+//     a block it is genuine only when end-of-stream follows it, else body.
+//   - Lines past MaxLine and bodies past MaxBody are read through, never kept:
+//     an overlong top-level line is Other, an oversized block fails as Error
+//     with ErrReplyTooLarge, and the stream goes on.
+//
+// tmux 3.3a–3.8 also emit the notifications a command causes inside that
+// command's block (#276); left in the body they read as that command's output,
+// so Next returns each one the moment it is read, ahead of the terminal line. A
+// body line is only taken for a notification when it parses as a known verb, so
+// pane content that merely starts with '%' stays body — but a row that does
+// parse as one is lifted too (docs/agents/bridge-daemon.md).
 type Reader struct {
-	sc *bufio.Scanner
-	// pending holds the lines a completed block yielded, in stream order, until
-	// Next has handed them out one at a time.
-	pending []Line
+	br *bufio.Reader
+	// long accumulates a line too long for br's buffer; reused across lines.
+	long  []byte
+	ended bool
+
+	// open block state: the %begin's fields and flags, the retained body, and
+	// whether the body overflowed (and so is no longer retained).
+	open     bool
+	begin    [3]string
+	flags    int
+	body     []byte
+	bodyLine bool
+	overflow bool
+	// heldExit is an owned copy of an in-block %exit awaiting the next read.
+	heldExit []byte
 }
 
 func NewReader(r io.Reader) *Reader {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	return &Reader{sc: sc}
+	return &Reader{br: bufio.NewReaderSize(r, 64<<10)}
 }
 
+// Next returns the next line, or false once the stream has ended. A Line never
+// aliases reader state: callers may keep it across later calls.
 func (rd *Reader) Next() (Line, bool) {
 	for {
-		if len(rd.pending) > 0 {
-			l := rd.pending[0]
-			rd.pending = rd.pending[1:]
+		raw, tooLong, ok := rd.readLine()
+		if !ok {
+			return rd.finish()
+		}
+		if !rd.open {
+			if l, ok := rd.topLevel(raw, tooLong); ok {
+				return l, true
+			}
+			continue
+		}
+		if l, ok := rd.inBlock(raw, tooLong); ok {
 			return l, true
 		}
-		if !rd.sc.Scan() {
-			return Line{}, false
-		}
-		l := parseLine(rd.sc.Bytes())
-		if l.Kind != Begin {
-			return l, true
-		}
-		rd.pending = rd.readBlock(l)
 	}
 }
 
-// readBlock consumes a guarded block and returns, in stream order, each
-// notification tmux emitted inside it followed by the block's own terminal line
-// (Kind End or Error, Data = the command output alone). tmux emits the
-// notifications a command causes inside that command's block, so they have to
-// be lifted out — left in the body they read as that command's output.
-//
-// A body line is only taken for a notification when it parses as a known verb,
-// so pane content that merely starts with '%' stays body.
-func (rd *Reader) readBlock(begin Line) []Line {
-	id := ""
-	if len(begin.Args) > 0 {
-		id = begin.Args[0]
+func (rd *Reader) topLevel(raw []byte, tooLong bool) (Line, bool) {
+	if tooLong {
+		return Line{Kind: Other}, true
 	}
-	var (
-		out  []Line
-		body []string
-	)
-	end := func(kind Kind, flags int) []Line {
-		return append(out, Line{Kind: kind, Args: []string{id}, Flags: flags, Data: []byte(strings.Join(body, "\n"))})
-	}
-	for rd.sc.Scan() {
-		raw := rd.sc.Text()
-		t := ParseLine(raw)
-		switch t.Kind {
-		case End, Error:
-			return end(t.Kind, t.Flags)
-		case Other, Begin:
-			body = append(body, raw)
-		default:
-			out = append(out, t)
+	l := parseLine(raw)
+	switch l.Kind {
+	case Begin:
+		if !validGuard(l.Args) {
+			return Line{Kind: Other}, true
 		}
+		rd.open, rd.begin, rd.flags = true, [3]string(l.Args), l.Flags
+		return Line{}, false
+	case End, Error:
+		return Line{Kind: Other}, true
+	default:
+		return l, true
 	}
-	return end(End, begin.Flags)
+}
+
+func (rd *Reader) inBlock(raw []byte, tooLong bool) (Line, bool) {
+	if rd.heldExit != nil {
+		rd.appendBody(rd.heldExit)
+		rd.heldExit = nil
+	}
+	if tooLong {
+		rd.setOverflow()
+		return Line{}, false
+	}
+	l := parseLine(raw)
+	switch l.Kind {
+	case End, Error:
+		if slices.Equal(l.Args, rd.begin[:]) {
+			return rd.closeBlock(l.Kind), true
+		}
+		rd.appendBody(raw)
+	case Exit:
+		rd.heldExit = bytes.Clone(raw)
+	case Begin, SubscriptionChanged, Other:
+		rd.appendBody(raw)
+	default:
+		return l, true
+	}
+	return Line{}, false
+}
+
+// finish drains an open block at end-of-stream: a held %exit was genuine, and
+// the block resolves with a synthesized End carrying its partial body.
+func (rd *Reader) finish() (Line, bool) {
+	if !rd.open {
+		return Line{}, false
+	}
+	if rd.heldExit != nil {
+		l := parseLine(rd.heldExit)
+		rd.heldExit = nil
+		return l, true
+	}
+	return rd.closeBlock(End), true
+}
+
+func (rd *Reader) appendBody(raw []byte) {
+	if rd.overflow {
+		return
+	}
+	sep := 0
+	if rd.bodyLine {
+		sep = 1
+	}
+	n := len(rd.body) + sep + len(raw)
+	if n > MaxBody {
+		rd.setOverflow()
+		return
+	}
+	if n > cap(rd.body) {
+		// Doubled by make+copy, not a bytes.Buffer: its append-make growth
+		// allocates every step twice under -race, breaking the memory bound.
+		grown := make([]byte, len(rd.body), min(max(n, 2*cap(rd.body)), MaxBody))
+		copy(grown, rd.body)
+		rd.body = grown
+	}
+	if rd.bodyLine {
+		rd.body = append(rd.body, '\n')
+	}
+	rd.body = append(rd.body, raw...)
+	rd.bodyLine = true
+}
+
+func (rd *Reader) setOverflow() {
+	rd.overflow = true
+	rd.body = nil
+}
+
+// closeBlock ends the open block with its terminal line, handing the body's
+// bytes to the caller.
+func (rd *Reader) closeBlock(kind Kind) Line {
+	l := Line{Kind: kind, Args: []string{rd.begin[0]}, Flags: rd.flags, Data: rd.body}
+	if rd.overflow {
+		l.Kind, l.Data, l.Err = Error, []byte(ErrReplyTooLarge.Error()), ErrReplyTooLarge
+	}
+	rd.open, rd.begin, rd.flags = false, [3]string{}, 0
+	rd.body, rd.bodyLine, rd.overflow, rd.heldExit = nil, false, false, nil
+	return l
+}
+
+// readLine returns the next line without its "\n" or one trailing "\r", as
+// bufio.ScanLines does; a final unterminated line is still a line. A line
+// longer than MaxLine is consumed to its newline and reported as tooLong with
+// no data. The slice is valid only until the next call. ok is false once the
+// underlying reader has returned any error.
+func (rd *Reader) readLine() (line []byte, tooLong, ok bool) {
+	if rd.ended {
+		return nil, false, false
+	}
+	rd.long = rd.long[:0]
+	for {
+		chunk, err := rd.br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			if !tooLong && len(rd.long)+len(chunk) <= MaxLine {
+				rd.long = append(rd.long, chunk...)
+			} else {
+				tooLong = true
+				rd.long = rd.long[:0]
+			}
+			continue
+		}
+		if err != nil {
+			rd.ended = true
+			if !tooLong && len(rd.long)+len(chunk) == 0 {
+				return nil, false, false
+			}
+		} else {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if tooLong || len(rd.long)+len(chunk) > MaxLine {
+			return nil, true, true
+		}
+		if len(rd.long) > 0 {
+			rd.long = append(rd.long, chunk...)
+			chunk = rd.long
+		}
+		return bytes.TrimSuffix(chunk, []byte{'\r'}), false, true
+	}
 }

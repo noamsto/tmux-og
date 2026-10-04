@@ -36,10 +36,9 @@ const (
 )
 
 // openURLFormat is the log bounded remote-side: tmux sends option values raw,
-// so the controller's reader would buffer an unbounded value whole before any
-// Go-side check. The test is "fits", not "too big", so a tmux that cannot
-// evaluate e|<= reads every value as oversized — the feature off, never
-// unbounded.
+// so the size cap has to run where the value lives. The test is "fits",
+// not "too big", so a tmux that cannot evaluate e|<= reads every value as
+// oversized — the feature off, never unbounded.
 var openURLFormat = "#{?#{e|<=:#{n:" + openURLOpt + "}," + strconv.Itoa(openValueMaxLen) + "},#{" + openURLOpt + "}," + openOversized + "}"
 
 // openerWaitBound is how long a launched opener's exit status still counts.
@@ -162,7 +161,7 @@ func (o *urlOpener) connect(rt roundTrip) {
 	if o == nil {
 		return
 	}
-	l, ok := one(rt, "display-message -p"+o.target()+" "+tmuxQuote(openURLFormat))
+	l, ok := one(rt, "display-message -p"+o.target()+" "+tmuxQuote(ctlSafe(openURLFormat)))
 	if !ok || l.Kind == controlmode.Error {
 		o.fail("seed")
 		return

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -57,6 +58,28 @@ func TestPaneSeedErrorReply(t *testing.T) {
 	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
 	if err == nil {
 		t.Fatalf("PaneSeed: want error on %%error reply, got seed %q", got)
+	}
+}
+
+func TestPaneSeedOverCapCaptureWrapsErrReplyTooLarge(t *testing.T) {
+	lines := []controlmode.Line{
+		{Kind: controlmode.End, Data: []byte("5 2 0 0 0 0 0 0 0")},
+		{Kind: controlmode.Error, Err: controlmode.ErrReplyTooLarge},
+	}
+	rt := func(...string) replies {
+		return func() (controlmode.Line, bool) {
+			if len(lines) == 0 {
+				return controlmode.Line{}, false
+			}
+			l := lines[0]
+			lines = lines[1:]
+			return l, true
+		}
+	}
+
+	_, err := PaneSeed(rt, "%3")
+	if !errors.Is(err, controlmode.ErrReplyTooLarge) {
+		t.Fatalf("PaneSeed err = %v, want it to wrap ErrReplyTooLarge", err)
 	}
 }
 
