@@ -94,6 +94,12 @@ type Config struct {
 	// IdentityTimeout bounds one attach's identity read; 0 takes
 	// defaultIdentityTimeout. See armIdentityDeadline.
 	IdentityTimeout time.Duration
+	// ReplyTimeout bounds one ordinary reply wait on a bound control
+	// connection; 0 takes defaultReplyTimeout. See armStall.
+	ReplyTimeout time.Duration
+	// SeedTimeout bounds one capture-pane reply, whose body may carry a whole
+	// screen; 0 takes defaultSeedTimeout. See armStall.
+	SeedTimeout time.Duration
 	// View is the daemon's live view-identity cell — see Viewing's doc in
 	// viewident.go for the full State model (Desired/Advertised/Relay).
 	// Desired is what every dial's argv reads; Relay is the single capability
@@ -148,6 +154,35 @@ func (c Config) identityTimeout() time.Duration {
 		return c.IdentityTimeout
 	}
 	return defaultIdentityTimeout
+}
+
+// defaultReplyTimeout bounds one ordinary reply wait on a bound control
+// connection. Measured loopback round trips are 15–75 µs and the largest
+// legitimate ordinary reply is ~1 MiB (`list-panes -s` at 500 panes); 30s
+// keeps >7x headroom over that body at a 2 Mbit/s link while still recovering
+// a wedged main loop in half a minute. See the #900 design spec.
+const defaultReplyTimeout = 30 * time.Second
+
+// defaultSeedTimeout bounds one capture-pane reply, the only reply that can
+// carry a whole screen (measured 3.45 MB for a dense 1000x300 pane, capped by
+// controlmode.MaxBody at 16 MiB). 120s keeps >8x headroom over the measured
+// body at a 2 Mbit/s link.
+const defaultSeedTimeout = 120 * time.Second
+
+// replyTimeout is the ordinary-reply deadline this Config asks for.
+func (c Config) replyTimeout() time.Duration {
+	if c.ReplyTimeout > 0 {
+		return c.ReplyTimeout
+	}
+	return defaultReplyTimeout
+}
+
+// seedTimeout is the capture-pane reply deadline this Config asks for.
+func (c Config) seedTimeout() time.Duration {
+	if c.SeedTimeout > 0 {
+		return c.SeedTimeout
+	}
+	return defaultSeedTimeout
 }
 
 // retrySchedule is the reconnect schedule this Config asks for.
@@ -538,7 +573,27 @@ type stream struct {
 	awaitHigh uint64
 	// parked is the one reply routeWhile set aside to keep reading; see park.
 	parked *parkedReply
+	// guard, when non-nil, bounds one wait on this connection — a reply read
+	// or a flush of the write buffer. A fired guard closes the connection (see
+	// ctlConn.armStall), which poisons the stream for every later caller; nil
+	// in every direct newStream test construction, and until bind enables it
+	// from the ctlConn's configured timeouts. replyTimeout and seedTimeout are
+	// the two command classes: a capture-pane reply carries a whole screen (up
+	// to controlmode.MaxBody), everything else is small. Zero means unbounded.
+	guard        stallGuard
+	replyTimeout time.Duration
+	seedTimeout  time.Duration
+	// stalled is set when a stall guard fires, before the connection is
+	// closed: controlmode synthesizes a terminal End for a block left open at
+	// EOF, and that synthesized line must never be handed to a waiter as its
+	// reply. From then on every read fails.
+	stalled atomic.Bool
 }
+
+// stallGuard arms a deadline that closes the connection when the wait it
+// covers does not finish in time; disarm stops it. Nil, or a zero duration,
+// means no deadline.
+type stallGuard func(d time.Duration, what string) (disarm func())
 
 // parkedReply is the reply routeWhile parked instead of routing: seq is the
 // ordinal claimSeq gave it, l the line itself.
@@ -577,6 +632,42 @@ type fanout struct {
 }
 
 func newStream(w io.Writer) *stream { return &stream{w: bufio.NewWriter(w)} }
+
+// isClosed reports whether sends are barred on this stream — either a close or
+// a write that already failed.
+func (s *stream) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// replyDeadline is the deadline for one reply: a capture-pane reply carries a
+// whole screen, everything else is small.
+func (s *stream) replyDeadline(cmd string) time.Duration {
+	if strings.HasPrefix(cmd, "capture-pane ") {
+		return s.seedTimeout
+	}
+	return s.replyTimeout
+}
+
+// armReply arms the deadline for one reply read. The disarm is always non-nil,
+// and calling it is the caller's job on every path that finishes the read.
+func (s *stream) armReply(cmd string) (disarm func()) {
+	if s.guard == nil {
+		return func() {}
+	}
+	d := s.replyDeadline(cmd)
+	if d <= 0 {
+		return func() {}
+	}
+	return s.guard(d, fmt.Sprintf("reply deadline %v exceeded for %q", d, cmd))
+}
+
+// markStalled records that a stall guard has fired on this connection.
+func (s *stream) markStalled() { s.stalled.Store(true) }
+
+// stalledOut reports whether a stall guard has fired.
+func (s *stream) stalledOut() bool { return s.stalled.Load() }
 
 // stampAll writes every command in cmds and returns their ordinals. ok is false
 // once the daemon is tearing down: a ctl request that loses that race must not
@@ -617,7 +708,21 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 	// tmux leaves reply blocks nobody reads, which desyncs nothing:
 	// readReplyRouting walks past any ordinal it isn't waiting for, and s.seen
 	// advances in nextLine regardless of who reads.
-	if err := s.w.Flush(); err != nil {
+	//
+	// A stalled write is the same freeze as a stalled reply — the far end has
+	// stopped draining — so it carries the same deadline. A fired guard closes
+	// the transport, which unparks this very Flush (ctlConn.close closes the
+	// transport before it takes this mutex again) and bars every later send. A
+	// flush that completed as the deadline fired still reports success; the
+	// connection is closed underneath it either way, and the next read's EOF
+	// surfaces that.
+	disarm := func() {}
+	if s.guard != nil && s.replyTimeout > 0 {
+		disarm = s.guard(s.replyTimeout, fmt.Sprintf("write deadline %v exceeded", s.replyTimeout))
+	}
+	err := s.w.Flush()
+	disarm()
+	if err != nil {
 		s.closed = true
 		return nil, false
 	}
@@ -733,8 +838,23 @@ func newRoundTrip(reader lineReader, router *Router, async *asyncQueue, st *stre
 				return controlmode.Line{}, false
 			}
 			seq := seqs[i]
+			cmd := cmds[i]
 			i++
-			return readReplyRouting(reader, router, async, st, seq)
+			// One deadline per reply, not per batch: a wedge holds the first
+			// unanswered reply, while a large PaneSeeds batch must be allowed its
+			// many slow replies. A fired guard has already closed the connection,
+			// so this read (and every later send) fails closed.
+			disarm := st.armReply(cmd)
+			l, ok := readReplyRouting(reader, router, async, st, seq)
+			disarm()
+			if st.stalledOut() {
+				// A fired guard poisons the connection: never deliver whatever the
+				// reader produced on its way out, since controlmode synthesizes a
+				// terminal End for a block left open at EOF and that line is not
+				// this command's reply.
+				return controlmode.Line{}, false
+			}
+			return l, ok
 		}
 	}
 }
@@ -2027,11 +2147,16 @@ const ctlPumpBuf = 256
 // a connection the daemon has moved on from has nothing left to deliver.
 type ctlPump struct {
 	lines chan controlmode.Line
+	// done is set once the reading goroutine has returned, so live() can tell a
+	// poisoned connection (our own close or a remote EOF) from a healthy one
+	// without touching the channel.
+	done atomic.Bool
 }
 
 func startCtlPump(rd *controlmode.Reader) *ctlPump {
 	p := &ctlPump{lines: make(chan controlmode.Line, ctlPumpBuf)}
 	go func() {
+		defer p.done.Store(true)
 		defer close(p.lines)
 		for {
 			l, ok := rd.Next()
@@ -2043,6 +2168,9 @@ func startCtlPump(rd *controlmode.Reader) *ctlPump {
 	}()
 	return p
 }
+
+// alive reports whether the pump's reader is still running.
+func (p *ctlPump) alive() bool { return !p.done.Load() }
 
 func (p *ctlPump) Next() (controlmode.Line, bool) {
 	l, ok := <-p.lines

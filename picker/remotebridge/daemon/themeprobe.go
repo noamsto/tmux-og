@@ -32,12 +32,11 @@ const (
 // which is what makes the result "once per bridge connect" rather than a
 // poll.
 //
-// No deadline beyond the retry budget above: it runs in the same unprotected
-// stretch as the list-windows round-trip immediately before it (past the
-// identity read's armIdentityDeadline, before repair's or watchLocalClient's
-// timeouts exist), so a wedged default-shell on the remote blocks daemon
-// startup no differently than an already-accepted-but-silent remote already
-// can there.
+// It carries the bound connection's reply deadline, like the list-windows
+// round-trip immediately before it (bind runs before both, past the identity
+// read's armIdentityDeadline): a remote whose default shell wedged fails this
+// probe — and startup — at that deadline instead of parking it. The retry
+// budget above covers the probe's own transient failures.
 func themeToggleAvailable(rt roundTrip, sess string) (available, checked bool) {
 	return themeToggleAvailableRetry(rt, sess, themeProbeRetries, themeProbeInterval, time.Sleep)
 }

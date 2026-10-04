@@ -5954,3 +5954,113 @@ mirror_of_remote() {
 	[ "$src_n" -eq 3 ]
 	[ "$src_map" = "$dst_map" ]
 }
+
+# #900: a socket holder replaces the daemon's subscription format with a value
+# whose raw newline opens a well-formed unterminated %begin, holding every later
+# reply and subscription line as body. Before the reply deadline the daemon's
+# main loop parked in that round trip forever, keeping its control client (and
+# the remote's per-window size clamp) in force; now the deadline closes the
+# connection, the mirror reattaches, and a fresh control client — which carries
+# no forged subscription — mirrors live output again.
+@test "a forged unterminated %begin is bounded by the reply deadline and the mirror reattaches" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 replydl --reply-timeout 2s --seed-timeout 2s
+	log="$BATS_TEST_TMPDIR/replydl.log"
+
+	# The daemon's own control client: the only client in control mode.
+	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)"
+	[ -n "$cc" ]
+	$SRC set-option -g @og900evil "$(printf 'x\n%%begin 999999 999999 1')"
+	$SRC refresh-client -t "$cc" -B 'og900evil::#{@og900evil}'
+
+	# Each option change re-reports through the replaced format; after a
+	# settle beat the forged lines land at top level, and the next split's
+	# round trip is the one they hold. Retrying converges if a report was
+	# swallowed as the body of an in-flight reply.
+	wedged=no
+	i=0
+	deadline=$((SECONDS + 40))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		i=$((i + 1))
+		$SRC set-option -g @og900evil "x$i$(printf '\n%%begin 999999 999999 1')"
+		sleep 1
+		$SRC split-window -d -t rem 2>/dev/null || true
+		if grep -Eq 'reply deadline|write deadline' "$log"; then
+			wedged=yes
+			break
+		fi
+	done
+	[ "$wedged" = yes ] || {
+		printf -- '--- daemon log ---\n' >&3
+		cat "$log" >&3
+		false
+	}
+
+	# And the mirror recovers on a fresh control client: live output paints.
+	painted=no
+	marker="REPLYDL_RECOVER_$$"
+	for _ in $(seq 1 100); do
+		$SRC send-keys -t rem "printf '$marker\\n'" Enter
+		for _ in $(seq 1 5); do
+			mirror_contains 1 "$marker" && {
+				painted=yes
+				break 2
+			}
+			sleep 0.1
+		done
+	done
+
+	state="$($DST show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$painted" = yes ]
+	[ -z "$state" ]
+}
+
+# The other half of #900's item 3: the local mirror session goes away while the
+# daemon is parked in the wedged round trip. Without a bounded wait the #680
+# liveness probe never gets a turn again and the daemon outlives its session
+# forever; with one, the deadline ends the wait and the next ticks exit it.
+@test "a local session that vanishes during a wedged reply ends the daemon" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 sessgone --reply-timeout 2s --seed-timeout 2s
+	log="$BATS_TEST_TMPDIR/sessgone.log"
+
+	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)"
+	[ -n "$cc" ]
+	$SRC set-option -g @og900evil2 "$(printf 'x\n%%begin 999998 999998 1')"
+	$SRC refresh-client -t "$cc" -B 'og900evil2::#{@og900evil2}'
+
+	# Gone by name (what #680's probe reads) while the round trip is still
+	# waiting: the probe only gets a turn again once the wait is bounded.
+	$DST rename-session -t host-sess mirror-gone
+
+	# Provoke the round trip that the forged block will hold: each option
+	# change re-reports, the settle beat lets that report land at top level,
+	# and the split's layout read is then the wait the deadline must end.
+	wedged=no
+	i=0
+	deadline=$((SECONDS + 40))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		i=$((i + 1))
+		$SRC set-option -g @og900evil2 "x$i$(printf '\n%%begin 999998 999998 1')"
+		sleep 1
+		$SRC split-window -d -t rem 2>/dev/null || true
+		if grep -Eq 'reply deadline|write deadline' "$log"; then
+			wedged=yes
+			break
+		fi
+	done
+	[ "$wedged" = yes ] || {
+		printf -- '--- daemon log ---\n' >&3
+		cat "$log" >&3
+		false
+	}
+
+	# The deadline ends the wait; the next ticks see the session gone and the
+	# daemon exits, instead of outliving its session forever.
+	wait_daemon_exit sessgone "$log" 300
+}
