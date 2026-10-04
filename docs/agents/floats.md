@@ -58,10 +58,10 @@
   segment for the launching command *is* the float while it's open; killing
   the picker's own window/session from inside the picker takes the picker
   with it, the same end state a picker that closes after acting leaves; the
-  session picker's launcher treats that death as a clean exit — the destroyed
-  float makes `display-popup` exit 129 (SIGHUP), and the launcher exits 0 for
-  it only while the popup's host window is actually gone, so a genuine picker
-  failure still surfaces (#884). A
+  session picker's launcher (and window picker's launcher) treat that death as a
+  clean exit — the destroyed float makes `display-popup` exit 129 (SIGHUP), and
+  the launcher exits 0 for it only while the popup's host window is actually
+  gone, so a genuine picker failure still surfaces (#884, #887). A
   popup-float carries no `@float_geom`, so `tmux-float-refit` skips it (same
   as a mouse-dragged float; upstream's own clamp keeps it on screen across a
   resize) — `float-conf-assertions` matches `^bind(-key)? .*new-pane` only, so
