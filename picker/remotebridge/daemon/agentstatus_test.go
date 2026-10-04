@@ -158,12 +158,10 @@ func TestAgentShipperStampsCrewDecorations(t *testing.T) {
 }
 
 // A forget() while the local mirror pane survives — park's clear() drops every
-// row without killing the mirror — must not make the pane read as never seen.
-// The remote may have cleared a crew role or the carousel marker during the
-// outage, and the skip for a first-seen-empty pane would leave the stale
-// @bridge_* option on the local border indefinitely (#895). The shipper
-// remembers it wrote a value on that pane id, so the next empty re-report
-// unsets it.
+// row without killing the mirror — must not make the pane read as never seen:
+// the remote may have cleared a crew role or the carousel marker meanwhile, and
+// the skip for a first-seen-empty pane would leave the stale @bridge_* option
+// on the local border indefinitely (#895).
 func TestAgentShipperClearsAfterForgetWhilePaneSurvives(t *testing.T) {
 	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
