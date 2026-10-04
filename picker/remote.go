@@ -35,8 +35,8 @@ const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n ker
 
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full
 // command begins with the identity preamble (machine-id line, username line),
-// then session names.
-var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F '#{session_name}'`)
+// then one S|$N|name line per session — the id is what a kill targets.
+var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_name}'`)
 
 // remoteTmuxBin resolves the remote's tmux without a shell assignment: PATH
 // first, then the nix per-user profile a non-interactive ssh does not see.
@@ -159,11 +159,13 @@ type remoteIdentity struct {
 
 // remoteProbeResult is stdout from remoteListSessionsCmd or
 // remoteListWindowsCmd: identity on the first two lines, then session names
-// (and, for the window probe, their windows).
+// (and, for the window probe, their windows). SessionIDs maps each name to its
+// tmux $N id.
 type remoteProbeResult struct {
-	Identity remoteIdentity
-	Sessions []string
-	Windows  []remoteWindow
+	Identity   remoteIdentity
+	Sessions   []string
+	SessionIDs map[string]string
+	Windows    []remoteWindow
 }
 
 // readLocalRemoteIdentity returns this machine's identity using the same
@@ -198,27 +200,10 @@ func localUsername() string {
 	return u.Username
 }
 
-// parseRemoteProbeOutput splits probe stdout into identity and session names.
+// parseRemoteProbeOutput splits probe stdout into identity, session names and
+// their ids. Both probes share one line format.
 func parseRemoteProbeOutput(stdout string) remoteProbeResult {
-	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	var res remoteProbeResult
-	if len(lines) >= 1 {
-		res.Identity.MachineID = strings.TrimSpace(lines[0])
-	}
-	if len(lines) >= 2 {
-		res.Identity.User = strings.TrimSpace(lines[1])
-	}
-	// A failed probe still lands here with whatever stdout it managed, which
-	// for an unreachable host is nothing at all.
-	if len(lines) > 2 {
-		for _, line := range lines[2:] {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				res.Sessions = append(res.Sessions, line)
-			}
-		}
-	}
-	return res
+	return parseRemoteWindowsOutput(stdout)
 }
 
 // isRemoteSelf reports whether remote resolved to this machine as the same user.
@@ -1286,6 +1271,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 	type hostResult struct {
 		host            string
 		sess            []string
+		sessionIDs      map[string]string
 		state           remoteProbeState
 		restorable      []remuxManifestSession
 		manifestSavedAt int64
@@ -1315,7 +1301,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 				}
 				return result, nil
 			})
-			res := hostResult{host: h, sess: sess, state: state}
+			res := hostResult{host: h, sess: sess, sessionIDs: result.SessionIDs, state: state}
 			switch state {
 			case remoteProbeOK:
 				writeRemoteSessionCache(h, result.Sessions, now)
@@ -1354,10 +1340,13 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 			hasHosts = true
 		}
 		hostRow := remoteHostRowForState(tmuxOpts, r.host, r.state, r.tailscaleURL, len(r.sess) > 0)
+		hostRow.remoteHostSessionIDs = r.sessionIDs
 		items = append(items, hostRow)
 		cH := hostColor(r.host)
 		for _, sess := range r.sess {
-			items = append(items, remoteSessionRowItem(r.host, sess, "", cH, cDim, false))
+			row := remoteSessionRowItem(r.host, sess, "", cH, cDim, false)
+			row.remoteSessionID = r.sessionIDs[sess]
+			items = append(items, row)
 		}
 		for _, s := range r.restorable {
 			row := remoteSessionRowItem(r.host, s.Name, "(restore — saved "+formatSnapshotAge(r.manifestSavedAt, now)+")", cH, cDim, false)

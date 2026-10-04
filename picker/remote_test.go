@@ -444,6 +444,28 @@ func TestCollectRemoteItemsAllBridged(t *testing.T) {
 	}
 }
 
+// A live probe's ids reach the session rows (and the host row's map, which
+// mirror rows read) but never the cache.
+func TestCollectRemoteItemsLiveRowsCarrySessionIDs(t *testing.T) {
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+	probe := func(string) (remoteProbeResult, error) {
+		res := probeWithSessions("mono")
+		res.SessionIDs = map[string]string{"mono": "$2"}
+		return res, nil
+	}
+
+	items := collectRemoteItems(opts, nil, probe, noRestore)
+	if len(items) != 3 {
+		t.Fatalf("expected header + host + mono, got %d: %+v", len(items), items)
+	}
+	if got := items[2].remoteSessionID; got != "$2" {
+		t.Errorf("mono remoteSessionID = %q, want $2", got)
+	}
+	if got := items[1].remoteHostSessionIDs["mono"]; got != "$2" {
+		t.Errorf("host row remoteHostSessionIDs[mono] = %q, want $2", got)
+	}
+}
+
 func TestCollectRemoteItemsEmptyHosts(t *testing.T) {
 	if items := collectRemoteItems(nil, nil, nil, nil); items != nil {
 		t.Fatalf("no hosts => nil, got %v", items)
@@ -484,8 +506,8 @@ func TestRemoteListSessionsCmdFishSafe(t *testing.T) {
 	if !strings.Contains(remoteListSessionsCmd, "env TMUX_TMPDIR=") {
 		t.Fatalf("probe should set TMUX_TMPDIR via env(1): %q", remoteListSessionsCmd)
 	}
-	if !strings.Contains(remoteListSessionsCmd, "list-sessions") {
-		t.Fatalf("probe should list sessions: %q", remoteListSessionsCmd)
+	if !strings.Contains(remoteListSessionsCmd, "list-sessions -F 'S|#{session_id}|#{session_name}'") {
+		t.Fatalf("probe should list sessions with their ids: %q", remoteListSessionsCmd)
 	}
 	// macOS remotes keep their server at tmux's default /tmp/tmux-<uid>, which
 	// tmux derives by appending tmux-<uid> to $TMUX_TMPDIR — so the fallback
@@ -805,13 +827,25 @@ func TestRemoteSessionsForHostNewStates(t *testing.T) {
 }
 
 func TestParseRemoteProbeOutput(t *testing.T) {
-	stdout := "abc123\nnoams\nmono\nother\n"
+	stdout := "abc123\nnoams\nS|$0|mono\nS|$4|x\\';id;#\n"
 	got := parseRemoteProbeOutput(stdout)
 	if got.Identity.MachineID != "abc123" || got.Identity.User != "noams" {
 		t.Fatalf("identity = %+v", got.Identity)
 	}
-	if len(got.Sessions) != 2 || got.Sessions[0] != "mono" || got.Sessions[1] != "other" {
+	hostile := `x\';id;#`
+	if len(got.Sessions) != 2 || got.Sessions[0] != "mono" || got.Sessions[1] != hostile {
 		t.Fatalf("sessions = %v", got.Sessions)
+	}
+	if got.SessionIDs["mono"] != "$0" || got.SessionIDs[hostile] != "$4" || len(got.SessionIDs) != 2 {
+		t.Fatalf("SessionIDs = %v", got.SessionIDs)
+	}
+}
+
+// A names-only line, a login greeting and a malformed S line are not sessions.
+func TestParseRemoteProbeOutputRejectsUnidentified(t *testing.T) {
+	got := parseRemoteProbeOutput("abc123\nnoams\nmono\nWelcome to lab\nS|bad|n\n")
+	if len(got.Sessions) != 0 || len(got.SessionIDs) != 0 {
+		t.Fatalf("sessions = %v ids = %v, want none", got.Sessions, got.SessionIDs)
 	}
 }
 

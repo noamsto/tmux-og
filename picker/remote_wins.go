@@ -83,6 +83,10 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 			}
 			names[f[1]] = f[2]
 			res.Sessions = append(res.Sessions, f[2])
+			if res.SessionIDs == nil {
+				res.SessionIDs = make(map[string]string)
+			}
+			res.SessionIDs[f[2]] = f[1]
 		case strings.HasPrefix(line, "W|"):
 			f := strings.SplitN(line, "|", 5)
 			if len(f) != 5 || !isTmuxID(f[1], '$') || !isTmuxID(f[2], '@') || !isDigits(f[3]) {

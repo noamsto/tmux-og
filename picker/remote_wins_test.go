@@ -37,6 +37,9 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 	if want := []string{"api", "web"}; !reflect.DeepEqual(got.Sessions, want) {
 		t.Errorf("sessions = %v, want %v", got.Sessions, want)
 	}
+	if want := map[string]string{"api": "$1", "web": "$2"}; !reflect.DeepEqual(got.SessionIDs, want) {
+		t.Errorf("SessionIDs = %v, want %v", got.SessionIDs, want)
+	}
 	want := []remoteWindow{
 		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
 		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs|with|pipes"},

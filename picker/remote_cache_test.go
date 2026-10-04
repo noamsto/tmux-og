@@ -305,3 +305,45 @@ func TestRemoteMsgOverCachedRowsKeepsCursorAndQuery(t *testing.T) {
 		}
 	}
 }
+
+// writeRawRemoteCache puts hand-written bytes where the cache for host lives,
+// standing in for a file written by another version.
+func writeRawRemoteCache(t *testing.T, host, body string) {
+	t.Helper()
+	dir := useRemoteCache(t)
+	writeRemoteSessionCache(host, nil, time.Now())
+	path := filepath.Join(dir, hostFileName(host)+".json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A cache written before ids existed still loads; its rows carry no kill id.
+func TestPendingRemoteItemsOldCacheHasNoSessionID(t *testing.T) {
+	writeRawRemoteCache(t, "lab", fmt.Sprintf(`{"host":"lab","saved_at":%d,"sessions":["mono"]}`, time.Now().UnixMilli()))
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+
+	var found bool
+	for _, it := range pendingRemoteItems(opts, nil) {
+		if it.remoteSess == "mono" {
+			found = true
+			if it.remoteSessionID != "" {
+				t.Errorf("cached row remoteSessionID = %q, want empty", it.remoteSessionID)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("old-format cache produced no mono row")
+	}
+}
+
+func TestPendingRemoteItemsGarbageCacheYieldsNoRows(t *testing.T) {
+	writeRawRemoteCache(t, "lab", `{"sessions":7}`)
+	opts := map[string]string{"@remote_bridge_hosts": "lab"}
+
+	for _, it := range pendingRemoteItems(opts, nil) {
+		if it.remoteSess != "" {
+			t.Errorf("garbage cache produced session row %+v", it)
+		}
+	}
+}
