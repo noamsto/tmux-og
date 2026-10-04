@@ -53,8 +53,9 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   is the one any picker that closes after acting leaves behind. The session
   picker's launcher makes that a *clean* end rather than an error: the
   destroyed float makes `display-popup` exit 129 (killed by SIGHUP), and
-  `tmux-session-picker.sh` exits 0 for it — but only when the popup's host
-  window is really gone, so a genuine picker failure still reaches `run-shell`
+  `tmux-session-picker.sh` (or `tmux-window-picker.sh` for the window picker)
+  exits 0 for it — but only when the popup's host window is really gone, so a
+  genuine picker failure still reaches `run-shell`
   and the binding paints no `returned 129` (#884). Launchers
   pass `-t "<client>:"` alongside `-c "$CLIENT"` — the float lands in the
   `-t` window, and unpinned that defaults to tmux's "best" session rather
