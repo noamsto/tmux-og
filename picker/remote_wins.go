@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// remoteWindow is one window of a remote tmux session. Session is the raw
-// name (the exact =sess target for launcher argv and kill); ID and SessionID
-// are tmux's stable @N and $N.
+// remoteWindow is one window of a remote tmux session. Session is the raw name
+// the launcher's argv needs; ID and SessionID are tmux's @N and $N, which the
+// kill targets instead of any name.
 type remoteWindow struct {
 	Session   string `json:"session"`
 	SessionID string `json:"session_id"`
