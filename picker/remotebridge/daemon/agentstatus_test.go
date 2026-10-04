@@ -203,10 +203,11 @@ func TestAgentShipperClearsAfterForgetWhilePaneSurvives(t *testing.T) {
 	}
 }
 
-// A tombstone must not outlive its local pane: the shipper prunes it against
-// the local pane set (not against the rows present), so a remote pane that
-// vanishes from one read while its mirror pane still exists keeps its tombstone
-// and can still be cleared when it reappears.
+// The tombstone is pruned against the LOCAL pane set, not against the rows a
+// pass carried: flush feeds subscription notifications to stamp as a one-pane
+// subset, so a rows-keyed prune would drop every other pane's tombstone on each
+// notification, and a later empty re-report would leave a stale option (#895).
+// A tombstone likewise must not outlive its local pane.
 func TestAgentShipperPrunesTombstones(t *testing.T) {
 	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
 	var calls [][]string
@@ -216,8 +217,16 @@ func TestAgentShipperPrunesTombstones(t *testing.T) {
 		t.Fatal("a written crew value should leave a tombstone")
 	}
 
-	// %1's local pane is gone: LocalPanes no longer maps it, so the tombstone
-	// must not survive the pass.
+	// A one-pane pass omits %1 from its rows while LocalPanes still maps it. A
+	// rows-keyed prune would drop the tombstone here; the local-set prune keeps
+	// it, so %1 can still be cleared when it next reports empty.
+	a.stamp(cfg, []paneStatus{{pane: "%2", proc: "fish"}})
+	if !a.wasWritten["7"] {
+		t.Fatal("a pass that omits a still-mapped pane's row pruned its tombstone")
+	}
+
+	// Now %1's local pane is gone: LocalPanes no longer maps it, so the
+	// tombstone must not survive the pass.
 	gone := mirrorCfg(&calls)
 	gone.LocalPanes = func() map[string]string { return map[string]string{"%2": "%8"} }
 	a.apply(gone, []paneStatus{{pane: "%1", proc: "fish", crewRole: "reviewer"}, {pane: "%2", proc: "fish"}})
