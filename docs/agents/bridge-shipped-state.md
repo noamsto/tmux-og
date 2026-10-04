@@ -578,9 +578,13 @@ whitespace-split records intact and preserves byte length, so the `#{n:}`
 bound (evaluated inside the wrapper) still holds. Invalid UTF-8 in the
 expansion measured two ways (empty on one remote, the 0xff byte kept with
 control bytes turned to spaces on another); either way no raw newline reaches
-the stream. An empty expansion makes that row unparsable, so it is skipped
-and the previous values persist, not unset; the usage segment is one
-`#{S:#{W:#{P:…}}}` row, so one such pane blanks or skips it whole.
+the stream. An empty expansion reads however each consumer reads an empty
+row: a label row is skipped and its previous stamp persists
+(`labelShipper.apply`); an empty `og_res` value unsets `@bridge_res`
+(`resShipper.flush`); an empty `og_usage` value clears `@bridge_usage`
+(`usageShipper.flush`) — the usage segment is one `#{S:#{W:#{P:…}}}` row, so
+one such pane blanks it whole; and a skipped agent row makes
+`agentShipper.apply` reap that pane's agent status.
 Wrapped: all five subscriptions (`og_labels`, `og_agents`, `og_res`,
 `og_usage`, `og_open`) at their one choke point `sendSubscription`, the label
 and agent polls (`list-windows`/`list-panes -s -F`), `og_open`'s seed, and

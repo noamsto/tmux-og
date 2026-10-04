@@ -141,11 +141,13 @@ evaluated inside the wrapper).
 
 Invalid UTF-8 in the wrapped expansion measured two ways: empty on one probe,
 the 0xff byte kept with control bytes turned to spaces on another. Either way no
-raw newline reaches the stream. An empty expansion makes that row unparsable,
-so it is skipped and the previous values persist, not unset. The blast radius
-is the wrapped expansion: one window's label row, one pane's agent row — but
+raw newline reaches the stream. An empty expansion reads however each consumer
+reads an empty row: a label row is skipped (previous stamp persists), an empty
+`og_res`/`og_usage` value unsets `@bridge_res`/`@bridge_usage`, and a skipped
+agent row reaps that pane's agent status. The blast radius is the wrapped
+expansion: one window's label row, one pane's agent row — but
 `agentUsageFormat` is a single `#{S:#{W:#{P:…}}}` row, so one pane command or
-`@og_agent_usage` holding invalid UTF-8 can blank or skip the whole usage
+`@og_agent_usage` holding invalid UTF-8 can blank the whole usage
 segment. Accepted: that is the "remote publishes nothing" state the segment
 already handles, and per-field wrapping would leave a later field unwrapped by
 omission.

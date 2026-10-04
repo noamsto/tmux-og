@@ -16,8 +16,10 @@ package daemon
 //
 // Invalid UTF-8 in the expansion measured two ways (empty on one remote, the
 // 0xff byte kept with control bytes turned to spaces on another); either way no
-// raw newline reaches the stream. An empty expansion makes that row
-// unparsable, so it is skipped and the previous values persist, not unset.
+// raw newline reaches the stream. What an empty expansion does is each
+// consumer's own reading of an empty row: a label row is skipped (the previous
+// stamp persists), an empty og_res or og_usage value unsets @bridge_res or
+// @bridge_usage, and a skipped agent row reaps that pane's agent status.
 // This is the remote half; the reader in controlmode bounds memory and keeps a
 // newline inside a reply body from opening or closing a block, but cannot hold
 // a raw newline in a top-level %subscription-changed value, so a socket holder
