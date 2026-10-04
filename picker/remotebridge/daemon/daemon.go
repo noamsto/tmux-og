@@ -2005,7 +2005,9 @@ type lineReader interface {
 //
 // The bound is a line count, so what it costs is 256 × one control-mode line —
 // an %output chunk, or a reply block's joined body. Both are small in practice;
-// the scanner's 4MB ceiling sizes a pathological reply body, not a routine one.
+// the worst case is 256 × controlmode.MaxBody (16 MiB) for a reply's Data — an
+// over-cap reply arrives as an Error carrying controlmode.ErrReplyTooLarge with
+// its body dropped — and 256 × controlmode.MaxLine (1 MiB) for any other line.
 const ctlPumpBuf = 256
 
 // ctlPump is the daemon's one caller of controlmode.Reader.Next() for the life

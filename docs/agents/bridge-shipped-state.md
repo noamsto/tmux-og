@@ -324,9 +324,10 @@ side is `picker/remotebridge/daemon/openurl.go`.
      the raw option value with no way to cap it before it crosses the wire,
      while `display-message -p` evaluates a `#{...}` format inside the
      *remote* tmux process that already holds the value, so the bound runs
-     before anything oversized is ever sent (tmux sends option values raw —
-     a control client's reader would otherwise have to buffer an unbounded
-     value whole before any Go-side check could run). Measured: `strftime`
+     before anything oversized is ever sent (tmux sends option values raw,
+     and the reader's `MaxLine` (1 MiB) only drops a line past that — a value
+     under it would still arrive whole and unusable, so the 12288-byte bound
+     is what keeps the value small and the log usable, #860). Measured: `strftime`
      touches only literal `%`-escapes in the *template*, never the
      substituted value — a URL containing `%41%2F%Y%%` comes back
      byte-for-byte, so the old worry that `display-message` would mangle one
@@ -351,7 +352,7 @@ side is `picker/remotebridge/daemon/openurl.go`.
      permanently oversized rather than ever forwarding an unbounded value
      (tmux 3.2's own support for these two specific operators is
      unverified; "no forwarding on such a remote" is the accepted trade for
-     never risking an unbounded buffer client-side). `og-open` itself never
+     never forwarding a value the bound did not vet). `og-open` itself never
      evaluates this format — it keeps appending to the log exactly as always
      — so on such a remote the session still reads as bridged and the log
      still grows, but the daemon opens nothing: the only sign on the
@@ -462,11 +463,10 @@ side is `picker/remotebridge/daemon/openurl.go`.
   `og-open` stops seeing a matching registered client and falls back to the
   remote's own opener until the other reconnects (and re-registers) —
   degraded to pre-feature behaviour, never a silent drop. A value under the
-  byte bound can still carry raw newlines — tmux relays a subscribed
-  option's bytes unescaped over the control protocol, so a log that fits the
-  bound could still forge extra control-mode lines. This is a general,
-  pre-existing risk across every subscription this daemon runs, not
-  specific to `og_open`, and is tracked in a separate issue.
+  byte bound could still carry raw newlines, since tmux relays a subscribed
+  option's bytes unescaped; `og_open`'s format (seed and subscription) is
+  `ctlSafe`-wrapped like every other, so the log arrives as one line — see
+  the newline-policy bullet under the shared sanitization rules (#860).
 
 ## Remote Agent Status
 
@@ -656,6 +656,34 @@ ships the remote window's own label state across instead.
   markup dropped, enums and colours regex-matched, a leading `-` rejected whole
   since `LocalTmux` execs without a shell) and length-capped. Teardown unsets
   what it wrote.
+- **Newline policy: every remote format carrying a remote-settable string is
+  `ctlSafe`-wrapped (#860).** tmux writes option values raw into reply bodies
+  and into `%subscription-changed` values, so a `\n` in `@og_open_url`, a
+  label option or a `session_path` splits into stream lines the reader would
+  take for framing (measured on 3.2a, 3.3a, 3.7c and next-3.9).
+  `ctlSafe(f)` = `#{s/[[#{l::}cntrl#{l::}]]/ /:f}` turns every control byte of
+  the whole format's expansion into one space. The spelling is forced: `\n` in
+  a tmux regex is the letter `n`; `[[:cntrl:]]` breaks the modifier parse at
+  its bare `:`; `#:` is unescaped inside the regex only on next-3.9 (3.2a,
+  3.3a and 3.7c pass it through literally, so no match); `#{l::}` is a literal
+  `:` that works on all four. A space, not deletion, keeps `og_open`'s
+  whitespace-split records intact and preserves byte length, so the `#{n:}`
+  bound (evaluated inside the wrapper) still holds. Invalid UTF-8 makes the
+  expansion empty on a UTF-8 remote — fail closed, reads as unset; the usage
+  segment is one `#{S:#{W:#{P:…}}}` row, so one such pane blanks it whole.
+  Wrapped: all five subscriptions (`og_labels`, `og_agents`, `og_res`,
+  `og_usage`, `og_open`) at their one choke point `sendSubscription`, the label
+  and agent polls (`list-windows`/`list-panes -s -F`), `og_open`'s seed, and
+  `readSessionPath` (`session_path` measured to carry a raw `\n` from a `-c`
+  dir holding one). Deliberately not wrapped: `windowListFormat` (tmux rejects
+  a newline window name or vis-escapes it, and wrapping a structural row would
+  let invalid UTF-8 empty the row and drop the window); `@carousel_verdict` via
+  `show-options` (no format to wrap; an exact-match compare rejects a
+  multi-line value); the theme probe's `#()` (tmux keeps only the job's last
+  line); the id/geometry formats (no remote-settable string); `capture-pane`
+  (pane content, not a format — only the reader can hold that). This is the
+  remote half: the reader (`bridge-daemon.md`) is what holds against a socket
+  holder replacing a subscription format, or a remote whose regex differs.
 - **Two cleaning policies, split on what a wrong value costs** (#598). Display
   fields (`@bridge_issue_title`, `@bridge_pr_title`, and the two label segments)
   **truncate** at their cap — a shortened title is still a title. Identity

@@ -40,6 +40,7 @@ const (
 // subscribeCmd builds the subscribe command for one format. Quoted as a single
 // argv token: the format holds '#{...}', and control mode's own parser rejects
 // it unquoted ("parse error: syntax error") rather than passing it through.
+// sendSubscription runs every format through ctlSafe first.
 func subscribeCmd(name, what, format string) string {
 	return "refresh-client -B " + tmuxQuote(name+":"+what+":"+format)
 }
@@ -61,7 +62,7 @@ func subscribeFormats(rt roundTrip) (labels, agents, res, usage bool) {
 }
 
 func sendSubscription(rt roundTrip, name, what, format string) bool {
-	l, ok := one(rt, subscribeCmd(name, what, format))
+	l, ok := one(rt, subscribeCmd(name, what, ctlSafe(format)))
 	return ok && l.Kind != controlmode.Error
 }
 

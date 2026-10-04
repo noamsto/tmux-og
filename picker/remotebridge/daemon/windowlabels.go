@@ -345,7 +345,7 @@ func (s *labelShipper) flush(cfg Config, reg *registry, rt roundTrip, gen uint64
 	}
 	if due(s.lastPoll, pollFloor(s.subscribed, windowLabelPollInterval, windowLabelBackstopInterval), gen, s.lastGen) {
 		s.lastPoll, s.lastGen = time.Now(), gen
-		if l, ok := one(rt, fmt.Sprintf("list-windows -t %s -F %s", tmuxQuote(cfg.RemoteSession), tmuxQuote(windowLabelFormat))); ok && l.Kind != controlmode.Error {
+		if l, ok := one(rt, fmt.Sprintf("list-windows -t %s -F %s", tmuxQuote(cfg.RemoteSession), tmuxQuote(ctlSafe(windowLabelFormat)))); ok && l.Kind != controlmode.Error {
 			changed = s.apply(cfg, reg, parseWindowLabels(string(l.Data))) || changed
 		}
 	}
