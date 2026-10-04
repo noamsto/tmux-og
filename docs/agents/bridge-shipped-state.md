@@ -519,6 +519,12 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   to draw its border. Colour falls back through `@bridge_crew_color` (the
   window's agent tint, already carried for the label) to the theme, which is the
   remote's own precedence.
+- **These are the first carried values a LOCAL format renders**, so they are the
+  first that may not merely garble: `cleanLabelValue`'s contract stops at
+  `#[…]`, leaving `#{…}` and `#(…)` intact, and `#(cmd)` on a border would run
+  cmd here. `crewWordRe`/`crewColorRe` exclude `#` outright rather than relying
+  on an escape pass a later consumer could forget — see that warning on
+  `cleanLabelValue`.
 - **An aeye carousel viewer crosses as a presence bit** (#866). The border
   gives the carousel split its own `━━ aeye ━━` label, but a mirror pane's
   start command is the renderer and the remote viewer's `pane_current_command`
@@ -530,12 +536,6 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   goes away). Never the real name: a local `@claude_img_src` on a mirror pane
   reads as a local carousel to `tmux-update-icons`, which would stamp
   `@remux_relaunch` on it.
-- **These are the first carried values a LOCAL format renders**, so they are the
-  first that may not merely garble: `cleanLabelValue`'s contract stops at
-  `#[…]`, leaving `#{…}` and `#(…)` intact, and `#(cmd)` on a border would run
-  cmd here. `crewWordRe`/`crewColorRe` exclude `#` outright rather than relying
-  on an escape pass a later consumer could forget — see that warning on
-  `cleanLabelValue`.
 - **Screen-scraped agents (pi, codex, cursor) cross the bridge too** (#635),
   on a second pane option: `agent-detect`'s `statefile.Writer` mirrors its
   verdict into `@agent_screen` (`"<state> <epoch> [name=count ...]"`) the same
