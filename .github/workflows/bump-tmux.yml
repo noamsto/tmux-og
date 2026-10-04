@@ -94,12 +94,12 @@ jobs:
           fi
 
           git add flake.nix flake.lock
-          git commit -m "chore(tmux): bump upstream pin to ${short} (next-3.8)"
+          git commit -m "chore(tmux): bump upstream pin to ${short} (next-3.9)"
           git push -f origin "$branch"
 
           existing=$(gh pr list --head "$branch" --state open --base main --json number --jq length)
           if [ "$existing" -eq 0 ]; then
-            body="Auto-bumped tmux upstream from \`${current:0:7}\` to \`${short}\` (next-3.8).
+            body="Auto-bumped tmux upstream from \`${current:0:7}\` to \`${short}\` (next-3.9).
 
           ## Commits since previous pin
 
@@ -112,7 +112,7 @@ jobs:
           - [ ] Review upstream changelog for breaking changes
           - [ ] Deploy via nix-config bump + server restart"
             gh pr create \
-              --title "chore(tmux): bump upstream pin to ${short} (next-3.8)" \
+              --title "chore(tmux): bump upstream pin to ${short} (next-3.9)" \
               --body "$body" \
               --base main \
               --head "$branch" \

@@ -6,7 +6,7 @@
 # Runs against a private, config-less tmux server (like tests/float-refit.bats)
 # so `display-message -p -F` evaluates the REAL script's output, not a
 # hand-copied string that could drift from what ships. Needs the pinned
-# next-3.8 tmux (mkTmux in flake.nix) for -O/-K/-C/-B/-X/-Y, which nixpkgs'
+# next-3.9 tmux (mkTmux in flake.nix) for -O/-K/-C/-B/-X/-Y, which nixpkgs'
 # stock tmux only advertises via `list-commands` and then rejects at parse
 # time (see float-refit.bats's header comment on the same trap).
 

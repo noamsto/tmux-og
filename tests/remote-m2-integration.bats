@@ -3424,7 +3424,7 @@ m2_pane_gate_failed() {
 # transient `tmux -L m2dst set-option ...` the daemon forks for a local-tmux
 # call is also, briefly, one of its children.
 #
-# The distinction is load-bearing (measured on the pinned next-3.8 tmux):
+# The distinction is load-bearing (measured on the pinned next-3.9 tmux):
 # `detach-client`/`kill-server` end the control client with a terminal %exit,
 # while only killing the transport out from under a live stdin/stdout pipe
 # produces the bare EOF that is a DROP — see the design spec's "Test strategy".
@@ -3679,7 +3679,7 @@ wait_daemon_exit() {
 	[ -n "$old_transport" ]
 
 	# SIGKILL first: kill-server against the still-live control client would
-	# itself be seen as a terminal %exit (measured on next-3.8), reaching
+	# itself be seen as a terminal %exit (measured on next-3.9), reaching
 	# teardown without ever touching the identity check this test is named
 	# for. Only killing the TRANSPORT produces the bare-EOF drop that the
 	# reconnect loop retries — the identity check runs on that retry's dial.

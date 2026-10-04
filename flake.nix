@@ -12,7 +12,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     # The wrapped tmux is pinned to plain upstream at a fixed rev to pick up the
-    # next-3.8 work (floating panes, scene renderer, menus-in-scene,
+    # next-3.9 work (floating panes, scene renderer, menus-in-scene,
     # display-panes-as-a-mode). Pin the exact rev (not a moving branch) so builds
     # stay reproducible. The prior fork (noamsto/tmux fix/popup-overlay-flicker)
     # is dropped: its overlay-clipping fix is already upstream (e242da16), and its
@@ -2356,11 +2356,14 @@
               # buildGoModule (pickerChecked) so this check never invokes
               # `go build` — a non-FOD sandbox has no network.
               #
-              # Uses the pinned next-3.8 tmux (mkTmux), not pkgs.tmux (3.7b):
-              # the M2 bridge is a next-3.8 effort and its control-mode
-              # notification behavior (e.g. %window-close on kill-window) differs
-              # from 3.7b, so the mirror is exercised against the version it —
-              # and production, local + remote — actually runs.
+              # Uses the pinned next-3.9 tmux (mkTmux), not pkgs.tmux (3.7c):
+              # The live tests in tests/remote-m2-integration.bats rely on the
+              # pinned build deferring notifications out of guard blocks
+              # (tmux 6db5175e). The M2 bridge is a next-3.9 effort and its
+              # control-mode notification behavior (e.g. %window-close on
+              # kill-window) differs from 3.7c, so the mirror is exercised
+              # against the version it — and production, local + remote —
+              # actually runs.
               # procps supplies ps, which the #482 reconnect cases use to find
               # the daemon's own transport child (not the daemon_pid itself)
               # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
