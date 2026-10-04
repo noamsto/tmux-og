@@ -237,6 +237,18 @@
               touch $out
             '';
 
+          enrich-url-tests =
+            pkgs.runCommand "enrich-url-tests" {
+              # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
+              # for the pass's repo resolution.
+              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/enrich-url.bats
+              touch $out
+            '';
+
           agent-usage-gate-tests =
             pkgs.runCommand "agent-usage-gate-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];

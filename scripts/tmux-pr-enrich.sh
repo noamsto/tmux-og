@@ -11,7 +11,8 @@
 # gh resolves the repo from its cwd, and this poller's own cwd is the tmux
 # server's (usually not a repo at all) — so every gh call must run inside a
 # checkout of the branch's repo: D in single-target mode, the window's
-# @worktree/@git_root in the full pass.
+# @worktree/@git_root in the full pass. Except a window whose checkout is gone:
+# its @pr_url names the repo, so `gh pr view <url>` refreshes it.
 set -uo pipefail
 
 # shellcheck source=/dev/null
@@ -471,6 +472,44 @@ enrich_repo_group() {
 	fi
 }
 
+# refresh_url_pr URL WINDOWS — refresh a PR by its url for windows whose checkout
+# is gone. `gh pr view <url>` needs no repo context. The answer is cached as the
+# same one-element array shape as the branch caches (key derived from the url, so
+# it can't collide with a repo|branch key) and applied through
+# apply_cache_to_target. A failed call leaves the cache alone, keeping the
+# last-known options.
+refresh_url_pr() {
+	local url="$1" line tgt br
+	local -a wlines
+	mapfile -t wlines <<<"$2"
+	branch_sha1 "url|$url"
+	local cache="$ENRICH_CACHE_DIR/$REPLY.json"
+	local check_cache="$ENRICH_CACHE_DIR/$REPLY.checks.json"
+	local lock="$ENRICH_CACHE_DIR/$REPLY.lock"
+
+	local exists=0 content="" age=0
+	if [[ -f $cache ]]; then
+		exists=1
+		content="$(<"$cache")"
+		age=$((EPOCHSECONDS - $(file_mtime "$cache")))
+	fi
+	pr_cache_decision "$force" "$exists" "$content" "$age" "$TTL" "$TTL_NONE" "$TTL_TERMINAL"
+	if [[ $REPLY == fetch ]] && command -v gh >/dev/null 2>&1; then
+		(
+			acquire_lock "$lock" || exit 0
+			json="$(gh pr view "$url" --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup 2>/dev/null)" || exit 0
+			[[ -n $json ]] || exit 0
+			jq -c '[del(.statusCheckRollup)]' <<<"$json" >"$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
+			jq -c '[{statusCheckRollup: (.statusCheckRollup // [])}]' <<<"$json" >"$check_cache.tmp.$$" && mv -f "$check_cache.tmp.$$" "$check_cache"
+		)
+	fi
+	for line in "${wlines[@]}"; do
+		[[ -z $line ]] && continue
+		IFS="|" read -r tgt br <<<"$line"
+		apply_cache_to_target "$tgt" "$cache" "$br"
+	done
+}
+
 # run_full_pass [PENDING_ONLY] — enrich every window that carries a @branch.
 # Windows are grouped by repo (git common dir, derived from @worktree/@git_root);
 # each group runs concurrently as one enrich_repo_group. Multi-repo setups pay
@@ -484,30 +523,46 @@ run_full_pass() {
 		touch "$check_tick"
 	fi
 	local windows
-	mapfile -t windows < <(tmux list-windows -a -F '#{session_id}:#{window_id}|#{@worktree}|#{@git_root}|#{@branch}|#{@bridge_win}' | awk -F'|' 'NF>=5')
+	mapfile -t windows < <(tmux list-windows -a -F '#{session_id}:#{window_id}|#{@worktree}|#{@git_root}|#{@branch}|#{@bridge_win}|#{@pr_url}' | awk -F'|' 'NF>=5')
 
 	# Unique branches (capped — matches the prior head -n 30 bound) and window
-	# lines, grouped by repo. Windows with no resolvable repo checkout are
-	# skipped: gh could only run in the server's cwd (the original wrong-repo
-	# bug), so they keep their last-known options instead.
-	declare -A seen grp_dir grp_branches grp_windows
-	local total=0 truncated=0 line tgt wt gr br bw d key sk
+	# lines, grouped by repo. A window with no resolvable repo checkout can't give
+	# gh a repo context (the original wrong-repo bug), so it is skipped — unless it
+	# already has a PR url, which names its own repo: those are refreshed by url_pr
+	# below, sharing the same 30-entry bound.
+	declare -A seen grp_dir grp_branches grp_windows url_windows
+	local total=0 truncated=0 line tgt wt gr br bw pu d key sk
 	for line in "${windows[@]}"; do
-		IFS="|" read -r tgt wt gr br bw <<<"$line"
+		IFS="|" read -r tgt wt gr br bw pu <<<"$line"
 		[[ -z $br ]] && continue
 		# Remote-bridge mirror window (#167 @bridge_win opt-out): no PR to poll
 		# for — skip it rather than fetch data for the launcher's repo.
 		[[ $bw == 1 ]] && continue
 		d="${wt:-$gr}"
-		[[ -z $d ]] && continue
-		key="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+		key=""
+		[[ -n $d ]] && key="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 		# Stale @worktree (dir removed out from under the window): retry with
 		# @git_root before giving up.
 		if [[ -z $key && -n $gr && $gr != "$d" ]]; then
 			d="$gr"
 			key="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 		fi
-		[[ -z $key ]] && continue
+		if [[ -z $key ]]; then
+			# Checkout gone (a merged PR's worktree was removed, the window stayed):
+			# last-known options would show the PR as open forever.
+			[[ $pu =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || continue
+			sk="url|$pu"
+			if [[ -z ${seen[$sk]:-} ]]; then
+				if ((total >= 30)); then
+					truncated=1
+					continue
+				fi
+				seen[$sk]=1
+				((++total))
+			fi
+			url_windows[$pu]+="$tgt|$br"$'\n'
+			continue
+		fi
 		grp_windows[$key]+="$tgt|$br"$'\n'
 		sk="$key|$br"
 		[[ -n ${seen[$sk]:-} ]] && continue
@@ -557,6 +612,11 @@ run_full_pass() {
 		enrich_repo_group "${grp_dir[$k]}" "$k" "${grp_branches[$k]}" "${grp_windows[$k]}" \
 			"$((refresh_checks || due))" "$((! pending_only))" &
 	done
+	if ((! pending_only)); then
+		for k in "${!url_windows[@]}"; do
+			refresh_url_pr "$k" "${url_windows[$k]}" &
+		done
+	fi
 	wait
 	# Every marker is past PENDING_MAX_SECONDS: push .last-pending-tick a settled
 	# refresh ahead so the gate stops launching passes that find nothing due.
