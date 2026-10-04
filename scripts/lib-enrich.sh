@@ -75,8 +75,8 @@ branch_to_gh_issue_number() {
 }
 
 # sanitize_title RAW
-# Strips CR, LF, ESC control chars plus ' and # (# is a tmux format char), then
-# hard-truncates to 256 chars, GitHub's title limit. Sets REPLY to the cleaned
+# Strips CR, LF, ESC control chars plus ', # and | (tmux format chars / delimiter),
+# then hard-truncates to 256 chars, GitHub's title limit. Sets REPLY to the cleaned
 # title.
 sanitize_title() {
 	local clean="${1//$'\r'/}"
@@ -84,6 +84,7 @@ sanitize_title() {
 	clean="${clean//$'\033'/}"
 	clean="${clean//\'/}"
 	clean="${clean//\#/}"
+	clean="${clean//|/ }"
 	REPLY="${clean:0:256}"
 }
 
