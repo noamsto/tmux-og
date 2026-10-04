@@ -49,11 +49,11 @@ func mixedWindows() []windowData {
 }
 
 func col(s, needle string) int {
-	i := strings.Index(s, needle)
-	if i < 0 {
+	before, _, ok := strings.Cut(s, needle)
+	if !ok {
 		return -1
 	}
-	return visibleWidth(s[:i])
+	return visibleWidth(before)
 }
 
 func TestWindowColumnHeaderLabelsAlignWithCells(t *testing.T) {
