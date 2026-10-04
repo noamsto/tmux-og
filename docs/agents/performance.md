@@ -426,6 +426,33 @@ info`, the chained read and the `list-panes` of the immediate refresh `Init` sta
 `--dump-first-frame` output is byte-identical before and after for both modes on the
 fixture (`OG_PICKER_DUMP_SIZE=140x40`), i.e. the same rows in the same order.
 
+### Remote windows in the window picker (#902)
+
+The window picker now paints a Remote section (`picker.md`, "Remote windows in the
+window picker") from `@remote_bridge_hosts` and the per-host window cache, and starts
+the ssh window probe from `Init`, so its `Init` now does start a tmux read
+(`collectBridgeSessions`) and the ssh probes, both off the first-frame path.
+`REMOTE_HOSTS=<n>` makes the fixture configure `n` unresolvable hosts, each with a
+seeded cache of 3 sessions × 4 windows, under the script's own `XDG_CACHE_HOME`.
+A `--dump-first-frame --windows` against it shows the cached rows under the Remote
+header, so the first paint really reads the caches.
+
+Window mode, `OPENS=40`, two alternating rounds, ms; base = `main` @36272d3, same raw
+`tmux-next` 3.9; load average 9.0–9.6 throughout. Base ignores the hosts in window mode,
+so its `REMOTE_HOSTS=2` column is the no-remote baseline under the same fixture:
+
+| | base, 0 hosts | base, 2 hosts | new, 0 hosts | new, 2 hosts (24 cached rows) |
+| --- | --- | --- | --- | --- |
+| first list frame drawn, median | 9.1 / 8.7 | 9.3 / 8.7 | 9.2 / 9.1 | 8.9 / 9.0 |
+| painted, median | 17.0 / 16.6 | 17.2 / 16.6 | 17.1 / 17.1 | 17.0 / 17.3 |
+| painted, p95 | 17.8 / 18.2 | 19.3 / 17.8 | 18.9 / 20.1 | 18.4 / 18.9 |
+
+Within noise. `forks` with `REMOTE_HOSTS=2` (`OPENS=5`, strace-inflated) counts 5 execs
+before the first paint for base (4 tmux) and 7 for new (6 tmux), and no `ssh` in either.
+The two extra tmux execs come from `Init`'s Cmds, `remoteCmd`'s `collectBridgeSessions`
+among them. They run in their own goroutines, and the timed medians above show they do
+not delay the frame. The ssh probes start after the paint.
+
 ### Key latency (keypress → repaint)
 
 `picker/keyprobe` is a control-mode client like `latencyprobe`: it sends `send-keys`
