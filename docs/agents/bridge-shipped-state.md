@@ -525,6 +525,17 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   cmd here. `crewWordRe`/`crewColorRe` exclude `#` outright rather than relying
   on an escape pass a later consumer could forget — see that warning on
   `cleanLabelValue`.
+- **An aeye carousel viewer crosses as a presence bit** (#866). The border
+  gives the carousel split its own `━━ aeye ━━` label, but a mirror pane's
+  start command is the renderer and the remote viewer's `pane_current_command`
+  is its shell, so only aeye's `@claude_img_src` names it. `agentStatusFormat`
+  carries `#{?@claude_img_src,1,}` — the REMOTE evaluates it, so aeye's
+  `<server pid>-<pane>` key never crosses and there is no free-form value to
+  sanitize; the shipper accepts only the exact `1` — and the shipper stamps it
+  as `@bridge_img_src` alongside the crew trio (unset when the remote option
+  goes away). Never the real name: a local `@claude_img_src` on a mirror pane
+  reads as a local carousel to `tmux-update-icons`, which would stamp
+  `@remux_relaunch` on it.
 - **Screen-scraped agents (pi, codex, cursor) cross the bridge too** (#635),
   on a second pane option: `agent-detect`'s `statefile.Writer` mirrors its
   verdict into `@agent_screen` (`"<state> <epoch> [name=count ...]"`) the same

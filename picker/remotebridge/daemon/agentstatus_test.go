@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,17 +28,19 @@ func TestParseAgentStatus(t *testing.T) {
 	body := strings.Join([]string{
 		"%1|claude|processing 1700000000 |",                       // trailing empty fields trimmed away
 		"%2|nvim|||||||",                                          // mirrored pane, no agent
-		"%3|claude|waiting 1700000042 1||ENG-7||||fix | y",        // unseen, issues, task holding a '|'
+		"%3|claude|waiting 1700000042 1||ENG-7|||||fix | y",       // unseen, issues, task holding a '|'
 		"%4|fish|garbage||",                                       // unparsable stamp reads as no agent
-		"%5|claude||||plan-critic|working|colour111|grill it",     // a decorated role pane
+		"%5|claude||||plan-critic|working|colour111||grill it",    // a decorated role pane
 		"%6|claude||||#(id)|WORKING|#[fg=red]|",                   // markup and an uppercase state drop
 		"%7|claude||||plan-critic-with-a-very-long-name||red|",    // over its cap, so dropped whole
 		"%8|pi|processing 1700000200 |idle 1700000050 bg=2|ENG-7", // screen-scraped state alongside a hook stamp
+		"%9|fish|||||||1|",                                        // an aeye carousel viewer
+		"%10|fish|||||||yes|",                                     // only the exact presence bit counts
 	}, "\n")
 
 	got := parseAgentStatus(body)
-	if len(got) != 8 {
-		t.Fatalf("got %d rows, want 8 (every mirrored pane): %+v", len(got), got)
+	if len(got) != 10 {
+		t.Fatalf("got %d rows, want 10 (every mirrored pane): %+v", len(got), got)
 	}
 	if got[0].pane != "%1" || got[0].proc != "claude" || got[0].state != "processing" || got[0].ts != 1700000000 || got[0].unseen {
 		t.Errorf("row 0 = %+v", got[0])
@@ -66,6 +69,45 @@ func TestParseAgentStatus(t *testing.T) {
 	s := got[7]
 	if s.pane != "%8" || s.state != "processing" || s.screenState != "idle" || s.screenTS != 1700000050 || s.screenFlags != "bg=2" || s.issues != "ENG-7" {
 		t.Errorf("row 7 (screen-scraped) = %+v", s)
+	}
+	if !got[8].imgSrc || got[9].imgSrc || got[7].imgSrc {
+		t.Errorf("imgSrc = %v/%v/%v on rows 8/9/7, want true/false/false", got[8].imgSrc, got[9].imgSrc, got[7].imgSrc)
+	}
+}
+
+// A mirrored aeye carousel carries only a presence bit across, stamped as
+// @bridge_img_src: the local pane runs a renderer, so its border cannot see the
+// remote's @claude_img_src.
+func TestAgentShipperStampsCarouselMarker(t *testing.T) {
+	a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	a.apply(cfg, []paneStatus{{pane: "%2", proc: "fish"}})
+	for _, c := range calls {
+		if slices.Contains(c, "@bridge_img_src") {
+			t.Fatalf("a pane first seen without the marker has nothing to clear: %v", calls)
+		}
+	}
+
+	calls = nil
+	rows := []paneStatus{{pane: "%1", proc: "fish", imgSrc: true}}
+	a.apply(cfg, rows)
+	want := []string{"set-option", "-p", "-t", "%7", "@bridge_img_src", "1"}
+	if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
+		t.Fatalf("marker stamp = %v, want %v after the @bridge_proc call", calls, want)
+	}
+
+	a.apply(cfg, rows)
+	if len(calls) != 2 {
+		t.Errorf("unchanged marker re-stamped: %v", calls)
+	}
+
+	rows[0].imgSrc = false
+	a.apply(cfg, rows)
+	want = []string{"set-option", "-p", "-t", "%7", "-u", "@bridge_img_src"}
+	if len(calls) != 3 || !reflect.DeepEqual(calls[2], want) {
+		t.Errorf("marker clear = %v, want %v", calls[2:], want)
 	}
 }
 

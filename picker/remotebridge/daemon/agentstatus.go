@@ -34,15 +34,16 @@ const agentStatusBackstopInterval = 30 * time.Second
 // is the crew trio — agent-writable, per GRID_PROTOCOL, and pipe-stripped on
 // the REMOTE the way windowLabelFormat's free-form fields are — so they all
 // sit ahead of the free-form task, which goes last so a '|' inside it lands
-// in the final field instead of shifting the row.
+// in the final field instead of shifting the row. @claude_img_src (aeye's
+// carousel key) is reduced to a presence bit here so its value never crosses.
 // Unquoted: it is both a -F argument and a subscription format, and only the
 // call site knows which quoting each needs.
 const agentStatusFormat = "#{pane_id}|#{pane_current_command}|#{@claude_status}|#{@agent_screen}|#{@claude_issues}|" +
-	"#{s/[|]/ /:@crew_role}|#{s/[|]/ /:@crew_state}|#{s/[|]/ /:@crew_role_color}|#{@claude_task}"
+	"#{s/[|]/ /:@crew_role}|#{s/[|]/ /:@crew_state}|#{s/[|]/ /:@crew_role_color}|#{?@claude_img_src,1,}|#{@claude_task}"
 
 // agentStatusFields is agentStatusFormat's field count, shared with the test
 // fixture so the parser and the fixture cannot drift apart.
-const agentStatusFields = 9
+const agentStatusFields = 10
 
 const (
 	crewRoleMaxRunes  = 24
@@ -78,6 +79,7 @@ type paneStatus struct {
 	crewRole  string
 	crewState string
 	crewColor string
+	imgSrc    bool // an aeye carousel viewer runs on the remote pane
 
 	// screenState/screenTS/screenFlags mirror agent-detect's screen/<pane_id>
 	// file for a non-Claude agent (#635). screenFlags holds the raw
@@ -116,7 +118,8 @@ func parseAgentStatus(body string) []paneStatus {
 			crewRole:  matching(cleanLabelValueExact(at(5), crewRoleMaxRunes), crewWordRe),
 			crewState: matching(cleanLabelValueExact(at(6), crewStateMaxRunes), crewWordRe),
 			crewColor: matching(cleanLabelValueExact(at(7), crewColorMaxRunes), crewColorRe),
-			task:      at(8),
+			imgSrc:    at(8) == "1",
+			task:      at(9),
 		}
 		row.readStatus(at(2))
 		row.readScreen(at(3))
@@ -327,7 +330,7 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		}
 		// Before the agent-less return below: a role pane the dispatcher
 		// decorated still draws a border when no agent ever reported on it.
-		stampCrew(cfg, localPane, r, prev, seen)
+		stampPaneOptions(cfg, localPane, r, prev, seen)
 		if !trusted {
 			if a.unsynced == nil {
 				a.unsynced = map[string]bool{}
@@ -377,24 +380,33 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 	return live, true
 }
 
-// bridgeCrewOptions maps each carried crew value to the daemon-owned @bridge_*
-// option it is stamped into. The daemon never writes @crew_*: those are the
-// dispatcher's own names, and a mirror that carried them would have a local
-// tmux-og reading a remote pane's role as its own.
-var bridgeCrewOptions = []struct {
+// bridgePaneOptions maps each carried crew value and the carousel marker to the
+// daemon-owned @bridge_* option it is stamped into. The daemon never writes
+// @crew_* or @claude_img_src: those are the local names, and a mirror that
+// carried them would have a local tmux-og reading a remote pane's role as its
+// own — or, for @claude_img_src, treating the mirror pane as a local carousel
+// (tmux-update-icons stamps @remux_relaunch from it).
+var bridgePaneOptions = []struct {
 	opt string
 	get func(paneStatus) string
 }{
 	{"@bridge_crew_role", func(r paneStatus) string { return r.crewRole }},
 	{"@bridge_crew_state", func(r paneStatus) string { return r.crewState }},
 	{"@bridge_crew_role_color", func(r paneStatus) string { return r.crewColor }},
+	{"@bridge_img_src", func(r paneStatus) string {
+		if r.imgSrc {
+			return "1"
+		}
+		return ""
+	}},
 }
 
-// stampCrew writes the crew values that moved onto one mirror pane, as a single
-// argv command sequence so a decorated pane costs one fork rather than three.
-func stampCrew(cfg Config, localPane string, r, prev paneStatus, seen bool) {
+// stampPaneOptions writes the carried values that moved onto one mirror pane, as
+// a single argv command sequence so a decorated pane costs one fork rather than
+// one per option.
+func stampPaneOptions(cfg Config, localPane string, r, prev paneStatus, seen bool) {
 	var argv []string
-	for _, o := range bridgeCrewOptions {
+	for _, o := range bridgePaneOptions {
 		v := o.get(r)
 		if seen && o.get(prev) == v {
 			continue
