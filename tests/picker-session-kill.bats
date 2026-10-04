@@ -137,6 +137,81 @@ modal_float() { # win
 	}
 }
 
+@test "killing the current window from the window picker paints no run-shell error" {
+	local win deadline
+	# Session s needs a second window so the picker has more than one to show.
+	inner new-window -d -t s: -n two
+	win="$(inner display-message -p -t s:1 '#{window_id}')"
+
+	press w
+	modal_float "$win" >/dev/null || {
+		echo "prefix + w opened no modal float" >&2
+		inner list-panes -a -F '#{pane_id}|#{pane_modal_flag}|#{window_id}' >&2
+		false
+	}
+
+	# Ctrl+x kills the selected window in the window picker. The selected window
+	# is @1 (the popup's host window), so the popup is destroyed.
+	send C-x
+
+	# detach-on-destroy off lands the client on the surviving window (window 2).
+	deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)); do
+		[ "$(inner display-message -p -t s: '#{window_id}')" != "$win" ] && break
+		sleep 0.1
+	done
+	[ "$(inner display-message -p -t s: '#{window_id}')" != "$win" ] || {
+		echo "window $win survived ctrl+x" >&2
+		inner list-windows -t s: -F '#{window_id}' >&2
+		false
+	}
+
+	# The regression: run-shell prints `'…tmux-window-picker …' returned 129`.
+	# Bounded wait for the message to paint, then assert it never did.
+	sleep 1
+	local screen
+	screen="$(outer capture-pane -p -t "$OPANE")"
+	[[ $screen != *returned* ]] || {
+		echo "run-shell error painted on the client:" >&2
+		printf '%s\n' "$screen" >&2
+		false
+	}
+}
+
+@test "the wrapper exits 0 when its own host window is killed while the window picker popup is open" {
+	local client other_pane rcfile deadline
+	client="$(inner list-clients -F '#{client_name}')"
+	inner new-window -d -t s: -n two
+	other_pane="$(inner list-panes -t s:2 -F '#{pane_id}' | head -1)"
+	rcfile="$BATS_TEST_TMPDIR/rc"
+
+	# Drive the production launcher from window 2, targeting the client on s.
+	# The popup opens in window 1 (the client's window).
+	inner send-keys -t "$other_pane" \
+		"tmux-window-picker --client '$client'; echo rc=\$? >'$rcfile'" Enter
+
+	# Wait for the popup to open, then kill its host window under it.
+	deadline=$((SECONDS + 5))
+	while ((SECONDS < deadline)); do
+		[ "$(inner list-panes -a -F '#{pane_modal_flag}' | grep -c '^1' || true)" -ge 1 ] && break
+		sleep 0.1
+	done
+	inner kill-window -t s:1
+
+	deadline=$((SECONDS + 10))
+	while ((SECONDS < deadline)) && [ ! -s "$rcfile" ]; do
+		sleep 0.1
+	done
+	[ -s "$rcfile" ] || {
+		echo "wrapper recorded no exit status" >&2
+		false
+	}
+	grep -qx 'rc=0' "$rcfile" || {
+		echo "wrapper exited non-zero: $(cat "$rcfile")" >&2
+		false
+	}
+}
+
 @test "the wrapper exits 0 when its own host session is killed while the popup is open" {
 	local client other_pane rcfile deadline
 	client="$(inner list-clients -F '#{client_name}')"

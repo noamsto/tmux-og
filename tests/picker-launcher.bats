@@ -112,6 +112,27 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	[ "$status" -eq 129 ]
 }
 
+# #887: same guard for the window picker — killing the window the popup lives in
+# destroys the float and display-popup exits 129. Suppress it only when the host
+# window is really gone.
+@test "window picker: a display-popup exit with the host window gone exits 0" {
+	launcher="$(mk_launcher tmux-window-picker.sh)"
+	run env FAKE_POPUP_RC=129 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@2' bash "$launcher" --client foo
+	[ "$status" -eq 0 ]
+}
+
+@test "window picker: a genuine picker failure still exits non-zero" {
+	launcher="$(mk_launcher tmux-window-picker.sh)"
+	run env FAKE_POPUP_RC=4 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@1' bash "$launcher" --client foo
+	[ "$status" -eq 4 ]
+}
+
+@test "window picker: without --client no exit is suppressed" {
+	launcher="$(mk_launcher tmux-window-picker.sh)"
+	run env FAKE_POPUP_RC=129 FAKE_HOST_WINDOW='@1' FAKE_WINDOWS='@2' bash "$launcher"
+	[ "$status" -eq 129 ]
+}
+
 @test "session picker: --client foo pins the popup's client and window" {
 	launcher="$(mk_launcher tmux-session-picker.sh)"
 	bash "$launcher" --client foo
