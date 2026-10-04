@@ -963,10 +963,10 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadPreviewCmd()
 
 	case "tab":
-		// Window mode's rows carry no remote data and emit mode skips the
-		// remote probe, so neither has anything to scope. In wall mode this
-		// case is unreachable — handleWallKey owns tab there.
-		if m.windowMode || m.emitPath != "" {
+		// Emit mode skips the remote probe, so it has nothing to scope. Window
+		// mode cycles hosts like session mode. In wall mode this case is
+		// unreachable — handleWallKey owns tab there.
+		if m.emitPath != "" {
 			return m, nil
 		}
 		hosts := configuredHosts(m.tmuxOpts)
@@ -2594,11 +2594,13 @@ func hostSet(hosts []string) map[string]bool {
 // scopedItems builds the list for a host scope: the local sessions that mirror
 // a matching host, then the Remote section assembled one host block at a time.
 // Zoxide rows are local-scope only — a "create a session here" suggestion has
-// no host to be scoped to.
+// no host to be scoped to. Window mode keeps every local header (withFilter
+// prunes the ones left childless) and skips the "(mirrored)" synthesis: the
+// mirror windows are already local rows.
 func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 	out := []listItem{}
 	for _, item := range m.sessionItems {
-		if hostMatches(item.bridgeHost) {
+		if hostMatches(item.bridgeHost) || m.windowMode && item.isHeader {
 			out = append(out, item)
 		}
 	}
@@ -2622,6 +2624,9 @@ func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 			header = true
 		}
 		out = append(out, block...)
+		if m.windowMode {
+			continue
+		}
 		for _, bm := range m.mirrors {
 			if bm.host != host || seen[bm.sess] {
 				continue
