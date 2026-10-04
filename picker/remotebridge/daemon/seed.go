@@ -101,6 +101,10 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 		// yields a reply at all — isErr covers both, keyed off Kind and ok,
 		// never body length.
 		if isErr {
+			if capLine.Err != nil {
+				onSeed(i, nil, fmt.Errorf("capture-pane failed for %s: %w", id, capLine.Err))
+				continue
+			}
 			onSeed(i, nil, fmt.Errorf("capture-pane failed for %s", id))
 			continue
 		}

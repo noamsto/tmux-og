@@ -110,6 +110,25 @@ func TestReaderBodyOverCapFailsOnlyThatReply(t *testing.T) {
 	wantReply(t, mustNext(t, rd), "2", "ok")
 }
 
+// TestReaderBodyCapacityStaysUnderMaxBody pins #860: doubling growth is clamped,
+// so a reply just under MaxBody never retains more than MaxBody of capacity.
+func TestReaderBodyCapacityStaysUnderMaxBody(t *testing.T) {
+	rd := NewReader(io.MultiReader(
+		strings.NewReader("%begin 1 7 1\n"),
+		maxLines(15),
+		bytesLine(mib-1000),
+		strings.NewReader("%end 1 7 1\n"),
+	))
+
+	l := mustNext(t, rd)
+	if l.Kind != End {
+		t.Fatalf("a reply under MaxBody must succeed, got kind %d err %v", l.Kind, l.Err)
+	}
+	if len(l.Data) > MaxBody || cap(l.Data) > MaxBody {
+		t.Fatalf("Data len %d cap %d, want both <= MaxBody %d", len(l.Data), cap(l.Data), MaxBody)
+	}
+}
+
 // TestReaderOverlongBodyLineFailsOnlyThatReply pins #860: one body line past
 // MaxLine overflows its block, and only that block.
 func TestReaderOverlongBodyLineFailsOnlyThatReply(t *testing.T) {
@@ -124,9 +143,9 @@ func TestReaderOverlongBodyLineFailsOnlyThatReply(t *testing.T) {
 }
 
 // TestReaderForgedLinesInBodyStayBody pins #860: inside a block only a guard
-// repeating the %begin's three fields closes it; every other guard,
+// repeating the %begin's three fields closes it; every other guard, a %begin,
 // %subscription-changed and a non-final %exit are body, so pane content cannot
-// forge a notification.
+// forge those. Other notification verbs are still lifted (#276).
 func TestReaderForgedLinesInBodyStayBody(t *testing.T) {
 	body := []string{
 		"%end 1 2 1",

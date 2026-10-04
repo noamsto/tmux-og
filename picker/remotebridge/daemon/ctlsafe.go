@@ -14,11 +14,15 @@ package daemon
 // n. Wrapping the whole format covers every field and leaves tmux's own row
 // separators, which sit outside the expansion, alone.
 //
-// Invalid UTF-8 in the expansion makes it empty on a UTF-8 remote: it fails
-// closed and reads as unset, which for agentUsageFormat blanks the whole usage
-// segment. This is the remote half; the reader in controlmode is the half that
-// holds when a socket holder replaces a subscription format or the remote's
-// regex differs.
+// Invalid UTF-8 in the expansion measured two ways (empty on one remote, the
+// 0xff byte kept with control bytes turned to spaces on another); either way no
+// raw newline reaches the stream. An empty expansion makes that row
+// unparsable, so it is skipped and the previous values persist, not unset.
+// This is the remote half; the reader in controlmode bounds memory and keeps a
+// newline inside a reply body from opening or closing a block, but cannot hold
+// a raw newline in a top-level %subscription-changed value, so a socket holder
+// replacing a format, or a remote whose regex does not match, still forges
+// top-level lines.
 func ctlSafe(format string) string {
 	return "#{s/[[#{l::}cntrl#{l::}]]/ /:" + format + "}"
 }

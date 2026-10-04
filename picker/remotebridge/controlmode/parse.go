@@ -247,7 +247,10 @@ func validGuard(fields []string) bool {
 // = the %begin's time, Data = the command output alone).
 //
 // Framing follows what tmux can actually write, so a raw newline in a remote
-// value or a pane row cannot forge stream structure (#860):
+// value or a pane row cannot forge a non-matching guard, a %begin, an %exit
+// (unless end-of-stream follows) or a %subscription-changed inside a block
+// (#860). Other notification verbs in a body are still lifted (#276) and pane
+// content can forge them; see docs/agents/bridge-daemon.md:
 //   - tmux writes %begin and its %end/%error synchronously with the same three
 //     fields (cmdq_fire_command, cmdq_guard), so only a guard repeating the
 //     %begin's fields closes a block, blocks never nest, and a guard outside a
@@ -382,7 +385,7 @@ func (rd *Reader) appendBody(raw []byte) {
 	if n > cap(rd.body) {
 		// Doubled by make+copy, not a bytes.Buffer: its append-make growth
 		// allocates every step twice under -race, breaking the memory bound.
-		grown := make([]byte, len(rd.body), max(n, 2*cap(rd.body)))
+		grown := make([]byte, len(rd.body), min(max(n, 2*cap(rd.body)), MaxBody))
 		copy(grown, rd.body)
 		rd.body = grown
 	}

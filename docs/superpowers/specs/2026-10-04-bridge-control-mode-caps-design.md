@@ -139,11 +139,13 @@ consumer's parse changes. Byte length is preserved for single-byte control
 characters, so `openURLFormat`'s `#{n:}` bound still holds (the bound is
 evaluated inside the wrapper).
 
-Invalid UTF-8 makes the wrapped expansion empty on a UTF-8 remote: that row
-reads as empty — the same as an unset value — never as a leaked newline. The
-blast radius is the wrapped expansion: one window's label row, one pane's
-agent row — but `agentUsageFormat` is a single `#{S:#{W:#{P:…}}}` row, so one
-pane command or `@og_agent_usage` holding invalid UTF-8 blanks the whole usage
+Invalid UTF-8 in the wrapped expansion measured two ways: empty on one probe,
+the 0xff byte kept with control bytes turned to spaces on another. Either way no
+raw newline reaches the stream. An empty expansion makes that row unparsable,
+so it is skipped and the previous values persist, not unset. The blast radius
+is the wrapped expansion: one window's label row, one pane's agent row — but
+`agentUsageFormat` is a single `#{S:#{W:#{P:…}}}` row, so one pane command or
+`@og_agent_usage` holding invalid UTF-8 can blank or skip the whole usage
 segment. Accepted: that is the "remote publishes nothing" state the segment
 already handles, and per-field wrapping would leave a later field unwrapped by
 omission.
@@ -161,7 +163,7 @@ Applied at:
 | `carouselprobe.go:172` | `show-options -pqv @carousel_verdict` | the verdict | none: `show-options` takes no format; reader layer bounds it, and a multi-line value fails the exact-match verdict compare |
 | `ctl.go:680` `themeProbeCmd` | `display-message -p '#(…)'` | job stdout | none: tmux keeps only the job's last line (measured) |
 | `daemon.go:2257`, `sessionpin.go:72`, `seed.go:46`, `agentstatus.go:476`, `main.go:187,198` | ids, geometry, flags, time | none | none |
-| `seed.go:50`, `main.go:199` | `capture-pane -e -p` | pane content | none possible (content); a row cannot hold `\n`, and the reader layer makes a row starting with a verb inert |
+| `seed.go:50`, `main.go:199` | `capture-pane -e -p` | pane content | none possible (content); a row cannot hold `\n`; the reader layer makes only a non-matching guard, `%begin`, `%exit` (unless EOF follows) and `%subscription-changed` inert in a body — other notification verbs are lifted (#276), residual |
 | `ctl.go` `run-shell -b` script bodies | remote `tmux show-options` into shell variables | — | none: output never reaches the stream |
 
 Commands the daemon runs on the **local** server (`LocalTmuxOut`) are out of
@@ -217,7 +219,9 @@ line (was unbounded).
   on — while the reply count is unaffected, because the real `%end` is then a
   top-level guard, which is dropped.
 - **A remote whose libc regex differs** (e.g. macOS) is unmeasured; the reader
-  layer is what holds there.
+  bounds memory and keeps a newline inside a reply body from opening or closing
+  a block, but cannot hold a raw newline in a top-level `%subscription-changed`
+  value, so a regex that does not match still forges top-level lines.
 
 ## Non-goals
 
