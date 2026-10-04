@@ -210,6 +210,9 @@ func (m tuiModel) renderHints() string {
 		if n := len(m.killConfirm); n > 1 {
 			prompt = "kill " + strconv.Itoa(n) + " remote sessions?"
 		}
+		if isMirrorWindowKill(m.killConfirm[0]) {
+			prompt = "kill " + sanitizeStatusText(m.killConfirm[0].target) + " on the remote?"
+		}
 		// The (y/N) answer is the one part that must never be truncated away,
 		// so reserve its cells and clip only the name/question to the rest.
 		suffix := warn.Render("  (y/N)")
@@ -284,7 +287,7 @@ func (m tuiModel) renderHints() string {
 		}
 		parts = append(parts, hint("^g", groupLabel))
 	}
-	if len(configuredHosts(m.tmuxOpts)) > 0 {
+	if !m.windowMode && len(configuredHosts(m.tmuxOpts)) > 0 {
 		scopeLabel := "scope"
 		if m.scope.kind != scopeLocal {
 			scopeLabel = highlight.Render(scopeLabel)
