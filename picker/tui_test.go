@@ -1494,6 +1494,7 @@ func TestCtrlXOnMirrorRowRoutesToBridgeCtl(t *testing.T) {
 	m := tuiModel{windowMode: true, width: 200, visible: []listItem{mirror}}
 
 	next, _ := m.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	next, _ = next.(tuiModel).handleKey(tea.KeyPressMsg{Code: 'y'})
 	got, ok := next.(tuiModel)
 	if !ok {
 		t.Fatalf("Update returned %T", next)

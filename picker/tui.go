@@ -128,7 +128,8 @@ type tuiModel struct {
 
 	// Transient error shown in the hint line (e.g. session-create failure)
 	statusMsg string
-	// killConfirm holds the remote session rows staged for a y/N confirmation;
+	// killConfirm holds the remote session rows (or one mirror window row)
+	// staged for a y/N confirmation;
 	// non-empty means the next key answers the prompt (see handleKillConfirm).
 	killConfirm []listItem
 	// forgotten records every (host,sess) killed in this popup. The initial
@@ -577,6 +578,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionItems = m.filterForgottenRemoteRows(msg.items)
 		m.mirrors = m.filterForgottenMirrors(msg.mirrors)
 		m = m.recombine().withFilter()
+		if m.windowMode && m.mode != modeWall {
+			// A vanished target lands on its neighbour, not the top.
+			old := m.cursor
+			m = m.restoreCursor(keep)
+			if keep != "" && m.currentTarget() != keep && len(m.visible) > 0 {
+				m.cursor = min(old, len(m.visible)-1)
+			}
+		}
 		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
 		}
@@ -863,16 +872,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				// A local kill-window is wrong for a mirror: the daemon
 				// reconciles only toward the remote, so it would go on
 				// servicing a registry entry whose localWin is gone (#393).
+				// It kills the remote window, so it asks first like a
+				// remote session kill.
 				if item.bridgePane != "" && item.bridgeSock != "" {
-					logEvent("picker", "event", "kill_bridge_window", "target", item.target, "pane", item.bridgePane)
-					if err := bridgeCtlKillWindow(m.tmuxOpts, item.bridgeSock, item.bridgePane); err != nil {
-						m.statusMsg = err.Error()
-						return m, nil
-					}
-				} else {
-					logEvent("picker", "event", "kill_window", "target", item.target)
-					_ = exec.Command("tmux", "kill-window", "-t", item.target).Run() //nolint:gosec // fixed binary, argv passed without a shell
+					m.killConfirm = []listItem{item}
+					return m, nil
 				}
+				logEvent("picker", "event", "kill_window", "target", item.target)
+				_ = exec.Command("tmux", "kill-window", "-t", item.target).Run() //nolint:gosec // fixed binary, argv passed without a shell
 			} else {
 				logEvent("picker", "event", "kill_session", "target", item.target)
 				// Must run before kill-session: it reads @bridge_sock off the
@@ -987,7 +994,6 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.stateGrouped = !m.stateGrouped
-		m.cursor = m.firstSelectable(0)
 		return m, m.refreshDataCmd()
 
 	case "backspace":
@@ -1775,7 +1781,16 @@ func (m tuiModel) killableMarkedRemoteItems() []listItem {
 	return out
 }
 
-// handleKillConfirm answers a staged remote-kill prompt. Only y/Y acts; every
+// bridgeKillWindow is bridgeCtlKillWindow, seamed for tests.
+var bridgeKillWindow = bridgeCtlKillWindow
+
+// isMirrorWindowKill reports whether a staged kill-confirm row is a mirrored
+// (bridge) window rather than a remote session row.
+func isMirrorWindowKill(item listItem) bool {
+	return !item.isRemoteRow && item.bridgePane != "" && item.bridgeSock != ""
+}
+
+// handleKillConfirm answers a staged remote session / mirror window kill prompt. Only y/Y acts; every
 // other key — n, esc, space, an unmapped chord — cancels, so the destructive
 // default is NO.
 func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
@@ -1792,6 +1807,14 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 	m.killConfirm = nil
 	if len(targets) == 0 {
 		return m, nil
+	}
+	if item := targets[0]; isMirrorWindowKill(item) {
+		logEvent("picker", "event", "kill_bridge_window", "target", item.target, "pane", item.bridgePane)
+		if err := bridgeKillWindow(m.tmuxOpts, item.bridgeSock, item.bridgePane); err != nil {
+			m.statusMsg = err.Error()
+			return m, nil
+		}
+		return m, m.refreshDataCmd()
 	}
 	cmd := m.beginKill(targets)
 	return m, cmd
@@ -3431,6 +3454,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 				bridgePane:     w.bridgePane,
 				bridgeSock:     w.bridgeSock,
 				hasActiveAgent: isActiveState(agentPriority(w.agent)),
+				isScratch:      strings.HasPrefix(w.session, "scratch-"),
 			})
 		}
 	}
