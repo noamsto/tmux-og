@@ -315,7 +315,7 @@ func (m tuiModel) renderHints() string {
 		}
 		parts = append(parts, hint("^g", groupLabel))
 	}
-	if !m.windowMode && len(configuredHosts(m.tmuxOpts)) > 0 {
+	if m.emitPath == "" && len(configuredHosts(m.tmuxOpts)) > 0 {
 		scopeLabel := "scope"
 		if m.scope.kind != scopeLocal {
 			scopeLabel = highlight.Render(scopeLabel)

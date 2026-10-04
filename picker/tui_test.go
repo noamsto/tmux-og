@@ -2585,3 +2585,22 @@ func TestRenderHintsKillRemoteLabelOnRemoteSessionAndWindowRows(t *testing.T) {
 		}
 	}
 }
+
+// Mirror-window and remote-window kills share one y/N mechanism: both stage in
+// killConfirm, render through renderKillConfirm, and default to No.
+func TestMirrorAndRemoteWindowKillShareOneConfirm(t *testing.T) {
+	remote := cursorOnRemoteWindow(t, liveWindowKillModel(t, killTestWindows()...), "@4")
+	mirror := listItem{target: "s:1", session: "s", bridgePane: "%7", bridgeSock: "/tmp/b.sock"}
+	for name, item := range map[string]listItem{"remote window": remote.visible[remote.cursor], "mirror window": mirror} {
+		m := remote
+		m.killConfirm = []listItem{item}
+		m.width = 120
+		if got := stripANSI(m.renderHints()); got != stripANSI(m.renderKillConfirm()) || !strings.Contains(got, "(y/N)") {
+			t.Errorf("%s: hints = %q, want renderKillConfirm's prompt", name, got)
+		}
+		next, cmd := m.handleKey(tea.KeyPressMsg{Code: 'n'})
+		if cmd != nil || len(next.(tuiModel).killConfirm) != 0 {
+			t.Errorf("%s: n must cancel", name)
+		}
+	}
+}
