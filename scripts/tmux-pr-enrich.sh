@@ -225,8 +225,9 @@ branch_cache_key() {
 
 # pending_marker REPO_ID — sets REPLY to the repo's pending-checks marker. Its
 # presence means the repo's last applied rollup had a pending PR; its mtime is
-# when that repo's last checks refresh started; its content is the epoch the
-# repo was first seen pending.
+# when that repo's last checks refresh started; its content is two lines — the
+# pending episode's first-seen epoch, then its pending-head-set fingerprint (see
+# arm_pending_marker).
 pending_marker() {
 	branch_sha1 "$1"
 	REPLY="$ENRICH_CACHE_DIR/$REPLY.checks-pending$ENRICH_SRV"
@@ -699,7 +700,9 @@ if [[ -n $target && -n $branch ]]; then
 		repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 		if [[ -n $repo ]]; then
 			ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
-			branch_sha1 "$branch|$ho"$'\n'
+			# Same form as enrich_repo_group's single-head fingerprint: command
+			# substitution strips the trailing newline there, so no newline here.
+			branch_sha1 "$branch|$ho"
 			arm_pending_marker "$repo" "$REPLY"
 		fi
 	fi

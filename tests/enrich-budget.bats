@@ -160,9 +160,10 @@ set_marker() {
 }
 
 # fingerprint BRANCH OID — the sha1 the repo-group pass computes for one head.
+# No trailing newline: command substitution strips the one sort emits.
 fingerprint() {
 	local out
-	out="$(printf '%s|%s\n' "$1" "$2" | sha1sum)"
+	out="$(printf '%s|%s' "$1" "$2" | sha1sum)"
 	printf '%s' "${out%% *}"
 }
 
@@ -289,6 +290,20 @@ stamp() {
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
 	[ "$status" -eq 0 ]
 	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 1 ]
+}
+
+@test "pending: an unchanged pending set keeps the episode and does not re-arm" {
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(markers | wc -l)" -eq 1 ]
+	local old=$((EPOCHSECONDS - 300))
+	set_marker "$old" "$(marker_fp)"
+	touch "$OG_ENRICH_CACHE_DIR/.last-pending-tick"
+	# Force the group to run so it re-arms unless the fingerprint early-returns.
+	touch -t 200001010000 "$OG_ENRICH_CACHE_DIR/.last-check-tick"
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(marker_first)" = "$old" ]
+	[ -f "$OG_ENRICH_CACHE_DIR/.last-pending-tick" ]
 }
 
 @test "pending: a second PR on an old marker restarts the fast window" {
