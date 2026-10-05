@@ -83,12 +83,9 @@ secret_flag() {
 # not in CREW_WORKER_ID, so it cannot be the discriminator). A lead gets the
 # `dispatch resume` stamp (no store paths). A role pane has no "resume as
 # role" verb, so it falls through to the replay below and resumes its OWN pi
-# session (`pi … --session <file>`) — using the `dispatch resume` lead verb
-# on a role pane would launch a second lead (#928).
+# session (`pi … --session <file>`), never the `dispatch resume` lead verb.
 cmd=""
-if [[ -n ${CREW_ROLE_ID:-} ]]; then
-	: # role-grid pane: fall through to the raw pi replay below
-elif [[ ${CREW_WORKER_ID:-} == worker:* ]]; then
+if [[ -z ${CREW_ROLE_ID:-} && ${CREW_WORKER_ID:-} == worker:* ]]; then
 	cmd="dispatch resume"
 fi
 

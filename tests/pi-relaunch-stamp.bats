@@ -343,7 +343,7 @@ stamp_json() {
 	# CREW_WORKER_ID=worker:<branch>#<s> PLUS CREW_ROLE_ID=role:<branch>:<role>
 	# (adapters/core/dispatch.sh). A role pane must resume its OWN pi session
 	# (`pi … --session <file>`), never the lead's `dispatch resume` verb, or a
-	# restore would launch a second lead from every role pane (#928).
+	# restore would launch a second lead from every role pane.
 	CREW_WORKER_ID='worker:feat/661-x#s123' CREW_ROLE_ID='role:feat/661-x:reviewer' \
 		run stamp "$SESS" --name reef
 
