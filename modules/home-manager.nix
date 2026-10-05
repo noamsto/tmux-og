@@ -1216,24 +1216,49 @@ in {
           reloadTmux = lib.hm.dag.entryAfter ["writeBoundary" "restoreTheme"] ''
             TMUX=${pkgs.tmux}/bin/tmux
             REFLOW=${tmuxConfig.script.tmux-reflow-windows}/bin/tmux-reflow-windows
-            if $TMUX info &>/dev/null 2>&1; then
-              # Source config (restoreTheme may have already done this, but it's
-              # idempotent and handles the case where restoreTheme doesn't exist)
-              if SOURCE_ERR=$($TMUX source-file ${tmuxConfig.tmuxConf} 2>&1); then
-                # Wait for async run-shell plugin commands to finish
-                sleep 1
-                # Reflow ALL sessions
-                WIDTH=$($TMUX list-clients -F '#{client_width}' 2>/dev/null | head -1)
-                WIDTH=''${WIDTH:-200}
-                while read -r sess; do
-                  [ -n "$sess" ] && "$REFLOW" "$sess" "$WIDTH" || true
-                done < <($TMUX list-sessions -F '#{session_name}' 2>/dev/null)
-              else
-                echo "tmux-og: tmux rejected the new config during home-manager switch:" >&2
-                echo "$SOURCE_ERR" >&2
-                echo "tmux-og: restart the tmux server to pick up this generation." >&2
+            # The Linux startup unit starts the server with `TMUX_TMPDIR=%t`
+            # (= $XDG_RUNTIME_DIR), so it lives under
+            # $XDG_RUNTIME_DIR/tmux-$UID/default, not /tmp/tmux-$UID/default.
+            # When this activation inherits no TMUX_TMPDIR (the usual case),
+            # try the inherited/default socket dir and $XDG_RUNTIME_DIR, and
+            # reload every live server found — either or both may exist.
+            if [ -n "''${TMUX_TMPDIR:-}" ]; then
+              TMPDIRS=("$TMUX_TMPDIR")
+            else
+              TMPDIRS=("")
+              if [ -n "''${XDG_RUNTIME_DIR:-}" ]; then
+                TMPDIRS+=("$XDG_RUNTIME_DIR")
               fi
             fi
+            for TMUX_TMPDIR_CAND in "''${TMPDIRS[@]}"; do
+              # A subshell keeps the per-candidate TMUX_TMPDIR from leaking
+              # into the rest of the activation.
+              (
+                if [ -n "$TMUX_TMPDIR_CAND" ]; then
+                  export TMUX_TMPDIR="$TMUX_TMPDIR_CAND"
+                else
+                  unset TMUX_TMPDIR
+                fi
+                $TMUX info &>/dev/null 2>&1 || exit 0
+                # Source config (restoreTheme may have already done this, but
+                # it's idempotent and handles the case where restoreTheme
+                # doesn't exist)
+                if SOURCE_ERR=$($TMUX source-file ${tmuxConfig.tmuxConf} 2>&1); then
+                  # Wait for async run-shell plugin commands to finish
+                  sleep 1
+                  # Reflow ALL sessions
+                  WIDTH=$($TMUX list-clients -F '#{client_width}' 2>/dev/null | head -1)
+                  WIDTH=''${WIDTH:-200}
+                  while read -r sess; do
+                    [ -n "$sess" ] && "$REFLOW" "$sess" "$WIDTH" || true
+                  done < <($TMUX list-sessions -F '#{session_name}' 2>/dev/null)
+                else
+                  echo "tmux-og: tmux rejected the new config during home-manager switch:" >&2
+                  echo "$SOURCE_ERR" >&2
+                  echo "tmux-og: restart the tmux server to pick up this generation." >&2
+                fi
+              )
+            done
           '';
 
           # Ensure the codex SessionStart hook block exists in the user's
