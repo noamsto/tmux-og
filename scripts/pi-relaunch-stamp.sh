@@ -81,13 +81,13 @@ secret_flag() {
 # CREW_WORKER_ID into this pane's environment at launch (`worker:<branch>#…`
 # for a lead, `role:<branch>:<role>` for a role-grid pane sharing this
 # worktree), inherited straight through to this script. A lead gets the
-# `dispatch resume` stamp (no store paths); a role pane restores as a bare
-# shell — there is no "resume as role" verb, and role panes must not each
-# launch a second lead.
+# `dispatch resume` stamp (no store paths). A role pane has no "resume as
+# role" verb, so it falls through to the replay below and resumes its OWN pi
+# session (`pi … --session <file>`) — the `dispatch resume` lead verb stays
+# worker-only, or every restored role pane would launch a second lead (#928).
 cmd=""
 case "${CREW_WORKER_ID:-}" in
 worker:*) cmd="dispatch resume" ;;
-role:*) exit 0 ;;
 esac
 
 if [[ -z $cmd ]]; then

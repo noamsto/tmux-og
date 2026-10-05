@@ -338,11 +338,17 @@ stamp_json() {
 	[ ! -s "$TMUX_LOG" ]
 }
 
-@test "CREW_WORKER_ID=role:… is a no-op, no tmux call at all" {
+@test "CREW_WORKER_ID=role:… stamps the role's own pi session, never dispatch resume" {
+	# A role-grid pane is not a worker lead: it must resume its OWN pi session
+	# (`pi … --session <file>`), never the lead's `dispatch resume` verb, or a
+	# restore would launch a second lead from every role pane (#928).
 	CREW_WORKER_ID='role:feat/661-x:reviewer' run stamp "$SESS" --name reef
 
 	[ "$status" -eq 0 ]
-	[ ! -s "$TMUX_LOG" ]
+	local stamped
+	stamped="$(set_lines)"
+	[ "$stamped" = "pi '--name' 'reef' --session '$SESS'" ]
+	run ! grep -qF 'dispatch resume' "$TMUX_LOG"
 }
 
 @test "no-op when tmux is absent" {
