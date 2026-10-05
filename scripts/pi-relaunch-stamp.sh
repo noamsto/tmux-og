@@ -86,7 +86,6 @@ secret_flag() {
 # session (`pi … --session <file>`) — using the `dispatch resume` lead verb
 # on a role pane would launch a second lead (#928).
 cmd=""
-# shellcheck disable=SC2015 # the empty then-branch is the documented fall-through
 if [[ -n ${CREW_ROLE_ID:-} ]]; then
 	: # role-grid pane: fall through to the raw pi replay below
 elif [[ ${CREW_WORKER_ID:-} == worker:* ]]; then
