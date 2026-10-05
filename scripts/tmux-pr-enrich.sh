@@ -485,8 +485,7 @@ enrich_repo_group() {
 			apply_cache_to_target "$tgt" "$cache" "$br"
 			if [[ $APPLIED_CHECK == pending ]]; then
 				any_pending=1
-				# The pending episode's identity is the head, so read the SHA the
-				# checks query stored beside the rollup.
+				# The episode's identity is the head: read the SHA stored with the rollup.
 				ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
 				sig+="$br|$ho"$'\n'
 			fi
@@ -700,8 +699,7 @@ if [[ -n $target && -n $branch ]]; then
 		repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 		if [[ -n $repo ]]; then
 			ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
-			# Same form as enrich_repo_group's single-head fingerprint: command
-			# substitution strips the trailing newline there, so no newline here.
+			# Match enrich_repo_group's fingerprint: $() strips the trailing newline.
 			branch_sha1 "$branch|$ho"
 			arm_pending_marker "$repo" "$REPLY"
 		fi
