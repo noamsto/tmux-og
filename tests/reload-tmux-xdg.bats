@@ -32,7 +32,9 @@ setup() {
 teardown() {
 	local d
 	for d in "${SOCKET_DIRS[@]}"; do
-		env TMUX_TMPDIR="$d" timeout --foreground 30s "$TMUX_BIN" kill-server 2>/dev/null || true
+		# -u TMUX: with $TMUX set, tmux ignores TMUX_TMPDIR and targets the
+		# socket named in $TMUX (the caller's live server).
+		env -u TMUX TMUX_TMPDIR="$d" timeout --foreground 30s "$TMUX_BIN" kill-server 2>/dev/null || true
 	done
 	return 0
 }
@@ -46,6 +48,9 @@ isolated_tmux() {
 	TMUX_WRAPPER="$BATS_TEST_TMPDIR/tmux.sh"
 	cat >"$TMUX_WRAPPER" <<EOF
 #!$BASH
+# Drop $TMUX so the scratch TMUX_TMPDIR is authoritative; otherwise tmux
+# would connect to whatever live server the caller's pane is attached to.
+unset TMUX
 if [ -z "\${TMUX_TMPDIR:-}" ]; then
 	export TMUX_TMPDIR="$default_dir"
 fi
@@ -76,11 +81,11 @@ start_server() {
 	local dir=$1
 	mkdir -p "$dir"
 	SOCKET_DIRS+=("$dir")
-	env TMUX_TMPDIR="$dir" timeout --foreground 30s "$TMUX_BIN" -f /dev/null new-session -d -s main
+	env -u TMUX TMUX_TMPDIR="$dir" timeout --foreground 30s "$TMUX_BIN" -f /dev/null new-session -d -s main
 }
 
 marker() {
-	env TMUX_TMPDIR="$1" timeout --foreground 30s "$TMUX_BIN" show-options -gqv @reload_marker 2>/dev/null || true
+	env -u TMUX TMUX_TMPDIR="$1" timeout --foreground 30s "$TMUX_BIN" show-options -gqv @reload_marker 2>/dev/null || true
 }
 
 reflow_stub() {
@@ -108,7 +113,7 @@ write_marker_conf() {
 	reflow_stub
 	reload_body "$conf" >"$BATS_TEST_TMPDIR/reload.sh"
 
-	run env -u TMUX_TMPDIR XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
+	run env -u TMUX -u TMUX_TMPDIR XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
 
 	[ "$status" -eq 0 ]
 	[ "$(marker "$xdg")" = xdg ]
@@ -125,7 +130,7 @@ write_marker_conf() {
 	reflow_stub
 	reload_body "$conf" >"$BATS_TEST_TMPDIR/reload.sh"
 
-	run env -u TMUX_TMPDIR XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
+	run env -u TMUX -u TMUX_TMPDIR XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
 
 	[ "$status" -eq 0 ]
 	[ "$(marker "$default")" = default ]
@@ -142,7 +147,7 @@ write_marker_conf() {
 	reflow_stub
 	reload_body "$conf" >"$BATS_TEST_TMPDIR/reload.sh"
 
-	run env -u TMUX_TMPDIR XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
+	run env -u TMUX -u TMUX_TMPDIR XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
 
 	[ "$status" -eq 0 ]
 	[ "$(marker "$xdg")" = both ]
@@ -161,7 +166,7 @@ $xdg main" ]
 	reflow_stub
 	reload_body "$conf" >"$BATS_TEST_TMPDIR/reload.sh"
 
-	run env TMUX_TMPDIR="$other" XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
+	run env -u TMUX TMUX_TMPDIR="$other" XDG_RUNTIME_DIR="$xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
 
 	[ "$status" -eq 0 ]
 	[ "$(marker "$other")" = other ]
@@ -178,7 +183,7 @@ $xdg main" ]
 	reflow_stub
 	reload_body "$conf" >"$BATS_TEST_TMPDIR/reload.sh"
 
-	run env -u TMUX_TMPDIR XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
+	run env -u TMUX -u TMUX_TMPDIR XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR/xdg" bash "$BATS_TEST_TMPDIR/reload.sh"
 
 	[ "$status" -eq 0 ]
 	[ ! -s "$REFLOW_LOG" ]
