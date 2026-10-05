@@ -1719,6 +1719,22 @@
               touch $out
             '';
 
+          # #925: the activation body is lifted from modules/home-manager.nix
+          # and run against real scratch servers, so the suite needs the
+          # shipped tmux (mkTmux) and a sed/grep-capable coreutils.
+          reload-tmux-xdg-tests =
+            pkgs.runCommand "reload-tmux-xdg-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused (mkTmux pkgs)];
+              # The test reads TMUX_BIN and exports the four scratch dirs, so
+              # wrapped-tmux-suite-isolation-assertions stays satisfied.
+              TMUX_BIN = "${mkTmux pkgs}/bin/tmux";
+            } ''
+              cp -r ${./modules} modules
+              cp -r ${./tests} tests
+              bats tests/reload-tmux-xdg.bats
+              touch $out
+            '';
+
           notify-bell-integration-tests =
             pkgs.runCommand "notify-bell-integration-tests" {
               # mkTmux, not pkgs.tmux: the hook behavior this pins must be the
