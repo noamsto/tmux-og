@@ -766,8 +766,9 @@ func primeClient(cfg Config, c *ctlConn, reg *registry) bool {
 
 // connVerdict is how one connection's main loop ended. Only connDrop is a
 // transport failure worth another dial; connEnd covers the remote deliberately
-// ending this control client (%exit) and a mirror left with no windows, either
-// of which would reconnect into a session there is nothing left to mirror in.
+// ending this control client (%exit), a mirror left with no windows, and the
+// pinned remote session destroyed, any of which would reconnect into a session
+// there is nothing left to mirror in.
 type connVerdict int
 
 const (

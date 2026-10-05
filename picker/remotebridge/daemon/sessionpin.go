@@ -176,22 +176,34 @@ func newSessionPin(cfg Config, rt roundTrip) *sessionPin {
 }
 
 // apply reacts to one %session-changed. Our own id is the attach-time
-// notification, or our switch back landing; any other is an excursion.
-func (p *sessionPin) apply(l controlmode.Line, reg *registry, router *Router, rt roundTrip) {
+// notification, or our switch back landing; any other is an excursion. It
+// reports whether the pinned session was destroyed, which ends the mirror: with
+// detach-on-destroy off the remote moves this client to another session when
+// the last pane of ours exits, and there is nothing left to switch back to.
+// A failed switch back with the session still alive stays a frozen
+// mirror, not an ending.
+func (p *sessionPin) apply(l controlmode.Line, reg *registry, router *Router, rt roundTrip) (ended bool) {
 	if p.id == "" || len(l.Args) == 0 || l.Args[0] == p.id {
-		return
+		return false
 	}
 	away := string(l.Data)
 	// No -c: a command sent over this stream resolves "current client" to this
 	// control client, which is exactly the one that was switched away.
 	if r, ok := one(rt, fmt.Sprintf("switch-client -t '%s'", p.id)); !ok || r.Kind == controlmode.Error {
+		if ok {
+			if h, hok := one(rt, fmt.Sprintf("has-session -t '%s'", p.id)); hok && h.Kind == controlmode.Error {
+				fmt.Fprintf(os.Stderr, "daemon: pinned session %s is gone; ending mirror\n", p.id)
+				return true
+			}
+		}
 		fmt.Fprintf(os.Stderr, "daemon: switch back to %s failed; mirror stays frozen\n", p.id)
-		return
+		return false
 	}
 	p.reseed(reg, router, rt)
 	if p.handOff != nil && away != "" {
 		go p.handOff(away)
 	}
+	return false
 }
 
 // reseed repaints every mirrored pane after the switch back.

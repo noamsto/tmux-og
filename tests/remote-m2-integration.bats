@@ -6067,3 +6067,62 @@ mirror_of_remote() {
 	# daemon exits, instead of outliving its session forever.
 	wait_daemon_exit sessgone "$log" 300
 }
+
+@test "exiting the shell in the last pane of a mirror window closes that window (#934)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t rem
+	# bridge_up's startup marker goes to the remote's active window and is read
+	# back from mirror window 1, so window 1 must be active until it is up.
+	$SRC select-window -t rem:1
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 ex1
+	stamped=0
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		stamped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+		[ "$stamped" -eq 2 ] && break
+		sleep 0.1
+	done
+	[ "$stamped" -eq 2 ]
+	# Exit in the ACTIVE window, as a user does.
+	$SRC select-window -t rem:2
+	$SRC send-keys -t rem:2 "exit" Enter
+
+	n=2
+	for _ in $(seq 1 100); do
+		n="$($DST list-windows -t host-sess -F '#{window_id}' 2>/dev/null | wc -l)"
+		[ "$n" -eq 1 ] && break
+		sleep 0.1
+	done
+	[ "$n" -eq 1 ]
+	[ "$($DST list-panes -s -t host-sess -F '#{pane_dead}' | grep -c 1 || true)" -eq 0 ]
+	kill -0 "$daemon_pid"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
+@test "exiting the shell in the last pane of the last window ends the mirror (#934)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 ex2
+	$SRC send-keys -t rem:1 "exit" Enter
+
+	wait_daemon_exit ex2 "$BATS_TEST_TMPDIR/ex2.log" 100
+	[ "$($DST list-sessions -F '#{session_name}' 2>/dev/null | grep -c '^host-sess$' || true)" -eq 0 ]
+}
+
+@test "exiting the shell in the last pane of the last window ends the mirror when the remote has detach-on-destroy off (#934)" {
+	$SRC new-session -d -s other -x 100 -y 30
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC set-option -g detach-on-destroy off
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 ex3
+	$SRC send-keys -t rem:1 "exit" Enter
+
+	wait_daemon_exit ex3 "$BATS_TEST_TMPDIR/ex3.log" 100
+	[ "$($DST list-sessions -F '#{session_name}' 2>/dev/null | grep -c '^host-sess$' || true)" -eq 0 ]
+}
