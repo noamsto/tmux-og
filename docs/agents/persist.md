@@ -62,14 +62,24 @@ layer (replaces tmux-resurrect/tmux-continuum). Enabled by default via
   <store path>/WORKER_PROTOCOL.md`, and any dispatch-supplied `-e` files).
   `pi-relaunch-stamp.sh` detects a dispatcher-launched pane via
   `CREW_WORKER_ID` in its environment (set by dispatch's own launch command,
-  inherited straight through to the stamper): a worker lead (`worker:…`) gets
+  inherited straight through to the stamper): a worker lead
+  (`CREW_WORKER_ID=worker:<branch>#<session>`, no `CREW_ROLE_ID`) gets
   `dispatch resume` stamped instead of a raw pi replay — that command
   re-resolves engine/model/effort and current protocol paths from the
   worktree's `WORKER_TASK.md` rather than replaying stale argv. A role-grid
-  pane sharing the worktree (`role:…`) stamps nothing and restores as a bare
-  shell: there is no "resume as role" verb, and role panes must not each
-  launch a second lead — a role pane's own resume onto the crew bus is out of
-  scope for this mechanism.
+  pane carries the *lead's* `CREW_WORKER_ID` plus its own
+  `CREW_ROLE_ID=role:<branch>:<role>` (dispatch's `split_role_pane`) and has no
+  "resume as role" verb, so it falls through to the same raw pi replay a plain
+  pi pane gets and stamps its OWN session (`pi <flags> --session <file>`); the
+  `dispatch resume` lead verb must stay lead-only (`CREW_ROLE_ID` unset), or
+  every restored role pane would launch a second lead (#928). Caveats: `persist.resumePi` must be on for any pi stamp to exist at
+  all, and a `--no-session` launch never stamps; a resumed role pane is not a
+  working crew role on its own — tmux-remux persists no pane environment
+  (`CREW_WORKER_ID`/`CREW_ROLE_ID`) and does not restart the assignment
+  watcher, so re-attaching the role to the crew bus is the dispatcher's job;
+  and the replay keeps dispatcher-supplied `--append-system-prompt`/`--skill`
+  store paths, accepted as the same per-pane replay contract every pi pane
+  uses.
 - Restored windows already get `@worktree`/`@branch`/`@issue_*` from the
   ordinary `after-new-window`/`after-new-session` creation hooks — tmux-remux's
   restore/undo/pick all create windows via `new-window -c`/`new-session -c`
