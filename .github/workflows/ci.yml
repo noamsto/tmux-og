@@ -26,10 +26,14 @@ jobs:
         include:
           - system: x86_64-linux
             runner: ubuntu-latest
+            eval-workers: 4
           - system: aarch64-darwin
             runner: macos-14
+            eval-workers: 2
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      NIX_CONFIG: accept-flake-config = true
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -37,6 +41,16 @@ jobs:
         with:
           name: lazytmux
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - run: nix build .#default --accept-flake-config
-      - run: nix build .#tmux-remux --accept-flake-config
-      - run: nix flake check --accept-flake-config
+      # Evaluates the non-check outputs (devShells, modules, overlays, apps)
+      # that nix-fast-build below does not touch.
+      - run: nix flake check --no-build
+      # --skip-cached: outputs already in lazytmux are neither rebuilt nor
+      # downloaded. New builds still reach the cache via cachix-action's daemon.
+      - run: >-
+          nix run --inputs-from . nixpkgs#nix-fast-build --
+          --no-nom --skip-cached
+          --eval-workers ${{ matrix.eval-workers }}
+          --flake .#
+          --select 'f: f.checks.${{ matrix.system }} // {
+          pkg-default = f.packages.${{ matrix.system }}.default;
+          pkg-tmux-remux = f.packages.${{ matrix.system }}.tmux-remux; }'
