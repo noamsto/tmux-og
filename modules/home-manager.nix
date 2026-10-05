@@ -529,11 +529,13 @@ in {
           stamper detects a dispatcher-launched pane via `CREW_WORKER_ID` in
           its environment (set by dispatch's own launch command) and stamps
           `dispatch resume` instead of a raw pi replay for a worker lead
-          (`worker:…`); a role-grid pane sharing the worktree (`role:…`) has no
-          "resume as role" verb, so it falls through to the raw pi replay and
-          stamps its OWN session (`pi … --session <file>`). The `dispatch
-          resume` lead verb stays `worker:`-only, or every restored role pane
-          would launch a second lead. Caveats: a resumed role pane is not a
+          (`CREW_WORKER_ID=worker:<branch>#<session>`, no `CREW_ROLE_ID`); a
+          role-grid pane carries the lead's `CREW_WORKER_ID` PLUS its own
+          `CREW_ROLE_ID=role:<branch>:<role>` and has no "resume as role" verb,
+          so it falls through to the raw pi replay and stamps its OWN session
+          (`pi … --session <file>`). The `dispatch resume` lead verb must stay
+          lead-only (`CREW_ROLE_ID` unset), or every restored role pane would
+          launch a second lead. Caveats: a resumed role pane is not a
           working crew role by itself — tmux-remux persists no pane environment
           and does not restart the assignment watcher, so re-attaching the role
           to the crew bus is the dispatcher's job.

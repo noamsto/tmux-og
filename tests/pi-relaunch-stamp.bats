@@ -11,7 +11,7 @@ setup() {
 	# Tests run from a plain interactive pi launch unless a case opts in —
 	# unset rather than assume empty, since a dispatched worker pane (this
 	# one, possibly) already has this in its real environment.
-	unset CREW_WORKER_ID PI_USER_ARGC
+	unset CREW_WORKER_ID CREW_ROLE_ID PI_USER_ARGC
 	export TMUX_PANE="%7"
 	STAMP="$BATS_TEST_TMPDIR/pi-relaunch-stamp.sh"
 	sed "s|@jq@|$(command -v jq)|" "$BATS_TEST_DIRNAME/../scripts/pi-relaunch-stamp.sh" >"$STAMP"
@@ -338,17 +338,28 @@ stamp_json() {
 	[ ! -s "$TMUX_LOG" ]
 }
 
-@test "CREW_WORKER_ID=role:… stamps the role's own pi session, never dispatch resume" {
-	# A role-grid pane is not a worker lead: it must resume its OWN pi session
+@test "role-grid pane (lead CREW_WORKER_ID + CREW_ROLE_ID) stamps its own pi session, never dispatch resume" {
+	# dispatch's split_role_pane gives a role pane the LEAD's
+	# CREW_WORKER_ID=worker:<branch>#<s> PLUS CREW_ROLE_ID=role:<branch>:<role>
+	# (adapters/core/dispatch.sh). A role pane must resume its OWN pi session
 	# (`pi … --session <file>`), never the lead's `dispatch resume` verb, or a
 	# restore would launch a second lead from every role pane (#928).
-	CREW_WORKER_ID='role:feat/661-x:reviewer' run stamp "$SESS" --name reef
+	CREW_WORKER_ID='worker:feat/661-x#s123' CREW_ROLE_ID='role:feat/661-x:reviewer' \
+		run stamp "$SESS" --name reef
 
 	[ "$status" -eq 0 ]
 	local stamped
 	stamped="$(set_lines)"
 	[ "$stamped" = "pi '--name' 'reef' --session '$SESS'" ]
 	run ! grep -qF 'dispatch resume' "$TMUX_LOG"
+}
+
+@test "role-grid pane with no session file is a no-op" {
+	CREW_WORKER_ID='worker:feat/661-x#s123' CREW_ROLE_ID='role:feat/661-x:reviewer' \
+		run stamp "" --print hi
+
+	[ "$status" -eq 0 ]
+	[ ! -s "$TMUX_LOG" ]
 }
 
 @test "no-op when tmux is absent" {

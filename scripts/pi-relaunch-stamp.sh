@@ -77,18 +77,21 @@ secret_flag() {
 # dispatch supplies) that go stale exactly like the wrapper's, but dispatch
 # ships its own resume path — `dispatch resume` — that re-resolves
 # engine/model/effort and current protocol paths from the worktree's
-# WORKER_TASK.md instead of replaying stale argv. The dispatcher tags
-# CREW_WORKER_ID into this pane's environment at launch (`worker:<branch>#…`
-# for a lead, `role:<branch>:<role>` for a role-grid pane sharing this
-# worktree), inherited straight through to this script. A lead gets the
+# WORKER_TASK.md instead of replaying stale argv. dispatch's split_role_pane
+# tags a LEAD pane with CREW_WORKER_ID=worker:<branch>#… and a ROLE-grid pane
+# with that SAME lead id PLUS CREW_ROLE_ID=role:<branch>:<role> (the role is
+# not in CREW_WORKER_ID, so it cannot be the discriminator). A lead gets the
 # `dispatch resume` stamp (no store paths). A role pane has no "resume as
 # role" verb, so it falls through to the replay below and resumes its OWN pi
-# session (`pi … --session <file>`) — the `dispatch resume` lead verb stays
-# worker-only, or every restored role pane would launch a second lead (#928).
+# session (`pi … --session <file>`) — using the `dispatch resume` lead verb
+# on a role pane would launch a second lead (#928).
 cmd=""
-case "${CREW_WORKER_ID:-}" in
-worker:*) cmd="dispatch resume" ;;
-esac
+# shellcheck disable=SC2015 # the empty then-branch is the documented fall-through
+if [[ -n ${CREW_ROLE_ID:-} ]]; then
+	: # role-grid pane: fall through to the raw pi replay below
+elif [[ ${CREW_WORKER_ID:-} == worker:* ]]; then
+	cmd="dispatch resume"
+fi
 
 if [[ -z $cmd ]]; then
 	if ((has_user_argv)); then
