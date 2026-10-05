@@ -20,6 +20,8 @@ jobs:
       - run: nix build .#lint --accept-flake-config
 
   build:
+    # Matches the ruleset's required check names.
+    name: build (${{ matrix.system }}, ${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
