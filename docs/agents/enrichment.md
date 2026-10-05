@@ -33,19 +33,28 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   separately gates the more expensive CI-rollup query; `r` refreshes both for
   the current window immediately. PR state is cached at `/tmp/og-pr/`
   (60s TTL). A repo whose last applied rollup was still pending re-polls
-  checks alone about every 30s (never slower than `prCheckRefreshSeconds`) via
-  the `--tick-run-pending` pass, so a running check suite doesn't sit stale for
-  a whole `prCheckRefreshSeconds` window. The fast cadence is capped at 10
-  minutes per repo, counted from when the repo was first seen pending (the
-  marker's content): a required status stuck at `EXPECTED` or a deployment
-  awaiting approval would otherwise spend the shared GraphQL bucket 120 times
-  an hour, so past the cap the repo falls back to `prCheckRefreshSeconds` until
-  its checks settle. A marker whose repo has lost its windows is removed by the
-  next pass, and `prefix + i` `r` on a pending PR arms the fast cadence
-  immediately. Known gap: a push that sends a settled PR back to pending is
-  noticed only by the slow check refresh, up to `prCheckRefreshSeconds` later,
-  because the identity batch carries no head SHA — adding `headRefOid` to it is
-  the follow-up.
+  checks alone via the `--tick-run-pending` pass, so a running check suite
+  doesn't sit stale for a whole `prCheckRefreshSeconds` window. The fast
+  cadence is stepped and bounded: 30s for the first 10 minutes of a pending
+  episode, 60s from 10 to 30 minutes, then `prCheckRefreshSeconds` until the
+  checks settle. A required status stuck at `EXPECTED` or a deployment awaiting
+  approval therefore stops costing the shared GraphQL bucket after 30 minutes;
+  the gate keeps dispatching a gh-free pending pass every 30s during the 60s
+  tier, so the extra cadence costs forks, not API calls. An **episode** is the
+  set of pending heads, not the repo: the marker's content holds a first-seen
+  epoch and a fingerprint of the sorted pending `branch|headRefOid` set (the
+  checks query carries `headRefOid`), and a changed set — a new PR going
+  pending, one settling, or a push moving a head — rewrites the epoch and drops
+  `.last-pending-tick`, restarting the 30s tier. So a second PR is never stuck
+  on an old repo clock, and a push that sends a pending PR back to pending
+  re-arms the fast window at the next checks refresh. Worst case for one repo:
+  ~40 check queries over the first 30 minutes, then 12/hour, when the pending
+  set is stable; a churning set restarts the 30s tier each change, so sustained
+  churn can approach ~120/hour plus the full-pass baseline. A marker whose repo
+  has lost its windows is removed by the next pass, and `prefix + i` `r` on a
+  pending PR arms the fast cadence immediately. Upgrade note: a one-line marker
+  written by an older build has no fingerprint, so the first pass after upgrade
+  restarts the window once.
 - **Checkout gone:** a window whose `@worktree` and `@git_root` both fail to
   resolve a repo (a merged PR's worktree was removed, the window stayed open)
   but which carries a well-formed `@pr_url` is refreshed by that url —

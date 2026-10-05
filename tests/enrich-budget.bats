@@ -64,7 +64,7 @@ setup() {
 	export FAKE_WINDOWS='$1:@1|'"$REPO"'||feat/has-pr|
 $1:@2|'"$REPO"'||feat/no-pr|'
 	export GH_BATCH_JSON='[{"number":7,"title":"t","url":"u","state":"OPEN","statusCheckRollup":[],"mergeable":"MERGEABLE","isDraft":false,"reviewDecision":"APPROVED","autoMergeRequest":{"enabledAt":"2026-09-15T00:00:00Z"},"headRefName":"feat/has-pr"}]'
-	export GH_CHECK_JSON='[{"headRefName":"feat/has-pr","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}]'
+	export GH_CHECK_JSON='[{"headRefName":"feat/has-pr","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"aaaa"}]'
 
 	make_pr_enrich
 }
@@ -106,7 +106,7 @@ gh_calls() {
 @test "force refresh fetches the current branch's check rollup immediately" {
 	run bash "$PR_ENRICH_SCRIPT" --target '$1:@1' --branch feat/has-pr --dir "$REPO" --force
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--head feat/has-pr --state open --limit 1 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup')" -eq 1 ]
+	[ "$(gh_calls '--head feat/has-pr --state open --limit 1 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup,headRefOid')" -eq 1 ]
 }
 
 @test "pass: a failed batch falls back to the full open-then-all lookup" {
@@ -135,11 +135,35 @@ gh_calls() {
 	grep -q -- '@pr_check_progress 1/2' "$TMUX_LOG"
 }
 
-PENDING_CHECK_JSON='[{"headRefName":"feat/has-pr","statusCheckRollup":[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]}]'
+PENDING_CHECK_JSON='[{"headRefName":"feat/has-pr","statusCheckRollup":[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}],"headRefOid":"aaaa"}]'
+# A second branch going pending (a different head), used to prove the pending
+# head set — not just the branch count — restarts the fast window. Its open PR
+# must be in the identity batch too, or its rollup is ignored as terminal.
+PENDING_OTHER_JSON='[{"headRefName":"feat/no-pr","statusCheckRollup":[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}],"headRefOid":"bbbb"}]'
+GH_BATCH_TWO_JSON='[{"number":7,"title":"t","url":"u","state":"OPEN","statusCheckRollup":[],"mergeable":"MERGEABLE","isDraft":false,"reviewDecision":"APPROVED","autoMergeRequest":null,"headRefName":"feat/has-pr"},{"number":8,"title":"t2","url":"u2","state":"OPEN","statusCheckRollup":[],"mergeable":"MERGEABLE","isDraft":false,"reviewDecision":"","autoMergeRequest":null,"headRefName":"feat/no-pr"}]'
+# The settled answer for the same head, to prove a late green is applied.
+SETTLED_CHECK_JSON='[{"headRefName":"feat/has-pr","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"aaaa"}]'
 
 # markers — the pending markers currently in the cache dir, one per line.
 markers() {
 	compgen -G "$OG_ENRICH_CACHE_DIR/*.checks-pending" || true
+}
+
+# marker_first — the episode's first-seen epoch (line 1).
+marker_first() { sed -n 1p "$(markers)"; }
+# marker_fp — the pending-head-set fingerprint (line 2).
+marker_fp() { sed -n 2p "$(markers)"; }
+
+# set_marker FIRST FP — rewrite the marker's content without moving its mtime.
+set_marker() {
+	printf '%s\n%s\n' "$1" "$2" >"$(markers)"
+}
+
+# fingerprint BRANCH OID — the sha1 the repo-group pass computes for one head.
+fingerprint() {
+	local out
+	out="$(printf '%s|%s\n' "$1" "$2" | sha1sum)"
+	printf '%s' "${out%% *}"
 }
 
 @test "pending: a pending rollup leaves a repo marker, a settled one clears it" {
@@ -239,11 +263,66 @@ stamp() {
 	[ "$(markers)" = "$live" ]
 }
 
-@test "pending: a repo pending past the cap no longer re-polls on the fast cadence" {
+@test "pending: a run past the old 600s cap is still re-polled in the 60s tier" {
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(markers | wc -l)" -eq 1 ]
+	local now=$EPOCHSECONDS
+	# First seen 700s ago (past the OLD 600s cap, inside the new 1800s window),
+	# last refreshed 65s ago — due under the 60s tier, not the 30s one.
+	set_marker "$((now - 700))" "$(marker_fp)"
+	stamp $((now - 65)) "$(markers)"
+	# CI has settled; the pass must fetch and apply it, then clear the marker.
+	GH_CHECK_JSON="$SETTLED_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
+	[ "$status" -eq 0 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 2 ]
+	[ -z "$(markers)" ]
+	grep -q -- '@pr_check_state success' "$TMUX_LOG"
+}
+
+@test "pending: the 60s tier is not re-polled before its interval" {
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
 	local now=$EPOCHSECONDS
-	# First seen 700s ago (past PENDING_MAX_SECONDS), last refreshed long ago.
-	printf '%s\n' "$((now - 700))" >"$(markers)"
+	set_marker "$((now - 700))" "$(marker_fp)"
+	# 35s < 60 - PENDING_DUE_SLACK, so this must stay a gh-free no-op — a flat
+	# 30s-until-1800 implementation would wrongly re-poll here.
+	stamp $((now - 35)) "$(markers)"
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
+	[ "$status" -eq 0 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 1 ]
+}
+
+@test "pending: a second PR on an old marker restarts the fast window" {
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$(markers | wc -l)" -eq 1 ]
+	local now=$EPOCHSECONDS
+	# A future .last-pending-tick is the push-ahead state; the restart drops it.
+	touch -t "$(printf '%(%Y%m%d%H%M.%S)T' $((now + 300)))" "$OG_ENRICH_CACHE_DIR/.last-pending-tick"
+	set_marker "$((now - 700))" "$(marker_fp)"
+	touch -t 200001010000 "$OG_ENRICH_CACHE_DIR/.last-check-tick"
+	# A different branch goes pending: the head set changed.
+	GH_BATCH_JSON="$GH_BATCH_TWO_JSON" GH_CHECK_JSON="$PENDING_OTHER_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(marker_first)" -ge "$((now - 10))" ]
+	[ ! -e "$OG_ENRICH_CACHE_DIR/.last-pending-tick" ]
+}
+
+@test "pending: a new pending head restarts the window even past the cap" {
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	local now=$EPOCHSECONDS
+	touch -t "$(printf '%(%Y%m%d%H%M.%S)T' $((now + 300)))" "$OG_ENRICH_CACHE_DIR/.last-pending-tick"
+	set_marker "$((now - 1900))" "$(marker_fp)"
+	touch -t 200001010000 "$OG_ENRICH_CACHE_DIR/.last-check-tick"
+	GH_BATCH_JSON="$GH_BATCH_TWO_JSON" GH_CHECK_JSON="$PENDING_OTHER_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(marker_first)" -ge "$((now - 10))" ]
+	[ ! -e "$OG_ENRICH_CACHE_DIR/.last-pending-tick" ]
+}
+
+@test "pending: a repo pending past the bounded window settles to the slow cadence" {
+	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
+	local now=$EPOCHSECONDS
+	# First seen 1900s ago (past PENDING_MAX_SECONDS), last refreshed 100s ago.
+	set_marker "$((now - 1900))" "$(marker_fp)"
 	stamp $((now - 100)) "$(markers)"
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
 	[ "$status" -eq 0 ]
@@ -257,12 +336,15 @@ stamp() {
 }
 
 @test "force refresh of a pending PR arms the fast check cadence" {
-	GH_HEAD_JSON='[{"number":7,"title":"t","url":"u","state":"OPEN","mergeable":"MERGEABLE","isDraft":false,"statusCheckRollup":[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]}]' \
+	GH_HEAD_JSON='[{"number":7,"title":"t","url":"u","state":"OPEN","mergeable":"MERGEABLE","isDraft":false,"statusCheckRollup":[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}],"headRefOid":"aaaa"}]' \
 		run bash "$PR_ENRICH_SCRIPT" --target '$1:@1' --branch feat/has-pr --dir "$REPO" --force
 	[ "$status" -eq 0 ]
 	grep -q -- '@pr_check_state pending' "$TMUX_LOG"
 	[ "$(markers | wc -l)" -eq 1 ]
-	[ "$(cat "$(markers)")" -le "$EPOCHSECONDS" ]
+	[ "$(marker_first)" -le "$EPOCHSECONDS" ]
+	# The fingerprint names the pending head with its SHA, the same value the
+	# repo-group pass computes, so the two paths agree on the episode identity.
+	[ "$(marker_fp)" = "$(fingerprint feat/has-pr aaaa)" ]
 }
 
 @test "tick: the gate runs with no compgen builtin and still dispatches nothing when idle" {

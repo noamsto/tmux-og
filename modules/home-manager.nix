@@ -605,8 +605,10 @@ in {
           CI check-state refresh cadence in seconds (clamped 10–300). PR
           identity still refreshes at `prRefreshSeconds`; this slower query
           keeps routine status-line polling within GitHub's API budget. A
-          repo with pending checks re-polls every 30 seconds (never slower
-          than this value) until they settle.
+          repo with pending checks re-polls every 30 seconds (60 after 10
+          minutes, never slower than this value) until they settle, then
+          falls back to this cadence; a changed set of pending heads
+          restarts the fast window.
         '';
       };
 
