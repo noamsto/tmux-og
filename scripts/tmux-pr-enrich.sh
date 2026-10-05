@@ -37,11 +37,24 @@ TTL_TERMINAL=3600
 # so the badge's progress pie moves while CI runs. Capped by the settled cadence.
 PENDING_CHECK_SECONDS=30
 ((PENDING_CHECK_SECONDS > CHECK_REFRESH_SECONDS)) && PENDING_CHECK_SECONDS=$CHECK_REFRESH_SECONDS
+# A pending episode steps up to this clock once it is older than
+# PENDING_FAST_SECONDS, so a long CI run's green still lands within a minute of
+# settling without holding the 30s rate for the whole episode.
+PENDING_SLOW_SECONDS=60
+((PENDING_SLOW_SECONDS > CHECK_REFRESH_SECONDS)) && PENDING_SLOW_SECONDS=$CHECK_REFRESH_SECONDS
+# A pending episode polls at PENDING_CHECK_SECONDS until this age, then at
+# PENDING_SLOW_SECONDS.
+PENDING_FAST_SECONDS=600
 # Checks can sit pending for hours (a required status stuck at EXPECTED, a
-# deployment awaiting approval). This long after a repo was first seen pending,
-# it drops back to the settled cadence rather than spend the shared GraphQL
-# budget 120 times an hour.
-PENDING_MAX_SECONDS=600
+# deployment awaiting approval). This long after a pending episode began, the
+# repo drops back to the settled cadence rather than spend the shared GraphQL
+# budget on every tick. The episode is the SET of pending heads, not the repo: a
+# new PR going pending (or a push moving a head) restarts the clock through the
+# marker's fingerprint, so one stuck check can't keep a fresh run on the slow
+# clock.
+PENDING_MAX_SECONDS=1800
+((PENDING_FAST_SECONDS > PENDING_MAX_SECONDS)) && PENDING_FAST_SECONDS=$PENDING_MAX_SECONDS
+((PENDING_FAST_SECONDS > CHECK_REFRESH_SECONDS)) && PENDING_FAST_SECONDS=$CHECK_REFRESH_SECONDS
 # The gate stamps .last-pending-tick when it dispatches and the pass stamps the
 # marker a few forks later, so on the next 5s-aligned dispatch the marker can be
 # a second short of PENDING_CHECK_SECONDS. One hook period of slack keeps that
@@ -212,22 +225,34 @@ branch_cache_key() {
 
 # pending_marker REPO_ID — sets REPLY to the repo's pending-checks marker. Its
 # presence means the repo's last applied rollup had a pending PR; its mtime is
-# when that repo's last checks refresh started; its content is the epoch the
-# repo was first seen pending.
+# when that repo's last checks refresh started; its content is two lines — the
+# pending episode's first-seen epoch, then its pending-head-set fingerprint (see
+# arm_pending_marker).
 pending_marker() {
 	branch_sha1 "$1"
 	REPLY="$ENRICH_CACHE_DIR/$REPLY.checks-pending$ENRICH_SRV"
 }
 
-# arm_pending_marker REPO_ID — create the repo's pending marker if it has none.
-# First-seen is written only here, so later touches move the mtime and never the
-# content. Dropping .last-pending-tick undoes a pass's push-ahead (set when every
-# marker was past PENDING_MAX_SECONDS), so the new repo's fast cadence starts on
-# the next tick. Leaves REPLY as the marker path.
+# arm_pending_marker REPO_ID FINGERPRINT — reconcile the repo's pending-checks
+# marker with the current pending head set. Line 1 is the episode's first-seen
+# epoch; line 2 is FINGERPRINT, a sha1 over the sorted "branch|headRefOid" of
+# every pending window. When the file is absent, or its fingerprint differs (a
+# new PR went pending, one settled, or a push moved a head), the content is
+# rewritten with the current epoch — restarting the fast window — and
+# .last-pending-tick is dropped so the gate re-arms on the next tick (undoing a
+# pass's push-ahead). Otherwise only the mtime moves (the caller stamps the
+# refresh start). Leaves REPLY as the marker path.
 arm_pending_marker() {
+	local fp="${2:-}" first cur
 	pending_marker "$1"
-	[[ -f $REPLY ]] && return
-	printf '%s\n' "$EPOCHSECONDS" >"$REPLY"
+	if [[ -f $REPLY ]]; then
+		{
+			IFS= read -r first
+			IFS= read -r cur
+		} <"$REPLY" 2>/dev/null
+		[[ $cur == "$fp" ]] && return
+	fi
+	printf '%s\n%s\n' "$EPOCHSECONDS" "$fp" >"$REPLY"
 	rm -f "$ENRICH_CACHE_DIR/.last-pending-tick$ENRICH_SRV"
 }
 
@@ -292,7 +317,7 @@ fetch_pr_cached() {
 		acquire_lock "$lock" || exit 0
 		if [[ -n $d ]]; then cd "$d" 2>/dev/null || exit 0; fi
 		local json="" fields="number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest"
-		((force)) && fields+=",statusCheckRollup"
+		((force)) && fields+=",statusCheckRollup,headRefOid"
 		if [[ $states == open+all ]]; then
 			json="$(gh pr list --head "$b" --state open --limit 1 \
 				--json "$fields" 2>/dev/null)" || exit 0
@@ -303,7 +328,7 @@ fetch_pr_cached() {
 		fi
 		if ((force)); then
 			jq 'map(del(.statusCheckRollup))' <<<"$json" >"$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
-			jq 'map({statusCheckRollup: (.statusCheckRollup // [])})' <<<"$json" >"$check_cache.tmp.$$" && mv -f "$check_cache.tmp.$$" "$check_cache"
+			jq 'map({statusCheckRollup: (.statusCheckRollup // []), headRefOid})' <<<"$json" >"$check_cache.tmp.$$" && mv -f "$check_cache.tmp.$$" "$check_cache"
 		else
 			printf '%s' "$json" >"$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
 		fi
@@ -373,13 +398,13 @@ refresh_repo_checks() {
 	mapfile -t branches <<<"$3"
 	command -v gh >/dev/null 2>&1 || return
 	all_json="$(cd "$d" 2>/dev/null && gh pr list --state open --limit 100 \
-		--json headRefName,statusCheckRollup 2>/dev/null)" || return
+		--json headRefName,statusCheckRollup,headRefOid 2>/dev/null)" || return
 	[[ -n $all_json ]] || return
 
 	declare -A checks
 	while IFS=$'\t' read -r head obj; do
 		[[ -n $head ]] && checks[$head]="$obj"
-	done < <(jq -r '.[] | "\(.headRefName)\t\([{statusCheckRollup}])"' <<<"$all_json")
+	done < <(jq -r '.[] | "\(.headRefName)\t\([{statusCheckRollup, headRefOid}])"' <<<"$all_json")
 
 	local br ck check_cache
 	for br in "${branches[@]}"; do
@@ -449,7 +474,7 @@ enrich_repo_group() {
 		refresh_repo_checks "$d" "$repo_id" "$3"
 	fi
 
-	local line tgt b2 any_pending=0
+	local line tgt b2 any_pending=0 sig="" ho
 	for br in "${branches[@]}"; do
 		[[ -z $br ]] && continue
 		branch_sha1 "$repo_id|$br"
@@ -458,14 +483,21 @@ enrich_repo_group() {
 			IFS="|" read -r tgt b2 <<<"$line"
 			[[ $b2 == "$br" ]] || continue
 			apply_cache_to_target "$tgt" "$cache" "$br"
-			[[ $APPLIED_CHECK == pending ]] && any_pending=1
+			if [[ $APPLIED_CHECK == pending ]]; then
+				any_pending=1
+				# The episode's identity is the head: read the SHA stored with the rollup.
+				ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
+				sig+="$br|$ho"$'\n'
+			fi
 		done
 	done
 
 	# An existing marker's refresh stamp was already set by run_full_pass, before
-	# this group launched.
+	# this group launched. The fingerprint lets arm restart the fast window when
+	# the set of pending heads changes.
 	if ((any_pending)); then
-		arm_pending_marker "$repo_id"
+		branch_sha1 "$(printf '%s' "$sig" | LC_ALL=C sort -u)"
+		arm_pending_marker "$repo_id" "$REPLY"
 	else
 		pending_marker "$repo_id"
 		rm -f "$REPLY"
@@ -596,7 +628,7 @@ run_full_pass() {
 	fi
 	((total)) || return
 
-	local due fast=0 first
+	local due fast=0 first interval
 	for k in "${!grp_branches[@]}"; do
 		m="${marker[$k]}"
 		due=0
@@ -605,7 +637,9 @@ run_full_pass() {
 			[[ $first =~ ^[0-9]+$ ]] || first=0
 			if ((EPOCHSECONDS - first < PENDING_MAX_SECONDS)); then
 				fast=1
-				((EPOCHSECONDS - $(file_mtime "$m") >= PENDING_CHECK_SECONDS - PENDING_DUE_SLACK)) && due=1
+				interval=$PENDING_CHECK_SECONDS
+				((EPOCHSECONDS - first >= PENDING_FAST_SECONDS)) && interval=$PENDING_SLOW_SECONDS
+				((EPOCHSECONDS - $(file_mtime "$m") >= interval - PENDING_DUE_SLACK)) && due=1
 			fi
 		fi
 		((pending_only && ! due)) && continue
@@ -663,7 +697,12 @@ if [[ -n $target && -n $branch ]]; then
 	# full pass. Repo id derived exactly as run_full_pass derives it.
 	if [[ $APPLIED_CHECK == pending && -n $dir ]]; then
 		repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-		[[ -n $repo ]] && arm_pending_marker "$repo"
+		if [[ -n $repo ]]; then
+			ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
+			# Match enrich_repo_group's fingerprint: $() strips the trailing newline.
+			branch_sha1 "$branch|$ho"
+			arm_pending_marker "$repo" "$REPLY"
+		fi
 	fi
 	exit 0
 fi
