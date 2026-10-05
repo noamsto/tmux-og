@@ -66,6 +66,16 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   isn't `https://github.com/<owner>/<repo>/pull/<N>`) still means skipped, and
   `@bridge_win` mirrors stay skipped. Without this the badge stayed `open`
   forever (#921).
+- **Fork PRs are ignored.** `gh pr list --head <b>` matches the head branch
+  *name* across forks, so a fork PR whose branch is also called `main` used to
+  shadow the repo's own PR — and a window merely sitting on the default branch
+  with no PR of its own showed a long-merged fork's state forever (#926). Every
+  `gh pr list` that maps a PR to a branch — the per-head lookup, the identity
+  batch and the check-rollup batch — now asks for `isCrossRepository` and drops
+  cross-repo PRs before picking by `headRefName`, with the per-head lookup's
+  `--limit` raised past the fork PRs that could share the name. The field is
+  stripped before the answer is cached, so the cached JSON shape is unchanged.
+  A window already stamped with a fork PR clears to no PR on the next refresh.
 - **Icons:** override the 9 glyphs (linear/github/pending/success/failure/
   merged/closed/conflict/draft) via `enrich.icons`; defaults are nerd-font
   glyphs. The `#` escape: Nix replaces `#` with `##` in icon values for tmux
