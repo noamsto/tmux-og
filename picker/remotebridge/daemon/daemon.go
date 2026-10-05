@@ -1388,7 +1388,7 @@ func runMirror(cfg Config) error {
 				}
 			}
 		case controlmode.SessionChanged:
-			pin.apply(l, reg, router, rt)
+			return pin.apply(l, reg, router, rt)
 		case controlmode.SessionWindowChanged:
 			if argv, ok := translateWindowNotification(l, reg); ok {
 				_ = cfg.LocalTmux(argv...)
@@ -1821,8 +1821,9 @@ attach:
 			afterProbe = false
 		default:
 			// connEnd: the remote ended this control client, the local mirror
-			// session is gone, or the mirror was left with no windows — either way
-			// there is nothing to re-dial into.
+			// session is gone, the mirror was left with no windows, or the pinned
+			// remote session was destroyed — either way there is nothing to
+			// re-dial into.
 			break attach
 		}
 	}

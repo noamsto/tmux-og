@@ -34,6 +34,24 @@ completes, so the mirror reads as *frozen* rather than dead (#396).
   starts one and switches the local client to it. So `sesh connect` inside a
   mirror opens the target as a second mirror instead of no-opping.
 
+- **A destroyed pinned session ends the mirror (#934).** Exiting the shell in
+  the last pane of the last remote window destroys the pinned session. On a
+  remote with `detach-on-destroy off` (tmux-og sets it) the server does not send
+  `%exit`: it moves this control client to another session and sends
+  `%session-changed`. The dead window then arrives as `%unlinked-window-close`
+  (the client is no longer in its session), which parses as `Other`, so
+  `closeWindow` never runs and the registry never empties — the switch back
+  above is the only signal. When `switch-client` errors, `apply` confirms with
+  `has-session -t '$N'`; an error from that too means the session is gone, and
+  `apply` returns true (no reseed, no hand-off to the session we landed on),
+  which `dispatch` turns into `connEnd`, so the usual teardown kills the local
+  mirror session. A failed switch back with the session still alive, or an EOF
+  mid-check, stays the logged "mirror stays frozen" case. With pinning off (the
+  first identity read failed) this ending cannot fire. The other close paths
+  already worked: the last pane of a window with others remaining is
+  `%window-close` → `closeWindow`, and a remote with `detach-on-destroy on` sends
+  `%exit`; the #934 bats cases pin all three.
+
 Not done: rebuilding the mirror windows for the new session in place. That would
 break the one-local-session ↔ one-remote-session invariant `@bridge_host`,
 `@bridge_win` and `og-remote-detach` all assume.
@@ -69,7 +87,8 @@ path, which every caller already handles.
   and published rather than risk the mirror over a nicety; its mismatch
   handling is unchanged, still abandoning rather than re-opening.
 - **Only a bare EOF is a drop.** `%exit` is the remote deliberately ending the
-  client and is terminal, as is an emptied registry and a raised stop.
+  client and is terminal, as is an emptied registry, a destroyed pinned
+  session (#934, see Session Pinning) and a raised stop.
   Measured: `detach-client` and `kill-server` both make the control client see
   `%exit`; only killing the transport process gives the bare EOF. That is why
   the offline reconnect tests SIGKILL the transport child rather than

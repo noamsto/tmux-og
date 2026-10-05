@@ -116,6 +116,74 @@ func TestSessionPinSwitchesBackReseedsAndHandsOff(t *testing.T) {
 	}
 }
 
+// With detach-on-destroy off, the remote moves this client to another session
+// when the pinned one is destroyed. The switch back fails and has-session
+// confirms the session is gone, so the mirror ends: no reseed, no hand-off.
+func TestSessionPinEndsWhenPinnedSessionIsGone(t *testing.T) {
+	// Real %error framing: %error is the block terminator, with no trailing %end.
+	script := "%begin 1 1 1\ncan't find session: $0\n%error 1 1 1\n" +
+		"%begin 1 2 1\ncan't find session: $0\n%error 1 2 1\n"
+	rt, sent := scriptedRT(script)
+	handedOff := false
+	p := &sessionPin{id: "$0", handOff: func(string) { handedOff = true }}
+
+	var ended bool
+	logs := captureRouterStderr(t, func() {
+		ended = p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt)
+	})
+
+	if !ended {
+		t.Error("apply = false, want true once the pinned session is confirmed gone")
+	}
+	// The round-trip interleaves its own ordering barriers; only the pin's
+	// commands matter, and a reseed would show up as capture-pane.
+	got := sent.String()
+	if sw, hs := strings.Index(got, "switch-client -t '$0'"), strings.Index(got, "has-session -t '$0'"); sw < 0 || hs < sw {
+		t.Errorf("sent %q, want switch-client then has-session", got)
+	}
+	if strings.Contains(got, "capture-pane") {
+		t.Errorf("sent %q, want no reseed", got)
+	}
+	if handedOff {
+		t.Error("handed off after the pinned session ended")
+	}
+	if !strings.Contains(logs, "pinned session $0 is gone; ending mirror") {
+		t.Errorf("logs = %q, want the ending message", logs)
+	}
+}
+
+// A switch back that fails while the session is still alive is a frozen
+// mirror, not an ending.
+func TestSessionPinStaysFrozenWhenPinnedSessionExists(t *testing.T) {
+	script := "%begin 1 1 1\nno such client\n%error 1 1 1\n" +
+		"%begin 1 2 1\n%end 1 2 1\n"
+	rt, _ := scriptedRT(script)
+	p := &sessionPin{id: "$0"}
+
+	var ended bool
+	logs := captureRouterStderr(t, func() {
+		ended = p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt)
+	})
+
+	if ended {
+		t.Error("apply = true, want false while the pinned session exists")
+	}
+	if !strings.Contains(logs, "switch back to $0 failed; mirror stays frozen") {
+		t.Errorf("logs = %q, want the frozen message", logs)
+	}
+}
+
+// An EOF before has-session answers proves nothing about the session, and the
+// connection drop is handled by the reconnect path.
+func TestSessionPinStaysFrozenOnEOFBeforeHasSessionReply(t *testing.T) {
+	rt, _ := scriptedRT("%begin 1 1 1\nno such client\n%error 1 1 1\n")
+	p := &sessionPin{id: "$0"}
+
+	if p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt) {
+		t.Error("apply = true, want false when the has-session reply never arrives")
+	}
+}
+
 // newLayoutsFlagAck models the reply to readIdentity's leading
 // `refresh-client -f new-layouts`. It is claimed and, on success, ignored, so
 // its content never matters — only that a reply block sits there for the
