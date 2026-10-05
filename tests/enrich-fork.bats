@@ -25,7 +25,7 @@ setup() {
 		#!/bin/sh
 		printf '%s\n' "$*" >>"$GH_LOG"
 		case "$*" in
-		*"--json headRefName,statusCheckRollup,isCrossRepository"*) printf '%s' "${GH_CHECK_JSON:-[]}" ;;
+		*"--json headRefName,statusCheckRollup,headRefOid,isCrossRepository"*) printf '%s' "${GH_CHECK_JSON:-[]}" ;;
 		*"--head main --state open"*) printf '%s' "${GH_HEAD_JSON:-[]}" ;;
 		*"--head main --state all"*) printf '%s' "${GH_HEAD_ALL_JSON:-[]}" ;;
 		*"--state open --limit 100 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository"*) printf '%s' "${GH_BATCH_JSON:-[]}" ;;
