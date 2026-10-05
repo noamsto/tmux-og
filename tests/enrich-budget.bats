@@ -23,12 +23,12 @@ setup() {
 		#!/bin/sh
 		printf '%s\n' "$*" >>"$GH_LOG"
 		case "$*" in
-		*"--json headRefName,statusCheckRollup"*) printf '%s' "$GH_CHECK_JSON" ;;
+		*"--json headRefName,statusCheckRollup,isCrossRepository"*) printf '%s' "$GH_CHECK_JSON" ;;
+		*"--head "*) printf '%s' "${GH_HEAD_JSON:-[]}" ;;
 		*"--state open --limit 100"*)
 			[ -n "${GH_BATCH_FAIL:-}" ] && exit 1
 			printf '%s' "$GH_BATCH_JSON"
 			;;
-		*"--head feat/has-pr --state open"*) printf '%s' "${GH_HEAD_JSON:-[]}" ;;
 		*) printf '[]' ;;
 		esac
 		exit 0
@@ -78,16 +78,16 @@ gh_calls() {
 	run bash "$PR_ENRICH_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ "$(gh_calls '--head feat/has-pr')" -eq 0 ]
-	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName')" -eq 1 ]
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 1 ]
+	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository')" -eq 1 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 1 ]
 	grep -q -- '@pr_check_state success' "$TMUX_LOG"
 }
 
 @test "pass: a PR-less branch is settled with one --state all call, never --state open" {
 	run bash "$PR_ENRICH_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--head feat/no-pr --state all --limit 1')" -eq 1 ]
-	[ "$(gh_calls '--head feat/no-pr --state open --limit 1')" -eq 0 ]
+	[ "$(gh_calls '--head feat/no-pr --state all --limit 100')" -eq 1 ]
+	[ "$(gh_calls '--head feat/no-pr --state open --limit 100')" -eq 0 ]
 }
 
 @test "pass: a second pass re-asks nothing for the PR-less branch" {
@@ -98,15 +98,15 @@ gh_calls() {
 	# Identity stays fresh on every pass, but check state remains cached until
 	# the independent, slower cadence expires. The terminal answer for feat/no-pr
 	# is also cached for TTL_TERMINAL.
-	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName')" -eq 2 ]
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 1 ]
+	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository')" -eq 2 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 1 ]
 	[ "$(gh_calls '--head feat/no-pr')" -eq 1 ]
 }
 
 @test "force refresh fetches the current branch's check rollup immediately" {
 	run bash "$PR_ENRICH_SCRIPT" --target '$1:@1' --branch feat/has-pr --dir "$REPO" --force
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--head feat/has-pr --state open --limit 1 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup,headRefOid')" -eq 1 ]
+	[ "$(gh_calls '--head feat/has-pr --state open --limit 100 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup,headRefOid,isCrossRepository')" -eq 1 ]
 }
 
 @test "pass: a failed batch falls back to the full open-then-all lookup" {
@@ -114,9 +114,9 @@ gh_calls() {
 	[ "$status" -eq 0 ]
 	# Nothing was ruled out, so both heads get the two-call lookup rather than
 	# inheriting the batch's authority.
-	[ "$(gh_calls '--head feat/has-pr --state open --limit 1')" -eq 1 ]
-	[ "$(gh_calls '--head feat/has-pr --state all --limit 1')" -eq 1 ]
-	[ "$(gh_calls '--head feat/no-pr --state open --limit 1')" -eq 1 ]
+	[ "$(gh_calls '--head feat/has-pr --state open --limit 100')" -eq 1 ]
+	[ "$(gh_calls '--head feat/has-pr --state all --limit 100')" -eq 1 ]
+	[ "$(gh_calls '--head feat/no-pr --state open --limit 100')" -eq 1 ]
 }
 
 @test "pass: review decision and auto-merge are stamped from the identity batch" {
@@ -175,7 +175,7 @@ fingerprint() {
 	touch -t 200001010000 "$(markers)"
 	run bash "$PR_ENRICH_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 2 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 2 ]
 	[ -z "$(markers)" ]
 }
 
@@ -183,7 +183,7 @@ fingerprint() {
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 1 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 1 ]
 }
 
 @test "pending: a checks-only pass skips the identity batch" {
@@ -191,8 +191,8 @@ fingerprint() {
 	touch -t 200001010000 "$(markers)"
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName')" -eq 1 ]
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 2 ]
+	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository')" -eq 1 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 2 ]
 	grep -q -- '@pr_check_state pending' "$TMUX_LOG"
 }
 
@@ -247,10 +247,10 @@ stamp() {
 	# The gate detaches its pass; wait for it to reach gh.
 	local i
 	for ((i = 0; i < 50; i++)); do
-		[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 2 ] && break
+		[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 2 ] && break
 		sleep 0.1
 	done
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 2 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 2 ]
 }
 
 @test "pending: a marker for a repo with no window is removed, a live one stays" {
@@ -341,7 +341,7 @@ stamp() {
 	stamp $((now - 100)) "$(markers)"
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--json headRefName,statusCheckRollup')" -eq 1 ]
+	[ "$(gh_calls '--json headRefName,statusCheckRollup,isCrossRepository')" -eq 1 ]
 	# The marker stays until checks settle, but nothing is left on the fast
 	# cadence: the pass pushes .last-pending-tick ahead so the gate stops
 	# dispatching no-op passes.

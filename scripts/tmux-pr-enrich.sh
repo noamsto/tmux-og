@@ -256,6 +256,17 @@ arm_pending_marker() {
 	rm -f "$ENRICH_CACHE_DIR/.last-pending-tick$ENRICH_SRV"
 }
 
+# same_repo_pr — reads a `gh pr list` JSON array on stdin and echoes the first
+# PR whose head lives in the base repository, as a one-element array, or [] when
+# only cross-repo (fork) PRs matched. `gh pr list --head <b>` matches the head
+# branch NAME across forks, so a fork PR whose branch is also called `main` would
+# otherwise shadow the repo's own PR — or stamp a window that has no PR with a
+# long-merged fork's state (#926). `isCrossRepository` is stripped from the
+# result so the cached JSON shape consumers already read is unchanged.
+same_repo_pr() {
+	jq -c '[.[] | select(.isCrossRepository | not)] | .[0:1] | map(del(.isCrossRepository))' 2>/dev/null || printf '[]'
+}
+
 # fetch_branch_pr DIR BRANCH [KEY]  → echoes cache JSON path, refreshing via
 # gh if stale. DIR is a checkout of the branch's repo; KEY is the precomputed
 # cache key (derived from DIR+BRANCH when absent, saving a git fork for
@@ -318,13 +329,19 @@ fetch_pr_cached() {
 		if [[ -n $d ]]; then cd "$d" 2>/dev/null || exit 0; fi
 		local json="" fields="number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest"
 		((force)) && fields+=",statusCheckRollup,headRefOid"
+		# Ask for isCrossRepository and drop fork PRs before picking one. The
+		# limit must exceed the fork PRs that could share the head name, or a
+		# fork PR would crowd the repo's own out of the page.
+		local list_fields="$fields,isCrossRepository"
 		if [[ $states == open+all ]]; then
-			json="$(gh pr list --head "$b" --state open --limit 1 \
-				--json "$fields" 2>/dev/null)" || exit 0
+			json="$(gh pr list --head "$b" --state open --limit 100 \
+				--json "$list_fields" 2>/dev/null)" || exit 0
+			json="$(same_repo_pr <<<"$json")"
 		fi
 		if [[ $json == "[]" || -z $json ]]; then
-			json="$(gh pr list --head "$b" --state all --limit 1 \
-				--json "$fields" 2>/dev/null)" || exit 0
+			json="$(gh pr list --head "$b" --state all --limit 100 \
+				--json "$list_fields" 2>/dev/null)" || exit 0
+			json="$(same_repo_pr <<<"$json")"
 		fi
 		if ((force)); then
 			jq 'map(del(.statusCheckRollup))' <<<"$json" >"$cache.tmp.$$" && mv -f "$cache.tmp.$$" "$cache"
@@ -398,13 +415,13 @@ refresh_repo_checks() {
 	mapfile -t branches <<<"$3"
 	command -v gh >/dev/null 2>&1 || return
 	all_json="$(cd "$d" 2>/dev/null && gh pr list --state open --limit 100 \
-		--json headRefName,statusCheckRollup,headRefOid 2>/dev/null)" || return
+		--json headRefName,statusCheckRollup,headRefOid,isCrossRepository 2>/dev/null)" || return
 	[[ -n $all_json ]] || return
 
 	declare -A checks
 	while IFS=$'\t' read -r head obj; do
 		[[ -n $head ]] && checks[$head]="$obj"
-	done < <(jq -r '.[] | "\(.headRefName)\t\([{statusCheckRollup, headRefOid}])"' <<<"$all_json")
+	done < <(jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\([{statusCheckRollup, headRefOid}])"' <<<"$all_json")
 
 	local br ck check_cache
 	for br in "${branches[@]}"; do
@@ -443,12 +460,12 @@ enrich_repo_group() {
 		local all_json head obj batch_ok=0
 		if command -v gh >/dev/null 2>&1 &&
 			all_json="$(cd "$d" 2>/dev/null && gh pr list --state open --limit 100 \
-				--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName 2>/dev/null)" &&
+				--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository 2>/dev/null)" &&
 			[[ -n $all_json ]]; then
 			batch_ok=1
 			while IFS=$'\t' read -r head obj; do
 				[[ -n $head ]] && open_pr[$head]="$obj"
-			done < <(jq -r '.[] | "\(.headRefName)\t\([.])"' <<<"$all_json")
+			done < <(jq -r '.[] | select(.isCrossRepository | not) | "\(.headRefName)\t\([del(.isCrossRepository)])"' <<<"$all_json")
 		fi
 
 		for br in "${branches[@]}"; do
