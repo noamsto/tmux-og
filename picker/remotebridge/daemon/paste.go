@@ -392,13 +392,15 @@ func listFailure(name string, err error, timedOut bool) string {
 	if timedOut {
 		return fmt.Sprintf("%s timed out after %s", name, clipTimeout)
 	}
-	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		line, _, _ := strings.Cut(strings.TrimSpace(string(exitErr.Stderr)), "\n")
-		if line = strings.TrimSpace(line); line != "" {
-			return name + ": " + line
-		}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return name + ": " + err.Error()
 	}
-	return name + ": " + err.Error()
+	line, _, _ := strings.Cut(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+	if line = strings.TrimSpace(line); line == "" {
+		return name + ": " + err.Error()
+	}
+	return name + ": " + line
 }
 
 // unsupportedImageTarget returns the first image/* target a clipboard offers,
