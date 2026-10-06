@@ -694,3 +694,54 @@ func assertAmbiguousFrame(t *testing.T, peer net.Conn, sendCh <-chan string, wan
 		}
 	}
 }
+
+// TestPumpInputPasteMarkerSplitByCarryFlush pins the production chain behind
+// a split paste marker: pumpInput carries an incomplete trailing escape, but
+// flushes it alone once the grace passes, so a late next frame splits the end
+// marker across two handle calls. The ctrl+v after the paste must still be
+// swallowed into an image paste, never forwarded as a raw 0x16.
+func TestPumpInputPasteMarkerSplitByCarryFlush(t *testing.T) {
+	oldGrace := escCarryGrace
+	escCarryGrace = 20 * time.Millisecond
+	t.Cleanup(func() { escCarryGrace = oldGrace })
+
+	conn, peer := net.Pipe()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
+	f := newPasteFixture()
+	sends := make(chan string, 32)
+	go pumpInput(conn, "%1", func(s string) { sends <- s }, f.h, nil, nil, nil)
+
+	write := func(s string) {
+		t.Helper()
+		if err := wire.WriteFrame(peer, wire.FrameInput, []byte(s)); err != nil {
+			t.Fatalf("write %q: %v", s, err)
+		}
+	}
+	write("\x1b[200~x\x1b[20")
+	time.Sleep(100 * time.Millisecond)
+	write("1~")
+	write("\x16")
+
+	select {
+	case s := <-f.sent:
+		if !strings.HasPrefix(s, "send-keys -H -t %1 ") {
+			t.Errorf("send %q is not a hex send-keys to the pane", s)
+		}
+	case msg := <-f.notified:
+		t.Fatalf("unexpected notify: %q", msg)
+	case <-time.After(2 * time.Second):
+		t.Fatal("ctrl+v after the split end marker produced no paste")
+	}
+
+	for {
+		select {
+		case s := <-sends:
+			if s == "send-keys -H -t %1 16" {
+				t.Fatalf("ctrl+v was forwarded to the pane: %q", s)
+			}
+		case <-time.After(200 * time.Millisecond):
+			return
+		}
+	}
+}

@@ -3,6 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -118,7 +121,7 @@ func newPasteFixture() *pasteFixture {
 				extract: func() ([]byte, error) { return []byte("png-bytes"), nil },
 			}, true, nil
 		},
-		procFor: func(string) string { return "claude" },
+		procFor: func(string) (string, error) { return "claude", nil },
 		notify:  func(msg string) { f.notified <- msg },
 		sendCtl: f.sendCtl,
 	}
@@ -158,6 +161,29 @@ func (f *pasteFixture) awaitOutcome(t *testing.T) (sent, notified string) {
 	}
 }
 
+// assertNoNotify pins that a silent forward stays silent: notifies are
+// dispatched async, so it waits briefly for a late one.
+func (f *pasteFixture) assertNoNotify(t *testing.T) {
+	t.Helper()
+	select {
+	case msg := <-f.notified:
+		t.Errorf("unexpected notify: %q", msg)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// awaitNotify returns the next notify, failing fast instead of hanging.
+func (f *pasteFixture) awaitNotify(t *testing.T) string {
+	t.Helper()
+	select {
+	case msg := <-f.notified:
+		return msg
+	case <-time.After(2 * time.Second):
+		t.Fatal("no notify")
+		return ""
+	}
+}
+
 func TestHandleForwardsWithoutCtrlV(t *testing.T) {
 	f := newPasteFixture()
 	in := []byte("ls -la\r")
@@ -168,11 +194,12 @@ func TestHandleForwardsWithoutCtrlV(t *testing.T) {
 
 func TestHandleForwardsOnNonAgentPane(t *testing.T) {
 	f := newPasteFixture()
-	f.h.procFor = func(string) string { return "fish" }
+	f.h.procFor = func(string) (string, error) { return "fish", nil }
 	in := []byte("\x16")
 	if got := f.h.handle("%1", in); string(got) != string(in) {
 		t.Errorf("shell pane: handle dropped the byte: %q", got)
 	}
+	f.assertNoNotify(t)
 }
 
 // pi reads the system clipboard on ctrl+v exactly as claude does, so a pi
@@ -180,7 +207,7 @@ func TestHandleForwardsOnNonAgentPane(t *testing.T) {
 // headless, and the byte reaching it would otherwise no-op.
 func TestHandleSwallowsOnPiPane(t *testing.T) {
 	f := newPasteFixture()
-	f.h.procFor = func(string) string { return "pi" }
+	f.h.procFor = func(string) (string, error) { return "pi", nil }
 	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
 		t.Fatalf("pi pane: handle forwarded the byte instead of pasting: %q", got)
 	}
@@ -196,6 +223,7 @@ func TestHandleForwardsWhenNoImage(t *testing.T) {
 	if got := f.h.handle("%1", in); string(got) != string(in) {
 		t.Errorf("empty clipboard: handle dropped the byte: %q", got)
 	}
+	f.assertNoNotify(t)
 }
 
 // TestHandleSwallowsAndInjectsOnImage pins the ordering: the byte is
@@ -354,17 +382,42 @@ func TestHandleClipboardProbeErrorNotifies(t *testing.T) {
 	f.h.probeClipboard = func() (clipboardProbe, bool, error) {
 		return clipboardProbe{}, false, errors.New("xclip died")
 	}
-	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
-		t.Fatalf("byte not swallowed: %q", got)
+	in := []byte("\x16")
+	if got := f.h.handle("%1", in); string(got) != string(in) {
+		t.Fatalf("byte not forwarded unchanged: %q", got)
 	}
-	select {
-	case msg := <-f.notified:
-		if !strings.Contains(msg, "clipboard image read failed") {
-			t.Errorf("notify %q lacks the read-failure text", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("no notify on read error")
+	msg := f.awaitNotify(t)
+	if !strings.Contains(msg, "ctrl+v forwarded") || !strings.Contains(msg, "xclip died") {
+		t.Errorf("notify %q lacks the forwarded notice or the probe error", msg)
 	}
+}
+
+func TestHandleGateLookupErrorNotifies(t *testing.T) {
+	f := newPasteFixture()
+	f.h.procFor = func(string) (string, error) { return "", errors.New("mirror pane %1 not found") }
+	in := []byte("\x16")
+	if got := f.h.handle("%1", in); string(got) != string(in) {
+		t.Fatalf("byte not forwarded unchanged: %q", got)
+	}
+	msg := f.awaitNotify(t)
+	if !strings.Contains(msg, "ctrl+v forwarded") || !strings.Contains(msg, "not found") {
+		t.Errorf("notify %q lacks the forwarded notice or the gate error", msg)
+	}
+}
+
+// TestHandleBurstedDropsWithProbeErrorNotifiesOnce pins that a forwarded
+// two-gesture frame explains itself once, not once per byte.
+func TestHandleBurstedDropsWithProbeErrorNotifiesOnce(t *testing.T) {
+	f := newPasteFixture()
+	f.h.probeClipboard = func() (clipboardProbe, bool, error) {
+		return clipboardProbe{}, false, errors.New("xclip died")
+	}
+	in := []byte("\x16\x16")
+	if got := f.h.handle("%1", in); string(got) != string(in) {
+		t.Fatalf("payload not forwarded unchanged: %q", got)
+	}
+	f.awaitNotify(t)
+	f.assertNoNotify(t)
 }
 
 // TestHandleNotifiesOnRefusedSend pins that a dropped send-keys (e.g. the
@@ -424,5 +477,185 @@ func TestPasterNilWithoutUpload(t *testing.T) {
 	var cfg Config
 	if cfg.paster() != nil {
 		t.Error("paster() non-nil without PasteUpload")
+	}
+}
+
+// TestHandleMarkerSplitAcrossFrames pins that a bracketed-paste marker split
+// across two handle calls must not change the scan state: a split end marker
+// still closes the bracket (a later ctrl+v is the gesture), a split begin
+// marker still opens it (a 0x16 in the body is content).
+func TestHandleMarkerSplitAcrossFrames(t *testing.T) {
+	begin, end := string(bracketedPasteBegin), string(bracketedPasteEnd)
+	// await bounds the wait so a red run fails fast instead of hanging.
+	await := func(t *testing.T, f *pasteFixture) {
+		t.Helper()
+		select {
+		case s := <-f.sent:
+			if !strings.HasPrefix(s, "send-keys -H -t %1 ") {
+				t.Errorf("send %q is not a hex send-keys to the pane", s)
+			}
+		case msg := <-f.notified:
+			t.Fatalf("unexpected notify: %q", msg)
+		case <-time.After(2 * time.Second):
+			t.Fatal("ctrl+v was not swallowed into a paste")
+		}
+	}
+	// assertSwallowedAndPasted drives the closing ctrl+v.
+	assertSwallowedAndPasted := func(t *testing.T, f *pasteFixture) {
+		t.Helper()
+		if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
+			t.Fatalf("ctrl+v after the paste closed was forwarded as %q, want swallowed", got)
+		}
+		await(t, f)
+	}
+
+	for k := 1; k <= 5; k++ {
+		t.Run(fmt.Sprintf("end marker split after %d bytes", k), func(t *testing.T) {
+			f := newPasteFixture()
+			f.h.handle("%1", []byte(begin+"text"+end[:k]))
+			f.h.handle("%1", []byte(end[k:]))
+			assertSwallowedAndPasted(t, f)
+		})
+		t.Run(fmt.Sprintf("begin marker split after %d bytes", k), func(t *testing.T) {
+			f := newPasteFixture()
+			f.h.handle("%1", []byte("x"+begin[:k]))
+			in := begin[k:] + "a\x16b"
+			if got := f.h.handle("%1", []byte(in)); string(got) != in {
+				t.Fatalf("0x16 inside the bracket was not kept as content: got %q, want %q", got, in)
+			}
+			select {
+			case s := <-f.sent:
+				t.Fatalf("paste triggered from inside the bracket: %q", s)
+			case msg := <-f.notified:
+				t.Fatalf("paste triggered from inside the bracket, notify: %q", msg)
+			case <-time.After(50 * time.Millisecond):
+			}
+			if got := f.h.handle("%1", []byte(end)); string(got) != end {
+				t.Fatalf("end marker was not forwarded unchanged: %q", got)
+			}
+			assertSwallowedAndPasted(t, f)
+		})
+	}
+
+	t.Run("carried partial that mismatches, then full end marker", func(t *testing.T) {
+		f := newPasteFixture()
+		f.h.handle("%1", []byte(begin+"t\x1b["))
+		f.h.handle("%1", []byte(end))
+		assertSwallowedAndPasted(t, f)
+	})
+}
+
+// writeClipStub installs a fake clipboard tool whose listing prints body, or
+// fails with stderr when failErr is non-empty.
+func writeClipStub(t *testing.T, dir, name, body, failErr string) {
+	t.Helper()
+	script := "#!/bin/sh\nprintf '%s' '" + body + "'\n"
+	if failErr != "" {
+		script = "#!/bin/sh\necho '" + failErr + "' >&2\nexit 1\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil { //nolint:gosec // test stub must be executable
+		t.Fatal(err)
+	}
+}
+
+func TestProbeClipboardImage(t *testing.T) {
+	type stub struct{ name, body, failErr string }
+	cases := []struct {
+		name    string
+		stubs   []stub
+		wantOK  bool
+		wantExt string
+		wantErr string // substring; "" means err must be nil
+	}{
+		{name: "no tools", wantErr: "no clipboard tool"},
+		{
+			name:    "wl-paste offers png",
+			stubs:   []stub{{name: "wl-paste", body: "text/plain\nimage/png\n"}},
+			wantOK:  true,
+			wantExt: "png",
+		},
+		{
+			name:  "text only",
+			stubs: []stub{{name: "wl-paste", body: "text/plain\nUTF8_STRING\n"}},
+		},
+		{
+			name:    "unsupported image type",
+			stubs:   []stub{{name: "wl-paste", body: "image/tiff\n"}},
+			wantErr: "image/tiff",
+		},
+		{
+			name:    "listing fails with stderr",
+			stubs:   []stub{{name: "wl-paste", failErr: "Nothing is copied"}},
+			wantErr: "wl-paste: Nothing is copied",
+		},
+		{
+			name: "xclip fails, wl-paste lists text",
+			stubs: []stub{
+				{name: "xclip", failErr: "Error: target TARGETS not available"},
+				{name: "wl-paste", body: "text/plain\n"},
+			},
+		},
+		{
+			name: "xclip text, wl-paste png",
+			stubs: []stub{
+				{name: "xclip", body: "text/plain\n"},
+				{name: "wl-paste", body: "image/png\n"},
+			},
+			wantOK:  true,
+			wantExt: "png",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, s := range c.stubs {
+				writeClipStub(t, dir, s.name, s.body, s.failErr)
+			}
+			t.Setenv("PATH", dir)
+			probe, ok, err := probeClipboardImage()
+			if ok != c.wantOK || probe.ext != c.wantExt {
+				t.Errorf("ok=%v ext=%q, want ok=%v ext=%q", ok, probe.ext, c.wantOK, c.wantExt)
+			}
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Errorf("err = %v, want it to contain %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestBridgeProc(t *testing.T) {
+	cases := []struct {
+		name     string
+		out      string
+		outErr   error
+		pane     string
+		wantProc string
+		wantErr  string
+	}{
+		{name: "lookup error", outErr: errors.New("no server"), pane: "%1", wantErr: "lookup failed"},
+		{name: "found", out: "%1|claude\n%2|fish\n", pane: "%2", wantProc: "fish"},
+		{name: "pane missing", out: "%1|claude\n", pane: "%9", wantErr: "not found"},
+		{name: "empty proc", out: "%1|\n", pane: "%1", wantErr: "no @bridge_proc yet"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{
+				LocalSess:    "m",
+				LocalTmuxOut: func(...string) (string, error) { return c.out, c.outErr },
+			}
+			got, err := bridgeProc(cfg, c.pane)
+			if got != c.wantProc {
+				t.Errorf("proc = %q, want %q", got, c.wantProc)
+			}
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Errorf("err = %v, want it to contain %q", err, c.wantErr)
+			}
+		})
 	}
 }

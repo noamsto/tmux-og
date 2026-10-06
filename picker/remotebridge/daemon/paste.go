@@ -1,8 +1,8 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -67,14 +67,20 @@ var pastePathRe = regexp.MustCompile(`^/tmp/og-paste-[A-Za-z0-9]+/img\.(png|jpe?
 // mktemp template.
 var pasteExtRe = regexp.MustCompile(`^(png|jpe?g|gif|webp)$`)
 
-// bracketedPasteBegin/End are hoisted to package scope so splitPasteDrops's
-// per-byte scan does zero allocation: converting a string constant to []byte
-// inside the loop (even a short one) copied it on every non-marker byte,
-// making the scan quadratic.
+// bracketedPasteBegin/End are package-level so splitPasteDrops's per-byte
+// scan indexes them without allocating.
 var (
 	bracketedPasteBegin = []byte("\x1b[200~")
 	bracketedPasteEnd   = []byte("\x1b[201~")
 )
+
+// pasteImageTypeRe gates a clipboard target before it is quoted in a notify:
+// the TARGETS listing is whatever the selection owner offers.
+var pasteImageTypeRe = regexp.MustCompile(`^image/[A-Za-z0-9.+-]+$`)
+
+// pasteForwardedMsg prefixes every notify for a ctrl+v that reached the
+// remote pane untouched although the pane might be an agent.
+const pasteForwardedMsg = "tmux-og: ctrl+v forwarded to the remote: "
 
 // clipboardProbe is the result of listing the local clipboard's TARGETS: the
 // image type on offer (if any) and how to fetch it. Built synchronously —
@@ -93,12 +99,15 @@ type clipboardProbe struct {
 type pasteHandler struct {
 	upload func(ctx context.Context, ext string, data []byte) (string, error)
 	// probeClipboard lists the local clipboard's TARGETS and returns how to
-	// extract the best image on offer; ok is false when the clipboard holds
-	// no image (or no clipboard tool exists), err only when a tool listed a
-	// target and then malfunctioned probing it.
+	// extract the best image on offer. ok=false with a nil err means a listing
+	// succeeded and offered no image (text), so the byte is forwarded silently;
+	// a non-nil err means the probe could not tell, or the image is unusable,
+	// and the byte is forwarded with a notify.
 	probeClipboard func() (probe clipboardProbe, ok bool, err error)
-	// procFor reports the remote pane's foreground command (@bridge_proc).
-	procFor func(remotePane string) string
+	// procFor reports the remote pane's foreground command (@bridge_proc); an
+	// error means the lookup could not say, which is not the same as "not an
+	// agent".
+	procFor func(remotePane string) (string, error)
 	// notify shows a message on the mirror session's client.
 	notify func(msg string)
 	// sendCtl injects a command and reports whether it was written, so a
@@ -118,6 +127,11 @@ type pasteHandler struct {
 	// paste spanning more than one 4096-byte pty read must not lose track of
 	// being inside ESC[200~...ESC[201~ at the frame boundary.
 	inPaste bool
+	// matched is how many bytes of the awaited marker (the end marker while
+	// inPaste, else the begin marker) ended the previous payload. A marker can
+	// itself straddle two payloads: pumpInput flushes an incomplete escape
+	// carry on its own once escCarryGrace passes.
+	matched int
 }
 
 // paster builds the handler for one pumpInput, or nil when the Config cannot
@@ -135,7 +149,7 @@ func (c Config) paster() *pasteHandler {
 	return &pasteHandler{
 		upload:         c.PasteUpload,
 		probeClipboard: probeClipboardImage,
-		procFor:        func(remotePane string) string { return bridgeProc(c, remotePane) },
+		procFor:        func(remotePane string) (string, error) { return bridgeProc(c, remotePane) },
 		notify:         func(msg string) { notifyLocal(c, msg) },
 		sendCtl:        c.SendCtl,
 	}
@@ -159,16 +173,24 @@ func (h *pasteHandler) handle(remotePane string, payload []byte) []byte {
 		h.mu.Unlock()
 		return payload
 	}
-	if !pasteAgentProcs[h.procFor(remotePane)] {
+	proc, err := h.procFor(remotePane)
+	if err != nil {
+		h.mu.Unlock()
+		// Async: notifyLocal forks the local tmux, which a gate timeout
+		// suggests is wedged, and this runs on the input pump.
+		go h.notify(pasteForwardedMsg + err.Error())
+		return payload
+	}
+	if !pasteAgentProcs[proc] {
 		h.mu.Unlock()
 		return payload
 	}
 	probe, ok, err := h.probeClipboard()
 	switch {
 	case err != nil:
-		h.notify("tmux-og: clipboard image read failed: " + err.Error())
 		h.mu.Unlock()
-		return kept
+		go h.notify(pasteForwardedMsg + err.Error())
+		return payload
 	case !ok:
 		h.mu.Unlock()
 		return payload
@@ -239,32 +261,37 @@ func (h *pasteHandler) sendChunks(remotePane string, payload []byte) {
 }
 
 // splitPasteDrops copies payload without its ctrl+v bytes (0x16), counting
-// the drops. A 0x16 inside a bracketed-paste bracket (ESC[200~ … ESC[201~)
-// is pasted content, not the gesture, and is kept. h.inPaste carries the
-// scan state across calls (frames), since a paste can span more than one
-// 4096-byte pty read: a lost ESC[201~ pins it true, which forwards every
-// later byte on this pane rather than intercepting — the safe direction to
-// fail in.
+// the drops. A 0x16 inside a bracketed paste (ESC[200~ … ESC[201~) is pasted
+// content, not the gesture, and is kept. h.inPaste and h.matched carry the
+// scan across calls, so a paste or a marker split over several payloads is
+// tracked exactly. Bytes are never held back: a partial marker is forwarded
+// as it arrives and only its progress is remembered.
 func (h *pasteHandler) splitPasteDrops(payload []byte) (kept []byte, drops int) {
 	kept = make([]byte, 0, len(payload))
-	for i := 0; i < len(payload); {
-		switch {
-		case !h.inPaste && bytes.HasPrefix(payload[i:], bracketedPasteBegin):
-			h.inPaste = true
-			kept = append(kept, bracketedPasteBegin...)
-			i += len(bracketedPasteBegin)
-		case h.inPaste && bytes.HasPrefix(payload[i:], bracketedPasteEnd):
-			h.inPaste = false
-			kept = append(kept, bracketedPasteEnd...)
-			i += len(bracketedPasteEnd)
-		default:
-			if payload[i] == 0x16 && !h.inPaste {
-				drops++
-			} else {
-				kept = append(kept, payload[i])
-			}
-			i++
+	for _, c := range payload {
+		marker := bracketedPasteBegin
+		if h.inPaste {
+			marker = bracketedPasteEnd
 		}
+		switch c {
+		case marker[h.matched]:
+			h.matched++
+			if h.matched == len(marker) {
+				h.inPaste = !h.inPaste
+				h.matched = 0
+			}
+		case 0x1b:
+			// ESC occurs only at index 0 of either marker, so a mismatching ESC
+			// restarts the match there.
+			h.matched = 1
+		default:
+			h.matched = 0
+		}
+		if c == 0x16 && !h.inPaste {
+			drops++
+			continue
+		}
+		kept = append(kept, c)
 	}
 	return kept, drops
 }
@@ -312,31 +339,78 @@ var clipboardTools = []clipboardTool{
 }
 
 // probeClipboardImage lists the local clipboard's TARGETS with the same tools
-// Claude Code itself uses and picks the tool+target that offers an image. A
-// missing tool, a missing display, or a clipboard with no image target is
-// ok=false — the caller forwards the keypress and nothing about today's
-// behaviour changes. It does not read the image bytes: that happens in
-// probe.extract, called only from the async paste goroutine, so a wedged
-// clipboard owner costs this synchronous call at most clipTimeout per tool
-// rather than blocking on the extract too.
+// Claude Code itself uses and picks the tool+target that offers an image. The
+// result is ok=true for a pasteable image; ok=false with a nil err when a
+// listing succeeded and offered none (text), which the caller forwards
+// silently; and an err when no listing could say (no tool, or every listing
+// failed) or the only image on offer is a type that cannot be pasted. It does
+// not read the image bytes: that happens in probe.extract, called only from
+// the async paste goroutine, so a wedged clipboard owner costs this
+// synchronous call at most clipTimeout per tool rather than blocking on the
+// extract too.
 func probeClipboardImage() (probe clipboardProbe, ok bool, err error) {
+	var failures []string
+	var listed bool
+	var unsupported string
 	for _, tool := range clipboardTools {
 		if _, lookErr := exec.LookPath(tool.name); lookErr != nil {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), clipTimeout)
 		out, listErr := exec.CommandContext(ctx, tool.name, tool.listArgs...).Output() //nolint:gosec // tool.name is from the fixed clipboardTools table; target comes from the clipboard's own target list, passed as argv
+		timedOut := ctx.Err() != nil
 		cancel()
 		if listErr != nil {
+			failures = append(failures, listFailure(tool.name, listErr, timedOut))
 			continue
 		}
-		target, ext := imageTarget(strings.Split(string(out), "\n"))
-		if target == "" {
-			continue
+		listed = true
+		targets := strings.Split(string(out), "\n")
+		if target, ext := imageTarget(targets); target != "" {
+			return clipboardProbe{ext: ext, extract: extractClipboardImage(tool, target)}, true, nil
 		}
-		return clipboardProbe{ext: ext, extract: extractClipboardImage(tool, target)}, true, nil
+		if unsupported == "" {
+			unsupported = unsupportedImageTarget(targets)
+		}
 	}
-	return clipboardProbe{}, false, nil
+	switch {
+	case unsupported != "":
+		return clipboardProbe{}, false, fmt.Errorf("clipboard image type %s is not pasteable (copy as png)", unsupported)
+	case listed:
+		return clipboardProbe{}, false, nil
+	case len(failures) > 0:
+		return clipboardProbe{}, false, errors.New(strings.Join(failures, "; "))
+	default:
+		return clipboardProbe{}, false, errors.New("no clipboard tool (xclip or wl-paste) on PATH")
+	}
+}
+
+// listFailure describes one failed TARGETS listing for the notify: the tool's
+// own first stderr line when it printed one, since that is the actionable part
+// ("Nothing is copied", "Can't open display").
+func listFailure(name string, err error, timedOut bool) string {
+	if timedOut {
+		return fmt.Sprintf("%s timed out after %s", name, clipTimeout)
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		line, _, _ := strings.Cut(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+		if line = strings.TrimSpace(line); line != "" {
+			return name + ": " + line
+		}
+	}
+	return name + ": " + err.Error()
+}
+
+// unsupportedImageTarget returns the first image/* target a clipboard offers,
+// or "" when none passes pasteImageTypeRe. imageTarget has already found no
+// pasteable one by the time this is asked.
+func unsupportedImageTarget(targets []string) string {
+	for _, t := range targets {
+		if t = strings.TrimSpace(t); strings.HasPrefix(t, "image/") && pasteImageTypeRe.MatchString(t) {
+			return t
+		}
+	}
+	return ""
 }
 
 // extractClipboardImage builds the bounded, async-only read of one clipboard
@@ -376,7 +450,9 @@ func extractClipboardImage(tool clipboardTool, target string) func() ([]byte, er
 // context, so a genuinely wedged local tmux server leaks the goroutine and its
 // child process rather than being killed) — still strictly better than
 // blocking the pump indefinitely, which is what ran here before.
-func bridgeProc(cfg Config, remotePane string) string {
+// Every case that cannot yield a proc is an error, so the caller can tell "not
+// an agent" apart from "could not look".
+func bridgeProc(cfg Config, remotePane string) (string, error) {
 	type result struct {
 		out string
 		err error
@@ -389,17 +465,21 @@ func bridgeProc(cfg Config, remotePane string) string {
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			return ""
+			return "", fmt.Errorf("mirror pane lookup failed: %w", r.err)
 		}
 		for line := range strings.SplitSeq(strings.TrimSpace(r.out), "\n") {
 			pane, proc, found := strings.Cut(line, "|")
-			if found && pane == remotePane {
-				return proc
+			if !found || pane != remotePane {
+				continue
 			}
+			if proc == "" {
+				return "", fmt.Errorf("mirror pane %s has no @bridge_proc yet", remotePane)
+			}
+			return proc, nil
 		}
-		return ""
+		return "", fmt.Errorf("mirror pane %s not found", remotePane)
 	case <-time.After(clipTimeout):
-		return ""
+		return "", fmt.Errorf("mirror pane lookup timed out after %s", clipTimeout)
 	}
 }
 
