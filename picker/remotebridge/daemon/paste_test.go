@@ -486,7 +486,6 @@ func TestPasterNilWithoutUpload(t *testing.T) {
 // marker still opens it (a 0x16 in the body is content).
 func TestHandleMarkerSplitAcrossFrames(t *testing.T) {
 	begin, end := string(bracketedPasteBegin), string(bracketedPasteEnd)
-	// await bounds the wait so a red run fails fast instead of hanging.
 	await := func(t *testing.T, f *pasteFixture) {
 		t.Helper()
 		select {
@@ -500,7 +499,6 @@ func TestHandleMarkerSplitAcrossFrames(t *testing.T) {
 			t.Fatal("ctrl+v was not swallowed into a paste")
 		}
 	}
-	// assertSwallowedAndPasted drives the closing ctrl+v.
 	assertSwallowedAndPasted := func(t *testing.T, f *pasteFixture) {
 		t.Helper()
 		if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
