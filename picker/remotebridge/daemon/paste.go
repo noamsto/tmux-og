@@ -160,8 +160,10 @@ func (c Config) paster() *pasteHandler {
 // swallowed; the goroutine it starts sends everything for this pane from
 // here on — the rest of this frame's kept bytes, then the upload+injection —
 // so ordering against whatever the user types next is preserved. Every other
-// case forwards the payload untouched, so text paste, quoted-insert and empty
-// clipboards behave exactly as they did before this interception existed.
+// case forwards the payload untouched; a forward on a pane that might be an
+// agent notifies why (gate lookup failed, probe couldn't tell, unsupported
+// image type), except a text clipboard and a non-agent proc, which stay
+// silent as they did before this interception existed.
 //
 // mu is held for the duration of the call, or — when a paste is triggered —
 // handed off to the paste goroutine, so a later frame on this same pane

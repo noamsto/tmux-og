@@ -719,7 +719,17 @@ func TestPumpInputPasteMarkerSplitByCarryFlush(t *testing.T) {
 		}
 	}
 	write("\x1b[200~x\x1b[20")
-	time.Sleep(100 * time.Millisecond)
+	// Only once the carry is flushed alone does the next frame split the end
+	// marker; writing it earlier would let pumpInput join the two halves.
+	flushed := time.After(2 * time.Second)
+	for waiting := true; waiting; {
+		select {
+		case s := <-sends:
+			waiting = s != "send-keys -H -t %1 1b 5b 32 30"
+		case <-flushed:
+			t.Fatal("pumpInput never flushed the carried escape")
+		}
+	}
 	write("1~")
 	write("\x16")
 
