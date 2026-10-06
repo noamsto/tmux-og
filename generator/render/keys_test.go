@@ -54,12 +54,17 @@ func TestBridgedFloatToolsReuseTheirOwnLabel(t *testing.T) {
 		{"prdash", prdashBind(p), "prdash"},
 		{"lazygit", lazygitBind(p), "lazygit"},
 		{"yazi", yaziBind(p), "yazi"},
+		{"btop", btopBind(p), "btop"},
+		{"k9s", k9sBind(p), "k9s"},
 	} {
 		if !strings.Contains(tc.bind, "set -p @pane_label "+tc.tool) {
 			t.Fatalf("%s: bind does not stamp @pane_label %s: %q", tc.name, tc.tool, tc.bind)
 		}
 		if !strings.Contains(tc.bind, floatLookup(tc.tool)) {
 			t.Fatalf("%s: bind does not gate on %s: %q", tc.name, floatLookup(tc.tool), tc.bind)
+		}
+		if !strings.Contains(tc.bind, bridgeGate) {
+			t.Fatalf("%s: bind does not gate on %s: %q", tc.name, bridgeGate, tc.bind)
 		}
 		want := `run-shell "tmux select-pane -t #{q:` + floatRegister(tc.tool) + `}"`
 		if !strings.Contains(tc.bind, want) {

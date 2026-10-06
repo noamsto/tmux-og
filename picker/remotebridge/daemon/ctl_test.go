@@ -1165,6 +1165,8 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 		{"prdash", remoteFloatShort},
 		{"yazi", remoteFloatShort},
 		{"lazygit", remoteFloatFull},
+		{"btop", remoteFloatFull},
+		{"k9s", remoteFloatFull},
 	}
 	for _, tc := range tests {
 		t.Run(tc.tool, func(t *testing.T) {
