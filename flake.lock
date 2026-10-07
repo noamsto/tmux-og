@@ -539,17 +539,17 @@
     "tmux-upstream_2": {
       "flake": false,
       "locked": {
-        "lastModified": 1790609443,
-        "narHash": "sha256-HVeevkqYIGzn1j36j0puTY/Saz9mMTXhuVEbiCE9zro=",
+        "lastModified": 1791215568,
+        "narHash": "sha256-Edy8zTmbiOXmjHwjSX7pzhd5b2r6E9t3KbfudtqCJrI=",
         "owner": "tmux",
         "repo": "tmux",
-        "rev": "8a9122df1d886f925faffaa403770642659ff2c1",
+        "rev": "cdb857563067afc0fa84cc9fb858b05c449611c3",
         "type": "github"
       },
       "original": {
         "owner": "tmux",
         "repo": "tmux",
-        "rev": "8a9122df1d886f925faffaa403770642659ff2c1",
+        "rev": "cdb857563067afc0fa84cc9fb858b05c449611c3",
         "type": "github"
       }
     },
