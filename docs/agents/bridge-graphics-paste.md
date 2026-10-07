@@ -258,13 +258,41 @@ carries the measured evidence.
 - **Gated and conservative, not a security boundary.** Interception fires
   only when the remote pane's `@bridge_proc` is in the agent set (`claude`
   and `pi` are verified; codex has no clipboard read at all) AND the local
-  clipboard actually holds an image. Everything else — shells' quoted-insert,
-  text clipboards, empty clipboards — forwards the byte unchanged. A `0x16`
-  inside a bracketed paste is content, not the gesture, and is kept. The
-  process-name gate is a usability heuristic like every other `@bridge_*`
-  field: it's daemon-sanitized but remote-derived, and a hostile remote that
-  stamped it falsely would already need code execution in the foreground of
-  the pane the user is mirroring — a stronger foothold than the exfil buys.
+  clipboard actually holds an image. Everything else forwards the byte
+  unchanged. A `0x16` inside a bracketed paste is content, not the gesture,
+  and is kept. The process-name gate is a usability heuristic like every
+  other `@bridge_*` field: it's daemon-sanitized but remote-derived, and a
+  hostile remote that stamped it falsely would already need code execution
+  in the foreground of the pane the user is mirroring — a stronger foothold
+  than the exfil buys.
+- **Every pass-through on a possible agent pane says why.** **Silent**
+  forwards: a non-agent `@bridge_proc` (shell quoted-insert), and an agent
+  pane whose clipboard listing succeeded with no `image/*` type (text — the
+  agent's own answer is accurate). **Notified** forwards (ONE `tmux-og:
+  ctrl+v forwarded to the remote: <reason>` per gesture, however many drops
+  the frame carries): the `@bridge_proc` gate lookup failed (local
+  `list-panes` error/timeout, pane row missing, `@bridge_proc` not yet
+  stamped); on an agent pane, the clipboard probe can't tell (no
+  `xclip`/`wl-paste` on PATH, or every listing failed/timed out — the reason
+  is the tool's own stderr line, e.g. `wl-paste: Nothing is copied`, so an
+  empty clipboard notifies too); or the clipboard offers only an `image/*`
+  type outside `imageTarget`'s table, e.g. `image/tiff` (named in the
+  message). These forward because no image target was picked, and forwarding
+  keeps a remote-side clipboard paste working; swallowing is reserved for
+  "picked an image target, failed to deliver it" — which is why BMP (in the
+  table) is swallowed and reported, see "Failures are visible". These
+  notifies run async so a wedged local tmux — the likely cause of a gate
+  timeout, and what `notifyLocal` forks — can't freeze the pane's input.
+- **The paste scan survives frame splits.** `splitPasteDrops` matches
+  `ESC[200~`/`ESC[201~` even when a marker straddles input frames: a partial
+  match is carried in the handler's state, while the bytes themselves are
+  never held back or delayed. `pumpInput` carries an incomplete trailing
+  escape to the next frame but flushes it alone once `escCarryGrace` (50ms)
+  expires, and that timer can beat the next frame when `send` is
+  backpressured during a large paste (20 of 40 trials in a scratch probe).
+  Before #938 a split `ESC[201~` left the scan stuck "inside a paste" and
+  silently forwarded every later `ctrl+v` on that pane until the next text
+  paste.
 - **Only the TARGETS probe runs on the input pump.** It has to — it decides
   forward-vs-swallow — and it is bounded (`clipTimeout`, one fork per tool).
   Everything after a swallow (extracting the bytes, capping at 8 MiB,
@@ -298,6 +326,7 @@ carries the measured evidence.
   which the agent's path regex excludes — oversize, timeout, unwritable
   remote dir, malformed reply, a dropped send while the bridge reconnects) is
   a local `display-message`, never a silent no-op and never a frozen pane.
-  Disabled entirely when the daemon has no ssh transport (`--test-local`),
-  where `Config.PasteUpload` is nil.
+  Pass-through on a pane that might be an agent is visible too (see "Every
+  pass-through on a possible agent pane says why"). Disabled entirely when the daemon
+  has no ssh transport (`--test-local`), where `Config.PasteUpload` is nil.
 

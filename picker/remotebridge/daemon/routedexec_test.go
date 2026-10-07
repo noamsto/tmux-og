@@ -403,7 +403,11 @@ func TestPasterUsesPlainHooks(t *testing.T) {
 	if h == nil {
 		t.Fatal("paster() returned nil, want a handler (PasteUpload set)")
 	}
-	if got := h.procFor("%1"); got != "claude" {
+	got, err := h.procFor("%1")
+	if err != nil {
+		t.Fatalf("procFor error: %v", err)
+	}
+	if got != "claude" {
 		t.Errorf("procFor = %q, want %q", got, "claude")
 	}
 	if plainCalls != 1 {
