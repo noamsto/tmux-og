@@ -753,8 +753,9 @@
 
   # Scripts reached only by store-path interpolation from this file, a parent
   # script, or a respawn-pane argv -- no human runs one standalone, so none
-  # gets a verb. Recorded here, not just in the design doc, so ogPartitionOk
-  # can check the partition.
+  # gets a verb (tmux-agent-usage-cursor --print is for other tools, not
+  # humans). Recorded here, not just in the design doc, so ogPartitionOk can
+  # check the partition.
   ogInternal = [
     "tmux-agent-repaint"
     "tmux-agent-usage"

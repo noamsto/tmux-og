@@ -1,17 +1,20 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2030,SC2031 # bats @test blocks run in subshells; export is intentional
 # shellcheck disable=SC2016 # pi auth.json keys hold a literal "$VAR" for the provider to resolve
+bats_require_minimum_version 1.5.0 # run --separate-stderr
 # The cursor and pi usage providers, end to end against fixture API responses.
 # What's worth pinning is the normalization into the cache shape
-# tmux-statusline reads — `spend` written with no cap present, and pi's pct
-# taken from limit/limit_remaining whatever the reset period — plus pi's
-# auth.json key resolution, where a `!command` key must never run.
+# tmux-statusline reads and cursor's `--print` object, pi's pct taken from
+# limit/limit_remaining whatever the reset period, and pi's auth.json key
+# resolution, where a `!command` key must never run.
 #
-# Fakes: curl answers from $FIXTURES/<last URL segment>.json. The bearer token
-# required depends on the URL: a `/credits` request must carry $EXPECT_MGMT_TOKEN
-# (the management key), everything else (cursor's endpoints, pi's `/key`) must
-# carry $EXPECT_TOKEN — so a cache file existing proves which key the provider
-# resolved, without the stub ever recording the token.
+# Fakes: curl answers from $FIXTURES/<last URL segment>.json. pi's `-H
+# Authorization: Bearer` requests must carry $EXPECT_TOKEN (a `/credits` one
+# $EXPECT_MGMT_TOKEN, the management key). cursor's `-K -` request reads its
+# curl config from stdin and its Cookie header must equal
+# WorkosCursorSessionToken=$EXPECT_ACCOUNT::$EXPECT_TOKEN. Either way a served
+# fixture proves which credential the provider resolved, and the stub records
+# only argv (to curl-argv.log), never a credential.
 
 setup() {
 	FAKEBIN="$BATS_TEST_TMPDIR/bin"
@@ -21,24 +24,39 @@ setup() {
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/cache"
 	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	export HOME="$BATS_TEST_TMPDIR"
-	unset OPENROUTER_API_KEY PI_AUTH CURSOR_AUTH OG_OPENROUTER_MGMT_KEY_FILE OPENROUTER_MANAGEMENT_KEY XDG_CONFIG_HOME
+	unset OPENROUTER_API_KEY PI_AUTH OG_OPENROUTER_MGMT_KEY_FILE OPENROUTER_MANAGEMENT_KEY XDG_CONFIG_HOME
 
 	cat >"$FAKEBIN/curl" <<-'EOF'
 		#!/bin/sh
-		auth='' url=''
+		printf '%s\n' "$*" >>"$BATS_TEST_TMPDIR/curl-argv.log"
+		auth='' url='' stdin_conf=''
 		while [ $# -gt 0 ]; do
 			if [ "$1" = -H ]; then
 				shift
 				case "$1" in "Authorization: Bearer "*) auth=${1#Authorization: Bearer } ;; esac
 			fi
+			if [ "$1" = -K ]; then
+				shift
+				[ "$1" = - ] && stdin_conf=1
+			fi
 			url=$1
 			shift
 		done
-		case "$url" in
-			*credits) want=$EXPECT_MGMT_TOKEN ;;
-			*) want=$EXPECT_TOKEN ;;
-		esac
-		[ -n "$want" ] && [ "$auth" = "$want" ] || exit 22
+		if [ -n "$stdin_conf" ]; then
+			cookie=''
+			while IFS= read -r line; do
+				case "$line" in
+					'header = "Cookie: '*'"') cookie=${line#'header = "Cookie: '}; cookie=${cookie%'"'} ;;
+				esac
+			done
+			[ -n "$EXPECT_TOKEN" ] && [ "$cookie" = "WorkosCursorSessionToken=$EXPECT_ACCOUNT::$EXPECT_TOKEN" ] || exit 22
+		else
+			case "$url" in
+				*credits) want=$EXPECT_MGMT_TOKEN ;;
+				*) want=$EXPECT_TOKEN ;;
+			esac
+			[ -n "$want" ] && [ "$auth" = "$want" ] || exit 22
+		fi
 		f="$FIXTURES/${url##*/}.json"
 		[ -f "$f" ] || exit 22
 		cat "$f"
@@ -52,30 +70,167 @@ setup() {
 cursor_setup() {
 	mkdir -p "$HOME/.config/cursor"
 	echo '{"accessToken":"cursor-test-not-a-token"}' >"$HOME/.config/cursor/auth.json"
-	export EXPECT_TOKEN=cursor-test-not-a-token
-	echo '{"teamId":1,"userId":2}' >"$FIXTURES/GetMe.json"
-	echo '{}' >"$FIXTURES/GetCurrentPeriodUsage.json"
-	echo '{"totalCostCents":1234}' >"$FIXTURES/GetAggregatedUsageEvents.json"
+	echo '{"authInfo":{"authId":"auth0|user_synth01"}}' >"$HOME/.config/cursor/cli-config.json"
+	export EXPECT_TOKEN=cursor-test-not-a-token EXPECT_ACCOUNT=user_synth01
+	printf '#!/bin/sh\necho Linux\n' >"$FAKEBIN/uname"
+	chmod +x "$FAKEBIN/uname"
+	CACHE="$OG_AGENT_USAGE_DIR/cursor.json"
 }
 
-@test "cursor: spend is the cycle's totalCostCents in USD, capped by the hard limit" {
-	cursor_setup
-	echo '{"hardLimit":5000}' >"$FIXTURES/GetHardLimit.json"
-	run bash scripts/tmux-agent-usage-cursor.sh
-	[ "$status" -eq 0 ]
-	cache="$OG_AGENT_USAGE_DIR/cursor.json"
-	[ "$(jq -c .spend "$cache")" = '{"label":"mo","usd":12.34,"period":"cycle","limit_usd":50}' ]
-	[ "$(jq -c .monthly.pct "$cache")" = 24 ]
+team_fixture() {
+	cat >"$FIXTURES/usage-summary.json" <<-'EOF'
+		{"billingCycleStart":"2026-10-01T00:00:00.000Z","billingCycleEnd":"2026-11-01T00:00:00.000Z",
+		"membershipType":"enterprise","limitType":"team","isUnlimited":false,
+		"individualUsage":{"overall":{"enabled":true,"used":40603,"limit":105000,"remaining":64397}},
+		"teamUsage":{"onDemand":{"enabled":true,"used":86155,"limit":600000,"remaining":513845}}}
+	EOF
 }
 
-@test "cursor: spend is written with no hard limit, and no limit_usd" {
+individual_fixture() {
+	cat >"$FIXTURES/usage-summary.json" <<-'EOF'
+		{"billingCycleStart":"2026-10-01T00:00:00.000Z","billingCycleEnd":"2026-11-01T00:00:00.000Z",
+		"membershipType":"pro","limitType":"user","isUnlimited":false,
+		"individualUsage":{"plan":{"autoPercentUsed":20,"apiPercentUsed":61.5},
+		"onDemand":{"enabled":false,"used":0,"limit":null}}}
+	EOF
+}
+
+unlimited_fixture() {
+	cat >"$FIXTURES/usage-summary.json" <<-'EOF'
+		{"billingCycleStart":"2026-10-01T00:00:00.000Z","billingCycleEnd":"2026-11-01T00:00:00.000Z",
+		"membershipType":"enterprise","limitType":"team","isUnlimited":true,
+		"individualUsage":{"overall":{"enabled":true,"used":5000,"limit":null}}}
+	EOF
+}
+
+# --print output with the raw used_pct rounded to 2 decimals, key-sorted.
+print_norm() { jq -cS '.plan.used_pct |= (if . == null then . else (. * 100 | round) / 100 end)' <<<"$output"; }
+
+@test "cursor: team shape writes plan pct, cycle reset and plan dollars" {
 	cursor_setup
-	echo '{}' >"$FIXTURES/GetHardLimit.json"
+	team_fixture
 	run bash scripts/tmux-agent-usage-cursor.sh
 	[ "$status" -eq 0 ]
-	cache="$OG_AGENT_USAGE_DIR/cursor.json"
-	[ "$(jq -c .spend "$cache")" = '{"label":"mo","usd":12.34,"period":"cycle"}' ]
-	[ "$(jq -c .monthly "$cache")" = null ]
+	[ "$(jq -c .monthly "$CACHE")" = '{"label":"mo","pct":38.7,"reset_at":1793491200}' ]
+	[ "$(jq -c .spend "$CACHE")" = '{"label":"mo","usd":406.03,"period":"cycle","limit_usd":1050}' ]
+	[ "$(jq -c .windows "$CACHE")" = '[]' ]
+}
+
+@test "cursor: individual shape takes max(auto, api) as pct and has no spend" {
+	cursor_setup
+	individual_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly.pct "$CACHE")" = 61.5 ]
+	[ "$(jq -c .spend "$CACHE")" = null ]
+}
+
+@test "cursor: unlimited plan has no monthly and spend without a limit" {
+	cursor_setup
+	unlimited_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly "$CACHE")" = null ]
+	[ "$(jq -c .spend "$CACHE")" = '{"label":"mo","usd":50,"period":"cycle"}' ]
+}
+
+@test "cursor: a failed or unrecognised fetch leaves the previous cache byte-identical" {
+	cursor_setup
+	echo '{"windows":[],"monthly":{"label":"mo","pct":9},"spend":null}' >"$CACHE"
+	cp "$CACHE" "$BATS_TEST_TMPDIR/seed"
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	cmp "$CACHE" "$BATS_TEST_TMPDIR/seed"
+	echo '{}' >"$FIXTURES/usage-summary.json"
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	cmp "$CACHE" "$BATS_TEST_TMPDIR/seed"
+	team_fixture
+	rm "$HOME/.config/cursor/cli-config.json"
+	echo '{"accessToken":"not-a-jwt"}' >"$HOME/.config/cursor/auth.json"
+	export EXPECT_TOKEN=not-a-jwt
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	cmp "$CACHE" "$BATS_TEST_TMPDIR/seed"
+}
+
+@test "cursor --print: each shape prints the normalized object and writes no cache" {
+	cursor_setup
+	unset OG_AGENT_USAGE_DIR
+	team_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 0 ]
+	[ "$(print_norm)" = "$(jq -cS . <<<'{"plan_type":"enterprise","unlimited":false,"cycle":{"starts_at":1790812800,"resets_at":1793491200},"plan":{"used_pct":38.67,"used_usd":406.03,"limit_usd":1050},"pools":{"auto_pct":null,"api_pct":null},"on_demand":[{"scope":"team","enabled":true,"used_usd":861.55,"limit_usd":6000}]}')" ]
+	individual_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 0 ]
+	[ "$(print_norm)" = "$(jq -cS . <<<'{"plan_type":"pro","unlimited":false,"cycle":{"starts_at":1790812800,"resets_at":1793491200},"plan":{"used_pct":61.5,"used_usd":null,"limit_usd":null},"pools":{"auto_pct":20,"api_pct":61.5},"on_demand":[{"scope":"individual","enabled":false,"used_usd":0,"limit_usd":null}]}')" ]
+	unlimited_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 0 ]
+	[ "$(print_norm)" = "$(jq -cS . <<<'{"plan_type":"enterprise","unlimited":true,"cycle":{"starts_at":1790812800,"resets_at":1793491200},"plan":{"used_pct":null,"used_usd":50,"limit_usd":null},"pools":{"auto_pct":null,"api_pct":null},"on_demand":[]}')" ]
+	[ -z "$(find "$OG_AGENT_USAGE_DIR" -mindepth 1 2>/dev/null)" ]
+}
+
+@test "cursor --print: distinct exit codes and empty stdout on failure" {
+	cursor_setup
+	team_fixture
+	rm "$HOME/.config/cursor/auth.json"
+	run --separate-stderr bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 2 ]
+	[ -z "$output" ]
+	echo '{"accessToken":"not-a-jwt"}' >"$HOME/.config/cursor/auth.json"
+	rm "$HOME/.config/cursor/cli-config.json"
+	run --separate-stderr bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 3 ]
+	[ -z "$output" ]
+	cursor_setup
+	rm "$FIXTURES/usage-summary.json"
+	run --separate-stderr bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 4 ]
+	[ -z "$output" ]
+	echo '{"foo":1}' >"$FIXTURES/usage-summary.json"
+	run --separate-stderr bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 5 ]
+	[ -z "$output" ]
+}
+
+@test "cursor: account falls back to the token's JWT sub when cli-config is absent" {
+	cursor_setup
+	team_fixture
+	rm "$HOME/.config/cursor/cli-config.json"
+	payload=$(printf '{"sub":"auth0|user_jwt9"}' | base64 | tr -d '\n=' | tr '+/' '-_')
+	tok="eyJhbGciOiJub25lIn0.$payload.sig"
+	echo "{\"accessToken\":\"$tok\"}" >"$HOME/.config/cursor/auth.json"
+	export EXPECT_TOKEN=$tok EXPECT_ACCOUNT=user_jwt9
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly.pct "$CACHE")" = 38.7 ]
+}
+
+@test "cursor: macOS reads the token from the keychain and the account from ~/.cursor" {
+	cursor_setup
+	team_fixture
+	rm -r "$HOME/.config/cursor"
+	mkdir -p "$HOME/.cursor"
+	echo '{"authInfo":{"userId":"auth0|user_synth01"}}' >"$HOME/.cursor/cli-config.json"
+	printf '#!/bin/sh\necho Darwin\n' >"$FAKEBIN/uname"
+	printf '#!/bin/sh\necho cursor-test-not-a-token\n' >"$FAKEBIN/security"
+	chmod +x "$FAKEBIN/security"
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly.pct "$CACHE")" = 38.7 ]
+}
+
+@test "cursor: the token never reaches stdout, stderr, the cache or curl's argv" {
+	cursor_setup
+	team_fixture
+	bash scripts/tmux-agent-usage-cursor.sh >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err"
+	bash scripts/tmux-agent-usage-cursor.sh --print >>"$BATS_TEST_TMPDIR/out" 2>>"$BATS_TEST_TMPDIR/err"
+	[ -s "$CACHE" ]
+	[ -s "$BATS_TEST_TMPDIR/curl-argv.log" ]
+	run grep -rF "$EXPECT_TOKEN" "$BATS_TEST_TMPDIR/out" "$BATS_TEST_TMPDIR/err" "$CACHE" "$BATS_TEST_TMPDIR/curl-argv.log"
+	[ "$status" -eq 1 ]
 }
 
 # --- pi ---
@@ -289,7 +444,7 @@ default_pi() {
 	export TMPDIR="$BATS_TEST_TMPDIR/tmp"
 	mkdir -p "$XDG_RUNTIME_DIR" "$TMPDIR"
 	cursor_setup
-	echo '{"hardLimit":5000}' >"$FIXTURES/GetHardLimit.json"
+	team_fixture
 	run bash scripts/tmux-agent-usage-cursor.sh
 	[ "$status" -eq 0 ]
 	[ -z "$(find "$XDG_RUNTIME_DIR" "$TMPDIR" -mindepth 1 2>/dev/null)" ]

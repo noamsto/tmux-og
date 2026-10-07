@@ -287,6 +287,29 @@ func TestUsageSegmentCursorRenderUnchanged(t *testing.T) {
 	}
 }
 
+// An enterprise plan below the monthly threshold still shows its plan dollars
+// against the limit, without the %.
+func TestUsageSegmentCursorDollarsBelowThreshold(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsageCursor:       "CU",
+		thmSubtext0:           "#9a8",
+	}
+	limit := func(v float64) *float64 { return &v }
+	caches := map[string]usageCache{
+		"cursor": {
+			Monthly: &usageWindow{Label: "mo", Pct: 38.7, ResetAt: 1793491200},
+			Spend:   &usageSpend{Label: "mo", USD: 406.03, Period: "cycle", LimitUSD: limit(1050)},
+		},
+	}
+	open := map[string]bool{"cursor": true}
+	got := usageSegment(a, caches, open, 0)
+	want := "#[fg=#9a8]CU #[fg=#9a8]$406/$1050  "
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestUsageSegmentPiSpendShowsLabel(t *testing.T) {
 	a := args{
 		usageMonthlyThreshold: 50,
