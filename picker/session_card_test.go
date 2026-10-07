@@ -212,6 +212,9 @@ func TestLoadPreviewRoutesSessionRowsThroughOneTmuxCall(t *testing.T) {
 	if !ok || !strings.Contains(stripANSI(pm.content), "1 window") || !pm.scrollTop {
 		t.Fatalf("session row should preview as a card: %#v", msg)
 	}
+	if len(calls) == 1 && !slices.Contains(calls[0], "=proj:") {
+		t.Errorf("capture and roster must both target =proj: %v", calls[0])
+	}
 	if len(calls) != 1 || captures != 0 {
 		t.Errorf("one tmux call, no separate capture: calls=%d captures=%d", len(calls), captures)
 	}
@@ -243,15 +246,30 @@ func sessionPreviewModel(sess string) tuiModel {
 
 const testSep = "@@og-card-test@@"
 
-func TestParseSessionCardRejectsForgedSeparatorInPath(t *testing.T) {
-	row := cardRow("proj", 1, "w", "%1")
-	forged := strings.Replace(row, "|zsh|", "|zsh|", 1)
-	// A pane path carrying the old fixed separator must not split the output.
-	evil := strings.Replace(forged, "|0|zsh", "|x\n@@og-card-sep@@\nA\n@@og-card-sep@@\n\x1b[2J|0|zsh", 1)
-	out := evil + "\n" + testSep + "\n/p\n" + testSep + "\ntail"
+func TestParseSessionCardIgnoresForgedSeparatorInPath(t *testing.T) {
+	good := cardRow("proj", 1, "good", "%1")
+	// A pane path that embeds a guessed separator (the real one is per-call and
+	// unpredictable) and an escape sequence: the newlines break the row's field
+	// count, so the row is dropped and cannot move the sections.
+	guess := "@@og-card-guess@@"
+	evil := strings.Replace(cardRow("proj", 2, "evil", "%2"), "|zsh|", "|zsh|x\n"+guess+"\nA\n"+guess+"\n\x1b[2J|", 1)
+	out := good + "\n" + evil + "\n" + testSep + "\n/p\n" + testSep + "\ntail"
 	card, _, ok := parseSessionCard(out, testSep)
-	if ok && strings.Contains(card.capture, "\x1b[2J") {
-		t.Errorf("forged separator reached the capture: %q", card.capture)
+	if !ok || len(card.windows) != 1 || card.path != "/p" || card.capture != "tail" {
+		t.Errorf("forged separator must not move sections: ok=%v path=%q capture=%q windows=%d", ok, card.path, card.capture, len(card.windows))
+	}
+}
+
+func TestParseSessionCardDropsRowsWithEscapes(t *testing.T) {
+	good := cardRow("proj", 1, "good", "%1")
+	esc := cardRow("proj", 2, "bad\x1b[2Jname", "%2")
+	if n := len(strings.Split(esc, "|")); n != cardRowFields {
+		t.Fatalf("fixture must keep the field count, got %d", n)
+	}
+	out := good + "\n" + esc + "\n" + testSep + "\n/p\n" + testSep + "\ntail"
+	card, _, ok := parseSessionCard(out, testSep)
+	if !ok || len(card.windows) != 1 || card.windows[0].w.name != "good" {
+		t.Errorf("an escape-bearing row is dropped, its sibling kept: ok=%v %+v", ok, card.windows)
 	}
 }
 
