@@ -2745,10 +2745,23 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 			return previewMsg{content: msg, target: t, scrollTop: true}
 		}
 	}
+	// A local session row previews as a window roster card; the plain capture
+	// below stays its fallback and every other row's preview. A zero width
+	// (before the first WindowSizeMsg) has nothing to lay out.
+	cardSess, cardW, cardH := "", m.previewWidth(), m.previewHeight()
+	if !m.windowMode && !item.isHeader && item.session != "" && item.session == t && cardW > 0 {
+		cardSess = t
+	}
+	opts, theme := m.tmuxOpts, m.theme
 	seq := previewGate.request()
 	return func() tea.Msg {
 		if !previewGate.admit(seq) {
 			return nil // a newer request took over while this one waited its turn
+		}
+		if cardSess != "" {
+			if card, ok := loadSessionCard(cardSess, selfCaptureTarget(t), opts, theme, cardW, cardH); ok {
+				return previewMsg{content: card, target: t, scrollTop: true}
+			}
 		}
 		// selfCaptureTarget: never capture the picker's own popup pane over
 		// the window/session it covers.

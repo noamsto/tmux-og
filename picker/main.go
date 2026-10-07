@@ -122,6 +122,7 @@ type agentCounts struct {
 type agentPaneInfo struct {
 	session string
 	winIdx  int
+	paneID  string // pane id without the leading %
 	state   string
 	ts      int64
 	stale   bool
@@ -481,11 +482,13 @@ func parseWindowPaneRows(lines []string) ([]winKey, map[winKey]*winInfo) {
 	return order, m
 }
 
+// windowsFormat is the 38-field row parseWindowPaneRows reads.
+const windowsFormat = "#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}|#{pane_pid}|#{@bridge_session_path}|#{window_id}"
+
 // windowsArgv builds collectWindows' `list-panes` argv, split out so
 // picker/main_test.go can assert notModalFilter is on it.
 func windowsArgv() []string {
-	return []string{"list-panes", "-a", "-f", notModalFilter, "-F",
-		"#{session_name}|#{window_index}|#{b:pane_current_path}|#{window_zoomed_flag}|#{pane_current_command}|#{window_active}|#{@branch}|#{pane_current_path}|#{@window_label_id}|#{@window_label_rest_long}|#{@window_pr_plain}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@crew_name}|#{@crew_color}|#{@window_bridge_name}|#{@bridge_pane}|#{@bridge_sock}|#{@bridge_win}|#{@bridge_crew_name}|#{@bridge_crew_color}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_pr_state}|#{@bridge_pr_check_state}|#{@bridge_pr_mergeable}|#{@bridge_host}|#{@bridge_proc}|#{@pr_review}|#{@pr_auto_merge}|#{@bridge_pr_review}|#{@bridge_pr_auto_merge}|#{@window_has_agent}|#{pane_pid}|#{@bridge_session_path}|#{window_id}"}
+	return []string{"list-panes", "-a", "-f", notModalFilter, "-F", windowsFormat}
 }
 
 func collectWindows() []windowData {
@@ -996,6 +999,7 @@ func collectAgentPanesFrom(hookDir, screenDir, issuesDir string, paneMap map[str
 
 		result = append(result, agentPaneInfo{
 			session: session,
+			paneID:  id,
 			winIdx:  winIdx,
 			state:   state,
 			bg:      bg,
