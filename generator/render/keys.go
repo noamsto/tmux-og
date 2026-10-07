@@ -158,15 +158,19 @@ func yaziBind(p *paths.Paths) string {
 		"yazi \\; set -p @pane_label yazi")
 }
 
-func btopBind() string {
-	return floatBind("b", "Open btop", floatFull, "", "btop \\; set -p @pane_label btop")
+// btop takes no -c prefix on the local leg: unlike prdash/lazygit/yazi it does
+// not depend on cwd. The remote leg still receives @bridge_dir like every
+// bridgedFloatTool bind, so the remote float opens in the remote window's dir.
+func btopBind(p *paths.Paths) string {
+	return bridgedFloatTool(p, "b", "Open btop", "btop", floatFull, "", "btop \\; set -p @pane_label btop")
 }
 
 // k9s is reached through PATH only, unlike the binds above: a pkgs.k9s
 // fallback dragged k9s + kubectl into every closure for a bind only k8s users
-// press.
-func k9sBind() string {
-	return floatBind("k", "Open k9s", floatFull, "",
+// press. The suffix keeps the local leg's own not-found message; the remote leg
+// gets toolResolveScript's generic one.
+func k9sBind(p *paths.Paths) string {
+	return bridgedFloatTool(p, "k", "Open k9s", "k9s", floatFull, "",
 		`"command -v k9s >/dev/null 2>&1 && exec k9s || { echo 'k9s not found in PATH — add pkgs.k9s to programs.tmux-og.popupTools'; read -r; }" \; set -p @pane_label k9s`)
 }
 

@@ -205,7 +205,7 @@ var (
 	// The closed set of tools a bind may launch on the remote: a name reaches a
 	// remote shell only by being a key here, so the socket peer cannot smuggle
 	// one in.
-	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true}
+	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true, "btop": true, "k9s": true}
 	remoteThemes = map[string]bool{"dark": true, "light": true}
 	// remoteToolFloat gives each remoteTools entry its float shape, matching
 	// config/tmux.conf.nix's floatShort/floatFull mkFloat shapes byte for byte
@@ -217,6 +217,8 @@ var (
 		"prdash":  remoteFloatShort,
 		"yazi":    remoteFloatShort,
 		"lazygit": remoteFloatFull,
+		"btop":    remoteFloatFull,
+		"k9s":     remoteFloatFull,
 	}
 )
 
@@ -508,7 +510,7 @@ var verbs = map[string]verb{
 		cmd := fmt.Sprintf("run-shell -b -t %s %s", pane, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)))
 		return []string{cmd}, nil
 	}},
-	// The tool binds (prefix p/g/G/y) open a float locally, and this is the
+	// The tool binds (prefix p/g/b/k/y) open a float locally, and this is the
 	// remote leg: it now opens a float on the remote too, at the same shape
 	// (remoteToolFloat) the local bind uses, so the mirror can reconcile it
 	// into a local float the same way it reconciles any other remote float.

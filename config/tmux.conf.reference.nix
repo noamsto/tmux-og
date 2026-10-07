@@ -828,11 +828,11 @@
     # over popups — full escape-sequence passthrough, and a pane is mirrorable
     # across the remote bridge in principle where a popup can never be).
     ${bridgedFloatTool "g" "Open lazygit" "lazygit" floatFull "-c '#{pane_current_path}' " "lazygit \\; set -p @pane_label lazygit"}
-    ${floatBind "b" "Open btop" floatFull "" "btop \\; set -p @pane_label btop"}
+    ${bridgedFloatTool "b" "Open btop" "btop" floatFull "" "btop \\; set -p @pane_label btop"}
     # PATH only, unlike the binds above: falling back to a pkgs.k9s store path
     # dragged k9s + kubectl into every closure — 237 MB, its largest single
     # item — for a bind only k8s users press. Add pkgs.k9s to popupTools.
-    ${floatBind "k" "Open k9s" floatFull "" ''"command -v k9s >/dev/null 2>&1 && exec k9s || { echo 'k9s not found in PATH — add pkgs.k9s to programs.tmux-og.popupTools'; read -r; }" \; set -p @pane_label k9s''}
+    ${bridgedFloatTool "k" "Open k9s" "k9s" floatFull "" ''"command -v k9s >/dev/null 2>&1 && exec k9s || { echo 'k9s not found in PATH — add pkgs.k9s to programs.tmux-og.popupTools'; read -r; }" \; set -p @pane_label k9s''}
     ${prdashBind}
     bind-key -N 'Toggle debug overlay' D run-shell '${script.og-debug}/bin/og-debug toggle'
     # yazi in a tmux 3.7 floating pane: unlike display-popup, floating panes have
