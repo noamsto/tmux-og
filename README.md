@@ -461,10 +461,13 @@ programs.tmux-og = {
 
 Home Manager upserts tmux-og entries into `~/.cursor/hooks.json` on every
 switch (strips prior `/bin/cursor-status-hook` commands; leaves other entries
-alone). They write processing, done, compacting, idle, and error state for the
+alone). They write processing, done, compacting, and idle state for the
 current `$TMUX_PANE` via a silent `cursor-status-hook` wrapper around
-`claude-status-update`. The screen scraper remains the backfill — and the
-source of `waiting`, since Cursor has no clean permission-prompt hook.
+`claude-status-update`. A `postToolUseFailure` maps to `processing`, not
+`error`: it fires on any tool that exits non-zero, and `error` is protected
+until the next prompt, so a failed build would pin a red x for the whole
+session. The screen scraper remains the backfill — and the source of
+`waiting`, since Cursor has no clean permission-prompt hook.
 
 ### OpenCode Plugin
 

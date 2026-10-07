@@ -67,6 +67,18 @@ IFS= read -r -d '' input || true
 transcript=""
 [[ $input =~ \"transcript_path\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && transcript="${BASH_REMATCH[1]}"
 
+# A `Stop` hook fires both when the turn really ends and when it parks to wait
+# for background work it launched. Claude Code lists that work in the payload's
+# `background_tasks`; a running `subagent` entry means the Task call is still
+# going, so `done` here would drop the spinner while the subagent works — keep
+# `processing`. Only the friendly `subagent` type, not `shell`: a background
+# shell is a badge (`bg=N`), not agent work. jq is optional (the `task` hook
+# already needs it); without it the write stays `done`, as before.
+if [[ ${1:-} == "done" && $input == *background_tasks* ]] && command -v jq >/dev/null 2>&1; then
+	subagents=$(jq -r '[.background_tasks[]? | select(.type == "subagent")] | length' <<<"$input" 2>/dev/null) || subagents=0
+	[[ ${subagents:-0} -gt 0 ]] && set -- processing "${@:2}"
+fi
+
 if [[ -n $transcript ]]; then
 	exec claude-status-update "$@" --transcript "$transcript"
 fi

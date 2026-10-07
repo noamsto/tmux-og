@@ -28,7 +28,8 @@ setup() {
 	[[ $output == *"$WRAPPER processing"* ]]
 
 	run jq -r '.hooks.postToolUseFailure[0].command' "$CURSOR_HOOKS_FILE"
-	[[ $output == *"$WRAPPER error"* ]]
+	[[ $output == *"$WRAPPER processing"* ]]
+	[[ $output != *"$WRAPPER error"* ]]
 
 	run jq -r '.hooks.preCompact[0].command' "$CURSOR_HOOKS_FILE"
 	[[ $output == *"$WRAPPER compacting"* ]]
