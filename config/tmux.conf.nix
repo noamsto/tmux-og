@@ -425,9 +425,6 @@
   agent-usage-provider-bins =
     lib.genAttrs ["claude" "codex" "pi"] (p: mkScript "tmux-agent-usage-${p}")
     // {
-      # `--print` is called by tools outside tmux, so jq/curl/timeout can't come
-      # from the wrapper's PATH; macOS `security`/system tools stay on the
-      # inherited PATH.
       cursor = pkgs.writeShellScriptBin "tmux-agent-usage-cursor" (
         builtins.replaceStrings
         ["@cursor_path@"]
