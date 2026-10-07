@@ -6,7 +6,8 @@ bats_require_minimum_version 1.5.0 # run --separate-stderr
 # What's worth pinning is the normalization into the cache shape
 # tmux-statusline reads and cursor's `--print` object, pi's pct taken from
 # limit/limit_remaining whatever the reset period, and pi's auth.json key
-# resolution, where a `!command` key must never run.
+# resolution (literal/escaped/env, OAuth .access, and that a `!command` key
+# must never run).
 #
 # Fakes: curl answers from $FIXTURES/<last URL segment>.json. pi's `-H
 # Authorization: Bearer` requests must carry $EXPECT_TOKEN (a `/credits` one
@@ -408,6 +409,30 @@ default_pi() {
 
 # Key resolution: EXPECT_TOKEN is the key the provider should have chosen, so
 # pi.json appearing proves the choice.
+
+@test "pi key: an OAuth credential's minted key comes from .access" {
+	pi_key_fixture '{"usage_monthly":1}'
+	pi_auth '{"openrouter":{"type":"oauth","access":"sk-or-test-oauth-not-a-key","refresh":"","expires":9007199254740991}}'
+	export EXPECT_TOKEN=sk-or-test-oauth-not-a-key
+	run_pi
+	[ -e "$(pi_cache)" ]
+}
+
+@test "pi key: a literal .key wins over an OAuth .access" {
+	pi_key_fixture '{"usage_monthly":1}'
+	pi_auth '{"openrouter":{"key":"sk-or-test-literal-not-a-key","type":"oauth","access":"sk-or-test-oauth-not-a-key"}}'
+	export EXPECT_TOKEN=sk-or-test-literal-not-a-key
+	run_pi
+	[ -e "$(pi_cache)" ]
+}
+
+@test "pi key: an OAuth .access wins over OPENROUTER_API_KEY" {
+	pi_key_fixture '{"usage_monthly":1}'
+	pi_auth '{"openrouter":{"type":"oauth","access":"sk-or-test-oauth-not-a-key"}}'
+	export OPENROUTER_API_KEY=sk-or-test-fallback-not-a-key EXPECT_TOKEN=sk-or-test-oauth-not-a-key
+	run_pi
+	[ -e "$(pi_cache)" ]
+}
 
 @test "pi key: a literal key is used as-is" {
 	pi_key_fixture '{"usage_monthly":1}'

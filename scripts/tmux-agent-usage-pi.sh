@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # pi usage provider: query OpenRouter's key-info endpoint with pi's own
 # OpenRouter key and atomically rewrite $CACHE_DIR/pi.json for tmux-statusline.
-# A failed fetch (offline, revoked key, non-JSON) leaves the previous cache
-# untouched.
+# The key comes from auth.json's `.openrouter.key`, else the OAuth-minted
+# `.openrouter.access`, else $OPENROUTER_API_KEY. A failed fetch (offline,
+# revoked key, non-JSON) leaves the previous cache untouched.
 #
 # OpenRouter has no short rate-limit windows. `spend` is usage_monthly (USD,
 # current UTC calendar month), always written. `monthly` is a pct only when the
@@ -36,6 +37,11 @@ CACHE_DIR="${OG_AGENT_USAGE_DIR:-}"
 [[ -n $CACHE_DIR ]] || exit 0
 AUTH="${PI_AUTH:-$HOME/.pi/agent/auth.json}"
 
+# An OAuth `/login` (pi's own login flow) stores the key it mints, a plain
+# bearer token, under `.openrouter.access` with `type: "oauth"` — there is no
+# `.key` then. Try it after `.key` and before the env, mirroring pi's own
+# credential precedence.
+#
 # pi's key syntax: `!cmd` runs a shell command (never executed here — a
 # background status tick must not run commands from a config file), `$VAR` /
 # `${VAR}` interpolates the environment, `$$` / `$!` escape a literal leading
@@ -61,6 +67,7 @@ case "$raw" in
 	;;
 *) token="$raw" ;;
 esac
+[[ -n $token ]] || token=$(jq -r '.openrouter.access // empty' "$AUTH" 2>/dev/null)
 [[ -n $token ]] || token="${OPENROUTER_API_KEY:-}"
 [[ -n $token ]] || exit 0
 
