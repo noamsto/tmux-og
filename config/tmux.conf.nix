@@ -417,12 +417,21 @@
   enrich-github-bin = mkScriptEnrich "tmux-issue-stamp-github";
   enrich-pr-bin = mkScriptEnrich "tmux-pr-enrich";
 
-  # Agent-usage providers are plain scripts; only the dispatcher needs
+  # Agent-usage providers are plain scripts except cursor, which pins its own
+  # tools via @cursor_path@ (its --print runs outside tmux); the dispatcher needs
   # substitution (lib-log, the agent-command gate list, provider store paths —
   # the daemonized pass must not resolve providers against the tmux server's
   # frozen PATH).
   agent-usage-provider-bins =
-    lib.genAttrs ["claude" "codex" "cursor" "pi"] (p: mkScript "tmux-agent-usage-${p}");
+    lib.genAttrs ["claude" "codex" "pi"] (p: mkScript "tmux-agent-usage-${p}")
+    // {
+      cursor = pkgs.writeShellScriptBin "tmux-agent-usage-cursor" (
+        builtins.replaceStrings
+        ["@cursor_path@"]
+        [(lib.makeBinPath [pkgs.jq pkgs.curl pkgs.coreutils])]
+        (builtins.readFile ../scripts/tmux-agent-usage-cursor.sh)
+      );
+    };
 
   mkScriptAgentUsage = name:
     pkgs.writeShellScriptBin name (
@@ -753,8 +762,9 @@
 
   # Scripts reached only by store-path interpolation from this file, a parent
   # script, or a respawn-pane argv -- no human runs one standalone, so none
-  # gets a verb. Recorded here, not just in the design doc, so ogPartitionOk
-  # can check the partition.
+  # gets a verb (tmux-agent-usage-cursor --print is for other tools, not
+  # humans). Recorded here, not just in the design doc, so ogPartitionOk can
+  # check the partition.
   ogInternal = [
     "tmux-agent-repaint"
     "tmux-agent-usage"

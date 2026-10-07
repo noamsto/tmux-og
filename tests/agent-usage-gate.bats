@@ -203,6 +203,13 @@ claude'
 	[ "$(cat "$USAGE_LOG")" = "claude" ]
 }
 
+@test "tick-run: an open cursor-agent with no auth.json still runs the cursor provider" {
+	export FAKE_PANES='cursor-agent'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$USAGE_LOG")" = "cursor" ]
+}
+
 @test "tick-run: an open pi with an auth.json runs the pi provider" {
 	export FAKE_PANES='pi'
 	mkdir -p "$HOME/.pi/agent"

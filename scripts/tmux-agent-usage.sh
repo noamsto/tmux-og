@@ -143,7 +143,9 @@ pids+=($!)
 	"@usage_codex@"
 ) &
 pids+=($!)
-[[ -f $HOME/.config/cursor/auth.json && -v OPEN[cursor-agent] ]] && (
+# No auth.json test: the token may live in the macOS keychain or under
+# $XDG_CONFIG_HOME, and the provider exits 0 silently when it finds none.
+[[ -v OPEN[cursor-agent] ]] && (
 	acquire_lock "$CACHE_DIR/.lock-cursor" || exit 0
 	"@usage_cursor@"
 ) &

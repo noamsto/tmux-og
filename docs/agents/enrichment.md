@@ -132,7 +132,7 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `picker/statusline/usage.go:20`) and the segment simply skips the `$`
   figure for that agent; when present it renders unconditionally, no
   threshold. `spend.limit_usd` is the provider's own known spending cap in
-  USD — cursor's `GetHardLimit.hardLimit` (cents ÷ 100), pi's OpenRouter
+  USD — cursor's usage-summary `individualUsage.overall.limit` (cents ÷ 100), pi's OpenRouter
   `/api/v1/key` `limit` (already USD) — and the key is omitted, not nulled,
   when no cap is set; present, the renderer shows `$<spend>/$<limit>`.
   `spend.label` renders as a trailing suffix (e.g. `$1.20 mo`) for every
@@ -154,7 +154,15 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
 - **Auth is the CLIs' own.** Each provider extracts the token from the CLI's
   credential file and hits the same endpoint the CLI's own usage view uses.
   No configured API keys (pi is the one exception — see below); an
-  expired/absent token just skips the refresh.
+  expired/absent token just skips the refresh. Cursor's token is Linux
+  `${XDG_CONFIG_HOME:-~/.config}/cursor/auth.json` or the macOS keychain item
+  `cursor-access-token`; the account comes from `cli-config.json` (else the
+  token's JWT `sub`), and the call authenticates with
+  `Cookie: WorkosCursorSessionToken=<account>::<token>` passed through
+  `curl -K -` on stdin so it never reaches argv. The dispatcher forks cursor
+  on an open `cursor-agent` pane alone — no `auth.json` presence test, since
+  the token may be in the keychain or under `$XDG_CONFIG_HOME`, and the
+  provider exits 0 silently when it finds none. Do not restore a file gate.
 - **The gate is per-agent, not global.** Go's `openAgents()`
   (`picker/statusline/usage.go:68`) and bash's `OPEN` assoc array
   (`scripts/tmux-agent-usage.sh`'s `scan_open_agents`) each do their own
@@ -180,14 +188,53 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
 - **Reset countdowns**: providers pass each window's reset time through as
   `reset_at`; the renderer appends `↻<dur>` only to windows at ≥90% — the
   moment the reset starts to matter.
-- **Cursor has no short windows.** Its DashboardService exposes only the
-  monthly spend hard limit (`GetHardLimit`, cents) vs the billing cycle's
-  aggregated usage-based cost (`GetAggregatedUsageEvents.totalCostCents`),
-  plus `percentOfBurstUsed` (rendered as a `burst` window when nonzero).
-  Fully pooled plans sit at 0% and stay hidden below the monthly threshold.
-  `totalCostCents` is also written as `spend` (USD, billing cycle),
-  unconditionally — no hard limit needed for the dollar figure to show; a
-  set hard limit adds `spend.limit_usd`.
+- **Cursor reads the dashboard's usage-summary.** `GET
+  https://cursor.com/api/usage-summary` is the dashboard's own endpoint; the
+  legacy DashboardService figure counted on-demand usage only and read 0% on
+  team/enterprise plans (#944). Monthly pct = `individualUsage.overall`
+  used/limit (team shape), else max(`autoPercentUsed`, `apiPercentUsed`) of
+  `individualUsage.plan`; `reset_at` = billing-cycle end. `spend` = overall
+  used/limit in USD, team shape only — the individual shape carries no
+  dollars, so no `spend`. A team plan with `overall.used` but no individual
+  limit (and not unlimited) has no percentage: no `monthly`, and `spend`
+  without `limit_usd`. `isUnlimited` → no `monthly`, and `spend` without
+  `limit_usd`. There is no burst window anymore. Renderer decision: `spend`
+  renders unconditionally, so `$406/$1050` shows below the monthly threshold;
+  the `%` stays threshold-gated because below it the dollar pair already
+  conveys fullness and at/above it the colour-graded `%` adds the warning.
+  Cursor's `$used/$limit` form is unchanged, so
+  `TestUsageSegmentCursorRenderUnchanged` stands and
+  `TestUsageSegmentCursorDollarsBelowThreshold` pins the enterprise case.
+- **`tmux-agent-usage-cursor --print` — public contract.** One-shot: needs no
+  `OG_AGENT_USAGE_DIR`, writes no cache, applies no agent-open gate. Prints
+  one JSON object plus newline and exits 0; on failure stdout is empty and
+  the exit code is 2 no token, 3 no account, 4 fetch failed, 5 unrecognised
+  response. Fields:
+  - `plan_type` — `membershipType` (string|null); `unlimited` — bool.
+  - `cycle.starts_at` / `cycle.resets_at` — epoch seconds; both set or both
+    null.
+  - `plan.used_pct` — raw unrounded percent, null when `unlimited` or when
+    the plan carries dollars but no individual limit; `plan.used_usd` /
+    `plan.limit_usd` — USD, null on the individual shape; `limit_usd` is null
+    unless > 0.
+  - `pools.auto_pct` / `pools.api_pct` — raw percents, null when absent.
+  - `on_demand[]` — `{scope: "individual"|"team", enabled, used_usd (USD|null),
+    limit_usd (USD; null = uncapped)}`: one entry per pool the response
+    carries (0-2), enabled or not. Select by `scope`, never by index. A
+    numeric `limit_usd` <= 0 is passed through, so test `limit_usd > 0`
+    before comparing.
+
+  A consumer derives `credits_cover` = any enabled pool with `limit_usd` null,
+  or `limit_usd > 0` and `used_usd` (null as 0) `< limit_usd`; `limit_reached`
+  = max of `plan.used_pct` and the pools >= 100, or an enabled pool with
+  `limit_usd > 0` and `used_usd >= limit_usd`. The script is internal to the
+  tmux wrapper (in `ogInternal`, no `og` verb) and pins jq/curl/coreutils
+  itself, so it runs from any PATH (macOS `security` comes from the system).
+  Inside a tmux-og pane call it by name; outside, resolve it per call, since
+  store paths change every generation, e.g. `tmux run-shell 'command -v
+  tmux-agent-usage-cursor'` against the running server (the wrapper prefixes
+  its bin dir onto PATH for the server it starts). It is a public interface —
+  changes are additive only.
 - **pi is OpenRouter-keyed, not pi's own token.** `tmux-agent-usage-pi.sh`
   reads `~/.pi/agent/auth.json`'s `.openrouter.key` and hits OpenRouter's
   `/api/v1/key` endpoint. pi's own key value supports a small syntax —
