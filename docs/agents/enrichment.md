@@ -237,7 +237,12 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   changes are additive only.
 - **pi is OpenRouter-keyed, not pi's own token.** `tmux-agent-usage-pi.sh`
   reads `~/.pi/agent/auth.json`'s `.openrouter.key` and hits OpenRouter's
-  `/api/v1/key` endpoint. pi's own key value supports a small syntax —
+  `/api/v1/key` endpoint. When there is no `.key` — pi's own `/login` writes
+  an OAuth credential (`type: "oauth"` plus `.access`/`.refresh`/`.expires`)
+  and no `.key` — the provider falls back to the OAuth-minted
+  `.openrouter.access` bearer token before `$OPENROUTER_API_KEY`, so a host
+  authed only through `/login` still reports spend. pi's own key value
+  supports a small syntax —
   `!cmd` (run a shell command), `$VAR`/`${VAR}` (env interpolation), `$$`/`$!`
   (escape a literal leading `$`/`!`), anything else literal — and the
   provider implements only the parts safe for a background status tick:
