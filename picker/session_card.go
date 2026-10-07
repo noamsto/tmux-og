@@ -245,7 +245,6 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 	const dim = "\033[2m"
 	clamp := func(s string) string { return truncateVisibleWidth(s, width) }
 
-	// Header.
 	path := sanitizeStatusText(c.path)
 	if home := os.Getenv("HOME"); home != "" && (path == home || strings.HasPrefix(path, home+"/")) {
 		path = "~" + path[len(home):]
@@ -264,7 +263,6 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 	}
 	lines := []string{clamp(head + reset), ""}
 
-	// Cells.
 	type cardLine struct {
 		idx, marker, name, icons, branch, badge, age, detail string
 		iconDW, badgeDW                                      int
@@ -374,7 +372,6 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		}
 	}
 
-	// Active-pane tail.
 	label := "── active pane "
 	lines = append(lines, "", clamp(cFaint+label+strings.Repeat("─", max(0, width-iconCellWidth(label)))+reset))
 	capLines := strings.Split(stripStringEscapes(c.capture), "\n")
