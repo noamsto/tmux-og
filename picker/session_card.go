@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,15 +10,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/claudestatus"
 )
 
-// cardSep separates the chained commands' outputs in loadSessionCard's one tmux
-// invocation. Only the first two occurrences split: the capture section comes
-// last and is untrusted, so a pane that prints the separator cannot add one.
-const cardSep = "@@og-card-sep@@"
+// cardSepSeq makes each card call's separator unique. The rows carry pane paths
+// a process in any pane controls, so a fixed separator could be forged to
+// split the output early; an unpredictable one cannot.
+var cardSepSeq atomic.Uint64
+
+// newCardSep returns a separator no pane can have printed ahead of time.
+func newCardSep() string {
+	return fmt.Sprintf("@@og-card-%d-%d-%d@@", os.Getpid(), time.Now().UnixNano(), cardSepSeq.Add(1))
+}
 
 // cardRowFields is windowsFormat's 38 fields plus window_activity and pane_id.
 // The count is exact so a '|' in a path or name fails the row closed, like the
@@ -25,15 +33,16 @@ const cardSep = "@@og-card-sep@@"
 const cardRowFields = 40
 
 // sessionCardArgv builds the card's single tmux invocation: the session's pane
-// rows, its path, then a capture of capTarget. sess is addressed with the `=`
-// exact-match prefix.
-func sessionCardArgv(sess, capTarget string) []string {
+// rows, its path, then a capture of capTarget. sess is addressed `=name:`: a
+// bare `=name` falls back to a window/pane match, so a vanished numeric-named
+// session would list another session's panes instead of failing the chain.
+func sessionCardArgv(sess, capTarget, sep string) []string {
 	return []string{
-		"list-panes", "-s", "-t", "=" + sess, "-f", notModalFilter, "-F",
+		"list-panes", "-s", "-t", "=" + sess + ":", "-f", notModalFilter, "-F",
 		windowsFormat + "|#{window_activity}|#{pane_id}",
-		";", "display-message", "-p", cardSep,
-		";", "display-message", "-p", "-t", "=" + sess, "#{session_path}",
-		";", "display-message", "-p", cardSep,
+		";", "display-message", "-p", sep,
+		";", "display-message", "-p", "-t", "=" + sess + ":", "#{session_path}",
+		";", "display-message", "-p", sep,
 		";", "capture-pane", "-t", capTarget, "-p", "-e",
 	}
 }
@@ -57,18 +66,14 @@ var cardPaneIDRe = regexp.MustCompile(`^[0-9]+$`)
 
 // parseSessionCard turns sessionCardArgv's output into a card. ok is false
 // when the output is not the expected three sections or has no window rows.
-func parseSessionCard(out string) (card sessionCard, panes map[string]paneMapping, ok bool) {
-	rowsPart, rest, found := strings.Cut("\n"+out, "\n"+cardSep+"\n")
+func parseSessionCard(out, sep string) (card sessionCard, panes map[string]paneMapping, ok bool) {
+	rowsPart, rest, found := strings.Cut("\n"+out, "\n"+sep+"\n")
 	if !found {
 		return sessionCard{}, nil, false
 	}
-	pathPart, capture, found := strings.Cut(rest, "\n"+cardSep+"\n")
+	pathPart, capture, found := strings.Cut(rest, "\n"+sep+"\n")
 	if !found {
-		// An empty session path leaves "\nSEP\n" glued to the first separator.
-		pathPart, capture, found = strings.Cut("\n"+rest, "\n"+cardSep+"\n")
-		if !found {
-			return sessionCard{}, nil, false
-		}
+		return sessionCard{}, nil, false
 	}
 
 	var rows []string
@@ -76,7 +81,7 @@ func parseSessionCard(out string) (card sessionCard, panes map[string]paneMappin
 	panes = map[string]paneMapping{}
 	for line := range strings.SplitSeq(strings.TrimSpace(rowsPart), "\n") {
 		parts := strings.Split(line, "|")
-		if len(parts) != cardRowFields {
+		if len(parts) != cardRowFields || strings.ContainsRune(line, 0x1b) {
 			continue
 		}
 		idx, err := strconv.Atoi(parts[1])
@@ -150,9 +155,7 @@ func attachCardAgents(windows []cardWindow, panes map[string]paneMapping) {
 				continue
 			}
 			task := ""
-			if data, err := os.ReadFile(filepath.Join(root, "tasks", p.paneID)); err == nil { //nolint:gosec // G304: path built from a validated numeric pane id under the trusted status dir
-				task = sanitizeStatusText(string(data))
-			}
+			task = readCardTask(filepath.Join(root, "tasks", p.paneID))
 			cw.detail = agentStateLabel[state]
 			if task != "" {
 				cw.detail += " · " + task
@@ -160,6 +163,21 @@ func attachCardAgents(windows []cardWindow, panes map[string]paneMapping) {
 			break
 		}
 	}
+}
+
+// readCardTask reads a task self-report: regular files only, 4 KiB at most, so
+// a FIFO or an oversized file cannot stall or bloat the preview.
+func readCardTask(path string) string {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // G304: path built from a validated numeric pane id under the trusted status dir
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	data, _ := io.ReadAll(io.LimitReader(f, 4096))
+	return sanitizeStatusText(string(data))
 }
 
 // cardRun runs the card's tmux invocation; a test seam.
@@ -171,11 +189,15 @@ var cardRun = func(argv []string) ([]byte, error) {
 // is false when tmux failed the chain or returned no windows, and the caller
 // falls back to the plain pane capture.
 func loadSessionCard(sess, capTarget string, opts map[string]string, theme string, width, height int) (string, bool) {
-	out, err := cardRun(sessionCardArgv(sess, capTarget))
+	sep := newCardSep()
+	if capTarget == sess {
+		capTarget = "=" + sess + ":"
+	}
+	out, err := cardRun(sessionCardArgv(sess, capTarget, sep))
 	if err != nil {
 		return "", false
 	}
-	card, panes, ok := parseSessionCard(string(out))
+	card, panes, ok := parseSessionCard(string(out), sep)
 	if !ok {
 		return "", false
 	}
@@ -269,11 +291,11 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		}
 		r.branch = truncateCells(sanitizeStatusText(br), 28)
 		var badge []string
-		if id := strings.TrimSpace(sanitizeStatusText(w.labelID)); id != "" {
+		if id := truncateCells(strings.TrimSpace(sanitizeStatusText(w.labelID)), 16); id != "" {
 			badge = append(badge, cMauve+id+reset)
 			r.badgeDW += iconCellWidth(id)
 		}
-		pr := sanitizeStatusText(w.prPlain)
+		pr := truncateCells(sanitizeStatusText(w.prPlain), 14)
 		if b := colorPRBadge(pr, w.prState, w.prCheck, w.prMergeable, w.prReview, w.prAutoMerge, prCols); b != "" {
 			badge = append(badge, b)
 			r.badgeDW += iconCellWidth(strings.TrimSpace(pr))
@@ -348,7 +370,7 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		}
 		lines = append(lines, clamp(b.String()))
 		if r.detail != "" {
-			lines = append(lines, clamp(strings.Repeat(" ", idxDW+5)+cPeach+r.detail+reset))
+			lines = append(lines, clamp(strings.Repeat(" ", idxDW+3+2)+cPeach+r.detail+reset))
 		}
 	}
 

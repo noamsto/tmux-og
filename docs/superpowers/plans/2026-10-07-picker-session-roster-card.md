@@ -10,16 +10,16 @@ line, rule, tail of the active pane) instead of a bare `capture-pane`.
   (windowsArgv unchanged); add `paneID` to `agentPaneInfo`, set in
   `collectAgentPanesFrom`.
 - `picker/session_card.go` (new): `sessionCardArgv`, `parseSessionCard`,
-  `renderSessionCard` (pure), `cardAge`, `cardDetail`, `loadSessionCard`.
+  `attachCardAgents`, `renderSessionCard` (pure), `cardAge`, `loadSessionCard`.
 - `picker/tui.go`: `loadPreviewCmd` routes a local session row (session mode,
   not header, `item.session == item.target`) through the card under the same
-  `previewGate` ticket; `capture` failure keeps `(no preview available)`.
+  `previewGate` ticket; a failed card chain falls back to the plain capture.
 - `picker/session_card_test.go` (new): renderer + argv tests.
 - `docs/agents/picker.md`: describe the card.
 
 ## Steps
 
-1. **Data, one tmux call**: `list-panes -s -t =<sess> -f notModalFilter -F
+1. **Data, one tmux call**: `list-panes -s -t =<sess>: -f notModalFilter -F
    <windowsFormat>|#{window_activity}|#{pane_id}|#{session_path}` `;`
    `display-message -p <sep>` `;` `capture-pane -p -e -t selfCaptureTarget(t)`.
    Split on a line equal to the separator. The first 38 fields go to
@@ -51,3 +51,8 @@ line, rule, tail of the active pane) instead of a bare `capture-pane`.
   plain capture (today's behaviour), never an empty preview.
 - Names/detail/capture are untrusted: sanitized before any render; nothing is
   placed in a tmux format.
+
+## Revisions
+
+- Plan-critic (revise): rows are exactly 40 fields; `session_path` is its own chained section; stable detail-pane choice (lowest pane id); width/height captured at cmd build.
+- Review gate: per-call nonce separator, `=name:` targets, bounded task read.
