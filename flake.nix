@@ -278,6 +278,11 @@
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
               bats tests/agent-usage-providers.bats
+              # bats runs the raw script, so only the built bin proves the
+              # cursor provider's tool pin was substituted.
+              CUR="${tmuxConfig.script.tmux-agent-usage-cursor}/bin/tmux-agent-usage-cursor"
+              ! grep -q '@cursor_path@' "$CUR"
+              grep -q '${pkgs.jq.bin}/bin' "$CUR"
               touch $out
             '';
 

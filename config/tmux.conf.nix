@@ -417,7 +417,8 @@
   enrich-github-bin = mkScriptEnrich "tmux-issue-stamp-github";
   enrich-pr-bin = mkScriptEnrich "tmux-pr-enrich";
 
-  # Agent-usage providers are plain scripts; only the dispatcher needs
+  # Agent-usage providers are plain scripts except cursor, which pins its own
+  # tools via @cursor_path@ (its --print runs outside tmux); the dispatcher needs
   # substitution (lib-log, the agent-command gate list, provider store paths —
   # the daemonized pass must not resolve providers against the tmux server's
   # frozen PATH).
