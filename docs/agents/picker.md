@@ -63,6 +63,35 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   `groupKey` stay raw), the aggregated agent icon and `N win`; state-grouped headers are
   unchanged. Host is part of row and header search text.
 
+## Session preview card (#942)
+
+- **A local session row previews as a window roster card**, not a bare capture of its active pane: a
+  header (display name, window count, path), one line per window (index, active marker `▸` when the
+  session has more than one window, name, proc icons + agent glyph, branch, issue id + PR badge,
+  compact last-activity age), an indented second line for a blocked agent (waiting/denied/error),
+  then `── active pane ──` and the tail of the session's active pane. Window mode, the wall, remote and
+  zoxide/`createPath` rows keep their previews; a failed card chain falls back to
+  the plain capture. Code: `picker/session_card.go`, routed from `loadPreviewCmd`.
+- **One tmux invocation** (`sessionCardArgv`): `list-panes -s -t =<sess>` (`windowsFormat` + `window_activity`
+  + `pane_id`, `notModalFilter`) `;` `display-message` for `#{session_path}` `;` `capture-pane`, sections split
+  on a separator line. The separator is unique per call (`newCardSep`): the rows carry pane paths any process
+  can set, so a fixed separator could be forged to split the output early and smuggle CSI into the capture.
+  Only the first two separators split, and a row containing ESC is dropped. The per-pane
+  rows must be exactly 40 fields: a `|` in a name or path drops that row (fails closed), it never shifts
+  later fields. Rows reuse `windowsFromRows`, so the mirror substitution (`@bridge_proc`, `@bridge_*` labels,
+  no local figures) and the in-process `currentBranch` fallback are the window picker's. It runs behind the
+  same `previewGate` ticket as the capture.
+- **Agent state** comes from the same `collectAgentPanesFrom` files as the lists (with a pane map built from
+  the card's own rows, so no second `list-panes`). The detail line is the pane's `tasks/<pane_id>` self-report
+  ("what the agent is doing") prefixed with the state: claude-status records no permission/tool reason, so
+  that is the closest thing it has. The lowest pane id of the window's blocking state supplies it.
+- **Untrusted text**: every window name, branch, label, host, path and detail goes through
+  `sanitizeStatusText`; name, branch, display name and the issue/PR badge are also `truncateCells`-capped,
+  the rest are bounded by the per-line clamp. The task file is read as a regular file, 4 KiB at most. The capture through `stripStringEscapes`, and keeps the per-line
+  `\033[49m` reset. Every line is clamped with `truncateVisibleWidth`; columns are sized with
+  `iconCellWidth` (`len` only for the ASCII index/age columns). The branch column shrinks first (to 8 cells),
+  then the name (to 8), then the branch column is dropped.
+
 ## Launch
 
 - **The picker itself launches in a popup-float** (`display-popup`'s compat
