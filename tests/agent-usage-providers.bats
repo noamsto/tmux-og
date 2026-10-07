@@ -103,6 +103,14 @@ unlimited_fixture() {
 	EOF
 }
 
+nolimit_fixture() {
+	cat >"$FIXTURES/usage-summary.json" <<-'EOF'
+		{"billingCycleStart":"2026-10-01T00:00:00.000Z","billingCycleEnd":"2026-11-01T00:00:00.000Z",
+		"membershipType":"enterprise","limitType":"team","isUnlimited":false,
+		"individualUsage":{"overall":{"enabled":true,"used":5000,"limit":null}}}
+	EOF
+}
+
 # --print output with the raw used_pct rounded to 2 decimals, key-sorted.
 print_norm() { jq -cS '.plan.used_pct |= (if . == null then . else (. * 100 | round) / 100 end)' <<<"$output"; }
 
@@ -128,6 +136,11 @@ print_norm() { jq -cS '.plan.used_pct |= (if . == null then . else (. * 100 | ro
 @test "cursor: unlimited plan has no monthly and spend without a limit" {
 	cursor_setup
 	unlimited_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly "$CACHE")" = null ]
+	[ "$(jq -c .spend "$CACHE")" = '{"label":"mo","usd":50,"period":"cycle"}' ]
+	nolimit_fixture
 	run bash scripts/tmux-agent-usage-cursor.sh
 	[ "$status" -eq 0 ]
 	[ "$(jq -c .monthly "$CACHE")" = null ]
@@ -169,6 +182,10 @@ print_norm() { jq -cS '.plan.used_pct |= (if . == null then . else (. * 100 | ro
 	run bash scripts/tmux-agent-usage-cursor.sh --print
 	[ "$status" -eq 0 ]
 	[ "$(print_norm)" = "$(jq -cS . <<<'{"plan_type":"enterprise","unlimited":true,"cycle":{"starts_at":1790812800,"resets_at":1793491200},"plan":{"used_pct":null,"used_usd":50,"limit_usd":null},"pools":{"auto_pct":null,"api_pct":null},"on_demand":[]}')" ]
+	nolimit_fixture
+	run bash scripts/tmux-agent-usage-cursor.sh --print
+	[ "$status" -eq 0 ]
+	[ "$(jq -c '.plan' <<<"$output")" = '{"used_pct":null,"used_usd":50,"limit_usd":null}' ]
 	[ -z "$(find "$OG_AGENT_USAGE_DIR" -mindepth 1 2>/dev/null)" ]
 }
 
@@ -203,6 +220,24 @@ print_norm() { jq -cS '.plan.used_pct |= (if . == null then . else (. * 100 | ro
 	tok="eyJhbGciOiJub25lIn0.$payload.sig"
 	echo "{\"accessToken\":\"$tok\"}" >"$HOME/.config/cursor/auth.json"
 	export EXPECT_TOKEN=$tok EXPECT_ACCOUNT=user_jwt9
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly.pct "$CACHE")" = 38.7 ]
+}
+
+@test "cursor: XDG_CONFIG_HOME relocates the config, and .access_token is accepted" {
+	cursor_setup
+	team_fixture
+	export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg"
+	mkdir -p "$XDG_CONFIG_HOME/cursor"
+	echo '{"accessToken":"","token":"cursor-test-not-a-token"}' >"$XDG_CONFIG_HOME/cursor/auth.json"
+	cp "$HOME/.config/cursor/cli-config.json" "$XDG_CONFIG_HOME/cursor/"
+	rm -r "$HOME/.config/cursor"
+	run bash scripts/tmux-agent-usage-cursor.sh
+	[ "$status" -eq 0 ]
+	[ "$(jq -c .monthly.pct "$CACHE")" = 38.7 ]
+	echo '{"access_token":"cursor-test-not-a-token"}' >"$XDG_CONFIG_HOME/cursor/auth.json"
+	rm "$CACHE"
 	run bash scripts/tmux-agent-usage-cursor.sh
 	[ "$status" -eq 0 ]
 	[ "$(jq -c .monthly.pct "$CACHE")" = 38.7 ]

@@ -195,7 +195,9 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   used/limit (team shape), else max(`autoPercentUsed`, `apiPercentUsed`) of
   `individualUsage.plan`; `reset_at` = billing-cycle end. `spend` = overall
   used/limit in USD, team shape only — the individual shape carries no
-  dollars, so no `spend`. `isUnlimited` → no `monthly`, and `spend` without
+  dollars, so no `spend`. A team plan with `overall.used` but no individual
+  limit (and not unlimited) has no percentage: no `monthly`, and `spend`
+  without `limit_usd`. `isUnlimited` → no `monthly`, and `spend` without
   `limit_usd`. There is no burst window anymore. Renderer decision: `spend`
   renders unconditionally, so `$406/$1050` shows below the monthly threshold;
   the `%` stays threshold-gated because below it the dollar pair already
@@ -211,22 +213,28 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   - `plan_type` — `membershipType` (string|null); `unlimited` — bool.
   - `cycle.starts_at` / `cycle.resets_at` — epoch seconds; both set or both
     null.
-  - `plan.used_pct` — raw unrounded percent, null only when `unlimited`;
-    `plan.used_usd` / `plan.limit_usd` — USD, null on the individual shape;
-    `limit_usd` is null unless > 0.
+  - `plan.used_pct` — raw unrounded percent, null when `unlimited` or when
+    the plan carries dollars but no individual limit; `plan.used_usd` /
+    `plan.limit_usd` — USD, null on the individual shape; `limit_usd` is null
+    unless > 0.
   - `pools.auto_pct` / `pools.api_pct` — raw percents, null when absent.
   - `on_demand[]` — `{scope: "individual"|"team", enabled, used_usd (USD|null),
-    limit_usd (USD; null = uncapped)}`, every pool present, enabled or not. A
+    limit_usd (USD; null = uncapped)}`: one entry per pool the response
+    carries (0-2), enabled or not. Select by `scope`, never by index. A
     numeric `limit_usd` <= 0 is passed through, so test `limit_usd > 0`
     before comparing.
 
-  A consumer derives `credits_cover` = any enabled pool with `limit_usd` null
-  or `used_usd < limit_usd`; `limit_reached` = max of `plan.used_pct` and the
-  pools >= 100, or an enabled pool with `limit_usd > 0` and
-  `used_usd >= limit_usd`. The script is internal to the tmux wrapper (in
-  `ogInternal`, no `og` verb): on PATH inside tmux panes via the wrapper's bin
-  dir, outside tmux use its store path. It is a public interface — changes
-  are additive only.
+  A consumer derives `credits_cover` = any enabled pool with `limit_usd` null,
+  or `limit_usd > 0` and `used_usd` (null as 0) `< limit_usd`; `limit_reached`
+  = max of `plan.used_pct` and the pools >= 100, or an enabled pool with
+  `limit_usd > 0` and `used_usd >= limit_usd`. The script is internal to the
+  tmux wrapper (in `ogInternal`, no `og` verb) and pins jq/curl/coreutils
+  itself, so it runs from any PATH (macOS `security` comes from the system).
+  Inside a tmux-og pane call it by name; outside, resolve it per call, since
+  store paths change every generation, e.g. `tmux run-shell 'command -v
+  tmux-agent-usage-cursor'` against the running server (the wrapper prefixes
+  its bin dir onto PATH for the server it starts). It is a public interface —
+  changes are additive only.
 - **pi is OpenRouter-keyed, not pi's own token.** `tmux-agent-usage-pi.sh`
   reads `~/.pi/agent/auth.json`'s `.openrouter.key` and hits OpenRouter's
   `/api/v1/key` endpoint. pi's own key value supports a small syntax —

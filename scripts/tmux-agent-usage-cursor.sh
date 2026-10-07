@@ -15,6 +15,7 @@
 # config on stdin and jq only on stdin, and every call that sees auth state
 # discards stderr (jq errors can echo string values).
 set -uo pipefail
+PATH="@cursor_path@:$PATH"
 
 cursor_usage() {
 	local conf token account resp
@@ -44,7 +45,9 @@ header = \"Cookie: WorkosCursorSessionToken=$account::$token\"") || return 4
 
 	# The team shape reports individualUsage.overall used/limit, the individual
 	# shape per-pool percentages (max of the two). The billing-cycle bounds are
-	# both kept or both dropped. A numeric on-demand limit <= 0 passes through.
+	# both kept or both dropped. A team plan without an individual limit has
+	# dollars but no percentage (used_pct null). A numeric on-demand limit <= 0
+	# passes through.
 	jq -ce '
 		def toepoch:
 			if type == "number" then (if . > 1e12 then . / 1000 else . end) | floor
@@ -65,7 +68,7 @@ header = \"Cookie: WorkosCursorSessionToken=$account::$token\"") || return 4
 		| ([.individualUsage.plan | objects | .autoPercentUsed | numbers][0]) as $auto
 		| ([.individualUsage.plan | objects | .apiPercentUsed | numbers][0]) as $api
 		| (if $overall != null then $overall else ([$auto, $api | numbers] | max) end) as $pct
-		| if $pct == null and ($unlimited | not) then error("no usable percentage") else . end
+		| if $pct == null and ($unlimited | not) and (($o.used | type) != "number") then error("no usable percentage") else . end
 		| (.billingCycleStart | toepoch) as $s
 		| (.billingCycleEnd | toepoch) as $e
 		| (if $s != null and $e != null and $e > $s then [$s, $e] else [null, null] end) as [$starts, $resets]

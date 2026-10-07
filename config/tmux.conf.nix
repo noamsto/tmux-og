@@ -422,7 +422,18 @@
   # the daemonized pass must not resolve providers against the tmux server's
   # frozen PATH).
   agent-usage-provider-bins =
-    lib.genAttrs ["claude" "codex" "cursor" "pi"] (p: mkScript "tmux-agent-usage-${p}");
+    lib.genAttrs ["claude" "codex" "pi"] (p: mkScript "tmux-agent-usage-${p}")
+    // {
+      # `--print` is called by tools outside tmux, so jq/curl/timeout can't come
+      # from the wrapper's PATH; macOS `security`/system tools stay on the
+      # inherited PATH.
+      cursor = pkgs.writeShellScriptBin "tmux-agent-usage-cursor" (
+        builtins.replaceStrings
+        ["@cursor_path@"]
+        [(lib.makeBinPath [pkgs.jq pkgs.curl pkgs.coreutils])]
+        (builtins.readFile ../scripts/tmux-agent-usage-cursor.sh)
+      );
+    };
 
   mkScriptAgentUsage = name:
     pkgs.writeShellScriptBin name (
