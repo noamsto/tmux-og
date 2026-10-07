@@ -1,9 +1,12 @@
 #!/usr/bin/env bats
 
-# Guards the UserPromptSubmit `task` hook in claude-plugin/scripts/status.sh:
-# Claude Code re-injects non-user text (background-task notices, system
-# reminders, command envelopes) wrapped in a hyphenated XML-ish tag. Those must
-# NOT become the task label / window-name seed; real prompts must.
+# Guards claude-plugin/scripts/status.sh:
+# - UserPromptSubmit `task` hook: Claude Code re-injects non-user text
+#   (background-task notices, system reminders, command envelopes) wrapped in a
+#   hyphenated XML-ish tag. Those must NOT become the task label / window-name
+#   seed; real prompts must.
+# - Stop hook: a turn that parks on an in-flight background subagent must keep
+#   `processing` rather than writing `done`.
 
 load helper
 
@@ -20,10 +23,23 @@ setup() {
 	# shellcheck disable=SC2329 # invoked indirectly by the child `bash status.sh` via export -f
 	claude-status-update() { printf '%s\n' "$*" >>"$CALLS"; }
 	export -f claude-status-update
+	# The state path ends in `exec claude-status-update …`; bash's exec does not
+	# resolve shell functions, so the child would error out. Override the builtin
+	# (exported) and record the final argv the same way.
+	# shellcheck disable=SC2329 # invoked indirectly by the child `bash status.sh` via export -f
+	exec() {
+		shift
+		printf '%s\n' "$*" >>"$CALLS"
+	}
+	export -f exec
 }
 
 run_task() { # JSON prompt object on stdin
 	printf '%s' "$1" | bash "$STATUS" task
+}
+
+run_state() { # state on argv, hook payload on stdin
+	printf '%s' "$2" | bash "$STATUS" "$1"
 }
 
 @test "task: <task-notification> envelope is skipped" {
@@ -59,4 +75,34 @@ run_task() { # JSON prompt object on stdin
 @test "task: an opening <tag> with no hyphen is NOT skipped" {
 	run_task '{"prompt":"<div> render the component"}'
 	grep -q '^task set ' "$CALLS"
+}
+
+@test "stop: an in-flight background subagent keeps processing" {
+	run_state "done" '{"hook_event_name":"Stop","background_tasks":[{"id":"a","type":"subagent","status":"running","agent_type":"Explore"}]}'
+	grep -qx 'processing' "$CALLS"
+}
+
+@test "stop: a background shell alone stays done" {
+	run_state "done" '{"hook_event_name":"Stop","background_tasks":[{"id":"a","type":"shell","status":"running","command":"npm run dev"}]}'
+	grep -qx 'done' "$CALLS"
+}
+
+@test "stop: empty background_tasks stays done" {
+	run_state "done" '{"hook_event_name":"Stop","background_tasks":[]}'
+	grep -qx 'done' "$CALLS"
+}
+
+@test "stop: no background_tasks key stays done" {
+	run_state "done" '{"hook_event_name":"Stop"}'
+	grep -qx 'done' "$CALLS"
+}
+
+@test "stop: transcript is still forwarded when a subagent keeps processing" {
+	run_state "done" '{"hook_event_name":"Stop","transcript_path":"/tmp/t.jsonl","background_tasks":[{"id":"a","type":"subagent","status":"running"}]}'
+	grep -qx 'processing --transcript /tmp/t.jsonl' "$CALLS"
+}
+
+@test "stop: a non-done state with a background subagent is untouched" {
+	run_state waiting '{"hook_event_name":"Notification","background_tasks":[{"id":"a","type":"subagent","status":"running"}]}'
+	grep -qx 'waiting' "$CALLS"
 }

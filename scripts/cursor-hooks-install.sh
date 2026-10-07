@@ -52,7 +52,7 @@ merged=$(jq -n --argjson existing "$existing" --arg wrapper "$wrapper" --arg mar
 			entry("processing"; 15)
 		])
 		| .postToolUseFailure = ((.postToolUseFailure // []) + [
-			entry("error"; 15)
+			entry("processing"; 15)
 		])
 		| .preCompact = ((.preCompact // []) + [
 			entry("compacting"; 15)
