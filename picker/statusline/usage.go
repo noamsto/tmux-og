@@ -212,6 +212,29 @@ func usageResetSuffix(w usageWindow, now int64) string {
 	}
 }
 
+// usageMultiDay reports a window of a day or longer by its label ("7d", "wk");
+// the 5h/burst windows are never multi-day.
+func usageMultiDay(label string) bool {
+	if label == "wk" {
+		return true
+	}
+	n, ok := strings.CutSuffix(label, "d")
+	return ok && n != "" && n != "0" && strings.Trim(n, "0123456789") == ""
+}
+
+// usageClampToMonthly caps a multi-day window's reset at the provider's own
+// monthly reset: a billing-month rollover clears the window too, so the earlier
+// of the two is when it really resets. The monthly time is the provider's, only
+// applied when present, in the future and earlier. Done here so the local and
+// bridge paths share it; the cache keeps the raw monthly reset.
+func usageClampToMonthly(w usageWindow, monthly *usageWindow, now int64) usageWindow {
+	if monthly != nil && usageMultiDay(w.Label) &&
+		w.ResetAt > 0 && monthly.ResetAt > now && monthly.ResetAt < w.ResetAt {
+		w.ResetAt = monthly.ResetAt
+	}
+	return w
+}
+
 // usageDollars keeps cents only under $10, where they are still significant.
 func usageDollars(v float64) string {
 	if v < 10 {
@@ -258,7 +281,7 @@ func usageSegment(a args, caches map[string]usageCache, open map[string]bool, no
 		}
 		var parts []string
 		for _, w := range c.Windows {
-			parts = append(parts, render(w))
+			parts = append(parts, render(usageClampToMonthly(w, c.Monthly, now)))
 		}
 		if c.Monthly != nil && c.Monthly.Pct >= float64(a.usageMonthlyThreshold) {
 			parts = append(parts, render(*c.Monthly))
