@@ -202,9 +202,15 @@ pane_agent_absent() { [ -z "$(t display-message -p -t "$1" '#{@og_pane_agent}')"
 	# gate reading a plain shell as an agent.
 	cp -L "$(command -v bash)" "$BATS_TEST_TMPDIR/claude"
 	chmod +x "$BATS_TEST_TMPDIR/claude"
+	# Marker-driven stop, not a fixed child lifetime: the test clears the agent
+	# only after it has observed the set, so the 5s poll period and a loaded CI
+	# box cannot race the assertion. `sleep` is a child of the claude copy, whose
+	# own comm stays `claude` (a builtin-only body would exit instead).
+	local stop="$BATS_TEST_TMPDIR/wrap-stop"
+	rm -f "$stop"
 	cat >"$BATS_TEST_TMPDIR/wrap" <<-EOF
 		#!/bin/sh
-		"$BATS_TEST_TMPDIR/claude" -c 'read -t 6 x'
+		"$BATS_TEST_TMPDIR/claude" -c 'while [ ! -e "$stop" ]; do sleep 0.5; done'
 		read x
 	EOF
 	chmod +x "$BATS_TEST_TMPDIR/wrap"
@@ -217,10 +223,12 @@ pane_agent_absent() { [ -z "$(t display-message -p -t "$1" '#{@og_pane_agent}')"
 	pane=$(t list-panes -t s:98 -F '#{pane_id}')
 	# The wrapper premise: the foreground command is the shell, not the agent.
 	[[ $(t display-message -p -t "$pane" '#{pane_current_command}') != claude ]]
-	# A pass lands within one monitor period, before the 6s child exits.
+	# A pass lands within one monitor period; the child stays alive until we
+	# stop it below.
 	wait_for 20 pane_agent_is "$pane" claude
-	# The child is gone by now and the shell remains: the stamp must clear.
-	wait_for 30 pane_agent_absent "$pane"
+	# Stop the agent, keep the shell: the stamp must clear.
+	touch "$stop"
+	wait_for 20 pane_agent_absent "$pane"
 }
 
 @test "upstream assumption: a status-format #() job never expands for a control-mode client, only for a real one" {
