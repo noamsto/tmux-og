@@ -506,8 +506,8 @@ func TestRemoteListSessionsCmdFishSafe(t *testing.T) {
 	if !strings.Contains(remoteListSessionsCmd, "env TMUX_TMPDIR=") {
 		t.Fatalf("probe should set TMUX_TMPDIR via env(1): %q", remoteListSessionsCmd)
 	}
-	if !strings.Contains(remoteListSessionsCmd, "list-sessions -F 'S|#{session_id}|#{session_name}'") {
-		t.Fatalf("probe should list sessions with their ids: %q", remoteListSessionsCmd)
+	if !strings.Contains(remoteListSessionsCmd, "list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}'") {
+		t.Fatalf("probe should list sessions with their ids and created: %q", remoteListSessionsCmd)
 	}
 	// macOS remotes keep their server at tmux's default /tmp/tmux-<uid>, which
 	// tmux derives by appending tmux-<uid> to $TMUX_TMPDIR — so the fallback
@@ -827,7 +827,7 @@ func TestRemoteSessionsForHostNewStates(t *testing.T) {
 }
 
 func TestParseRemoteProbeOutput(t *testing.T) {
-	stdout := "abc123\nnoams\nS|$0|mono\nS|$4|x\\';id;#\n"
+	stdout := "abc123\nnoams\nS|$0|1700000000|mono\nS|$4|1700000001|x\\';id;#\n"
 	got := parseRemoteProbeOutput(stdout)
 	if got.Identity.MachineID != "abc123" || got.Identity.User != "noams" {
 		t.Fatalf("identity = %+v", got.Identity)
@@ -839,6 +839,9 @@ func TestParseRemoteProbeOutput(t *testing.T) {
 	if got.SessionIDs["mono"] != "$0" || got.SessionIDs[hostile] != "$4" || len(got.SessionIDs) != 2 {
 		t.Fatalf("SessionIDs = %v", got.SessionIDs)
 	}
+	if got.SessionCreated["mono"] != "1700000000" || got.SessionCreated[hostile] != "1700000001" || len(got.SessionCreated) != 2 {
+		t.Fatalf("SessionCreated = %v", got.SessionCreated)
+	}
 }
 
 // A names-only line, a login greeting and a malformed S line are not sessions.
@@ -846,6 +849,16 @@ func TestParseRemoteProbeOutputRejectsUnidentified(t *testing.T) {
 	got := parseRemoteProbeOutput("abc123\nnoams\nmono\nWelcome to lab\nS|bad|n\n")
 	if len(got.Sessions) != 0 || len(got.SessionIDs) != 0 {
 		t.Fatalf("sessions = %v ids = %v, want none", got.Sessions, got.SessionIDs)
+	}
+}
+
+// An S line whose created field is not digits (an old remote tmux) still lists
+// the session: losing the row would be worse than refusing its kill. The kill
+// validation refuses it with errRemoteKillNoID.
+func TestParseRemoteProbeOutputKeepsNonDigitCreated(t *testing.T) {
+	got := parseRemoteProbeOutput("abc123\nnoams\nS|$0||mono\nS|$1|abc|web\n")
+	if len(got.Sessions) != 2 || got.SessionCreated["mono"] != "" || got.SessionCreated["web"] != "abc" {
+		t.Fatalf("sessions = %v created = %v", got.Sessions, got.SessionCreated)
 	}
 }
 

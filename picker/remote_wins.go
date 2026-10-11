@@ -11,20 +11,23 @@ import (
 
 // remoteWindow is one window of a remote tmux session. Session is the raw name
 // the launcher's argv needs; ID and SessionID are tmux's @N and $N, which the
-// kill targets instead of any name.
+// kill targets instead of any name. SessionCreated is the owning session's
+// #{session_created}, the kill guard's comparison value (#920).
 type remoteWindow struct {
-	Session   string `json:"session"`
-	SessionID string `json:"session_id"`
-	ID        string `json:"id"`
-	Index     int    `json:"index"`
-	Name      string `json:"name"`
+	Session        string `json:"session"`
+	SessionID      string `json:"session_id"`
+	ID             string `json:"id"`
+	Index          int    `json:"index"`
+	Name           string `json:"name"`
+	SessionCreated string `json:"session_created,omitempty"`
 }
 
 // remoteListWindowsBody lists sessions and every window in one chained tmux
 // command. Each free-text field sits last on its own line kind (S or W), so a
-// name may hold `|`; the window line joins its session by session_id. `\;` is
-// a literal `;` argument under both fish and bash.
-var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`)
+// name may hold `|`; the window line joins its session by session_id, and the S
+// line carries #{session_created} for the same kill guard the session probe
+// uses (#920). `\;` is a literal `;` argument under both fish and bash.
+var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`)
 
 var remoteListWindowsCmd = remoteIdentityPreamble + `; ` + remoteListWindowsBody
 
@@ -73,20 +76,29 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 		return res
 	}
 	names := make(map[string]string)
+	created := make(map[string]string)
 	for _, line := range lines[2:] {
 		line = strings.TrimSuffix(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "S|"):
-			f := strings.SplitN(line, "|", 3)
-			if len(f) != 3 || !isTmuxID(f[1], '$') || f[2] == "" {
+			f := strings.SplitN(line, "|", 4)
+			if len(f) != 4 || !isTmuxID(f[1], '$') || f[3] == "" {
 				continue
 			}
-			names[f[1]] = f[2]
-			res.Sessions = append(res.Sessions, f[2])
+			// f[2] (session_created) is kept even when it is not digits — an
+			// old remote tmux must still list its sessions; the kill validation
+			// refuses a non-digits value instead of losing the row.
+			names[f[1]] = f[3]
+			created[f[1]] = f[2]
+			res.Sessions = append(res.Sessions, f[3])
 			if res.SessionIDs == nil {
 				res.SessionIDs = make(map[string]string)
 			}
-			res.SessionIDs[f[2]] = f[1]
+			res.SessionIDs[f[3]] = f[1]
+			if res.SessionCreated == nil {
+				res.SessionCreated = make(map[string]string)
+			}
+			res.SessionCreated[f[3]] = f[2]
 		case strings.HasPrefix(line, "W|"):
 			f := strings.SplitN(line, "|", 5)
 			if len(f) != 5 || !isTmuxID(f[1], '$') || !isTmuxID(f[2], '@') || !isDigits(f[3]) {
@@ -100,7 +112,7 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 			if err != nil {
 				continue
 			}
-			res.Windows = append(res.Windows, remoteWindow{Session: sess, SessionID: f[1], ID: f[2], Index: idx, Name: f[4]})
+			res.Windows = append(res.Windows, remoteWindow{Session: sess, SessionID: f[1], ID: f[2], Index: idx, Name: f[4], SessionCreated: created[f[1]]})
 		}
 	}
 	return res
@@ -173,17 +185,22 @@ func forgetRemoteSessionWindowsCache(host, sess string) {
 // only on the server the probe would list. Both ids are probe-validated ($N,
 // @N), so no remote name reaches the login shell; `$sid:@id` resolves only when
 // that window is linked into that session, so a moved or unknown window fails
-// (exit 1, the gone class) instead of killing another one.
-func remoteKillWindowBody(sessionID, id string) string {
-	return remoteKillBody("kill-window", sessionID+":"+id)
+// (exit 1, the gone class) instead of killing another one. created is the
+// probe's #{session_created} for $sid: an @N is not reused within one server
+// lifetime, so a renumbered $sid is the only retargeting hazard and the
+// session-scoped check covers it (#920).
+func remoteKillWindowBody(sessionID, id, created string) string {
+	return remoteKillBody("kill-window", sessionID+":"+id, created)
 }
 
 // sshKillRemoteWindowCtx kills window id of session sessionID on host over ssh.
-func sshKillRemoteWindowCtx(ctx context.Context, host, sessionID, id string) error {
-	if !isTmuxID(sessionID, '$') || !isTmuxID(id, '@') {
+// created is the probe's #{session_created} for sessionID, checked by the kill
+// script before it acts.
+func sshKillRemoteWindowCtx(ctx context.Context, host, sessionID, id, created string) error {
+	if !isTmuxID(sessionID, '$') || !isTmuxID(id, '@') || !isDigits(created) {
 		return errRemoteKillNoID
 	}
-	return sshKillCtx(ctx, host, remoteKillWindowBody(sessionID, id))
+	return sshKillCtx(ctx, host, remoteKillWindowBody(sessionID, id, created))
 }
 
 // remoteWindowRowItem renders one remote window as a tree child of its host:
@@ -209,19 +226,20 @@ func remoteWindowRowItem(host string, w remoteWindow, note, cHost, cDim string, 
 		label += cDim + "  " + note + reset
 	}
 	return listItem{
-		isRemoteRow:       true,
-		target:            "remote:" + host + ":" + w.Session + ":" + w.ID,
-		remoteHost:        host,
-		remoteSess:        w.Session,
-		remoteWindowID:    w.ID,
-		remoteWindowIndex: w.Index,
-		remoteSessionID:   w.SessionID,
-		remoteWindowName:  name,
-		display:           cHost + remoteTreeMid + reset + " " + label,
-		displayEnd:        cHost + remoteTreeEnd + reset + " " + label,
-		plain:             remoteTreeMid + " " + plain,
-		plainEnd:          remoteTreeEnd + " " + plain,
-		searchText:        host + "/" + fullSess + ":" + idx + " " + host + " " + fullSess + " " + fullName,
+		isRemoteRow:          true,
+		target:               "remote:" + host + ":" + w.Session + ":" + w.ID,
+		remoteHost:           host,
+		remoteSess:           w.Session,
+		remoteWindowID:       w.ID,
+		remoteWindowIndex:    w.Index,
+		remoteSessionID:      w.SessionID,
+		remoteSessionCreated: w.SessionCreated,
+		remoteWindowName:     name,
+		display:              cHost + remoteTreeMid + reset + " " + label,
+		displayEnd:           cHost + remoteTreeEnd + reset + " " + label,
+		plain:                remoteTreeMid + " " + plain,
+		plainEnd:             remoteTreeEnd + " " + plain,
+		searchText:           host + "/" + fullSess + ":" + idx + " " + host + " " + fullSess + " " + fullName,
 	}
 }
 

@@ -16,9 +16,9 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 		"machine-id-1",
 		"noams",
 		"Welcome to fish, the friendly interactive shell",
-		"S|$1|api",
-		"S|$2|web",
-		"S|$3|",
+		"S|$1|1700000000|api",
+		"S|$2|1700000001|web",
+		"S|$3|1700000002|",
 		"W|$1|@3|1|server",
 		"W|$1|@4|2|logs|with|pipes",
 		"W|$2|@7|1|vite",
@@ -40,10 +40,13 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 	if want := map[string]string{"api": "$1", "web": "$2"}; !reflect.DeepEqual(got.SessionIDs, want) {
 		t.Errorf("SessionIDs = %v, want %v", got.SessionIDs, want)
 	}
+	if want := map[string]string{"api": "1700000000", "web": "1700000001"}; !reflect.DeepEqual(got.SessionCreated, want) {
+		t.Errorf("SessionCreated = %v, want %v", got.SessionCreated, want)
+	}
 	want := []remoteWindow{
-		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
-		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs|with|pipes"},
-		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite"},
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server", SessionCreated: "1700000000"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs|with|pipes", SessionCreated: "1700000000"},
+		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite", SessionCreated: "1700000001"},
 	}
 	if !reflect.DeepEqual(got.Windows, want) {
 		t.Errorf("windows = %+v, want %+v", got.Windows, want)
@@ -55,7 +58,7 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 func TestParseRemoteWindowsOutputKeepsRawNames(t *testing.T) {
 	sess := "  s\x1b[31m\x07 "
 	win := " w\u202e\x1b[0m "
-	out := "id\nuser\nS|$1|" + sess + "\nW|$1|@1|1|" + win + "\r\n"
+	out := "id\nuser\nS|$1|1700000000|" + sess + "\nW|$1|@1|1|" + win + "\r\n"
 
 	got := parseRemoteWindowsOutput(out)
 
@@ -97,7 +100,7 @@ func TestRemoteListWindowsCmdFishSafe(t *testing.T) {
 	if got := strings.Count(cmd, "env TMUX_TMPDIR="); got != 2 {
 		t.Fatalf("cmd = %q, want both remoteTmuxCmd legs (got %d)", cmd, got)
 	}
-	if !strings.Contains(cmd, `list-sessions -F 'S|#{session_id}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`) {
+	if !strings.Contains(cmd, `list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`) {
 		t.Fatalf("cmd = %q, want list-sessions \\; list-windows -a", cmd)
 	}
 	if strings.Contains(cmd, "td=") || strings.Contains(cmd, "; t=") {
@@ -107,9 +110,9 @@ func TestRemoteListWindowsCmdFishSafe(t *testing.T) {
 
 func sampleRemoteWindows() []remoteWindow {
 	return []remoteWindow{
-		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
-		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
-		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite"},
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server", SessionCreated: "1700000000"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs", SessionCreated: "1700000000"},
+		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite", SessionCreated: "1700000001"},
 	}
 }
 
@@ -571,8 +574,12 @@ func TestRemoteWindowRowItemSearchTextKeepsFullNames(t *testing.T) {
 }
 
 func TestRemoteWindowRowItemCarriesSessionID(t *testing.T) {
-	w := remoteWindow{Session: "api", SessionID: "$9", ID: "@3", Index: 1, Name: "x"}
-	if got := remoteWindowRowItem("lab", w, "", "", "", false).remoteSessionID; got != "$9" {
+	w := remoteWindow{Session: "api", SessionID: "$9", ID: "@3", Index: 1, Name: "x", SessionCreated: "1700000009"}
+	row := remoteWindowRowItem("lab", w, "", "", "", false)
+	if got := row.remoteSessionID; got != "$9" {
 		t.Errorf("remoteSessionID = %q, want $9", got)
+	}
+	if got := row.remoteSessionCreated; got != "1700000009" {
+		t.Errorf("remoteSessionCreated = %q, want 1700000009", got)
 	}
 }

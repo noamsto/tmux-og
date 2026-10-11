@@ -38,33 +38,35 @@ type listItem struct {
 	session     string // owning session name (for kill)
 	groupKey    string // window-mode header key this row re-attaches to
 	// when filtering: session name, or agent state
-	bridgeHost           string            // @bridge_host — set when this session mirrors a remote host
-	current              bool              // session mode: the session the client is attached to; window mode: the client's current window
-	bridgePane           string            // window row: @bridge_pane — the remote pane whose window this mirrors
-	bridgeSock           string            // window row: @bridge_sock — ctl socket of the daemon mirroring it
-	hasActiveAgent       bool              // used for --agent filter
-	isScratch            bool              // scratch-* session
-	createPath           string            // zoxide suggestion: dir to create a session at ("" = normal row)
-	createName           string            // zoxide suggestion: derived session name
-	isRemoteRow          bool              // belongs to the Remote section (set even when unselectable)
-	remoteHost           string            // remote bridge row: ssh host for og-remote-open
-	remoteSess           string            // remote bridge row: optional remote session name
-	remoteContextOnly    bool              // host row: pulled in only as tree context for a matching child, not its own match — unselectable
-	displayEnd           string            // remote session row: display with the closing tree glyph
-	plainEnd             string            // remote session row: plain with the closing tree glyph
-	remoteRestore        bool              // remote bridge row: sourced from a tmux-remux snapshot, not a live probe — bridging must restore it first
-	remoteNeedsAuth      bool              // remote host row: the probe hit an interactive ssh prompt; Enter runs og-remote-auth
-	remoteInert          bool              // remote host row: host key changed — Enter must refuse to act, never offer to connect
-	remoteTailscaleCheck bool              // remote host row: a Tailscale ACL "check" blocked the probe — Enter must refuse to act, like remoteInert; og-remote-auth cannot clear this
-	remoteTailscaleURL   string            // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
-	remoteUnreachable    bool              // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
-	remoteMirrorTarget   string            // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
-	remoteWindowID       string            // remote window row: tmux @N of the window on the remote
-	remoteWindowIndex    int               // remote window row: window index on the remote
-	remoteSessionID      string            // remote window row: tmux $N of the owning session; session row: the live probe's (or, for a mirror row, its host row's) $N — the kill targets it instead of the raw name, and a cached row has none
-	remoteHostSessionIDs map[string]string // remote host row: the live probe's session name → $N for every session, bridged included; mirror rows take their kill id from it
-	remoteWindowName     string            // remote window row: render-safe window name (remoteDisplayName)
-	remoteLive           bool              // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
+	bridgeHost               string            // @bridge_host — set when this session mirrors a remote host
+	current                  bool              // session mode: the session the client is attached to; window mode: the client's current window
+	bridgePane               string            // window row: @bridge_pane — the remote pane whose window this mirrors
+	bridgeSock               string            // window row: @bridge_sock — ctl socket of the daemon mirroring it
+	hasActiveAgent           bool              // used for --agent filter
+	isScratch                bool              // scratch-* session
+	createPath               string            // zoxide suggestion: dir to create a session at ("" = normal row)
+	createName               string            // zoxide suggestion: derived session name
+	isRemoteRow              bool              // belongs to the Remote section (set even when unselectable)
+	remoteHost               string            // remote bridge row: ssh host for og-remote-open
+	remoteSess               string            // remote bridge row: optional remote session name
+	remoteContextOnly        bool              // host row: pulled in only as tree context for a matching child, not its own match — unselectable
+	displayEnd               string            // remote session row: display with the closing tree glyph
+	plainEnd                 string            // remote session row: plain with the closing tree glyph
+	remoteRestore            bool              // remote bridge row: sourced from a tmux-remux snapshot, not a live probe — bridging must restore it first
+	remoteNeedsAuth          bool              // remote host row: the probe hit an interactive ssh prompt; Enter runs og-remote-auth
+	remoteInert              bool              // remote host row: host key changed — Enter must refuse to act, never offer to connect
+	remoteTailscaleCheck     bool              // remote host row: a Tailscale ACL "check" blocked the probe — Enter must refuse to act, like remoteInert; og-remote-auth cannot clear this
+	remoteTailscaleURL       string            // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
+	remoteUnreachable        bool              // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
+	remoteMirrorTarget       string            // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
+	remoteWindowID           string            // remote window row: tmux @N of the window on the remote
+	remoteWindowIndex        int               // remote window row: window index on the remote
+	remoteSessionID          string            // remote window row: tmux $N of the owning session; session row: the live probe's (or, for a mirror row, its host row's) $N — the kill targets it instead of the raw name, and a cached row has none
+	remoteSessionCreated     string            // session row: the live probe's #{session_created} for remoteSessionID — the kill refuses when the remote's live value differs, so a server restart can't retarget the id (#920); a cached or pre-#920 row has none
+	remoteHostSessionIDs     map[string]string // remote host row: the live probe's session name → $N for every session, bridged included; mirror rows take their kill id from it
+	remoteHostSessionCreated map[string]string // remote host row: the same probe's session name → #{session_created}, which mirror rows take alongside the id (#920's guard needs both, from the same probe so they can't disagree), bridged included; nil off a live probe
+	remoteWindowName         string            // remote window row: render-safe window name (remoteDisplayName)
+	remoteLive               bool              // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
 }
 
 // scopeKind selects which sessions Tab's host scope shows.
@@ -888,7 +890,10 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				targets = []listItem{item}
 			}
 			for _, t := range targets {
-				if t.remoteSessionID == "" {
+				// A live row carries both the probe's $N and its #{session_created};
+				// the created is the guard that keeps a server restart from
+				// retargeting that id, so a row missing either is not killable.
+				if t.remoteSessionID == "" || !isDigits(t.remoteSessionCreated) {
 					m.statusMsg = remoteRowLabel(t) + ": no live session id — wait for the probe, then ^x"
 					return m, nil
 				}
@@ -2645,6 +2650,7 @@ func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 			row := remoteSessionRowItem(host, bm.sess, "(mirrored)", hostColor(host), cDim, false)
 			row.remoteMirrorTarget = bm.target
 			row.remoteSessionID = block[0].remoteHostSessionIDs[bm.sess]
+			row.remoteSessionCreated = block[0].remoteHostSessionCreated[bm.sess]
 			out = append(out, row)
 		}
 	}
