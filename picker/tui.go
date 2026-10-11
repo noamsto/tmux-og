@@ -2807,6 +2807,10 @@ func sortSessionsForDisplay(sessions []sessionData) {
 // padding stays aligned (multibyte glyphs measure wide in bytes, narrow in cells).
 const resourcePlaceholder = "-"
 
+// tinyMemMB is the footprint below which a session's memory is background
+// noise and renders dimmed rather than in the load colours.
+const tinyMemMB = 256
+
 func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPanes []agentPaneInfo, theme string, withResources bool, currentSession string) []listItem {
 	sessions := snap.sessions()
 	agentMap := aggregateAgentBySession(agentPanes)
@@ -2832,10 +2836,8 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 	}
 
 	thmMauve := envOrMap("THM_MAUVE", tmuxOpts, "@thm_mauve", "#cba6f7")
-	thmBlue := envOrMap("THM_BLUE", tmuxOpts, "@thm_blue", "#89b4fa")
 	thmSubtext0 := envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8")
-	iDir := envOrMap("PICKER_ICON_DIR", tmuxOpts, "@icon_dir", iconDir)
-	iSess := envOrMap("PICKER_ICON_SESSION", tmuxOpts, "@icon_session", iconSession)
+	thmOverlay1 := envOrMap("THM_OVERLAY_1", tmuxOpts, "@thm_overlay_1", "#7f849c")
 	iHost := envOrMap("PICKER_ICON_HOST", tmuxOpts, "@icon_host", iconHost)
 	iProcs := envOrMap("PICKER_ICON_PROCS", tmuxOpts, "@icon_procs", iconProcs)
 	iCPU := envOrMap("PICKER_ICON_CPU", tmuxOpts, "@icon_cpu", iconCPU)
@@ -2853,8 +2855,10 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 	lblPath := "Path"
 
 	cMauve := ansiFg(thmMauve)
-	cBlue := ansiFg(thmBlue)
 	cDim := ansiFg(thmSubtext0)
+	// cQuiet is dimmer than cDim: idle CPU, tiny memory and the path recede so
+	// real load and the agent state stand out.
+	cQuiet := ansiFg(thmOverlay1)
 	hostColor := hostColorFunc(tmuxOpts)
 	rc := newResourceColors(tmuxOpts)
 	reset := "\033[0m"
@@ -2873,8 +2877,8 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 	for i := range sessions {
 		s := &sessions[i]
 		name := sessionDisplayName(s.name, s.bridgeHost)
-		if len(name) > maxName {
-			maxName = len(name)
+		if visibleWidth(name) > maxName {
+			maxName = visibleWidth(name)
 		}
 		icons, dw := buildProcIcons(s.procs, maxIconsPicker)
 		icons, dw = appendAgentIcon(icons, dw, s.agent, theme, dim, reset)
@@ -2912,7 +2916,7 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		return color + host + reset + tail
 	}
 
-	// Pre-compute CPU and MEM strings separately so the "/" aligns
+	// Pre-compute CPU and MEM strings separately so the gap and Path align
 	cpuStrs := make([]string, len(rows))
 	memStrs := make([]string, len(rows))
 	maxCPU, maxMem := max(cpuColWidth(), visibleWidth(lblCPU)), visibleWidth(lblMem)
@@ -2932,30 +2936,29 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		}
 	}
 
-	// Build header row. Every label is a single glyph, so each cell is sized by
-	// display width — a nerd glyph is one cell but four bytes, and len() here
-	// would pad every column three cells short.
+	// Build header row. Each label is sized by display width — a nerd glyph is
+	// one cell but four bytes, and len() here would pad every column three
+	// cells short.
 	//
-	// The CPU and Mem labels mirror each other around the " / ": CPU padded on
-	// the left, Mem on the right, so the pair reads as one CPU/Mem unit rather
-	// than two labels adrift in their fields. Each field keeps the width the
-	// rows give it, so Path stays in place.
+	// The CPU and Mem labels mirror each other around the gap between them: CPU
+	// padded on the left, Mem on the right, so the pair reads as one CPU/Mem
+	// unit rather than two labels adrift in their fields. Each field keeps the
+	// width the rows give it, so Path stays in place.
+	const resGap = "  "
 	hdrCPUPad := strings.Repeat(" ", max(0, maxCPU-visibleWidth(lblCPU)))
 	hdrMemPad := strings.Repeat(" ", max(0, maxMem-visibleWidth(lblMem)))
-	hdrRes := hdrCPUPad + lblCPU + " / " + lblMem + hdrMemPad
+	hdrRes := hdrCPUPad + lblCPU + resGap + lblMem + hdrMemPad
 	hdrName := lblSess + strings.Repeat(" ", max(0, maxName-visibleWidth(lblSess)))
-	hdrDisplay := fmt.Sprintf("%s %s  %s%s  %s  %s %s",
-		cDim+iSess+reset,
+	hdrDisplay := fmt.Sprintf("%s  %s%s  %s  %s",
 		cDim+hdrName+reset,
 		hostCell(lblHost, cDim),
 		cDim+padToWidth(lblProcs, visibleWidth(lblProcs), iconCol)+reset,
 		cDim+hdrRes+reset,
-		cDim+iDir+reset,
 		cDim+lblPath+reset,
 	)
-	hdrPlain := fmt.Sprintf("%s %s  %s%s  %s  %s %s",
-		iSess, hdrName,
-		hostCell(lblHost, ""), padToWidth(lblProcs, visibleWidth(lblProcs), iconCol), hdrRes, iDir, lblPath,
+	hdrPlain := fmt.Sprintf("%s  %s%s  %s  %s",
+		hdrName,
+		hostCell(lblHost, ""), padToWidth(lblProcs, visibleWidth(lblProcs), iconCol), hdrRes, lblPath,
 	)
 
 	home := os.Getenv("HOME")
@@ -2966,11 +2969,9 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		isColumnHeader: true,
 	})
 	for i, r := range rows {
-		pad := strings.Repeat(" ", max(0, maxName-len(r.name)))
-		cName := cMauve
-		if r.sess.bridgeHost != "" {
-			cName = hostColor(r.sess.bridgeHost)
-		}
+		pad := strings.Repeat(" ", max(0, maxName-visibleWidth(r.name)))
+		// The Host cell is the one host signal: a mirror's name stays the
+		// ordinary session colour.
 		icons := r.icons
 		if icons == "" {
 			icons = emptyIcons
@@ -2981,24 +2982,23 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		}
 		cpuPad := strings.Repeat(" ", max(0, maxCPU-len(cpuStrs[i])))
 		memPad := strings.Repeat(" ", max(0, maxMem-len(memStrs[i])))
-		display := fmt.Sprintf("%s %s%s  %s%s  %s%s %s %s%s  %s %s",
-			cName+iSess+reset,
-			cName+r.name+reset,
+		cCPU, cMem := sessionResourceColors(rc, cQuiet, *r.sess, withResources && !r.sess.resUnknown)
+		display := fmt.Sprintf("%s%s  %s%s  %s%s%s%s%s  %s",
+			cMauve+r.name+reset,
 			pad,
-			hostCell(r.sess.bridgeHost, cName),
+			hostCell(r.sess.bridgeHost, hostColor(r.sess.bridgeHost)),
 			icons,
 			cpuPad,
-			rc.cpuColor(r.sess.cpuPct, r.sess.cores)+cpuStrs[i]+reset,
-			cDim+"/"+reset,
+			cCPU+cpuStrs[i]+reset,
+			resGap,
 			memPad,
-			rc.memColor(r.sess.memMB)+memStrs[i]+reset,
-			cBlue+iDir+reset,
-			cDim+shortPath+reset,
+			cMem+memStrs[i]+reset,
+			cQuiet+shortPath+reset,
 		)
-		resPlain := cpuPad + cpuStrs[i] + " / " + memPad + memStrs[i]
-		plain := fmt.Sprintf("%s %s%s  %s%s  %s  %s %s",
-			iSess, r.name, pad, hostCell(r.sess.bridgeHost, ""),
-			stripANSI(icons), resPlain, iDir, shortPath,
+		resPlain := cpuPad + cpuStrs[i] + resGap + memPad + memStrs[i]
+		plain := fmt.Sprintf("%s%s  %s%s  %s  %s",
+			r.name, pad, hostCell(r.sess.bridgeHost, ""),
+			stripANSI(icons), resPlain, shortPath,
 		)
 		// A mirror is searchable by its host, like the Remote rows, even when
 		// its name doesn't carry the <host>- prefix.
@@ -3019,6 +3019,22 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		})
 	}
 	return items
+}
+
+// sessionResourceColors picks the CPU and Mem cell colours: the load colours
+// for real usage, quiet for unmeasured, idle or tiny values.
+func sessionResourceColors(rc resourceColors, quiet string, s sessionData, known bool) (cpu, mem string) {
+	cpu, mem = quiet, quiet
+	if !known {
+		return cpu, mem
+	}
+	if s.cpuPct >= 1 {
+		cpu = rc.cpuColor(s.cpuPct, s.cores)
+	}
+	if s.memMB >= tinyMemMB {
+		mem = rc.memColor(s.memMB)
+	}
+	return cpu, mem
 }
 
 // collectZoxideItems builds the "New session" suggestion rows (header + zoxide

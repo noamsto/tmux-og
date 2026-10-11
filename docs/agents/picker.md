@@ -4,6 +4,14 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
 
 ## Picker Chrome (header, sticky line, sections)
 
+- **The session list says each thing once (#952).** Rows are
+  `name  [host]  procs  cpu  mem  path`: no per-row session glyph, no folder glyph
+  (header included, so `Path` stays flush with the cells), no ` / ` between CPU and
+  Mem (a two-space gap). The Host cell is the single host signal — a mirror's name
+  keeps the ordinary session colour; its host text carries the host colour.
+  Idle/unmeasured CPU (<1%, `-`), tiny memory (<256M, `tinyMemMB`) and the path
+  render in the `@thm_overlay_1` colour (overlay_0 vanishes on the selected row's surface_2 background) (`sessionResourceColors`), dimmer than the
+  `low` load colour, so real load and agent state stand out. Window list unchanged.
 - **The session list's column labels are glyph + word** (`@icon_host`,
   `@icon_procs`, `@icon_cpu`, `@icon_mem`, added to the `icons` attrset like the
   rest). Every cell is sized with `visibleWidth`, never `len`: a nerd glyph is
@@ -12,10 +20,9 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   otherwise sized by their data alone (Host is as wide as the widest
   `@bridge_host`), and a label wider than its cell pushes every later column
   right in the header only. The CPU and Mem labels mirror each other around the
-  ` / ` (CPU padded left, Mem padded right) so the pair reads as one unit;
+  gap (CPU padded left, Mem padded right) so the pair reads as one unit;
   padding never changes a field's total width, or Path drifts. The alignment
-  tests assert the ` / ` and the path glyph land on the same cell in the header
-  and in a row, which is the regression net for both mistakes.
+  test asserts `Path` lands on the same cell in the header and in a row.
 - **One pinned line** (`governingHeaderIdx` + `renderHeaderItem`) carries
   whichever header governs the rows beneath it — the column glyphs through the
   session list, the divider once the window starts inside Remote or New session,
