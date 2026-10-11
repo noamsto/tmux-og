@@ -720,3 +720,46 @@ func mustWriteFile(t *testing.T, path string, data []byte, perm os.FileMode) {
 		t.Fatal(err)
 	}
 }
+
+func TestUsageResetClampedToMonthly(t *testing.T) {
+	a := args{
+		usageMonthlyThreshold: 50,
+		iconUsageCodex:        "CX",
+		thmSubtext0:           "#9a8", thmGreen: "#0f0", thmPeach: "#fa0", thmRed: "#f00",
+	}
+	now := int64(10000)
+	const day = int64(86400)
+	open := map[string]bool{"codex": true}
+	render := func(monthly *usageWindow, windows ...usageWindow) string {
+		return usageSegment(a, map[string]usageCache{"codex": {Windows: windows, Monthly: monthly}}, open, now)
+	}
+	week := usageWindow{Label: "7d", Pct: 95, ResetAt: now + 5*day}
+	earlier := &usageWindow{Label: "mo", Pct: 10, ResetAt: now + 2*day}
+	cases := []struct {
+		name    string
+		monthly *usageWindow
+		w       usageWindow
+		want    string
+	}{
+		{"monthly earlier clamps", earlier, week, " 2d"},
+		{"monthly absent", nil, week, " 5d"},
+		{"monthly no reset", &usageWindow{Label: "mo", Pct: 10}, week, " 5d"},
+		{"monthly past", &usageWindow{Label: "mo", Pct: 10, ResetAt: now - 60}, week, " 5d"},
+		{"monthly later", &usageWindow{Label: "mo", Pct: 10, ResetAt: now + 9*day}, week, " 5d"},
+		{"5h never clamped", earlier, usageWindow{Label: "5h", Pct: 95, ResetAt: now + 3*3600}, " 3h"},
+		{"window without reset stays unknown", earlier, usageWindow{Label: "7d", Pct: 95}, ""},
+		{"wk label clamps", earlier, usageWindow{Label: "wk", Pct: 95, ResetAt: now + 5*day}, " 2d"},
+	}
+	for _, c := range cases {
+		got := render(c.monthly, c.w)
+		if c.want == "" {
+			if strings.Contains(got, usageResetGlyph) {
+				t.Errorf("%s: %q has a countdown", c.name, got)
+			}
+			continue
+		}
+		if want := usageResetGlyph + c.want; !strings.Contains(got, want) {
+			t.Errorf("%s: %q lacks %q", c.name, got, want)
+		}
+	}
+}

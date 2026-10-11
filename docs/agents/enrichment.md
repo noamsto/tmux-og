@@ -187,7 +187,13 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   are always on. Colors: <70 green, <90 peach, ≥90 red.
 - **Reset countdowns**: providers pass each window's reset time through as
   `reset_at`; the renderer appends `↻<dur>` only to windows at ≥90% — the
-  moment the reset starts to matter.
+  moment the reset starts to matter. A multi-day window (`7d`, `wk`) is capped
+  at the provider's own `monthly.reset_at` when that is present, future and
+  earlier — a billing-month rollover clears it too. The clamp lives in the Go
+  renderer (`usageClampToMonthly`), so the local and bridge paths share it
+  (the daemon skew-shifts `monthly.reset_at` like any reset); caches keep the
+  raw monthly reset. Codex and cursor write it; claude cannot — its usage API
+  has no monthly reset under `extra_usage` — so claude's 7d is never clamped.
 - **Cursor reads the dashboard's usage-summary.** `GET
   https://cursor.com/api/usage-summary` is the dashboard's own endpoint; the
   legacy DashboardService figure counted on-demand usage only and read 0% on
