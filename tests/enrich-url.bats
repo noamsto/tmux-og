@@ -136,10 +136,8 @@ gone_window() {
 	[ ! -s "$GH_LOG" ]
 }
 
-# Single-target mode (the enrich card's `r`) gets --dir from the window's
-# @worktree/@git_root. When that checkout is gone, gh has no repo context and the
-# fetch silently no-ops, so --force could not bypass the cached TTL_TERMINAL
-# answer (#923). It must fall back to the window's own @pr_url.
+# Single-target mode (the enrich card's `r`) passes the window's checkout as
+# --dir; a deleted one must fall back to the window's own @pr_url.
 
 @test "single-target force refresh with a deleted --dir falls back to the url" {
 	gone_window

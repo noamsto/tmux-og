@@ -710,11 +710,9 @@ if [[ -n $target && -n $branch ]]; then
 	# — its branch belongs to the launcher's repo, not the remote content.
 	[[ $(tmux show-options -t "$target" -wqv @bridge_win 2>/dev/null) == 1 ]] && exit 0
 	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
-	# gh resolves the repo from its cwd, so a --dir that no longer resolves a repo
-	# (a merged PR's worktree removed, the window left open) can't give it one and
-	# the fetch silently no-ops. Fall back to the url the window still carries,
-	# exactly as run_full_pass does for a gone checkout (#923) — without it --force
-	# can't bypass a cached TTL_TERMINAL answer.
+	# A --dir that no longer resolves a repo can't give gh a repo context (a
+	# merged PR's worktree removed, the window left open): fall back to the
+	# window's @pr_url, as run_full_pass does for a gone checkout.
 	repo=""
 	[[ -n $dir ]] && repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 	if [[ -z $repo ]]; then
@@ -723,8 +721,7 @@ if [[ -n $target && -n $branch ]]; then
 		refresh_url_pr "$url" "$target|$branch"
 		exit 0
 	fi
-	# Same key fetch_branch_pr's branch_cache_key derives from DIR+BRANCH, computed
-	# here so the repo id is resolved once for the pending-marker arming below.
+	# Key branch_cache_key derives from DIR+BRANCH; repo id reused for the marker below.
 	branch_sha1 "$repo|$branch"
 	cache="$(fetch_branch_pr "$dir" "$branch" "$REPLY")"
 	apply_cache_to_target "$target" "$cache" "$branch"
