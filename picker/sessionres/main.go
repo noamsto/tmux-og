@@ -89,9 +89,8 @@ func main() {
 	for sess, t := range proctree.Aggregate(sessionRoots, string(ps)) {
 		rows[sess] = stampValue(t, cores, now)
 	}
-	// A second, per-pane aggregate over the same ps table: the session rows
-	// keep their exact meaning, and each pane gets the agent its own tree
-	// carries.
+	// Per-pane tree agents from the same ps table; the session rows above keep
+	// their exact meaning.
 	paneAgents := paneAgentMap(paneRoots, string(ps))
 	argv := setOptionArgv(rows)
 	paneArgv := paneAgentArgv(paneAgents)
@@ -136,8 +135,7 @@ func stampValue(t proctree.Totals, cores int, now int64) string {
 }
 
 // paneRow is one list-panes row: the pane's session id ($N), its pane id (%N)
-// and its root pid. Grouping pids by session gives the session CPU/mem figures,
-// grouping them by pane gives the per-pane agent.
+// and its root pid (one pid per pane).
 type paneRow struct {
 	session string
 	pane    string
@@ -165,9 +163,8 @@ func parsePaneRows(out string) []paneRow {
 // paneAgentMap resolves each pane's tree agent over one ps table: the first of
 // AgentCmds (already sorted and deduped by Aggregate), or "" when the tree
 // carries no agent. EVERY pane in paneRoots gets an entry, empty ones included
-// — that is what lets paneAgentArgv UNSET a pane that lost its agent, rather
-// than omitting it and leaving a stale @og_pane_agent the daemon keeps reading
-// as an agent after the process is gone.
+// — omitting an agentless pane leaves its @og_pane_agent stale after the agent
+// exits, and the daemon keeps reading a plain shell as an agent.
 func paneAgentMap(paneRoots map[string][]int, psOut string) map[string]string {
 	found := make(map[string]string)
 	for pane, t := range proctree.Aggregate(paneRoots, psOut) {
