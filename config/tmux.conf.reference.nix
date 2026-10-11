@@ -741,6 +741,15 @@
     bind-key -N 'Swap the active pane with the pane above' '{' if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} swap #{q:@bridge_pane} U" } { swap-pane -U }
     bind-key -N 'Swap the active pane with the pane below' '}' if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} swap #{q:@bridge_pane} D" } { swap-pane -D }
 
+    # Breaking a pane out creates a new remote window and makes it active, so in a
+    # mirror window it runs on the remote through ctl: the mirror gains the new
+    # window and follows the remote's own selection. The else branch is next-3.9's
+    # stock bind, note included (tmux prints that note for `!` itself); break-pane
+    # exists in every tmux, so this bind needs no version gate. -s names the SOURCE
+    # pane — break-pane's -t names the destination WINDOW, so `-t %N` would resolve
+    # the pane's own window and fail.
+    bind-key -N 'Break pane to a new window' ! if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} break-pane #{q:@bridge_pane}" } { break-pane }
+
     # Layout presets, cycles and rotations. A local select-layout on a mirror
     # reshapes only the renderer panes: the remote panes keep their sizes, the
     # programs in them render at the old ones, and the next remote %layout-change
@@ -875,6 +884,20 @@
     # into a one-shot table that catches the drag end and routes it to ctl
     # drag, since tmux's own drag fires no hook while it runs.
     ${dragBinds}
+
+    # The float/tile toggle (#922) is a next-3.9 stock bind whose stock branch runs
+    # `break-pane -W`, a next-only flag: a block tmux builds at source time would
+    # make an older resident server reject the whole config (#407), so it is
+    # %if-gated like the menus and drags. It sits AFTER them because
+    # tests/menu-bind-integration.bats selects the first two gated blocks by
+    # ordinal (the menu block sends ctl verbs; the drag block is MouseDrag1Border).
+    # There is no faithful ctl verb for float/tile — floats are mirrored FROM the
+    # remote, and float-geom/tile-layout only reshape an already-floating or already
+    # tiled remote object — so on a mirror the #769 rule makes it a no-op with a
+    # message rather than letting it diverge the local view.
+    %if "#{==:#{version},next-3.9}"
+    bind-key -N 'Toggle pane between floating and tiled' @ if-shell -F '${bridgeGate}' { display-message "float/tile: not mirrored - do it on the remote" } { if-shell -F '#{pane_floating_flag}' { join-pane } { break-pane -W } }
+    %endif
 
     # Vim-tmux navigation (respects zoom)
     # tmux substitutes $is_vim into each bind at parse time, so this string IS an

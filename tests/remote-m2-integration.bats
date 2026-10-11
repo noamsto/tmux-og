@@ -2217,6 +2217,68 @@ remote_pane_of() {
 	[ "$src_map" = "$dst_map" ]
 }
 
+@test "ctl break-pane moves the REMOTE pane to a new window and the mirror follows" {
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC split-window -h -t rem
+	$DST new-session -d -s host-sess -x 150 -y 40
+	bridge_up 2 c6
+
+	victim="$(remote_pane_of 0)"
+
+	run "$CTL" --sock "$sock" break-pane "$victim"
+	[ "$status" -eq 0 ]
+
+	for _ in $(seq 1 60); do
+		src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
+		dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+		[ "$src_w" -eq 2 ] && [ "$dst_w" -eq 2 ] && break
+		sleep 0.15
+	done
+	src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
+	dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+
+	# Wait for the whole move to settle: two windows each side, the moved pane
+	# mirrored exactly once, and the mirror session back to one pane per window.
+	# `mapped == 1` means the source window's local pane for the victim is gone,
+	# i.e. the source reconcile (the pass that used to Unregister the pane by id
+	# and kill the sink the new window had just registered) has drained.
+	for _ in $(seq 1 80); do
+		src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
+		dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+		mapped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' | grep -cx "$victim" || true)"
+		dst_n="$($DST list-panes -s -t host-sess -F '#{pane_id}' | wc -l)"
+		[ "$src_w" -eq 2 ] && [ "$dst_w" -eq 2 ] && [ "$mapped" -eq 1 ] && [ "$dst_n" -eq 2 ] && break
+		sleep 0.15
+	done
+	vp="$($DST list-panes -s -t host-sess -F '#{@bridge_pane} #{pane_id}' | awk -v v="$victim" '$1 == v { print $2 }')"
+
+	# ...and it is still LIVE. A marker sent now is after the source reconcile
+	# drained, so the new window's creation seed, taken before that reconcile,
+	# cannot satisfy it — only a live router sink for the moved pane can.
+	marker="CTL_BREAK_$$"
+	$SRC send-keys -t "$victim" "printf '$marker\\n'" Enter
+	late_seen=0
+	for _ in $(seq 1 60); do
+		$DST capture-pane -p -t "$vp" 2>/dev/null | grep -q "$marker" && {
+			late_seen=1
+			break
+		}
+		sleep 0.1
+	done
+
+	# No orphaned non-mirror local window was left in the mirror session.
+	stranding="$($DST list-windows -t host-sess -F '#{@bridge_win}' | grep -vc '^1$' || true)"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	[ "$src_w" -eq 2 ]
+	[ "$dst_w" -eq 2 ]
+	[ "$mapped" -eq 1 ]
+	[ "$late_seen" -eq 1 ]
+	[ "$stranding" -eq 0 ]
+}
+
 @test "ctl new-window creates a REMOTE window and the mirror gains one" {
 	$SRC new-session -d -s rem -x 150 -y 40
 	$DST new-session -d -s host-sess -x 150 -y 40

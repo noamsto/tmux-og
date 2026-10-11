@@ -715,6 +715,56 @@
               touch $out
             '';
 
+          # The two pane keybinds that change the remote's pane set (#922).
+          # `prefix !` (break-pane) must route through the ctl `break-pane` verb
+          # — the mirror then follows the remote's new window and selection.
+          # `prefix @` is next-3.9's float/tile toggle, and there is no faithful
+          # ctl verb for float/tile (a float is mirrored FROM the remote;
+          # float-geom/tile-layout only reshape an existing remote object), so by
+          # the #769 rule it must be a no-op on a mirror — never a ctl guess,
+          # never the local stock toggle. Same grep-a-derivation shape as
+          # layout-conf-assertions above; the `@` bind sits in a %if block, so it
+          # is asserted as emitted.
+          break-pane-conf-assertions =
+            pkgs.runCommand "break-pane-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              gate="#{&&:#{@bridge_win},#{@bridge_pane}}"
+
+              n=$(grep -E "^bind-key -N '[^']*' ! if-shell -F " "$CONF" | wc -l)
+              if [ "$n" -ne 1 ]; then
+                echo "break-pane-conf: expected exactly one gated '!' bind, got $n" >&2
+                exit 1
+              fi
+              line=$(grep -E "^bind-key -N '[^']*' ! if-shell -F " "$CONF")
+              printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
+                { echo "break-pane-conf: '!' is not gated on bridgeGate" >&2; exit 1; }
+              printf '%s' "$line" | grep -qF -- 'break-pane #{q:@bridge_pane}"' ||
+                { echo "break-pane-conf: '!' does not send the break-pane verb" >&2; exit 1; }
+              printf '%s' "$line" | grep -qF -- '{ break-pane }' ||
+                { echo "break-pane-conf: '!' else-branch is not the stock break-pane" >&2; exit 1; }
+
+              n=$(grep -E "^bind-key -N '[^']*' @ if-shell -F " "$CONF" | wc -l)
+              if [ "$n" -ne 1 ]; then
+                echo "break-pane-conf: expected exactly one gated '@' bind, got $n" >&2
+                exit 1
+              fi
+              line=$(grep -E "^bind-key -N '[^']*' @ if-shell -F " "$CONF")
+              printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
+                { echo "break-pane-conf: '@' is not gated on bridgeGate" >&2; exit 1; }
+              printf '%s' "$line" | grep -qF -- '{ display-message ' ||
+                { echo "break-pane-conf: '@' mirror branch is not a display-message no-op" >&2; exit 1; }
+              if printf '%s' "$line" | grep -qF -- 'og-remote-bridge-ctl'; then
+                echo "break-pane-conf: '@' must not send a ctl verb (no faithful verb exists)" >&2
+                exit 1
+              fi
+              printf '%s' "$line" | grep -qF -- "{ if-shell -F '#{pane_floating_flag}' { join-pane } { break-pane -W } }" ||
+                { echo "break-pane-conf: '@' else-branch is not the stock float/tile toggle" >&2; exit 1; }
+
+              touch $out
+            '';
+
           # Crew badge display gate (#671). status-format[1]'s single-line
           # window list wraps the existing bridge-aware crew-name ternary
           # (bridgeOpts() in generator/render/status.go: for name "crew_name",

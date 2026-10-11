@@ -85,7 +85,7 @@ func TestApplyPaneOpsShapesBeforeHelloWait(t *testing.T) {
 	}
 
 	if err := applyPaneOps(cfg, w, paneOps{Append: []string{"%9"}}, L,
-		[]string{"%1"}, []string{"%1", "%9"}, func(string) {}, NewRouter(), waiter, rt); err != nil {
+		[]string{"%1"}, []string{"%1", "%9"}, func(string) {}, NewRouter(), newCtlState(), waiter, rt); err != nil {
 		t.Fatalf("applyPaneOps: %v", err)
 	}
 	<-done // wait for the sender's rec("hello") to land before asserting on trace

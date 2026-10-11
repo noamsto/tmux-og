@@ -309,6 +309,17 @@ wait_for_client() {
 	[ "$status" -eq 0 ]
 	[[ $output == *'swap-pane -D'* ]]
 
+	# #922: the two pane keybinds the gate now owns. The else branch is tmux's
+	# own stock command and note, byte for byte.
+	run t list-keys -T prefix '!'
+	[ "$status" -eq 0 ]
+	[[ $output == *'{ break-pane }'* ]]
+
+	run t list-keys -T prefix '@'
+	[ "$status" -eq 0 ]
+	[[ $output == *'join-pane'* ]]
+	[[ $output == *'break-pane -W'* ]]
+
 	# The -N notes feed which-key, and rebinding a default drops the note unless
 	# it is re-supplied.
 	run t list-keys -N -T prefix
@@ -316,6 +327,8 @@ wait_for_client() {
 	[[ $output == *'Rename current window'* ]]
 	[[ $output == *'Swap the active pane with the pane above'* ]]
 	[[ $output == *'Swap the active pane with the pane below'* ]]
+	[[ $output == *'Break pane to a new window'* ]]
+	[[ $output == *'Toggle pane between floating and tiled'* ]]
 }
 
 # Pins the mirror branch's '{ ... }' block form. Its trailing %1 is a template
@@ -417,6 +430,15 @@ wait_for_client() {
 		[[ $output == *' -r '* ]]
 		[[ $output == *'resize-pane -'* ]]
 	done
+
+	# #922: ! keeps the stock local break-pane, @ the stock float/tile toggle.
+	run t list-keys -T prefix '!'
+	[[ $output == *'{ break-pane }'* ]]
+
+	run t list-keys -T prefix '@'
+	[[ $output == *'pane_floating_flag'* ]]
+	[[ $output == *'{ join-pane }'* ]]
+	[[ $output == *'{ break-pane -W }'* ]]
 }
 
 # The focus hook must be registered, and `prefix + r` must stay idempotent: the

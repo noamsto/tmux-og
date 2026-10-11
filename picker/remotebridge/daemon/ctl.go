@@ -91,6 +91,14 @@ func (c *ctlState) setWindowPanes(remoteWin string, panes []string) {
 	}
 }
 
+// paneOwner returns the remote window that currently maps a pane, or "" when
+// no window claims it.
+func (c *ctlState) paneOwner(remotePane string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paneToWin[remotePane]
+}
+
 // forgetWindow drops a closed window's pane mapping, focus state and pending
 // intent, so a stale commanded entry cannot outlive its window.
 func (c *ctlState) forgetWindow(remoteWin string) {
@@ -379,6 +387,21 @@ var verbs = map[string]verb{
 	// Killing a pane can empty its window, so it needs the window reconcile too.
 	"kill-pane": {layout: true, windows: true, moves: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
 		return []string{fmt.Sprintf("kill-pane -t %s", pane)}, nil
+	}},
+	// break-pane pulls the pane out into a NEW remote window (spawn.c) and,
+	// without -d, makes that window active (session_select) — so the layout
+	// reconcile drops the moved renderer from the source window, the window
+	// reconcile creates and selects the new mirror window, and the source
+	// window's active-pane belief is invalidated.
+	//
+	// The target is -s, never -t: break-pane's -t names the DESTINATION WINDOW,
+	// so `-t %N` would resolve the pane's own window as the destination (and
+	// fail with "index in use"). -s names the source pane, and the new window
+	// lands in that pane's own session (measured on next-3.9 over a control
+	// connection: new window added at the end, made active, %layout-change for
+	// the source window).
+	"break-pane": {layout: true, windows: true, moves: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
+		return []string{fmt.Sprintf("break-pane -s %s", pane)}, nil
 	}},
 	// respawn-pane -k restarts the remote program in place (same pane id, same
 	// active pane), so only the re-seed is owed — not a layout/moves reconcile.

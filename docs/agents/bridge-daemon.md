@@ -451,6 +451,38 @@ for the menus' Respawn items); an item touching only local state (copy mode, pas
 buffers, other sessions, local tab order) stays stock; an item with no faithful
 ctl verb is hidden on a mirror. Implemented in `generator/render/menus.go`.
 
+### Keybinds in a mirror window (#922)
+
+The same rule covers the stock prefix keys: #769 rewrote the menus and missed
+them. `prefix !` (`break-pane`) pulled the local renderer pane into a plain local
+window the bridge does not own while the remote pane stayed put, and
+`prefix @` / `MouseDown1Control7` (the float/tile toggle) floated or tiled the
+local renderer pane the same way.
+
+- **`prefix !`** is bridge-gated: the mirror branch is
+  `run-shell "<ctl> break-pane #{q:@bridge_pane}"`, the else branch stock
+  `break-pane` (the note is tmux's own). The daemon gained a `break-pane` verb —
+  `break-pane -s %N` on the remote, with the `layout` + `windows` + `moves`
+  intents `kill-pane` carries. It is `-s`, never `-t`: break-pane's `-t` names
+  the **destination window**, so `-t %N` would resolve the pane's own window as
+  the destination. Without `-d` the remote creates the new window and selects it
+  (`session_select`, `spawn.c`), and the mirror follows: the `windows` intent
+  runs `reconcileWindows`, whose `added && activeRemote` branch creates and
+  selects the new mirror window, while the source window reconciles from its
+  `%layout-change`. `break-pane` exists in every tmux, so this bind carries no
+  version gate.
+- **`prefix @`** has **no faithful ctl verb**: a float is mirrored *from* the
+  remote, and `float-geom`/`tile-layout` only reshape an already-floating or
+  already-tiled remote object — neither creates a float nor tiles one. By the
+  rule above it is therefore a no-op on a mirror (`display-message "float/tile:
+  not mirrored - do it on the remote"`). Its stock branch carries
+  `break-pane -W`, a next-only flag, so the bind sits in the same
+  `%if next-3.9` gate as the menus and drags (#407) — placed *after* them,
+  because `tests/menu-bind-integration.bats` selects the menu and drag blocks by
+  ordinal.
+- **`MouseDown1Control7`** is unreachable here (see the out-of-scope note
+  below), so it stays unbound rather than guarded: a mirror cannot reach it.
+
 Inventory, measured with `list-keys` on a scratch server of the pinned
 `next-3.9`, byte-identical between `-f /dev/null` and the built config:
 
@@ -554,4 +586,6 @@ regression here.
 
 Out of scope: `MouseDown1Control7/8/9` and the `move` table are unreachable in
 this config (nothing binds `switch-client -T move`, and this config's
-`pane-border-format` carries no control range).
+`pane-border-format` carries no control range) — `MouseDown1Control7` is
+therefore also left unbound by the keybind fix above (#922): a bind for a key
+that can never fire is dead config.

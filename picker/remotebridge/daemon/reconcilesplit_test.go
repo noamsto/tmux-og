@@ -52,7 +52,7 @@ func TestApplyPaneOpsSplitsOnTheRemoteAxis(t *testing.T) {
 	ops := paneOps{Append: []string{"%2"}}
 	waiter := func([]string) (map[string]net.Conn, error) { return map[string]net.Conn{}, nil }
 	if err := applyPaneOps(cfg, w, ops, L, []string{"%1"}, []string{"%1", "%2"},
-		func(string) {}, NewRouter(), waiter, nil); err != nil {
+		func(string) {}, NewRouter(), newCtlState(), waiter, nil); err != nil {
 		t.Fatalf("applyPaneOps: %v", err)
 	}
 
