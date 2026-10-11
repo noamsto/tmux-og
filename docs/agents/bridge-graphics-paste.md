@@ -265,6 +265,18 @@ carries the measured evidence.
   hostile remote that stamped it falsely would already need code execution
   in the foreground of the pane the user is mirroring — a stronger foothold
   than the exfil buys.
+- **A wrapper script does not hide the agent.** The gate reads `@bridge_proc`,
+  and since #956 that value resolves an agent running anywhere in the pane's
+  process tree: a launcher that keeps bash foreground and runs claude as its
+  child used to report `bash`, so the gate read a plain shell, forwarded the
+  byte silently and the remote agent answered "no image in clipboard". The
+  remote's resource poller stamps the tree agent on `@og_pane_agent`
+  (`bridge-shipped-state.md`, "Remote Agent Status") and the daemon resolves
+  `@bridge_proc` to it when the foreground command is not itself an agent, so
+  the same value fixes the mirror's process icon. Because the tree agent rides
+  the poller's ~5s cadence, the gate can lag: an agent that exits may still read
+  as present for up to one poll (and the option persists if the poller stops,
+  the accepted `@og_agent_usage` posture).
 - **Every pass-through on a possible agent pane says why.** **Silent**
   forwards: a non-agent `@bridge_proc` (shell quoted-insert), and an agent
   pane whose clipboard listing succeeded with no `image/*` type (text — the

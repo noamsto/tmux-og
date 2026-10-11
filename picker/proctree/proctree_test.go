@@ -58,3 +58,25 @@ func TestAggregateAgentCmdsFromTree(t *testing.T) {
 		}
 	}
 }
+
+// IsAgentCommand is the one predicate the paste gate and the icon path use to
+// decide a name is an agent, so it must unwrap the makeWrapper spelling the
+// same way procName does — a `.claude-wrapped` process IS claude.
+func TestIsAgentCommand(t *testing.T) {
+	cases := map[string]bool{
+		"claude":                       true,
+		"pi":                           true,
+		"codex":                        true,
+		"cursor-agent":                 true,
+		".claude-wrapped":              true,
+		"/nix/store/x/.claude-wrapped": true,
+		"bash":                         false,
+		"node":                         false,
+		"":                             false,
+	}
+	for name, want := range cases {
+		if got := IsAgentCommand(name); got != want {
+			t.Errorf("IsAgentCommand(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

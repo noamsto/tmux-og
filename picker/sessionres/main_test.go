@@ -28,38 +28,6 @@ func TestParseControlClients(t *testing.T) {
 	}
 }
 
-func TestParsePanePIDs(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want map[string][]int
-	}{
-		{
-			name: "two sessions",
-			out:  "$0|101\n$0|102\n$3|203\n",
-			want: map[string][]int{"$0": {101, 102}, "$3": {203}},
-		},
-		{
-			name: "unusable pids skipped",
-			out:  "$0|0\n$0|-3\n$0|abc\n$0|7\n",
-			want: map[string][]int{"$0": {7}},
-		},
-		{
-			name: "empty",
-			out:  "",
-			want: map[string][]int{},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parsePanePIDs(tt.out)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parsePanePIDs(%q) = %v, want %v", tt.out, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestStampValue(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -135,6 +103,58 @@ func TestSetOptionArgv(t *testing.T) {
 	}
 	if nilArgv := setOptionArgv(map[string]string{}); nilArgv != nil {
 		t.Errorf("setOptionArgv(empty) = %#v, want nil", nilArgv)
+	}
+}
+
+func TestParsePaneRows(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want []paneRow
+	}{
+		{
+			name: "two sessions",
+			out:  "$0|%1|101\n$0|%2|102\n$3|%5|203\n",
+			want: []paneRow{{"$0", "%1", 101}, {"$0", "%2", 102}, {"$3", "%5", 203}},
+		},
+		{
+			name: "unusable rows skipped",
+			out:  "$0|%1|0\n$0|%2|-3\n$0|%3|abc\n$0||7\n$0|%4|7\n",
+			want: []paneRow{{"$0", "%4", 7}},
+		},
+		{
+			name: "empty",
+			out:  "",
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePaneRows(tt.out); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parsePaneRows(%q) = %v, want %v", tt.out, got, tt.want)
+			}
+		})
+	}
+}
+
+// paneAgentArgv is the per-pane half of the stamp: a pane whose tree carries an
+// agent gets the agent name, a pane with none is UNSET so a stale value cannot
+// keep a shell pane reading as an agent, and the order is deterministic.
+func TestPaneAgentArgv(t *testing.T) {
+	panes := map[string]string{"%2": "", "%1": "claude"}
+	want := []string{
+		"set-option", "-p", "-t", "%1", paneAgentOption, "claude", ";",
+		"set-option", "-p", "-t", "%2", "-u", paneAgentOption,
+	}
+	got := paneAgentArgv(panes)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("paneAgentArgv() = %#v, want %#v", got, want)
+	}
+	if again := paneAgentArgv(panes); !reflect.DeepEqual(again, got) {
+		t.Errorf("paneAgentArgv() is not deterministic: %#v then %#v", got, again)
+	}
+	if nilArgv := paneAgentArgv(map[string]string{}); nilArgv != nil {
+		t.Errorf("paneAgentArgv(empty) = %#v, want nil", nilArgv)
 	}
 }
 

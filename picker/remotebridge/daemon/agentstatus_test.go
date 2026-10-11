@@ -25,22 +25,30 @@ func privateDir(t *testing.T) string {
 }
 
 func TestParseAgentStatus(t *testing.T) {
+	// row builds an 11-field agentStatusFormat line. The free-form task is last,
+	// so a '|' inside it is absorbed by the final field instead of shifting.
+	row := func(pane, proc, status, screen, issues, role, state, color, img, tree, task string) string {
+		return strings.Join([]string{pane, proc, status, screen, issues, role, state, color, img, tree, task}, "|")
+	}
 	body := strings.Join([]string{
-		"%1|claude|processing 1700000000 |",                       // trailing empty fields trimmed away
-		"%2|nvim|||||||",                                          // mirrored pane, no agent
-		"%3|claude|waiting 1700000042 1||ENG-7|||||fix | y",       // unseen, issues, task holding a '|'
-		"%4|fish|garbage||",                                       // unparsable stamp reads as no agent
-		"%5|claude||||plan-critic|working|colour111||grill it",    // a decorated role pane
-		"%6|claude||||#(id)|WORKING|#[fg=red]|",                   // markup and an uppercase state drop
-		"%7|claude||||plan-critic-with-a-very-long-name||red|",    // over its cap, so dropped whole
-		"%8|pi|processing 1700000200 |idle 1700000050 bg=2|ENG-7", // screen-scraped state alongside a hook stamp
-		"%9|fish|||||||1|",                                        // an aeye carousel viewer
-		"%10|fish|||||||yes|",                                     // only the exact presence bit counts
+		row("%1", "claude", "processing 1700000000 ", "", "", "", "", "", "", "", ""),
+		row("%2", "nvim", "", "", "", "", "", "", "", "", ""),
+		row("%3", "claude", "waiting 1700000042 1", "", "ENG-7", "", "", "", "", "", "fix | y"),
+		row("%4", "fish", "garbage", "", "", "", "", "", "", "", ""),
+		row("%5", "claude", "", "", "", "plan-critic", "working", "colour111", "", "", "grill it"),
+		row("%6", "claude", "", "", "", "#(id)", "WORKING", "#[fg=red]", "", "", ""),
+		row("%7", "claude", "", "", "", "plan-critic-with-a-very-long-name", "", "red", "", "", ""),
+		row("%8", "pi", "processing 1700000200 ", "idle 1700000050 bg=2", "ENG-7", "", "", "", "", "", ""),
+		row("%9", "fish", "", "", "", "", "", "", "1", "", ""),
+		row("%10", "fish", "", "", "", "", "", "", "yes", "", ""),
+		row("%11", "bash", "", "", "", "", "", "", "", "claude", ""),
+		row("%12", "bash", "", "", "", "", "", "", "", "bad name", ""),
+		row("%13", "bash", "", "", "", "", "", "", "", "", ""),
 	}, "\n")
 
 	got := parseAgentStatus(body)
-	if len(got) != 10 {
-		t.Fatalf("got %d rows, want 10 (every mirrored pane): %+v", len(got), got)
+	if len(got) != 13 {
+		t.Fatalf("got %d rows, want 13 (every mirrored pane): %+v", len(got), got)
 	}
 	if got[0].pane != "%1" || got[0].proc != "claude" || got[0].state != "processing" || got[0].ts != 1700000000 || got[0].unseen {
 		t.Errorf("row 0 = %+v", got[0])
@@ -72,6 +80,17 @@ func TestParseAgentStatus(t *testing.T) {
 	}
 	if !got[8].imgSrc || got[9].imgSrc || got[7].imgSrc {
 		t.Errorf("imgSrc = %v/%v/%v on rows 8/9/7, want true/false/false", got[8].imgSrc, got[9].imgSrc, got[7].imgSrc)
+	}
+	// The wrapper case: a bash foreground pane whose process tree carries
+	// claude parses the tree agent; a name outside the allowed alphabet drops.
+	if got[10].proc != "bash" || got[10].treeAgent != "claude" {
+		t.Errorf("row 10 (wrapper) = %+v, want bash + treeAgent claude", got[10])
+	}
+	if got[11].treeAgent != "" {
+		t.Errorf("a malformed tree agent must drop whole, got %q", got[11].treeAgent)
+	}
+	if got[12].treeAgent != "" {
+		t.Errorf("an agent-free pane must carry no tree agent, got %q", got[12].treeAgent)
 	}
 }
 
@@ -108,6 +127,41 @@ func TestAgentShipperStampsCarouselMarker(t *testing.T) {
 	want = []string{"set-option", "-p", "-t", "%7", "-u", "@bridge_img_src"}
 	if len(calls) != 3 || !reflect.DeepEqual(calls[2], want) {
 		t.Errorf("marker clear = %v, want %v", calls[2:], want)
+	}
+}
+
+// A wrapper script keeps bash as the pane's foreground command and runs the
+// agent as its child, so @bridge_proc (from pane_current_command) reads the
+// shell while the agent is a child. The remote resource poller ships the tree
+// agent in @og_pane_agent; the shipper resolves @bridge_proc to it, and a real
+// foreground agent still wins over a tree one.
+func TestAgentShipperResolvesWrapperAgent(t *testing.T) {
+	cases := []struct {
+		name      string
+		proc      string
+		treeAgent string
+		want      string
+	}{
+		{"wrapper bash + tree claude", "bash", "claude", "claude"},
+		{"foreground agent wins over tree", "claude", "codex", "claude"},
+		{"tree agent with no foreground agent", "fish", "codex", "codex"},
+		{"no agent anywhere", "fish", "", "fish"},
+		{"tree value outside the manifest is ignored", "fish", "notanagent", "fish"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := &agentShipper{dir: privateDir(t), sess: "lab-mono", written: map[string]paneStatus{}}
+			var calls [][]string
+			cfg := mirrorCfg(&calls)
+			a.apply(cfg, []paneStatus{{pane: "%1", proc: c.proc, treeAgent: c.treeAgent}})
+			if len(calls) != 1 {
+				t.Fatalf("stamps = %v, want one @bridge_proc call", calls)
+			}
+			want := []string{"set-option", "-p", "-t", "%7", "@bridge_proc", c.want}
+			if !reflect.DeepEqual(calls[0], want) {
+				t.Errorf("@bridge_proc stamp = %v, want %v", calls[0], want)
+			}
+		})
 	}
 }
 

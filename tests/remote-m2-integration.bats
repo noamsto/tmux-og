@@ -2620,6 +2620,43 @@ $pane 1" ]; then
 	[ ! -f "$pane_file" ]
 }
 
+# #956: a wrapper script keeps bash as the pane's foreground command while the
+# agent runs as its child, so pane_current_command (and therefore the locally
+# shipped @bridge_proc before this fix) reads the shell. The remote resource
+# poller stamps the pane's process-tree agent on @og_pane_agent; the daemon must
+# resolve @bridge_proc to it, because the mirror's process icon and the bridge's
+# ctrl+v image-paste gate both read @bridge_proc and a shell value made ctrl+v
+# fall through to the remote clipboard.
+@test "daemon resolves @bridge_proc to the remote pane's tree agent" {
+	$SRC new-session -d -s rem -x 120 -y 34
+	$DST new-session -d -s host-sess -x 120 -y 34
+
+	remote_pane="$($SRC list-panes -t rem -F '#{pane_id}')"
+	# Stand in for the poller's stamp on a wrapper pane: the foreground stays a
+	# shell, the tree agent is claude.
+	$SRC set -p -t "$remote_pane" @og_pane_agent claude
+
+	bridge_up 1 wrapproc
+
+	local_pane="$($DST list-panes -t host-sess:1 -F '#{pane_id}')"
+	bridge_proc=""
+	for _ in $(seq 1 50); do
+		bridge_proc="$($DST show-options -p -t "$local_pane" -qv @bridge_proc 2>/dev/null || true)"
+		[ "$bridge_proc" = "claude" ] && break
+		sleep 0.2
+	done
+
+	remote_proc="$($SRC list-panes -t rem -F '#{pane_current_command}')"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+
+	# The wrapper premise: the remote's foreground command is the shell, not the
+	# agent, so the resolved value can only have come from @og_pane_agent.
+	[ "$remote_proc" != "claude" ]
+	[ "$bridge_proc" = "claude" ]
+}
+
 # The daemon is the sole producer of the @bridge_* window namespace: it polls
 # the remote's window options and stamps sanitized copies onto the mirrors. It
 # never writes @crew_*/@window_label_*/@pr_*, which tmux-reflow-windows owns on
