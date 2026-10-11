@@ -1831,6 +1831,126 @@ func TestEnrichRefreshVerbNeverOverlaysPane(t *testing.T) {
 	}
 }
 
+// The enrich card's [r] on a mirrored window whose remote checkout is gone: both
+// @worktree and @git_root are empty, and the body used to exit before the poller
+// ever ran (#958). It must fall back to the window's own well-formed @pr_url —
+// with an argv an unrebuilt remote's poller cannot misread: no --branch and no
+// --force, or that older poller (which drops unknown flags) enters its
+// single-target mode on the branch alone, runs gh in the remote tmux server's cwd
+// and writes another repo's PR onto the window (#598, the case the sibling test
+// guards). The poller's own --url mode has bats coverage; what this pins is the
+// routing the daemon owns.
+func TestEnrichRefreshVerbFallsBackToTheUrlWithoutACheckout(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	const url = "https://github.com/acme/widgets/pull/42"
+	tests := []struct {
+		name   string
+		branch string
+		prURL  string
+		ran    bool
+	}{
+		{"well-formed url without a checkout refreshes by url", "b", url, true},
+		{"a malformed url runs nothing", "b", "https://example.com/pull/42", false},
+		{"a non-numeric pr number runs nothing", "b", "https://github.com/acme/widgets/pull/4x", false},
+		{"an empty owner or repo segment runs nothing", "b", "https://github.com//widgets/pull/42", false},
+		{"a trailing segment runs nothing", "b", "https://github.com/acme/widgets/pull/42/extra", false},
+		{"a non-https url runs nothing", "b", "http://github.com/acme/widgets/pull/42", false},
+		{"no url runs nothing", "b", "", false},
+		{"no branch runs nothing", "", url, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			binDir := filepath.Join(dir, "bin")
+			if err := os.Mkdir(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			argvFile := filepath.Join(dir, "argv")
+			writeStub(t, filepath.Join(binDir, "tmux-pr-enrich"),
+				"#!/bin/sh\nprintf '%s\\n' \"$*\" >>\""+argvFile+"\"\n")
+
+			tmux := startIsolatedTmux(t, "PATH="+binDir+":"+filepath.Dir(tmuxPath))
+			paneOut, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			pane := strings.TrimSpace(string(paneOut))
+			winOut, err := tmux("display-message", "-p", "-t", "w", "#{window_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			win := strings.TrimSpace(string(winOut))
+
+			if tc.branch != "" {
+				if out, err := tmux("set-option", "-w", "-t", win, "@branch", tc.branch).CombinedOutput(); err != nil {
+					t.Fatalf("set-option @branch: %v\n%s", err, out)
+				}
+			}
+			if tc.prURL != "" {
+				if out, err := tmux("set-option", "-w", "-t", win, "@pr_url", tc.prURL).CombinedOutput(); err != nil {
+					t.Fatalf("set-option @pr_url: %v\n%s", err, out)
+				}
+			}
+			// No @worktree and no @git_root: the checkout is gone.
+
+			cmds, err := verbs["enrich-refresh"].build(pane, win, "w", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cmds) != 1 {
+				t.Fatalf("want one command, got %v", cmds)
+			}
+			conf := filepath.Join(dir, "cmd.conf")
+			if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+				t.Fatalf("source-file: %v\n%s", err, out)
+			}
+
+			// run-shell -b is asynchronous: poll for the stub, and give a case
+			// that must not run one the same one-second window the sibling test
+			// gives its no-poller case, so "never ran" means never, not "not
+			// yet".
+			if tc.ran {
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(argvFile); err == nil {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+			} else {
+				time.Sleep(time.Second)
+			}
+			got, _ := os.ReadFile(argvFile)
+			if !tc.ran {
+				if len(got) != 0 {
+					t.Fatalf("tmux-pr-enrich ran with %q, want no invocation", strings.TrimSpace(string(got)))
+				}
+				return
+			}
+			line := strings.TrimSpace(string(got))
+			if line == "" {
+				t.Fatalf("tmux-pr-enrich never ran: a gone checkout with a well-formed @pr_url must refresh by url")
+			}
+			for _, want := range []string{"--target " + win, "--url " + tc.prURL} {
+				if !strings.Contains(line, want) {
+					t.Errorf("argv %q missing %q", line, want)
+				}
+			}
+			for _, bad := range []string{"--branch", "--dir", "--force"} {
+				if strings.Contains(line, bad) {
+					t.Errorf("argv %q carries %s: an older poller would take its wrong-cwd path", line, bad)
+				}
+			}
+		})
+	}
+}
+
 // parseCtl refuses a pane it cannot map to a window, and the refusal reaches the
 // user as a --display-error banner — so a gesture inside a mirrored float has to
 // resolve from the moment the float exists. Two windows in the mapping: the

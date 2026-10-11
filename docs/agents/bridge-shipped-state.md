@@ -782,4 +782,8 @@ ships the remote window's own label state across instead.
   remote. `[r]` in a mirror sends the `enrich-refresh` verb synchronously and
   flashes the ctl's real outcome; a mirror with no ctl handle reads
   `[r] no bridge`.
+  On the remote that verb refreshes the window from its checkout when it has
+  one, and from the window's well-formed `@pr_url` by url when the checkout is
+  gone (#958); the mirror card only ever sees the result, carried home as
+  `@bridge_pr_*`.
 

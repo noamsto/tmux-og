@@ -167,3 +167,40 @@ gone_window() {
 	[ "$(tmux show-options -t "$WIN" -wqv @pr_state)" = open ]
 	[ ! -s "$GH_LOG" ]
 }
+
+# The mirror's [r] reaches the poller's --url mode (enrich-refresh in the
+# daemon): the remote window has no checkout dir, so the url is the only repo
+# context. The mode reads the window's own @branch — the daemon deliberately
+# puts neither --branch nor --force on the wire, so an unrebuilt remote's poller
+# cannot enter its empty-dir single-target path (#958).
+@test "single-target --url refreshes a gone-checkout window from the url" {
+	tmux set-option -t "$WIN" -w @branch feat/x
+	tmux set-option -t "$WIN" -w @pr_url "$PR_URL"
+	run bash "$PR_ENRICH_SCRIPT" --target "$WIN" --url "$PR_URL"
+	[ "$status" -eq 0 ]
+	[ "$(tmux show-options -t "$WIN" -wqv @pr_state)" = merged ]
+	[ "$(tmux show-options -t "$WIN" -wqv @pr_number)" = 42 ]
+	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 1 ]
+}
+
+@test "single-target --url rejects a url that is not the exact PR shape" {
+	tmux set-option -t "$WIN" -w @branch feat/x
+	tmux set-option -t "$WIN" -w @pr_state open
+	local u
+	for u in https://example.com/pull/42 https://github.com/acme/widgets/pull/4x; do
+		tmux set-option -t "$WIN" -w @pr_url "$u"
+		run bash "$PR_ENRICH_SCRIPT" --target "$WIN" --url "$u"
+		[ "$status" -eq 0 ]
+		[ "$(tmux show-options -t "$WIN" -wqv @pr_state)" = open ]
+	done
+	[ ! -s "$GH_LOG" ]
+}
+
+@test "single-target --url on a mirror window stays skipped" {
+	tmux set-option -t "$WIN" -w @branch feat/x
+	tmux set-option -t "$WIN" -w @pr_url "$PR_URL"
+	tmux set-option -t "$WIN" -w @bridge_win 1
+	run bash "$PR_ENRICH_SCRIPT" --target "$WIN" --url "$PR_URL"
+	[ "$status" -eq 0 ]
+	[ ! -s "$GH_LOG" ]
+}

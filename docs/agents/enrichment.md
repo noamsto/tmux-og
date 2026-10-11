@@ -28,11 +28,16 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   the card reads the bridged `@bridge_*` state and `r` routes to the remote via
   the `enrich-refresh` ctl verb, since the local poller refuses a `@bridge_win`
   target outright (see "Remote Window Labels" in `bridge-shipped-state.md`, #598).
+  That verb refreshes the remote window from its checkout, or — with the
+  checkout gone — from the window's well-formed `@pr_url` through the poller's
+  `--url` mode (#958).
 - **Refresh:** `prRefreshSeconds` (default 120, clamped 10-300) gates fast PR
   identity polling. `prCheckRefreshSeconds` (default 300, clamped 10-300)
   separately gates the more expensive CI-rollup query; `r` refreshes both for
   the current window immediately. PR state is cached at `/tmp/og-pr/`
-  (60s TTL). A repo whose last applied rollup was still pending re-polls
+  (60s TTL) — except the `--url` mode a gone checkout reaches (#958, the
+  mirror's `[r]`), which refetches regardless: it is the on-demand path, so a
+  cached answer must not be served in its place. A repo whose last applied rollup was still pending re-polls
   checks alone via the `--tick-run-pending` pass, so a running check suite
   doesn't sit stale for a whole `prCheckRefreshSeconds` window. The fast
   cadence is stepped and bounded: 30s for the first 10 minutes of a pending

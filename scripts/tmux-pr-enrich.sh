@@ -6,6 +6,9 @@
 #                           TTL); D is a checkout dir giving gh its repo context
 #                           — when D no longer resolves a repo, a well-formed
 #                           @pr_url refreshes the window by url instead
+#   --target T --url U      refresh one window from its PR url: the checkout is
+#                           gone, so the url names the repo and the window's own
+#                           @branch tags the data (the mirror's [r], #958)
 #   --mock-* ...            write mock @pr_* options directly (no gh), for tests
 # Always exits 0. Writes @pr_number @pr_title @pr_state @pr_check_state @pr_url
 # @pr_mergeable @pr_draft @pr_branch @pr_review @pr_auto_merge @pr_check_progress.
@@ -71,7 +74,7 @@ NOTIFY_BIN="${OG_NOTIFY_BIN:-@notify@}"
 
 # --- arg parse ---
 mode="tick"
-target="" branch="" dir="" force=0
+target="" branch="" dir="" url="" force=0
 mock_number="" mock_state="" mock_check="" mock_title="" mock_url="" mock_mergeable="" mock_draft=""
 mock_review="" mock_auto_merge="" mock_progress=""
 while (($#)); do
@@ -89,6 +92,10 @@ while (($#)); do
 		;;
 	--dir)
 		dir="$2"
+		shift
+		;;
+	--url)
+		url="$2"
 		shift
 		;;
 	--force) force=1 ;;
@@ -701,6 +708,26 @@ fi
 if [[ $mode == "tickrunpending" ]]; then
 	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
 	run_full_pass 1
+	exit 0
+fi
+
+# --- url mode (single-target): --target T --url U ---
+# The window's checkout is gone (@worktree/@git_root empty), so its own @pr_url is
+# the only repo context left and `gh pr view <url>` needs no dir. The mirror's [r]
+# reaches this through the daemon's enrich-refresh ctl verb (#958). The wire
+# carries no --branch and no --force: an unrebuilt remote's poller drops the
+# unknown --url, and --branch with an empty --dir sends it into the single-target
+# path that runs gh in the tmux server's cwd, writing another repo's PR onto the
+# window (#598). So the mode tags with the window's own @branch, and refetches
+# regardless of TTL — it is the on-demand path, so a cached answer must not be
+# served in its place.
+if [[ -n $target && -n $url ]]; then
+	[[ $url =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || exit 0
+	[[ $(tmux show-options -t "$target" -wqv @bridge_win 2>/dev/null) == 1 ]] && exit 0
+	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
+	bt="$(tmux show-options -t "$target" -wqv @branch 2>/dev/null)"
+	force=1
+	refresh_url_pr "$url" "$target|$bt"
 	exit 0
 fi
 
