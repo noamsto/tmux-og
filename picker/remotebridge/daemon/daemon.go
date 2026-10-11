@@ -2090,21 +2090,6 @@ func (q *asyncQueue) holdsLayoutChange() bool {
 	return false
 }
 
-// coalesceLayoutChanges collapses a burst of %layout-change notifications for
-// the same window into just the last one. reconcileLayoutFrom reads the
-// surviving line's own Args, so only the last notification for a given window
-// in an already-buffered batch can still matter — a resize drag can otherwise
-// queue many of these while a single reconcile call's own round-trips are in
-// flight, and dispatching each one individually would pay for N-1 redundant
-// readLayout round-trips before reconcileLayoutFrom's own gates, or
-// reconcileLayout's dedup behind them, even get a chance to discard them.
-// Every other notification kind, and the relative order of what survives, is
-// left untouched.
-func coalesceLayoutChanges(lines []controlmode.Line) []controlmode.Line {
-	out, _ := coalesceLayoutBursts(lines)
-	return out
-}
-
 // lineReader is the control stream as its consumers see it: one blocking read
 // that ends with the stream. Both *controlmode.Reader and *ctlPump satisfy it.
 type lineReader interface {

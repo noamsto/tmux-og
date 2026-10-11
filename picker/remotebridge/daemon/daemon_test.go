@@ -220,7 +220,7 @@ func TestReadReplyRoutingQueuesNotifications(t *testing.T) {
 // queue many %layout-change notifications for the same window while a single
 // reconcile call's own round-trips are in flight. reconcileLayoutFrom reads
 // the surviving line's own Args, so only the last queued notification per
-// window can still matter — coalesceLayoutChanges must drop the rest, keep
+// window can still matter — coalesceLayoutBursts must drop the rest, keep
 // the survivor's Args intact, and leave every other notification kind, and
 // the relative order of what survives, untouched.
 func TestCoalesceLayoutChangesKeepsLastPerWindow(t *testing.T) {
@@ -231,7 +231,7 @@ func TestCoalesceLayoutChangesKeepsLastPerWindow(t *testing.T) {
 		{Kind: controlmode.LayoutChange, Args: []string{"@1", "last-layout", "last-visible", "*Z"}, Data: []byte("last")},
 	}
 
-	got := coalesceLayoutChanges(lines)
+	got, _ := coalesceLayoutBursts(lines)
 
 	want := []controlmode.Line{
 		{Kind: controlmode.WindowRenamed, Args: []string{"@3"}, Data: []byte("renamed")},
@@ -239,7 +239,7 @@ func TestCoalesceLayoutChangesKeepsLastPerWindow(t *testing.T) {
 		{Kind: controlmode.LayoutChange, Args: []string{"@1", "last-layout", "last-visible", "*Z"}, Data: []byte("last")},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("coalesceLayoutChanges = %+v, want %+v", got, want)
+		t.Fatalf("coalesceLayoutBursts = %+v, want %+v", got, want)
 	}
 }
 

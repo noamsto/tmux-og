@@ -37,8 +37,9 @@ func reconcileLayout(cfg Config, w *mirrorWindow, send func(string), router *Rou
 // reconcileLayoutFrom is reconcileLayout for a %layout-change notification,
 // which already carries the unzoomed layout string and the zoom flag. A line
 // that reports nothing the mirror does not already show returns without a
-// round-trip, and a geometry-only reshape enters the pass loop from the line's
-// own layout. Everything else still reads first: a pane-set or float change
+// round-trip (unless the window is marked reshapeOwed, see transientreseed.go),
+// and a geometry-only reshape enters the pass loop from the line's own layout.
+// Everything else still reads first: a pane-set or float change
 // needs the active pane id for focus-follow, and a zoom transition needs the
 // post-command snapshot — window_push_zoom/window_pop_zoom bracket structural
 // commands, so on a zoomed window tmux emits transient unzoomed lines
@@ -116,7 +117,8 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 	// reconcileLayoutFrom after falling through its own gates 1/2 — then pays
 	// only this one cheap readLayout round-trip instead of the FitWindowCmd +
 	// per-pane resize/reseed; a notification that matched reconcileLayoutFrom's
-	// own gate 3 no-op returned before paying even that. L.Raw alone isn't
+	// own gate 3 no-op returned before paying even that (unless the window is
+	// marked reshapeOwed, see transientreseed.go). L.Raw alone isn't
 	// enough for that: it is deliberately the unzoomed geometry (see
 	// readLayout's doc comment), so the zoom flag has to agree too.
 	if L.Raw == w.layout {

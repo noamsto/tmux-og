@@ -6187,16 +6187,22 @@ mirror_of_remote() {
 	[ "$($DST list-sessions -F '#{session_name}' 2>/dev/null | grep -c '^host-sess$' || true)" -eq 0 ]
 }
 
-# m2_first_pane_diff prints "<src pane id> <dst pane id>" for the first pane, in
-# list order, whose capture differs between SRC's rem:1 and DST's host-sess:1,
-# and returns 1 when one does. A pane-count mismatch counts as a difference at
-# the first index only one side has. Panes are paired by list order, not id: the
+# m2_panes_match compares SRC's rem:1 against DST's host-sess:1 pane by pane and
+# returns 0 when every capture is identical. On the first differing pane it
+# prints "<src pane id> <dst pane id>" and returns 1; a pane-count mismatch
+# counts as a difference at the first index only one side has. It returns 2,
+# printing nothing on stdout, when either list-panes comes back empty: no panes
+# is a failed query, never a match. Panes are paired by list order, not id: the
 # mirror's pane ids are its own.
-m2_first_pane_diff() {
+m2_panes_match() {
 	local -a sp dp
 	local i
 	mapfile -t sp < <($SRC list-panes -t rem:1 -F '#{pane_id}')
 	mapfile -t dp < <($DST list-panes -t host-sess:1 -F '#{pane_id}')
+	((${#sp[@]} > 0 && ${#dp[@]} > 0)) || {
+		echo 'list-panes failed' >&2
+		return 2
+	}
 	for ((i = 0; i < ${#sp[@]} || i < ${#dp[@]}; i++)); do
 		if [ "$($SRC capture-pane -p -t "${sp[i]:-}" 2>/dev/null)" != "$($DST capture-pane -p -t "${dp[i]:-}" 2>/dev/null)" ]; then
 			printf '%s %s\n' "${sp[i]:-none}" "${dp[i]:-none}"
@@ -6245,6 +6251,7 @@ m2_first_pane_diff() {
 	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
 		--session rem --window 1 --local-sess host-sess \
 		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/d951.sock" \
+		--pause-after 0 \
 		>"$BATS_TEST_TMPDIR/d951.log" 2>&1 &
 	daemon_pid=$!
 
@@ -6260,12 +6267,15 @@ m2_first_pane_diff() {
 	# Let the initial paint reach the mirror before stalling the daemon, so the
 	# stall begins from an identical pair.
 	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	rc=1
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		m2_first_pane_diff >/dev/null && break
+		rc=0
+		m2_panes_match >/dev/null || rc=$?
+		[ "$rc" -eq 0 ] && break
 		sleep 0.1
 	done
-	if ! m2_first_pane_diff >/dev/null; then
-		echo "mirror never matched the remote before the stall (${BRIDGE_UP_BUDGET_SECS}s)" >&3
+	if [ "$rc" -ne 0 ]; then
+		echo "mirror never matched the remote before the stall (${BRIDGE_UP_BUDGET_SECS}s, m2_panes_match rc=$rc)" >&3
 		kill "$daemon_pid" 2>/dev/null || true
 		wait "$daemon_pid" 2>/dev/null || true
 		return 1
@@ -6274,21 +6284,28 @@ m2_first_pane_diff() {
 	# The top-right pane is the half-height one: zooming it grows it, so the
 	# transient size differs from the steady one in both axes.
 	kill -STOP "$daemon_pid"
-	$SRC resize-pane -Z -t rem:1.2
-	sleep 0.4
-	$SRC resize-pane -Z -t rem:1.2
+	zoomed=no
+	$SRC resize-pane -Z -t rem:1.2 && sleep 0.4 && $SRC resize-pane -Z -t rem:1.2 && zoomed=yes
 	sleep 0.4
 	kill -CONT "$daemon_pid"
+	if [ "$zoomed" != yes ]; then
+		echo "the remote zoom out-and-back did not run to completion" >&3
+		kill "$daemon_pid" 2>/dev/null || true
+		wait "$daemon_pid" 2>/dev/null || true
+		return 1
+	fi
 
 	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
 	diff_pair=""
+	rc=1
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		diff_pair="$(m2_first_pane_diff)" && break
+		rc=0
+		diff_pair="$(m2_panes_match)" || rc=$?
+		[ "$rc" -eq 0 ] && break
 		sleep 0.1
 	done
-	if ! m2_first_pane_diff >/dev/null; then
-		diff_pair="$(m2_first_pane_diff)" || true
-		echo "mirror still differs from the remote ${RESIZE_CONVERGE_BUDGET_SECS}s after a zoom out-and-back (SRC ${diff_pair%% *}, DST ${diff_pair##* })" >&3
+	if [ "$rc" -ne 0 ]; then
+		echo "mirror still differs from the remote ${RESIZE_CONVERGE_BUDGET_SECS}s after a zoom out-and-back (m2_panes_match rc=$rc, SRC ${diff_pair%% *}, DST ${diff_pair##* })" >&3
 		echo "--- SRC ${diff_pair%% *} ---" >&3
 		$SRC capture-pane -p -t "${diff_pair%% *}" >&3 2>&1 || true
 		echo "--- DST ${diff_pair##* } ---" >&3

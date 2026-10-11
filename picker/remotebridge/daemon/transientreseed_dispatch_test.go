@@ -9,6 +9,13 @@ import (
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
+// The float layouts below differ from tiledFloatLayout in the float's x alone
+// (floatMovedLayout) or in the tiled split alone (tiledMovedLayout).
+const (
+	floatMovedLayout = "9999,190x45,0,0{95x45,0,0,0,94x45,96,0,1,18x6,40,6,9}<18x6,40,6,9>"
+	tiledMovedLayout = "9999,190x45,0,0{90x45,0,0,0,99x45,91,0,1,18x6,11,6,9}<18x6,11,6,9>"
+)
+
 // burstKeys returns the out indices coalesceLayoutBursts flagged, sorted.
 func burstKeys(burst map[int]bool) []int {
 	var keys []int
@@ -39,6 +46,17 @@ func TestCoalesceLayoutBurstsFlagsADifferingDroppedNotice(t *testing.T) {
 		{"unparsable, identical", []controlmode.Line{controlmode.ParseLine("%layout-change @1 junk junk"), controlmode.ParseLine("%layout-change @1 junk junk")}, nil},
 		{"unparsable, differing", []controlmode.Line{controlmode.ParseLine("%layout-change @1 junk junk"), controlmode.ParseLine("%layout-change @1 junk other")}, []int{0}},
 		{"single line", []controlmode.Line{noticeLine("@1", a, a, "*")}, nil},
+		{
+			// A float moves no tiled pane, so the mirror owes nothing for it.
+			"float geometry only",
+			[]controlmode.Line{noticeLine("@1", tiledFloatLayout, tiledFloatLayout, "*"), noticeLine("@1", floatMovedLayout, floatMovedLayout, "*")},
+			nil,
+		},
+		{
+			"tiled shape with floats present",
+			[]controlmode.Line{noticeLine("@1", tiledMovedLayout, tiledMovedLayout, "*"), noticeLine("@1", tiledFloatLayout, tiledFloatLayout, "*")},
+			[]int{0},
+		},
 		{
 			// @1's dropped notice differs; @2's is an identical duplicate.
 			"windows do not interfere",
@@ -78,10 +96,12 @@ func TestDrainHandsTheBurstFlagToTheSurvivorOnly(t *testing.T) {
 		a = transientThreePane
 		b = transientFourPane
 	)
+	// The flagged survivor leads three, so an index counted from the wrong end
+	// misses it.
 	async := &asyncQueue{}
 	async.push(noticeLine("@1", b, b, "*"))
-	async.push(controlmode.Line{Kind: controlmode.WindowRenamed, Args: []string{"@1"}, Data: []byte("n")})
 	async.push(noticeLine("@1", a, a, "*"))
+	async.push(controlmode.Line{Kind: controlmode.WindowRenamed, Args: []string{"@1"}, Data: []byte("n")})
 	async.push(noticeLine("@2", a, a, "*"))
 
 	type seen struct {
@@ -96,8 +116,8 @@ func TestDrainHandsTheBurstFlagToTheSurvivorOnly(t *testing.T) {
 	})
 
 	want := []seen{
-		{controlmode.WindowRenamed, "@1", false},
 		{controlmode.LayoutChange, "@1", true},
+		{controlmode.WindowRenamed, "@1", false},
 		{controlmode.LayoutChange, "@2", false},
 	}
 	if !slices.Equal(got, want) {
@@ -207,5 +227,46 @@ func TestDispatchLayoutChangeBurstWithRealReshapeSeedsOnce(t *testing.T) {
 	}
 	if owed {
 		t.Error("reshapeOwed still set after the pass consumed it")
+	}
+}
+
+// A burst of notices that differ only in a float's geometry reaches dispatch
+// unflagged and moves the float alone: no tiled pane is captured.
+func TestDispatchLayoutChangeFloatOnlyBurstSeedsNoTiledPane(t *testing.T) {
+	lines := []controlmode.Line{
+		noticeLine("@1", tiledFloatLayout, tiledFloatLayout, "*"),
+		noticeLine("@1", floatMovedLayout, floatMovedLayout, "*"),
+	}
+	out, burst := coalesceLayoutBursts(lines)
+	if len(out) != 1 || burst[0] {
+		t.Fatalf("coalesced = %d lines, burst = %v, want one unflagged survivor", len(out), burst)
+	}
+
+	router := NewRouter()
+	for _, id := range []string{"%0", "%1", "%9"} {
+		router.Register(id, newOutputSink(drainedPipe(t), nil))
+	}
+	w := shapedMirror(t)
+	w.localFloats["%9"] = "%l9"
+	w.floatGeom["%9"] = float9
+	script := strings.Join([]string{
+		"%begin 1 1 1", "@1 " + floatMovedLayout + " %0 0", "%end 1 1 1", // readLayout: the float moved
+	}, "\n") + "\n" + floatSeedScript(2, "FLOAT")
+	log := &orderedLog{}
+	rt := scriptedRTRouterW(script, router, log)
+	f := &layoutTmux{windowID: "@101\n"}
+
+	if retire := dispatchLayoutChange(f.config(), w, out[0], burst[0], func(string) {}, router, noHellos, newCtlState(), newConverger(), rt); retire {
+		t.Errorf("retire = true, want false")
+	}
+
+	trace := streamText(log)
+	for _, id := range []string{"%0", "%1"} {
+		if strings.Contains(trace, captureCmd(id)) {
+			t.Errorf("captured tiled pane %s, want none for a float-only burst: %q", id, trace)
+		}
+	}
+	if !strings.Contains(trace, captureCmd("%9")) {
+		t.Errorf("trace %q lacks the moved float's repaint, so the test did not reach the float branch", trace)
 	}
 }
