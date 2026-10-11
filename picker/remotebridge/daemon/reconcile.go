@@ -56,6 +56,7 @@ func reconcileLayoutFrom(cfg Config, w *mirrorWindow, l controlmode.Line, send f
 	// A stale pane-set line applied here would split or kill a local pane for
 	// a remote pane the command has already moved past.
 	if !slices.Equal(RemotePaneOrder(L), w.remotePanes) {
+		w.reshapeOwed = true
 		return reconcileLayout(cfg, w, send, router, waitHellos, cst, cv, rt)
 	}
 	if !noFloatWork(w, L) {
@@ -65,10 +66,14 @@ func reconcileLayoutFrom(cfg Config, w *mirrorWindow, l controlmode.Line, send f
 	// unzoom, or the unzoomed line that opens a push/pop-zoom bracket;
 	// only the read's post-command snapshot tells them apart.
 	if n.zoomed != w.appliedZoom {
+		w.reshapeOwed = true
 		return reconcileLayout(cfg, w, send, router, waitHellos, cst, cv, rt)
 	}
 	if L.Raw == w.layout {
-		return false
+		if !w.reshapeOwed {
+			return false
+		}
+		return reconcileLayout(cfg, w, send, router, waitHellos, cst, cv, rt)
 	}
 	// A zoomed reshape needs the active pane for the -Z toggle and the zoomed
 	// pane's dims.
@@ -103,6 +108,8 @@ func reconcileLayoutFrom(cfg Config, w *mirrorWindow, l controlmode.Line, send f
 // holds the registry, and the rebuild goes back through reconcileWindows so the
 // replacement is built by the one path that stamps and names a mirror window.
 func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remoteActive string, zoomed bool, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, cv *converger, rt roundTrip) (retire bool) {
+	owed := w.reshapeOwed
+	w.reshapeOwed = false
 	// Same tiled shape, same zoom state: no tiled pane moved, so the pass loop
 	// below has nothing to do for one. A resize burst or a spurious/duplicate
 	// %layout-change reaching this entry — the read-first one directly, or
@@ -127,6 +134,9 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 				if indexOf(added, remoteActive) >= 0 {
 					focusLocalPane(cfg, cst, w, RemotePaneOrder(L), remoteActive)
 				}
+			}
+			if owed {
+				reseedOwed(w, router, rt, remoteActive, zoomed)
 			}
 			return false
 		}

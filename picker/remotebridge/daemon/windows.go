@@ -46,6 +46,11 @@ type mirrorWindow struct {
 	// window via if -F. Compared against readLayout's remote flag for dedup;
 	// zero value is unzoomed.
 	appliedZoom bool
+	// reshapeOwed records that the remote panes were resized and restored (or the
+	// notices for the intermediate shapes were dropped) since the mirror last
+	// reseeded them, so the next reconcile pass owes a reseed even when it finds
+	// nothing to apply.
+	reshapeOwed bool
 	conns       map[string]net.Conn
 	// spawned reports whether the last setupWindow reached its spawnRenderer
 	// loop — the point after which a kept pane's old renderer is dead

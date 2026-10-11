@@ -6186,3 +6186,118 @@ mirror_of_remote() {
 	wait_daemon_exit ex3 "$BATS_TEST_TMPDIR/ex3.log" 100
 	[ "$($DST list-sessions -F '#{session_name}' 2>/dev/null | grep -c '^host-sess$' || true)" -eq 0 ]
 }
+
+# m2_first_pane_diff prints "<src pane id> <dst pane id>" for the first pane, in
+# list order, whose capture differs between SRC's rem:1 and DST's host-sess:1,
+# and returns 1 when one does. A pane-count mismatch counts as a difference at
+# the first index only one side has. Panes are paired by list order, not id: the
+# mirror's pane ids are its own.
+m2_first_pane_diff() {
+	local -a sp dp
+	local i
+	mapfile -t sp < <($SRC list-panes -t rem:1 -F '#{pane_id}')
+	mapfile -t dp < <($DST list-panes -t host-sess:1 -F '#{pane_id}')
+	for ((i = 0; i < ${#sp[@]} || i < ${#dp[@]}; i++)); do
+		if [ "$($SRC capture-pane -p -t "${sp[i]:-}" 2>/dev/null)" != "$($DST capture-pane -p -t "${dp[i]:-}" 2>/dev/null)" ]; then
+			printf '%s %s\n' "${sp[i]:-none}" "${dp[i]:-none}"
+			return 1
+		fi
+	done
+}
+
+# #951: a remote reshape that goes out and back while the daemon is not reading
+# leaves the mirror panes holding output painted at the transient size. The
+# daemon sees one %layout-change whose ground truth equals what it already
+# applied, so every reconcile path is a no-op and nothing reseeds — a garble
+# that only a real shape change used to repair. SIGSTOP stands in for the
+# stall (tmux-agent-repaint's zoom nudge hits it in production, #883).
+# Each pane draws a full screen once, then on SIGWINCH repaints ONLY row h-2
+# with its size, like an Ink app's partial redraw: the stamp is positioned for
+# the size at the moment of the signal, so a mirror that kept the transient
+# paint cannot match SRC's rows.
+@test "a remote zoom out-and-back while the daemon is stalled leaves the mirror identical" {
+	cat >"$BATS_TEST_TMPDIR/paint.sh" <<-'EOF'
+		full() {
+			local h w r
+			h=$(tput lines)
+			w=$(tput cols)
+			printf '\033[2J'
+			for ((r = 1; r <= h; r++)); do
+				printf '\033[%d;1H%s r%02d %s' "$r" "$TMUX_PANE" "$r" "$(printf '=%.0s' $(seq 1 $((w - 12))))"
+			done
+		}
+		stamp() {
+			local h w
+			h=$(tput lines)
+			w=$(tput cols)
+			printf '\033[%d;1H\033[K%s WINCH %dx%d' "$((h - 2))" "$TMUX_PANE" "$w" "$h"
+		}
+		trap stamp WINCH
+		full
+		while :; do sleep 0.2; done
+	EOF
+	paint="bash $BATS_TEST_TMPDIR/paint.sh"
+	$SRC new-session -d -s rem -x 120 -y 40 "$paint"
+	$SRC split-window -h -t rem:1.1 "$paint"
+	$SRC split-window -v -t rem:1.2 "$paint"
+	$DST new-session -d -s host-sess -x 120 -y 40
+
+	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/d951.sock" \
+		>"$BATS_TEST_TMPDIR/d951.log" 2>&1 &
+	daemon_pid=$!
+
+	want_panes="$($SRC list-panes -s -t rem -F '#{pane_id}' | wc -l)"
+	for _ in $(seq 1 "$(((BRIDGE_UP_BUDGET_SECS + want_panes * BRIDGE_UP_PER_PANE_SECS) * 10))"); do
+		got_panes="$($DST list-panes -s -t host-sess -F '#{pane_current_command}' 2>/dev/null | grep -c "$RENDERER_PROBE")" || got_panes=0
+		[ "$got_panes" -eq "$want_panes" ] && break
+		sleep 0.1
+	done
+	[ "$got_panes" -eq "$want_panes" ] || m2_pane_gate_failed "$BATS_TEST_TMPDIR/d951.log" "$got_panes" "$want_panes"
+	[ "$got_panes" -eq "$want_panes" ]
+
+	# Let the initial paint reach the mirror before stalling the daemon, so the
+	# stall begins from an identical pair.
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		m2_first_pane_diff >/dev/null && break
+		sleep 0.1
+	done
+	if ! m2_first_pane_diff >/dev/null; then
+		echo "mirror never matched the remote before the stall (${BRIDGE_UP_BUDGET_SECS}s)" >&3
+		kill "$daemon_pid" 2>/dev/null || true
+		wait "$daemon_pid" 2>/dev/null || true
+		return 1
+	fi
+
+	# The top-right pane is the half-height one: zooming it grows it, so the
+	# transient size differs from the steady one in both axes.
+	kill -STOP "$daemon_pid"
+	$SRC resize-pane -Z -t rem:1.2
+	sleep 0.4
+	$SRC resize-pane -Z -t rem:1.2
+	sleep 0.4
+	kill -CONT "$daemon_pid"
+
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	diff_pair=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		diff_pair="$(m2_first_pane_diff)" && break
+		sleep 0.1
+	done
+	if ! m2_first_pane_diff >/dev/null; then
+		diff_pair="$(m2_first_pane_diff)" || true
+		echo "mirror still differs from the remote ${RESIZE_CONVERGE_BUDGET_SECS}s after a zoom out-and-back (SRC ${diff_pair%% *}, DST ${diff_pair##* })" >&3
+		echo "--- SRC ${diff_pair%% *} ---" >&3
+		$SRC capture-pane -p -t "${diff_pair%% *}" >&3 2>&1 || true
+		echo "--- DST ${diff_pair##* } ---" >&3
+		$DST capture-pane -p -t "${diff_pair##* }" >&3 2>&1 || true
+		kill "$daemon_pid" 2>/dev/null || true
+		wait "$daemon_pid" 2>/dev/null || true
+		return 1
+	fi
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}

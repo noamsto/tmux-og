@@ -1368,14 +1368,14 @@ func runMirror(cfg Config) error {
 	// or a reply reader queued it while awaiting a reply. It reports whether the
 	// bridge is finished. Only the main loop calls it: several branches run their
 	// own round-trips, which must not nest inside another.
-	dispatch := func(l controlmode.Line) (done bool) {
+	dispatch := func(l controlmode.Line, burst bool) (done bool) {
 		switch l.Kind {
 		case controlmode.Output:
 			router.Route(l.Pane, l.Data)
 		case controlmode.LayoutChange:
 			if len(l.Args) > 0 {
 				if mw, ok := reg.byRemoteID(l.Args[0]); ok {
-					if reconcileLayoutFrom(cfg, mw, l, send, router, waitHellosFn, cst, cv, rt) {
+					if dispatchLayoutChange(cfg, mw, l, burst, send, router, waitHellosFn, cst, cv, rt) {
 						retireMirror(cfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
 					}
 				}
@@ -1546,7 +1546,7 @@ func runMirror(cfg Config) error {
 				// reply — the guarantee nextLine gives the other readers, and what
 				// waitHellos does explicitly for the same reason.
 				claimSeq(l, c.st)
-				if dispatch(l) {
+				if dispatch(l, false) {
 					return connEnd
 				}
 			case hc := <-connCh:
@@ -2063,13 +2063,16 @@ func (q *asyncQueue) push(l controlmode.Line) { q.lines = append(q.lines, l) }
 // dispatch that reports done. Each line leaves the queue only as its own
 // dispatch starts, so a %layout-change behind it is still visible to
 // holdsLayoutChange while that dispatch runs routeWhile. Lines a dispatch
-// queues wait for the next drain.
-func (q *asyncQueue) drain(dispatch func(controlmode.Line) bool) (done bool) {
-	q.lines = coalesceLayoutChanges(q.lines)
-	for n := len(q.lines); n > 0; n-- {
+// queues wait for the next drain. The bool handed to dispatch is
+// coalesceLayoutBursts' burst flag for that line.
+func (q *asyncQueue) drain(dispatch func(controlmode.Line, bool) bool) (done bool) {
+	var burst map[int]bool
+	q.lines, burst = coalesceLayoutBursts(q.lines)
+	total := len(q.lines)
+	for n := total; n > 0; n-- {
 		l := q.lines[0]
 		q.lines = q.lines[1:]
-		if dispatch(l) {
+		if dispatch(l, burst[total-n]) {
 			return true
 		}
 	}
@@ -2098,19 +2101,7 @@ func (q *asyncQueue) holdsLayoutChange() bool {
 // Every other notification kind, and the relative order of what survives, is
 // left untouched.
 func coalesceLayoutChanges(lines []controlmode.Line) []controlmode.Line {
-	last := map[string]int{}
-	for i, l := range lines {
-		if l.Kind == controlmode.LayoutChange && len(l.Args) > 0 {
-			last[l.Args[0]] = i
-		}
-	}
-	out := make([]controlmode.Line, 0, len(lines))
-	for i, l := range lines {
-		if l.Kind == controlmode.LayoutChange && len(l.Args) > 0 && last[l.Args[0]] != i {
-			continue
-		}
-		out = append(out, l)
-	}
+	out, _ := coalesceLayoutBursts(lines)
 	return out
 }
 
