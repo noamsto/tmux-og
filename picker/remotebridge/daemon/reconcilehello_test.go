@@ -126,7 +126,7 @@ func TestApplyPaneOpsRoutesSiblingOutputDuringHelloWait(t *testing.T) {
 	}
 
 	if err := applyPaneOps(cfg, w, paneOps{Append: []string{"%9"}}, L,
-		[]string{"%1"}, []string{"%1", "%9"}, func(string) {}, router, waiter, rt); err != nil {
+		[]string{"%1"}, []string{"%1", "%9"}, func(string) {}, router, newCtlState(), waiter, rt); err != nil {
 		t.Fatalf("applyPaneOps: %v (the wait did not drain the control stream)", err)
 	}
 

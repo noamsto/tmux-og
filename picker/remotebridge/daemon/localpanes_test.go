@@ -114,7 +114,7 @@ func TestApplyPaneOpsTargetsPaneIDsPastAFloat(t *testing.T) {
 	ops := paneOps{Remove: []int{1}}
 
 	err := applyPaneOps(cfg, w, ops, controlmode.Layout{}, remote, []string{"%r1", "%r3"},
-		func(string) {}, NewRouter(), noHellos, nil)
+		func(string) {}, NewRouter(), newCtlState(), noHellos, nil)
 	if err != nil {
 		t.Fatalf("applyPaneOps: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestApplyPaneOpsSwapKeepsLocalPanesParallel(t *testing.T) {
 	ops := paneOps{Swaps: [][2]int{{0, 1}}}
 
 	if err := applyPaneOps(cfg, w, ops, controlmode.Layout{}, []string{"%r1", "%r2"},
-		[]string{"%r2", "%r1"}, func(string) {}, NewRouter(), noHellos, nil); err != nil {
+		[]string{"%r2", "%r1"}, func(string) {}, NewRouter(), newCtlState(), noHellos, nil); err != nil {
 		t.Fatalf("applyPaneOps: %v", err)
 	}
 
@@ -165,6 +165,54 @@ func TestApplyPaneOpsSwapKeepsLocalPanesParallel(t *testing.T) {
 	}
 	if want := []string{"%2", "%1"}; !reflect.DeepEqual(w.localPanes, want) {
 		t.Errorf("localPanes = %v, want %v", w.localPanes, want)
+	}
+}
+
+// A pane that moved to another remote window (#922) must not be unregistered by
+// the source window's reconcile: the destination window has already registered
+// its own sink for that pane id, and deleting it would leave the moved mirror
+// pane frozen on its seed forever. Removing a pane no other window owns still
+// unregisters.
+func TestApplyPaneOpsUnregistersOnlyPanesThisWindowOwns(t *testing.T) {
+	tests := []struct {
+		name     string
+		owner    string
+		wantSink bool
+	}{
+		{"moved to another window keeps the destination's sink", "@2", true},
+		{"gone from this window unregisters", "@1", false},
+		{"no owner recorded unregisters", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got [][]string
+			cfg := recordingCfg("%1 0\n%2 0\n", &got)
+			w := &mirrorWindow{
+				localWin:    "mirror:1",
+				remoteID:    "@1",
+				remotePanes: []string{"%r1", "%r2"},
+				localPanes:  []string{"%1", "%2"},
+				conns:       map[string]net.Conn{},
+			}
+			router := NewRouter()
+			router.Register("%r2", &strings.Builder{})
+			cst := newCtlState()
+			if tc.owner != "" {
+				cst.setWindowPanes(tc.owner, []string{"%r2"})
+			}
+
+			err := applyPaneOps(cfg, w, paneOps{Remove: []int{1}}, controlmode.Layout{},
+				[]string{"%r1", "%r2"}, []string{"%r1"}, func(string) {}, router, cst, noHellos, nil)
+			if err != nil {
+				t.Fatalf("applyPaneOps: %v", err)
+			}
+			router.mu.Lock()
+			_, registered := router.sinks["%r2"]
+			router.mu.Unlock()
+			if registered != tc.wantSink {
+				t.Errorf("sink registered = %v, want %v", registered, tc.wantSink)
+			}
+		})
 	}
 }
 

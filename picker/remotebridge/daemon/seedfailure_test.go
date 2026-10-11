@@ -61,7 +61,7 @@ func twoPaneAppendHarness(t *testing.T, send func(string)) (cfg Config, w *mirro
 	}, "\n") + "\n")
 
 	if err := applyPaneOps(cfg, w, paneOps{Append: []string{"%2"}}, L,
-		[]string{"%1"}, []string{"%1", "%2"}, send, router, waiter, rt); err != nil {
+		[]string{"%1"}, []string{"%1", "%2"}, send, router, newCtlState(), waiter, rt); err != nil {
 		t.Fatalf("applyPaneOps: %v", err)
 	}
 	w.remotePanes = []string{"%1", "%2"}

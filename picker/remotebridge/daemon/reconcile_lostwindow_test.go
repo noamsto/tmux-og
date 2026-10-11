@@ -43,7 +43,7 @@ func TestApplyPaneOpsFailureRetiresAMirrorWhoseWindowIsGone(t *testing.T) {
 
 	ops := paneOps{Append: []string{"%4"}}
 	err := applyPaneOps(cfg, w, ops, controlmode.Layout{}, []string{"%3"}, []string{"%3", "%4"},
-		func(string) {}, NewRouter(), noHellos, nil)
+		func(string) {}, NewRouter(), newCtlState(), noHellos, nil)
 	if err == nil {
 		t.Fatal("applyPaneOps err = nil, want the list-panes failure")
 	}

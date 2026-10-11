@@ -2237,22 +2237,35 @@ remote_pane_of() {
 	src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
 	dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
 
-	# The moved pane maps to exactly ONE local mirror pane, and that pane still
-	# paints remote output: the source window's layout reconcile unregistered the
-	# pane, so a router clobber would freeze the new mirror pane here.
+	# Wait for the whole move to settle: two windows each side, the moved pane
+	# mirrored exactly once, and the mirror session back to one pane per window.
+	# `mapped == 1` means the source window's local pane for the victim is gone,
+	# i.e. the source reconcile (the pass that used to Unregister the pane by id
+	# and kill the sink the new window had just registered) has drained.
+	for _ in $(seq 1 80); do
+		src_w="$($SRC list-windows -t rem -F '#{window_id}' | wc -l)"
+		dst_w="$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)"
+		mapped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' | grep -cx "$victim" || true)"
+		dst_n="$($DST list-panes -s -t host-sess -F '#{pane_id}' | wc -l)"
+		[ "$src_w" -eq 2 ] && [ "$dst_w" -eq 2 ] && [ "$mapped" -eq 1 ] && [ "$dst_n" -eq 2 ] && break
+		sleep 0.15
+	done
+	vp="$($DST list-panes -s -t host-sess -F '#{@bridge_pane} #{pane_id}' | awk -v v="$victim" '$1 == v { print $2 }')"
+
+	# ...and it is still LIVE. A marker sent now is after the source reconcile
+	# drained, so the new window's creation seed, taken before that reconcile,
+	# cannot satisfy it — only a live router sink for the moved pane can. At head
+	# before the ownership check this marker never painted: the source
+	# applyPaneOps Unregistered the pane by id and closed the fresh sink.
 	marker="CTL_BREAK_$$"
 	$SRC send-keys -t "$victim" "printf '$marker\\n'" Enter
-	mapped=0
-	painted=0
+	late_seen=0
 	for _ in $(seq 1 60); do
-		mapped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' | grep -cx "$victim" || true)"
-		painted=0
-		if [ "$mapped" -eq 1 ]; then
-			vp="$($DST list-panes -s -t host-sess -F '#{@bridge_pane} #{pane_id}' | awk -v v="$victim" '$1 == v { print $2 }')"
-			$DST capture-pane -p -t "$vp" 2>/dev/null | grep -q "$marker" && painted=1
-		fi
-		[ "$mapped" -eq 1 ] && [ "$painted" -eq 1 ] && break
-		sleep 0.15
+		$DST capture-pane -p -t "$vp" 2>/dev/null | grep -q "$marker" && {
+			late_seen=1
+			break
+		}
+		sleep 0.1
 	done
 
 	# No orphaned non-mirror local window was left in the mirror session.
@@ -2264,7 +2277,7 @@ remote_pane_of() {
 	[ "$src_w" -eq 2 ]
 	[ "$dst_w" -eq 2 ]
 	[ "$mapped" -eq 1 ]
-	[ "$painted" -eq 1 ]
+	[ "$late_seen" -eq 1 ]
 	[ "$stranding" -eq 0 ]
 }
 

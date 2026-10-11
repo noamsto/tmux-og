@@ -38,7 +38,7 @@ func TestApplyPaneOpsRejectsADesyncedWindow(t *testing.T) {
 
 	ops := paneOps{Remove: []int{1}}
 	err := applyPaneOps(cfg, w, ops, controlmode.Layout{}, []string{"%3", "%4"}, []string{"%3"},
-		func(string) {}, NewRouter(), noHellos, nil)
+		func(string) {}, NewRouter(), newCtlState(), noHellos, nil)
 
 	if !errors.Is(err, errLocalPanesDesynced) {
 		t.Fatalf("err = %v, want errLocalPanesDesynced", err)

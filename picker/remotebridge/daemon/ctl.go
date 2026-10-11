@@ -91,6 +91,19 @@ func (c *ctlState) setWindowPanes(remoteWin string, panes []string) {
 	}
 }
 
+// paneOwner returns the remote window that currently maps a pane, or "" when
+// no window claims it. It is how the layout reconcile tells a pane that was
+// REMOVED (kill-pane) from one that MOVED to another window (break-pane): a
+// `break-pane` schedules both the window and the layout intent, the window
+// reconcile can run first, and by the time the source window removes the pane
+// the destination window has already rewritten this mapping and registered its
+// own sink — unregistering by pane id then would delete that fresh sink.
+func (c *ctlState) paneOwner(remotePane string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paneToWin[remotePane]
+}
+
 // forgetWindow drops a closed window's pane mapping, focus state and pending
 // intent, so a stale commanded entry cannot outlive its window.
 func (c *ctlState) forgetWindow(remoteWin string) {

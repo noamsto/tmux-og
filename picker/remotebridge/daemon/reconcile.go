@@ -153,7 +153,7 @@ passes:
 			// setupWindow re-read the layout and re-shaped the window itself.
 			return false
 		case structural:
-			err := applyPaneOps(cfg, w, ops, L, remote, newRemote, send, router, waitHellos, rt)
+			err := applyPaneOps(cfg, w, ops, L, remote, newRemote, send, router, cst, waitHellos, rt)
 			if errors.Is(err, errLocalPanesDesynced) {
 				fmt.Fprintf(os.Stderr, "daemon: layout-change %s: %v; rebuilding\n", w.remoteID, err)
 				if err := resetWindow(cfg, w, send, router, waitHellos, cst, cv, rt); err != nil {
@@ -532,7 +532,7 @@ func floatCellsEqual(a, b []controlmode.PaneCell) bool {
 // applyPaneOps performs the local pane surgery ops describes: kill the panes
 // whose remote pane is gone, split new ones off the tail and wire a renderer to
 // each, then swap the local panes into the remote's order.
-func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout, remote, newRemote []string, send func(string), router *Router, waitHellos helloWaiter, rt roundTrip) error {
+func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout, remote, newRemote []string, send func(string), router *Router, cst *ctlState, waitHellos helloWaiter, rt roundTrip) error {
 	// tmux is the only authority on what the window holds (see
 	// refreshLocalPanes), and a pane can leave by a route this daemon never
 	// saw — a renderer that died, a local kill, the window picker's ^x. Re-read
@@ -557,7 +557,18 @@ func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout
 	// ids: they survive the kills ahead of them, an ordinal does not.
 	for _, i := range ops.Remove {
 		removed := remote[i]
-		router.Unregister(removed)
+		// A pane that MOVED to another remote window (#922 break-pane) is not gone
+		// — it is the destination window's to render now. The window intent can
+		// drain before this one (a ctl verb's own notifications are folded into
+		// its reply, so settle runs reconcileWindows before the layout loop), and
+		// by then the new window has registered its own sink and rewritten
+		// paneToWin. Unregistering by pane id here would delete that fresh sink and
+		// leave the moved mirror pane frozen on its seed. Only unregister a pane no
+		// other window claims; when the pane really is gone, the owner is still
+		// this window (or nothing).
+		if owner := cst.paneOwner(removed); owner == "" || owner == w.remoteID {
+			router.Unregister(removed)
+		}
 		if c := w.conns[removed]; c != nil {
 			_ = c.Close()
 			delete(w.conns, removed)
