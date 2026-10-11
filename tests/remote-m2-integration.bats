@@ -6011,12 +6011,10 @@ mirror_of_remote() {
 		done
 	done
 
-	state="$($DST show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+	[ "$painted" = yes ]
+	wait_bridge_state "" replydl "$log"
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
-
-	[ "$painted" = yes ]
-	[ -z "$state" ]
 }
 
 # The other half of #900's item 3: the local mirror session goes away while the
