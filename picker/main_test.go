@@ -82,6 +82,7 @@ func TestDecodeBridgeName(t *testing.T) {
 }
 
 func TestSessionHeaderLabelsAndAlignment(t *testing.T) {
+	t.Setenv("HOME", "/home/noams")
 	snap := panesSnapshot{
 		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
 		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src|",
@@ -111,17 +112,14 @@ func TestSessionHeaderLabelsAndAlignment(t *testing.T) {
 	if h, r := col(hdr.plain, iconHost), col(items[2].plain, "tp-g6 "); h != r {
 		t.Errorf("host column starts at %d in the header but %d in the row", h, r)
 	}
-	// The CPU and Mem labels mirror each other around the separator: CPU ends on
-	// its left, Mem starts on its right, reading as one CPU / Mem unit.
-	if !strings.Contains(hdr.plain, "CPU / "+iconMem) {
-		t.Errorf("CPU and Mem labels should flank the separator: %q", hdr.plain)
+	// The CPU and Mem labels mirror each other around the gap: CPU ends on its
+	// left, Mem starts on its right, reading as one CPU/Mem unit.
+	if !strings.Contains(hdr.plain, "CPU  "+iconMem) {
+		t.Errorf("CPU and Mem labels should flank the gap: %q", hdr.plain)
 	}
-	// Both header and rows must agree on where the resource field ends, or Path
-	// drifts: the label moving left may not change the field's width.
-	if h, r := col(hdr.plain, " / "), col(items[1].plain, " / "); h != r {
-		t.Errorf("the ' / ' sits at %d in the header but %d in a row", h, r)
-	}
-	if h, r := col(hdr.plain, iconDir), col(items[1].plain, iconDir); h != r {
+	// Both header and rows must agree on where the resource field and Path
+	// start, or Path drifts: the label moving left may not change the width.
+	if h, r := col(hdr.plain, "Path"), col(items[1].plain, "~/"); h != r {
 		t.Errorf("path column starts at %d in the header but %d in the row", h, r)
 	}
 }
@@ -576,6 +574,68 @@ func TestWindowCursorFallsBackWithoutCurrent(t *testing.T) {
 			if it.current {
 				t.Errorf("id=%q: %q marked current", id, it.target)
 			}
+		}
+	}
+}
+
+// The session list says each thing once: no per-row glyph or separator, one
+// host signal, and idle cells dimmed so real load stands out.
+func TestSessionRowsDeclutter(t *testing.T) {
+	t.Setenv("HOME", "/home/noams")
+	snap := panesSnapshot{
+		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
+		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src|",
+	}
+	items := buildSessionItems(nil, snap, nil, "dark", false, "")
+	for _, it := range items[1:] {
+		for _, glyph := range []string{iconDir, iconSession, " / "} {
+			if glyph != "" && (strings.Contains(it.plain, glyph) || strings.Contains(it.display, glyph)) {
+				t.Errorf("row %q repeats %q on every row: %q", it.target, glyph, it.plain)
+			}
+		}
+	}
+	local, remote := items[1], items[2]
+	if !strings.Contains(remote.plain, "tp-g6") || strings.Contains(local.plain, "tp-g6") {
+		t.Errorf("only the mirror row names its host: local=%q remote=%q", local.plain, remote.plain)
+	}
+	// One host signal: the name carries the plain session colour, the Host
+	// cell the host colour.
+	mauve := ansiFg("#cba6f7")
+	if !strings.Contains(remote.display, mauve+"money") {
+		t.Errorf("a mirror's name should keep the session colour: %q", remote.display)
+	}
+	if hostColor := hostColorFunc(nil)("tp-g6"); !strings.Contains(remote.display, hostColor+"tp-g6") {
+		t.Errorf("the Host cell should carry the host colour: %q", remote.display)
+	}
+	// Placeholder resources and the path render in the quiet overlay colour.
+	quiet := ansiFg("#6c7086")
+	for _, it := range items[1:] {
+		if !strings.Contains(it.display, quiet+resourcePlaceholder+"\033[0m") {
+			t.Errorf("unknown resources should be dimmed: %q", it.display)
+		}
+	}
+	if !strings.Contains(local.display, quiet+"~/git/tmux-og") {
+		t.Errorf("path should be dimmed: %q", local.display)
+	}
+}
+
+func TestSessionResourceColors(t *testing.T) {
+	quiet, rc := "QUIET", newResourceColors(nil)
+	cases := []struct {
+		name         string
+		s            sessionData
+		known        bool
+		wantCPU, mem string
+	}{
+		{"unmeasured", sessionData{cpuPct: 90, memMB: 5000}, false, quiet, quiet},
+		{"idle and tiny", sessionData{cpuPct: 0, memMB: 13}, true, quiet, quiet},
+		{"real load", sessionData{cpuPct: numCPU * 100, memMB: 5200}, true, rc.crit, rc.crit},
+		{"busy cpu, tiny mem", sessionData{cpuPct: numCPU * 100, memMB: 100}, true, rc.crit, quiet},
+	}
+	for _, c := range cases {
+		cpu, mem := sessionResourceColors(rc, quiet, c.s, c.known)
+		if cpu != c.wantCPU || mem != c.mem {
+			t.Errorf("%s: got cpu=%q mem=%q, want cpu=%q mem=%q", c.name, cpu, mem, c.wantCPU, c.mem)
 		}
 	}
 }
