@@ -35,10 +35,8 @@ const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n ker
 
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full
 // command begins with the identity preamble (machine-id line, username line),
-// then one S|$N|created|name line per session — the id is what a kill targets,
-// and created is #{session_created}, which the kill re-check refuses to act on
-// when the server no longer reports it (#920). The name comes last so it may
-// hold `|`.
+// then one S|$N|created|name line per session — the id a kill targets and the
+// #{session_created} it re-checks first; the name comes last so it may hold `|`.
 var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}'`)
 
 // remoteTmuxBin resolves the remote's tmux without a shell assignment: PATH
@@ -68,12 +66,11 @@ var remoteListSessionsCmd = remoteIdentityPreamble + `; ` + remoteListSessionsBo
 // first of /run/user/<uid>, /tmp whose server answers list-sessions — the
 // probe's own selection rule — and nowhere else. remoteTmuxCmd's `||` would
 // retry a failed kill on the second server and hit an unrelated id there.
-// Before exec it compares the target's live #{session_created} against $3, the
-// probe's value: a server restart renumbers $N, so a mismatch (or a session
-// that no longer answers, which prints empty) is the gone class rather than a
-// kill of whichever session now holds the id (#920). No quote or backslash:
-// the login shell may be fish, which escapes both inside single quotes. One
-// line, so no newline reaches the ssh command.
+// Before exec it compares the target's live #{session_created} against $3 (the
+// probe's value), so a server restart that renumbers $N refuses instead of
+// killing whichever session now holds it (#920). No quote or backslash: the
+// login shell may be fish, which escapes both inside single quotes. One line,
+// so no newline reaches the ssh command.
 const remoteKillScript = `t=$(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux); [ -x "$t" ] || exit 127; for d in /run/user/$(id -u) /tmp; do if env TMUX_TMPDIR=$d "$t" list-sessions >/dev/null 2>&1; then c=$(env TMUX_TMPDIR=$d "$t" display -p -t "$2" "#{session_created}" 2>/dev/null) || exit 1; [ "$c" = "$3" ] || exit 1; exec env TMUX_TMPDIR=$d "$t" "$1" -t "$2"; fi; done; exit 1`
 
 // remoteKillBody wraps remoteKillScript with its probe-validated arguments:

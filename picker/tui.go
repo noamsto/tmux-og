@@ -62,9 +62,9 @@ type listItem struct {
 	remoteWindowID           string            // remote window row: tmux @N of the window on the remote
 	remoteWindowIndex        int               // remote window row: window index on the remote
 	remoteSessionID          string            // remote window row: tmux $N of the owning session; session row: the live probe's (or, for a mirror row, its host row's) $N — the kill targets it instead of the raw name, and a cached row has none
-	remoteSessionCreated     string            // session row: the live probe's #{session_created} for remoteSessionID — the kill refuses when the remote's live value differs, so a server restart can't retarget the id (#920); a cached or pre-#920 row has none
+	remoteSessionCreated     string            // session row: the live probe's #{session_created} for remoteSessionID; the kill refuses when the remote's live value differs, and a cached row has none
 	remoteHostSessionIDs     map[string]string // remote host row: the live probe's session name → $N for every session, bridged included; mirror rows take their kill id from it
-	remoteHostSessionCreated map[string]string // remote host row: the same probe's session name → #{session_created}, which mirror rows take alongside the id (#920's guard needs both, from the same probe so they can't disagree), bridged included; nil off a live probe
+	remoteHostSessionCreated map[string]string // remote host row: the same probe's session name → #{session_created}, which mirror rows take alongside the id (same probe, so the pair can't disagree); nil off a live probe
 	remoteWindowName         string            // remote window row: render-safe window name (remoteDisplayName)
 	remoteLive               bool              // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
 }
@@ -890,9 +890,7 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				targets = []listItem{item}
 			}
 			for _, t := range targets {
-				// A live row carries both the probe's $N and its #{session_created};
-				// the created is the guard that keeps a server restart from
-				// retargeting that id, so a row missing either is not killable.
+				// A live row needs both the probe's $N and the created its kill compares.
 				if t.remoteSessionID == "" || !isDigits(t.remoteSessionCreated) {
 					m.statusMsg = remoteRowLabel(t) + ": no live session id — wait for the probe, then ^x"
 					return m, nil

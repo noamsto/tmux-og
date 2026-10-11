@@ -12,7 +12,7 @@ import (
 // remoteWindow is one window of a remote tmux session. Session is the raw name
 // the launcher's argv needs; ID and SessionID are tmux's @N and $N, which the
 // kill targets instead of any name. SessionCreated is the owning session's
-// #{session_created}, the kill guard's comparison value (#920).
+// #{session_created}, the value a kill compares before it acts.
 type remoteWindow struct {
 	Session        string `json:"session"`
 	SessionID      string `json:"session_id"`
@@ -26,7 +26,7 @@ type remoteWindow struct {
 // command. Each free-text field sits last on its own line kind (S or W), so a
 // name may hold `|`; the window line joins its session by session_id, and the S
 // line carries #{session_created} for the same kill guard the session probe
-// uses (#920). `\;` is a literal `;` argument under both fish and bash.
+// uses. `\;` is a literal `;` argument under both fish and bash.
 var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`)
 
 var remoteListWindowsCmd = remoteIdentityPreamble + `; ` + remoteListWindowsBody
@@ -186,9 +186,8 @@ func forgetRemoteSessionWindowsCache(host, sess string) {
 // @N), so no remote name reaches the login shell; `$sid:@id` resolves only when
 // that window is linked into that session, so a moved or unknown window fails
 // (exit 1, the gone class) instead of killing another one. created is the
-// probe's #{session_created} for $sid: an @N is not reused within one server
-// lifetime, so a renumbered $sid is the only retargeting hazard and the
-// session-scoped check covers it (#920).
+// probe's #{session_created} for $sid, the session-scoped half a restart can
+// renumber (@N is not reused within one server lifetime).
 func remoteKillWindowBody(sessionID, id, created string) string {
 	return remoteKillBody("kill-window", sessionID+":"+id, created)
 }
