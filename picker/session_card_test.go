@@ -21,7 +21,7 @@ func cardWin(idx int, name string, mod func(*windowData)) cardWindow {
 
 func renderTestCard(c sessionCard, width int) []string {
 	c.name = "proj"
-	return strings.Split(stripANSI(renderSessionCard(c, nil, "dark", width, 40, 1060)), "\n")
+	return strings.Split(stripANSI(renderSessionCard(c, nil, "dark", width, 1060)), "\n")
 }
 
 func assertNoWiderThan(t *testing.T, lines []string, width int) {
@@ -70,7 +70,6 @@ func TestSessionCardNeverExceedsNarrowWidth(t *testing.T) {
 			}),
 			cardWin(2, "x", func(w *windowData) { w.agent = agentCounts{waiting: 1} }),
 		},
-		capture: strings.Repeat("wide line ", 20) + "\nsecond",
 	}
 	for _, width := range []int{12, 24, 40, 60} {
 		assertNoWiderThan(t, renderTestCard(c, width), width)
@@ -125,8 +124,8 @@ func TestSessionCardSanitizesHostileText(t *testing.T) {
 		w.bridgeHost = hostile
 	})
 	cw.detail = hostile
-	c := sessionCard{path: hostile, windows: []cardWindow{cw}, capture: "ok\x1b]0;title\x07 line"}
-	out := renderSessionCard(c, nil, "dark", 80, 40, 1060)
+	c := sessionCard{path: hostile, windows: []cardWindow{cw}}
+	out := renderSessionCard(c, nil, "dark", 80, 1060)
 	for _, bad := range []string{"\x1b]", "\x1b[2J", "\u009b", "\x07"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("output carries %q: %q", bad, out)
@@ -134,16 +133,19 @@ func TestSessionCardSanitizesHostileText(t *testing.T) {
 	}
 }
 
-func TestSessionCardTailKeepsBackgroundReset(t *testing.T) {
-	c := sessionCard{windows: []cardWindow{cardWin(1, "w", nil)}, capture: "one\ntwo"}
-	out := renderSessionCard(c, nil, "dark", 40, 40, 1060)
-	if !strings.HasSuffix(out, "\033[49m") {
-		t.Errorf("each tail line ends with the background reset: %q", out)
+func TestSessionCardHasNoActivePaneBlock(t *testing.T) {
+	c := sessionCard{windows: []cardWindow{cardWin(1, "w", nil)}}
+	out := strings.Join(renderTestCard(c, 80), "\n")
+	if strings.Contains(out, "active pane") {
+		t.Errorf("card must not carry an active pane capture: %q", out)
+	}
+	if argv := sessionCardArgv("proj", testSep); slices.Contains(argv, "capture-pane") {
+		t.Errorf("card argv must not capture a pane: %v", argv)
 	}
 }
 
 func TestSessionCardZeroWidthRendersNothing(t *testing.T) {
-	if got := renderSessionCard(sessionCard{}, nil, "dark", 0, 10, 0); got != "" {
+	if got := renderSessionCard(sessionCard{}, nil, "dark", 0, 0); got != "" {
 		t.Errorf("zero width must render nothing, got %q", got)
 	}
 }
@@ -158,7 +160,7 @@ func cardRow(sess string, idx int, name, pane string, extra ...string) string {
 func TestParseSessionCardDropsRowsWithStrayPipes(t *testing.T) {
 	good := cardRow("proj", 1, "good", "%1")
 	bad := strings.Replace(cardRow("proj", 2, "bad", "%2"), "|bad|", "|ba|d|", 1)
-	out := "\n" + good + "\n" + bad + "\n" + testSep + "\n/home/x\n" + testSep + "\ncaptured\n" + testSep + "\nstill capture"
+	out := "\n" + good + "\n" + bad + "\n" + testSep + "\n/home/x"
 	card, panes, ok := parseSessionCard(out[1:], testSep)
 	if !ok || len(card.windows) != 1 || card.windows[0].w.name != "good" {
 		t.Fatalf("only the intact row survives: ok=%v card=%+v", ok, card)
@@ -166,16 +168,13 @@ func TestParseSessionCardDropsRowsWithStrayPipes(t *testing.T) {
 	if card.path != "/home/x" {
 		t.Errorf("path = %q", card.path)
 	}
-	if !strings.Contains(card.capture, "still capture") || !strings.Contains(card.capture, testSep) {
-		t.Errorf("a separator inside the capture must stay in it: %q", card.capture)
-	}
 	if _, ok := panes["1"]; !ok || len(panes) != 1 {
 		t.Errorf("pane map = %v", panes)
 	}
 }
 
 func TestSessionCardArgvIsOneInvocation(t *testing.T) {
-	argv := sessionCardArgv("proj", "%9", testSep)
+	argv := sessionCardArgv("proj", testSep)
 	count := func(cmd string) int {
 		n := 0
 		for i, a := range argv {
@@ -185,8 +184,8 @@ func TestSessionCardArgvIsOneInvocation(t *testing.T) {
 		}
 		return n
 	}
-	if count("list-panes") != 1 || count("capture-pane") != 1 {
-		t.Errorf("want one list-panes and one capture-pane: %v", argv)
+	if count("list-panes") != 1 || count("capture-pane") != 0 {
+		t.Errorf("want one list-panes and no capture-pane: %v", argv)
 	}
 	if !slices.Contains(argv, "=proj:") || !slices.Contains(argv, notModalFilter) {
 		t.Errorf("session must be addressed exactly and modal panes filtered: %v", argv)
@@ -201,7 +200,7 @@ func TestLoadPreviewRoutesSessionRowsThroughOneTmuxCall(t *testing.T) {
 	cardRun = func(argv []string) ([]byte, error) {
 		calls = append(calls, argv)
 		sep := argv[slices.IndexFunc(argv, func(a string) bool { return strings.HasPrefix(a, "@@og-card-") })]
-		return []byte("\n" + cardRow("proj", 1, "w", "%1") + "\n" + sep + "\n/p\n" + sep + "\ntail"), nil
+		return []byte("\n" + cardRow("proj", 1, "w", "%1") + "\n" + sep + "\n/p"), nil
 	}
 	captures := 0
 	previewCapture = func(string) ([]byte, error) { captures++; return []byte("plain"), nil }
@@ -212,8 +211,11 @@ func TestLoadPreviewRoutesSessionRowsThroughOneTmuxCall(t *testing.T) {
 	if !ok || !strings.Contains(stripANSI(pm.content), "1 window") || !pm.scrollTop {
 		t.Fatalf("session row should preview as a card: %#v", msg)
 	}
+	if strings.Contains(pm.content, "active pane") {
+		t.Errorf("card must not carry an active pane block: %q", pm.content)
+	}
 	if len(calls) == 1 && !slices.Contains(calls[0], "=proj:") {
-		t.Errorf("capture and roster must both target =proj: %v", calls[0])
+		t.Errorf("roster must target =proj: %v", calls[0])
 	}
 	if len(calls) != 1 || captures != 0 {
 		t.Errorf("one tmux call, no separate capture: calls=%d captures=%d", len(calls), captures)
@@ -253,10 +255,10 @@ func TestParseSessionCardIgnoresForgedSeparatorInPath(t *testing.T) {
 	// count, so the row is dropped and cannot move the sections.
 	guess := "@@og-card-guess@@"
 	evil := strings.Replace(cardRow("proj", 2, "evil", "%2"), "|zsh|", "|zsh|x\n"+guess+"\nA\n"+guess+"\n\x1b[2J|", 1)
-	out := good + "\n" + evil + "\n" + testSep + "\n/p\n" + testSep + "\ntail"
+	out := good + "\n" + evil + "\n" + testSep + "\n/p"
 	card, _, ok := parseSessionCard(out, testSep)
-	if !ok || len(card.windows) != 1 || card.path != "/p" || card.capture != "tail" {
-		t.Errorf("forged separator must not move sections: ok=%v path=%q capture=%q windows=%d", ok, card.path, card.capture, len(card.windows))
+	if !ok || len(card.windows) != 1 || card.path != "/p" {
+		t.Errorf("forged separator must not move sections: ok=%v path=%q windows=%d", ok, card.path, len(card.windows))
 	}
 }
 
@@ -266,7 +268,7 @@ func TestParseSessionCardDropsRowsWithEscapes(t *testing.T) {
 	if n := len(strings.Split(esc, "|")); n != cardRowFields {
 		t.Fatalf("fixture must keep the field count, got %d", n)
 	}
-	out := good + "\n" + esc + "\n" + testSep + "\n/p\n" + testSep + "\ntail"
+	out := good + "\n" + esc + "\n" + testSep + "\n/p"
 	card, _, ok := parseSessionCard(out, testSep)
 	if !ok || len(card.windows) != 1 || card.windows[0].w.name != "good" {
 		t.Errorf("an escape-bearing row is dropped, its sibling kept: ok=%v %+v", ok, card.windows)
@@ -320,7 +322,7 @@ func TestParseSessionCardMirrorPathAndActivity(t *testing.T) {
 	f[19] = "1"         // @bridge_win
 	f[36] = "/remote/p" // @bridge_session_path
 	f[38] = "900"
-	out := "\n" + strings.Join(f, "|") + "\n" + testSep + "\n/local/cwd\n" + testSep + "\n"
+	out := "\n" + strings.Join(f, "|") + "\n" + testSep + "\n/local/cwd"
 	card, _, ok := parseSessionCard(out, testSep)
 	if !ok || card.path != "/remote/p" || card.windows[0].activity != 900 {
 		t.Errorf("mirror path/activity wrong: ok=%v %+v", ok, card)
