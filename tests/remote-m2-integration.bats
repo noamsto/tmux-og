@@ -2254,9 +2254,7 @@ remote_pane_of() {
 
 	# ...and it is still LIVE. A marker sent now is after the source reconcile
 	# drained, so the new window's creation seed, taken before that reconcile,
-	# cannot satisfy it — only a live router sink for the moved pane can. At head
-	# before the ownership check this marker never painted: the source
-	# applyPaneOps Unregistered the pane by id and closed the fresh sink.
+	# cannot satisfy it — only a live router sink for the moved pane can.
 	marker="CTL_BREAK_$$"
 	$SRC send-keys -t "$victim" "printf '$marker\\n'" Enter
 	late_seen=0
