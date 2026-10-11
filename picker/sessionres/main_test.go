@@ -137,6 +137,26 @@ func TestParsePaneRows(t *testing.T) {
 	}
 }
 
+// paneAgentMap is the producer's per-pane resolution: every pane in the root
+// set gets an entry, and a pane whose tree carries no agent maps to "" — that
+// empty entry is what makes paneAgentArgv emit the UNSET that clears a stale
+// @og_pane_agent after the agent exits. A map that omits agentless panes (the
+// bug this test pins) leaves the option set and the daemon reading the pane as
+// an agent indefinitely.
+func TestPaneAgentMap(t *testing.T) {
+	ps := strings.Join([]string{
+		"  PID  PPID %CPU   RSS COMMAND",
+		"  100     1  0.0   512 fish",
+		"  200   100  1.0 65536 claude",
+		"  300     1  0.0   512 fish",
+	}, "\n")
+	got := paneAgentMap(map[string][]int{"%1": {100}, "%2": {300}}, ps)
+	want := map[string]string{"%1": "claude", "%2": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("paneAgentMap() = %v, want %v (an agentless pane must be present so it can be unset)", got, want)
+	}
+}
+
 // paneAgentArgv is the per-pane half of the stamp: a pane whose tree carries an
 // agent gets the agent name, a pane with none is UNSET so a stale value cannot
 // keep a shell pane reading as an agent, and the order is deterministic.

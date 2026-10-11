@@ -98,6 +98,9 @@ res_stamped() {
 	[[ $(t display-message -p -t "$1" '#{@og_session_res}') =~ ^[0-9]+\.[0-9]\ [0-9]+\ [0-9]+\ [0-9]+\ [a-z0-9,.-]+$ ]]
 }
 pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
+# pane_agent_is <target> <name>: the poller's per-pane tree-agent stamp.
+pane_agent_is() { [ "$(t display-message -p -t "$1" '#{@og_pane_agent}')" = "$2" ]; }
+pane_agent_absent() { [ -z "$(t display-message -p -t "$1" '#{@og_pane_agent}')" ]; }
 
 @test "all five tick hooks register via show-hooks -g -B" {
 	# show-hooks -g alone prints a monitor's COMMAND with no indication it is
@@ -188,6 +191,36 @@ pane_pipe_armed() { [ "$(t display-message -p -t "$1" '#{pane_pipe}')" = 1 ]; }
 	chmod +x "$BATS_TEST_TMPDIR/claude"
 	t new-window -t s:99 -c "$PWD" -- "$BATS_TEST_TMPDIR/claude" -c 'read x'
 	wait_for 20 pane_pipe_armed s:99
+}
+
+@test "pane agent stamp is wrapper-aware and clears when the agent exits" {
+	# The reported #956 shape: a wrapper keeps a shell as the pane's foreground
+	# command while the agent runs as its child. The poller must find the agent
+	# in the process tree, and must UNSET @og_pane_agent once the agent exits
+	# even though the shell stays — an agentless pane omitted from the stamp map
+	# leaves the option stale, which is exactly what kept the bridge's paste
+	# gate reading a plain shell as an agent.
+	cp -L "$(command -v bash)" "$BATS_TEST_TMPDIR/claude"
+	chmod +x "$BATS_TEST_TMPDIR/claude"
+	cat >"$BATS_TEST_TMPDIR/wrap" <<-EOF
+		#!/bin/sh
+		"$BATS_TEST_TMPDIR/claude" -c 'read -t 6 x'
+		read x
+	EOF
+	chmod +x "$BATS_TEST_TMPDIR/wrap"
+	t new-window -t s:98 -c "$PWD" -- sh "$BATS_TEST_TMPDIR/wrap"
+
+	# The poller's own gate is a control client attached to the server (#603).
+	coproc CTL { "$TMUX_BIN" -L "$SOCKET" -C attach-session -t s; }
+
+	local pane
+	pane=$(t list-panes -t s:98 -F '#{pane_id}')
+	# The wrapper premise: the foreground command is the shell, not the agent.
+	[[ $(t display-message -p -t "$pane" '#{pane_current_command}') != claude ]]
+	# A pass lands within one monitor period, before the 6s child exits.
+	wait_for 20 pane_agent_is "$pane" claude
+	# The child is gone by now and the shell remains: the stamp must clear.
+	wait_for 30 pane_agent_absent "$pane"
 }
 
 @test "upstream assumption: a status-format #() job never expands for a control-mode client, only for a real one" {

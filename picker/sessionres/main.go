@@ -91,13 +91,8 @@ func main() {
 	}
 	// A second, per-pane aggregate over the same ps table: the session rows
 	// keep their exact meaning, and each pane gets the agent its own tree
-	// carries. AgentCmds is sorted and deduped per root, so [0] is stable.
-	paneAgents := make(map[string]string)
-	for pane, t := range proctree.Aggregate(paneRoots, string(ps)) {
-		if len(t.AgentCmds) > 0 {
-			paneAgents[pane] = t.AgentCmds[0]
-		}
-	}
+	// carries.
+	paneAgents := paneAgentMap(paneRoots, string(ps))
 	argv := setOptionArgv(rows)
 	paneArgv := paneAgentArgv(paneAgents)
 	if len(argv) > 0 && len(paneArgv) > 0 {
@@ -165,6 +160,26 @@ func parsePaneRows(out string) []paneRow {
 		rows = append(rows, paneRow{session: parts[0], pane: parts[1], pid: pid})
 	}
 	return rows
+}
+
+// paneAgentMap resolves each pane's tree agent over one ps table: the first of
+// AgentCmds (already sorted and deduped by Aggregate), or "" when the tree
+// carries no agent. EVERY pane in paneRoots gets an entry, empty ones included
+// — that is what lets paneAgentArgv UNSET a pane that lost its agent, rather
+// than omitting it and leaving a stale @og_pane_agent the daemon keeps reading
+// as an agent after the process is gone.
+func paneAgentMap(paneRoots map[string][]int, psOut string) map[string]string {
+	found := make(map[string]string)
+	for pane, t := range proctree.Aggregate(paneRoots, psOut) {
+		if len(t.AgentCmds) > 0 {
+			found[pane] = t.AgentCmds[0]
+		}
+	}
+	out := make(map[string]string, len(paneRoots))
+	for pane := range paneRoots {
+		out[pane] = found[pane]
+	}
+	return out
 }
 
 // paneAgentArgv batches every pane's tree-agent stamp into one tmux argv,
