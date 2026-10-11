@@ -45,6 +45,7 @@ func TestCoalesceLayoutBurstsFlagsADifferingDroppedNotice(t *testing.T) {
 		{"zoom flag only", []controlmode.Line{noticeLine("@1", a, a, "*Z"), noticeLine("@1", a, a, "*")}, []int{0}},
 		{"unparsable, identical", []controlmode.Line{controlmode.ParseLine("%layout-change @1 junk junk"), controlmode.ParseLine("%layout-change @1 junk junk")}, nil},
 		{"unparsable, differing", []controlmode.Line{controlmode.ParseLine("%layout-change @1 junk junk"), controlmode.ParseLine("%layout-change @1 junk other")}, []int{0}},
+		{"shaped but unparsable, differing", []controlmode.Line{noticeLine("@1", "abcd,junk", "abcd,junk", "*"), noticeLine("@1", "abcd,other", "abcd,other", "*")}, []int{0}},
 		{"single line", []controlmode.Line{noticeLine("@1", a, a, "*")}, nil},
 		{
 			// A float moves no tiled pane, so the mirror owes nothing for it.

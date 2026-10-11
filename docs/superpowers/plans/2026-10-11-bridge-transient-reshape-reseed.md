@@ -2,7 +2,7 @@
 
 Spec (accepted by spec-critic): artifacts `spec.md`. Root cause: a remote reshape that
 goes out and comes back before the mirror reads it (read-first escalation finds
-ground truth == applied, or `coalesceLayoutChanges` drops the leading notice) makes
+ground truth == applied, or coalescing drops the leading notice) makes
 every reconcile path a no-op, so nothing reseeds the panes whose `%output` was
 painted at the transient size.
 
@@ -45,9 +45,11 @@ Files: `picker/remotebridge/daemon/windows.go`, `reconcile.go`, `daemon.go`, new
    `dispatch := func(l controlmode.Line, burst bool) (done bool)`.
    - New `coalesceLayoutBursts(lines) (out []controlmode.Line, burst map[int]bool)`:
      same collapse as today; `burst[i]` (index into `out`) is true when a dropped
-     same-window notice's layout string or zoom flag (`parseLayoutNotice`; compare
-     `Args` when it fails to parse) differs from the survivor's. `coalesceLayoutChanges`
-     stays as a thin wrapper returning only `out` (existing test unchanged).
+     same-window notice differs from the survivor in tiled shape
+     (`ParseLayout(...).Raw`, floats excluded; the raw layout string if `ParseLayout`
+     fails; `Args` if `parseLayoutNotice` fails) or zoom flag. The
+     `coalesceLayoutChanges` wrapper is removed and its test calls
+     `coalesceLayoutBursts`.
    - `asyncQueue.drain(dispatch func(controlmode.Line, bool) bool)` runs the
      coalesce, then calls `dispatch(l, burst[i])` per surviving line (a burst flag is
      only ever true for a `LayoutChange` survivor).
