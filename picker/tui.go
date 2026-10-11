@@ -2837,7 +2837,7 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 
 	thmMauve := envOrMap("THM_MAUVE", tmuxOpts, "@thm_mauve", "#cba6f7")
 	thmSubtext0 := envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8")
-	thmOverlay0 := envOrMap("THM_OVERLAY_0", tmuxOpts, "@thm_overlay_0", "#6c7086")
+	thmOverlay1 := envOrMap("THM_OVERLAY_1", tmuxOpts, "@thm_overlay_1", "#7f849c")
 	iHost := envOrMap("PICKER_ICON_HOST", tmuxOpts, "@icon_host", iconHost)
 	iProcs := envOrMap("PICKER_ICON_PROCS", tmuxOpts, "@icon_procs", iconProcs)
 	iCPU := envOrMap("PICKER_ICON_CPU", tmuxOpts, "@icon_cpu", iconCPU)
@@ -2858,7 +2858,7 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 	cDim := ansiFg(thmSubtext0)
 	// cQuiet is dimmer than cDim: idle CPU, tiny memory and the path recede so
 	// real load and the agent state stand out.
-	cQuiet := ansiFg(thmOverlay0)
+	cQuiet := ansiFg(thmOverlay1)
 	hostColor := hostColorFunc(tmuxOpts)
 	rc := newResourceColors(tmuxOpts)
 	reset := "\033[0m"
@@ -2877,8 +2877,8 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 	for i := range sessions {
 		s := &sessions[i]
 		name := sessionDisplayName(s.name, s.bridgeHost)
-		if len(name) > maxName {
-			maxName = len(name)
+		if visibleWidth(name) > maxName {
+			maxName = visibleWidth(name)
 		}
 		icons, dw := buildProcIcons(s.procs, maxIconsPicker)
 		icons, dw = appendAgentIcon(icons, dw, s.agent, theme, dim, reset)
@@ -2916,7 +2916,7 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		return color + host + reset + tail
 	}
 
-	// Pre-compute CPU and MEM strings separately so the "/" aligns
+	// Pre-compute CPU and MEM strings separately so the gap and Path align
 	cpuStrs := make([]string, len(rows))
 	memStrs := make([]string, len(rows))
 	maxCPU, maxMem := max(cpuColWidth(), visibleWidth(lblCPU)), visibleWidth(lblMem)
@@ -2969,7 +2969,7 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		isColumnHeader: true,
 	})
 	for i, r := range rows {
-		pad := strings.Repeat(" ", max(0, maxName-len(r.name)))
+		pad := strings.Repeat(" ", max(0, maxName-visibleWidth(r.name)))
 		// The Host cell is the one host signal: a mirror's name stays the
 		// ordinary session colour.
 		icons := r.icons

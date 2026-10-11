@@ -608,7 +608,7 @@ func TestSessionRowsDeclutter(t *testing.T) {
 		t.Errorf("the Host cell should carry the host colour: %q", remote.display)
 	}
 	// Placeholder resources and the path render in the quiet overlay colour.
-	quiet := ansiFg("#6c7086")
+	quiet := ansiFg("#7f849c")
 	for _, it := range items[1:] {
 		if !strings.Contains(it.display, quiet+resourcePlaceholder+"\033[0m") {
 			t.Errorf("unknown resources should be dimmed: %q", it.display)

@@ -10,7 +10,7 @@ Layout and input invariants of the Go bubbletea pickers under `picker/`.
   Mem (a two-space gap). The Host cell is the single host signal — a mirror's name
   keeps the ordinary session colour; its host text carries the host colour.
   Idle/unmeasured CPU (<1%, `-`), tiny memory (<256M, `tinyMemMB`) and the path
-  render in the `@thm_overlay_0` colour (`sessionResourceColors`), dimmer than the
+  render in the `@thm_overlay_1` colour (overlay_0 vanishes on the selected row's surface_2 background) (`sessionResourceColors`), dimmer than the
   `low` load colour, so real load and agent state stand out. Window list unchanged.
 - **The session list's column labels are glyph + word** (`@icon_host`,
   `@icon_procs`, `@icon_cpu`, `@icon_mem`, added to the `icons` attrset like the
