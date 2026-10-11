@@ -210,6 +210,37 @@ settle() {
 	return 1
 }
 
+# wait_stable_refit <script_basename> [quiet_tries]
+# Polls refit_jobs until the count stays unchanged for quiet_tries consecutive
+# polls (0.1s apart).  Returns the stable count.  Use after settle() to let a
+# refit job that hasn't forked yet (its job_run not yet in the log) finish
+# before taking the pre-storm baseline, so a late job does not inflate the
+# post-storm count.  quiet_tries defaults to 30 = ~3s quiet window.  Bounded
+# by POLL_TRIES total tries (~30s); on exhaustion prints the last count and
+# lets the caller's assertion catch any instability.
+wait_stable_refit() {
+	local name="$1" quiet="${2:-30}" prev="" cur tries stable
+	prev=""
+	stable=0
+	tries=0
+	while ((tries < POLL_TRIES)); do
+		cur="$(refit_jobs "$name")"
+		if [ "$cur" = "$prev" ]; then
+			((stable++)) || true
+			[ "$stable" -ge "$quiet" ] && {
+				echo "$cur"
+				return 0
+			}
+		else
+			stable=0
+		fi
+		prev="$cur"
+		sleep 0.1
+		((tries++)) || true
+	done
+	echo "$cur"
+}
+
 # #760 reproduces only on the pinned next-3.9: upstream <=3.7c already collapses
 # the freed cells back to the pre-split sibling, so on such a tmux the behavior
 # assertions below hold with no fix at all. Skip rather than report a green that
@@ -524,8 +555,8 @@ WRAP
 	settle
 
 	local g0 f0
-	g0="$(refit_jobs tmux-grid-refit)"
-	f0="$(refit_jobs tmux-float-refit)"
+	g0="$(wait_stable_refit tmux-grid-refit)"
+	f0="$(wait_stable_refit tmux-float-refit)"
 	storm
 	settle
 	# Plain windows: neither script could have done anything, so the
@@ -556,7 +587,7 @@ WRAP
 
 	settle
 	local g0
-	g0="$(refit_jobs tmux-grid-refit)"
+	g0="$(wait_stable_refit tmux-grid-refit)"
 	storm
 	settle
 	# A same-size storm against a grid the script already verified must fork
@@ -692,7 +723,7 @@ WRAP
 
 	settle
 	local f0
-	f0="$(refit_jobs tmux-float-refit)"
+	f0="$(wait_stable_refit tmux-float-refit)"
 	storm
 	settle
 	# A same-size storm against a float the script already stamped must fork
@@ -723,7 +754,7 @@ WRAP
 	tmux resize-pane -Z -t "$LEAD"
 	settle
 	local g0
-	g0="$(refit_jobs tmux-grid-refit)"
+	g0="$(wait_stable_refit tmux-grid-refit)"
 	storm
 	settle
 	# Without the zoom conjunct in the gate, the zoomed pane's geometry (it
@@ -866,7 +897,7 @@ WRAP
 
 	settle
 	local g0
-	g0="$(refit_jobs tmux-grid-refit)"
+	g0="$(wait_stable_refit tmux-grid-refit)"
 	storm
 	settle
 	[ "$(refit_jobs tmux-grid-refit)" = "$g0" ]
