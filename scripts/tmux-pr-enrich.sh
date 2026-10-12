@@ -4,6 +4,8 @@
 #   --target T --branch B [--dir D]
 #                           enrich one window's branch (with --force to bypass
 #                           TTL); D is a checkout dir giving gh its repo context
+#                           — when D no longer resolves a repo, a well-formed
+#                           @pr_url refreshes the window by url instead
 #   --mock-* ...            write mock @pr_* options directly (no gh), for tests
 # Always exits 0. Writes @pr_number @pr_title @pr_state @pr_check_state @pr_url
 # @pr_mergeable @pr_draft @pr_branch @pr_review @pr_auto_merge @pr_check_progress.
@@ -708,18 +710,28 @@ if [[ -n $target && -n $branch ]]; then
 	# — its branch belongs to the launcher's repo, not the remote content.
 	[[ $(tmux show-options -t "$target" -wqv @bridge_win 2>/dev/null) == 1 ]] && exit 0
 	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
-	cache="$(fetch_branch_pr "$dir" "$branch")"
+	# A --dir that no longer resolves a repo can't give gh a repo context (a
+	# merged PR's worktree removed, the window left open): fall back to the
+	# window's @pr_url, as run_full_pass does for a gone checkout.
+	repo=""
+	[[ -n $dir ]] && repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+	if [[ -z $repo ]]; then
+		url="$(tmux show-options -t "$target" -wqv @pr_url 2>/dev/null)"
+		[[ $url =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || exit 0
+		refresh_url_pr "$url" "$target|$branch"
+		exit 0
+	fi
+	# Key branch_cache_key derives from DIR+BRANCH; repo id reused for the marker below.
+	branch_sha1 "$repo|$branch"
+	cache="$(fetch_branch_pr "$dir" "$branch" "$REPLY")"
 	apply_cache_to_target "$target" "$cache" "$branch"
 	# prefix + i r on a pending PR arms the fast cadence now, not at the next
-	# full pass. Repo id derived exactly as run_full_pass derives it.
-	if [[ $APPLIED_CHECK == pending && -n $dir ]]; then
-		repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-		if [[ -n $repo ]]; then
-			ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
-			# Match enrich_repo_group's fingerprint: $() strips the trailing newline.
-			branch_sha1 "$branch|$ho"
-			arm_pending_marker "$repo" "$REPLY"
-		fi
+	# full pass.
+	if [[ $APPLIED_CHECK == pending ]]; then
+		ho="$(jq -r '.[0].headRefOid // ""' <"${cache%.json}.checks.json" 2>/dev/null)"
+		# Match enrich_repo_group's fingerprint: $() strips the trailing newline.
+		branch_sha1 "$branch|$ho"
+		arm_pending_marker "$repo" "$REPLY"
 	fi
 	exit 0
 fi

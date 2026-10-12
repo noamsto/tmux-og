@@ -135,3 +135,35 @@ gone_window() {
 	run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
 	[ ! -s "$GH_LOG" ]
 }
+
+# Single-target mode (the enrich card's `r`) passes the window's checkout as
+# --dir; a deleted one must fall back to the window's own @pr_url.
+
+@test "single-target force refresh with a deleted --dir falls back to the url" {
+	gone_window
+	tmux set-option -t "$WIN" -w @pr_url "$PR_URL"
+	# Pre-seed the url cache as a fresh terminal CLOSED answer: passing proves --force
+	# bypassed TTL_TERMINAL (a served cache would leave @pr_state=closed).
+	key="$(printf '%s' "url|$PR_URL" | sha1sum)"
+	key="${key%% *}"
+	mkdir -p "$OG_ENRICH_CACHE_DIR"
+	printf '%s' '[{"number":42,"state":"CLOSED","url":"'"$PR_URL"'"}]' \
+		>"$OG_ENRICH_CACHE_DIR/$key.json"
+
+	run bash "$PR_ENRICH_SCRIPT" --target "$WIN" --branch feat/x \
+		--dir "$BATS_TEST_TMPDIR/deleted-worktree" --force
+	[ "$status" -eq 0 ]
+	[ "$(tmux show-options -t "$WIN" -wqv @pr_state)" = merged ]
+	[ "$(grep -c 'pr view' "$GH_LOG")" -eq 1 ]
+	[ "$(grep -c 'pr list' "$GH_LOG")" -eq 0 ]
+}
+
+@test "single-target force refresh with a deleted --dir and a malformed url runs no gh" {
+	gone_window
+	tmux set-option -t "$WIN" -w @pr_url 'https://example.com/pull/42'
+	run bash "$PR_ENRICH_SCRIPT" --target "$WIN" --branch feat/x \
+		--dir "$BATS_TEST_TMPDIR/deleted-worktree" --force
+	[ "$status" -eq 0 ]
+	[ "$(tmux show-options -t "$WIN" -wqv @pr_state)" = open ]
+	[ ! -s "$GH_LOG" ]
+}

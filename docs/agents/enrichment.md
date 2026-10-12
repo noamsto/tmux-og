@@ -65,7 +65,11 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   and are skipped in the checks-only pending pass. No `@pr_url` (or a url that
   isn't `https://github.com/<owner>/<repo>/pull/<N>`) still means skipped, and
   `@bridge_win` mirrors stay skipped. Without this the badge stayed `open`
-  forever (#921).
+  forever (#921). Single-target mode takes the same fallback: `prefix + i r`
+  runs the card's `refreshCmd` with `--dir`, and when that dir no longer
+  resolves a repo the poller refreshes a well-formed `@pr_url` by url rather
+  than silently no-op'ing the branch fetch, so `--force` bypasses a cached
+  `TTL_TERMINAL` answer (#923).
 - **Fork PRs are ignored.** `gh pr list --head <b>` matches the head branch
   *name* across forks, so a fork PR whose branch is also called `main` used to
   shadow the repo's own PR — and a window merely sitting on the default branch
