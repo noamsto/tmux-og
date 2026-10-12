@@ -843,18 +843,31 @@ func carouselResolveScript(pane string) string {
 // That is the body's ONLY literal #, and it survives because #* is not one of
 // tmux's format codes; any # that would be read as one has to be doubled.
 //
-// Both resolved values are guarded before the poller runs, and neither empty is
-// a harmless no-op. An empty branch falls THROUGH the poller's single-target
-// guard (tmux-pr-enrich.sh:463) into tick mode, where --force skips the age gate
-// outright, touches the remote's .last-tick and detaches a whole-server
-// run_full_pass (:405) — one keypress enriching every window on that host and
-// resetting its tick clock. An empty dir keeps single-target mode but skips the
-// conditional cd (:234), so gh pr list --head runs in the remote tmux server's
-// cwd; if that happens to sit in a repo, that repo's PR for the branch name is
-// written to the remote window's own @pr_* and ships home as @bridge_pr_* — a
-// wrong value rather than an absent one. The card's local [r] no-branch footer
-// gate does not cover either: it reads the value carried home, on a different
-// host, and never gates dir at all.
+// The branch is guarded before the poller runs, and an empty one is not a
+// harmless no-op: it falls THROUGH the poller's single-target guard into tick
+// mode, where --force skips the age gate outright, touches the remote's
+// .last-tick and detaches a whole-server run_full_pass — one keypress enriching
+// every window on that host and resetting its tick clock. A dir is required for
+// the branch fetch for the same kind of reason: single-target mode skips its
+// conditional cd, so gh pr list --head runs in the remote tmux server's cwd, and
+// a repo sitting there gets its PR for the branch name written to the remote
+// window's own @pr_* — a wrong value rather than an absent one. The card's own
+// [r] footer gate cannot stand in for these: it reads the value carried home,
+// on a different host.
+//
+// With no dir at all the checkout is gone (a removed worktree is cleared by
+// tmux-worktree-match, and a bridge-only remote runs no #() status job to stamp
+// @git_root), and the window's own @pr_url — which the mirror does carry home —
+// is the only repo context left. So dir selects the mode (#958): with a
+// checkout, single-target mode as before; without one, --url, which the poller
+// validates against one shared rule and tags with the window's @branch. A
+// malformed url is therefore rejected there, and nothing is refreshed.
+//
+// The url call carries no --branch and no --force on purpose. An unrebuilt
+// remote's poller drops the unknown --url and would then enter its single-target
+// mode on --branch alone — the wrong-cwd write above — while --force would skip
+// its tick gate into a whole-server pass. With neither on the wire that older
+// poller only reaches its own tick path, a pass it was about to run anyway.
 //
 // The target is win, never <sess>:<win>. Config.RemoteSession may contain spaces
 // (daemon.go), and quoting it through run-shell's expansion, two tmuxQuote
@@ -875,10 +888,15 @@ func enrichRefreshScript(win string) string {
 			"b=$(tmux show-options -wqv -t %s @branch); "+
 			"d=$(tmux show-options -wqv -t %s @worktree); "+
 			"[ -n \"$d\" ] || d=$(tmux show-options -wqv -t %s @git_root); "+
-			"[ -n \"$b\" ] && [ -n \"$d\" ] || exit 0; "+
+			"[ -n \"$b\" ] || exit 0; "+
+			"if [ -n \"$d\" ]; then "+
 			"tmux-pr-enrich --target %s --branch \"$b\" --dir \"$d\" --force; "+
+			"exit 0; "+
+			"fi; "+
+			"u=$(tmux show-options -wqv -t %s @pr_url); "+
+			"[ -n \"$u\" ] && tmux-pr-enrich --target %s --url \"$u\"; "+
 			"exit 0",
-		win, win, win, win)
+		win, win, win, win, win, win)
 }
 
 // parseCtl validates a FrameCtl argv and resolves it against the current

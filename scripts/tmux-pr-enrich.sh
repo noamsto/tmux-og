@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Background PR enrichment poller. Three entry modes:
+# Background PR enrichment poller. Four entry modes:
 #   --tick                  cheap gate; daemonize a full pass if .last-tick stale
 #   --target T --branch B [--dir D]
 #                           enrich one window's branch (with --force to bypass
 #                           TTL); D is a checkout dir giving gh its repo context
 #                           — when D no longer resolves a repo, a well-formed
 #                           @pr_url refreshes the window by url instead
+#   --target T --url U      refresh one window from its PR url: the checkout is
+#                           gone, so the url names the repo and the window's own
+#                           @branch tags the data (the mirror's [r], #958)
 #   --mock-* ...            write mock @pr_* options directly (no gh), for tests
 # Always exits 0. Writes @pr_number @pr_title @pr_state @pr_check_state @pr_url
 # @pr_mergeable @pr_draft @pr_branch @pr_review @pr_auto_merge @pr_check_progress.
@@ -71,7 +74,7 @@ NOTIFY_BIN="${OG_NOTIFY_BIN:-@notify@}"
 
 # --- arg parse ---
 mode="tick"
-target="" branch="" dir="" force=0
+target="" branch="" dir="" url="" force=0
 mock_number="" mock_state="" mock_check="" mock_title="" mock_url="" mock_mergeable="" mock_draft=""
 mock_review="" mock_auto_merge="" mock_progress=""
 while (($#)); do
@@ -89,6 +92,10 @@ while (($#)); do
 		;;
 	--dir)
 		dir="$2"
+		shift
+		;;
+	--url)
+		url="$2"
 		shift
 		;;
 	--force) force=1 ;;
@@ -523,6 +530,13 @@ enrich_repo_group() {
 	fi
 }
 
+# pr_url_wellformed URL — true when URL is exactly a PR url the poller can
+# refresh by: https://github.com/<owner>/<repo>/pull/<n>, <n> digits. One rule
+# for every url path the poller has (#921, #923, #958).
+pr_url_wellformed() {
+	[[ $1 =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]]
+}
+
 # refresh_url_pr URL WINDOWS — refresh a PR by its url for windows whose checkout
 # is gone. `gh pr view <url>` needs no repo context. The answer is cached as the
 # same one-element array shape as the branch caches (key derived from the url, so
@@ -604,7 +618,7 @@ run_full_pass() {
 		if [[ -z $key ]]; then
 			# Checkout gone (a merged PR's worktree was removed, the window stayed):
 			# last-known options would show the PR as open forever.
-			[[ $pu =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || continue
+			pr_url_wellformed "$pu" || continue
 			sk="url|$pu"
 			if [[ -z ${seen[$sk]:-} ]]; then
 				if ((total >= 30)); then
@@ -704,6 +718,22 @@ if [[ $mode == "tickrunpending" ]]; then
 	exit 0
 fi
 
+# --- url mode (single-target): --target T --url U ---
+# The window's checkout is gone (@worktree/@git_root empty), so its own @pr_url is
+# the only repo context left and `gh pr view <url>` needs no dir. The mirror's [r]
+# reaches this through the daemon's enrich-refresh ctl verb (#958), which puts no
+# --branch on the wire (that body's comment has the reason), so the mode tags with
+# the window's @branch — and refetches regardless of TTL, being the on-demand path.
+if [[ -n $target && -n $url ]]; then
+	pr_url_wellformed "$url" || exit 0
+	[[ $(tmux show-options -t "$target" -wqv @bridge_win 2>/dev/null) == 1 ]] && exit 0
+	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
+	bt="$(tmux show-options -t "$target" -wqv @branch 2>/dev/null)"
+	force=1
+	refresh_url_pr "$url" "$target|$bt"
+	exit 0
+fi
+
 # --- single-target mode (from dispatcher / force refresh) ---
 if [[ -n $target && -n $branch ]]; then
 	# Remote-bridge mirror window (#167 @bridge_win opt-out): no PR to poll for
@@ -717,7 +747,7 @@ if [[ -n $target && -n $branch ]]; then
 	[[ -n $dir ]] && repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 	if [[ -z $repo ]]; then
 		url="$(tmux show-options -t "$target" -wqv @pr_url 2>/dev/null)"
-		[[ $url =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || exit 0
+		pr_url_wellformed "$url" || exit 0
 		refresh_url_pr "$url" "$target|$branch"
 		exit 0
 	fi

@@ -1683,11 +1683,15 @@ func TestThemeVerbNeverOverlaysPane(t *testing.T) {
 }
 
 // Nothing under nix flake check ever runs this body against a real remote
-// run-shell, so these substring assertions are the only regression net the two
-// emptiness guards will ever have — and what they prevent is severe: an empty
-// branch falls through tmux-pr-enrich.sh:463 into tick mode, where --force
-// detaches a whole-server run_full_pass, and an empty dir skips the conditional
-// cd at :234, writing another repo's PR onto the remote window's own @pr_*.
+// run-shell, so these substring assertions are the only regression net the
+// branch guard will ever have — and what it prevents is severe: an empty branch
+// falls through the poller's single-target guard into tick mode, where --force
+// detaches a whole-server run_full_pass. A dir that does not resolve is the
+// other hazard (single-target mode skips the conditional cd, so gh pr list
+// --head runs in the remote tmux server's cwd), which is why the dir decides
+// the mode rather than being handed to the branch fetch: the assertion pins
+// that the --dir call sits under the non-empty test, and the real-tmux test
+// below owns the no-dir route to --url (#958).
 func TestEnrichRefreshVerbGuardsBranchAndDir(t *testing.T) {
 	v, ok := verbs["enrich-refresh"]
 	if !ok {
@@ -1697,9 +1701,9 @@ func TestEnrichRefreshVerbGuardsBranchAndDir(t *testing.T) {
 	if strings.Contains(script, "'") {
 		t.Fatalf("refresh script must have zero single quotes: %q", script)
 	}
-	for _, want := range []string{`[ -n "$b" ]`, `[ -n "$d" ]`, "|| exit 0"} {
+	for _, want := range []string{`[ -n "$b" ] || exit 0`, `if [ -n "$d" ]`, `--dir "$d"`} {
 		if !strings.Contains(script, want) {
-			t.Fatalf("script %q missing %q: an empty branch runs a whole-server pass, an empty dir writes another repo's PR", script, want)
+			t.Fatalf("script %q missing %q: an empty branch runs a whole-server pass, and a --dir call outside the non-empty test runs gh in the tmux server's cwd", script, want)
 		}
 	}
 	// run-shell format-expands the whole string before /bin/sh sees it, so the
@@ -1826,6 +1830,146 @@ func TestEnrichRefreshVerbNeverOverlaysPane(t *testing.T) {
 			if got := strings.TrimSpace(string(out)); got != "0" {
 				shown, _ := tmux("capture-pane", "-p", "-M", "-t", pane).CombinedOutput()
 				t.Errorf("pane_in_mode = %q, want 0 — the job's output or exit status reached the pane:\n%s", got, shown)
+			}
+		})
+	}
+}
+
+// The enrich card's [r] on a mirrored window: which poller mode the daemon
+// routes to. With a checkout, the branch fetch; with none (both @worktree and
+// @git_root empty, #958), the window's own @pr_url, which the body used to skip.
+// The url call's missing --branch/--force is the assertion, not an accident: an
+// unrebuilt remote's poller drops the unknown --url, and --branch alone would
+// enter single-target mode with an empty --dir — gh in the remote tmux server's
+// cwd, writing another repo's PR onto the window (#598). The rule itself lives in
+// the poller (pr_url_wellformed); tests/enrich-url.bats pins the rejection.
+func TestEnrichRefreshVerbPicksTheModeFromTheCheckout(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	const url = "https://github.com/acme/widgets/pull/42"
+	tests := []struct {
+		name      string
+		branch    string
+		prURL     string
+		checkout  bool
+		ran       bool
+		argvHas   []string
+		argvLacks []string
+	}{
+		{
+			name: "a checkout fetches by branch", branch: "b", prURL: url, checkout: true, ran: true,
+			argvHas:   []string{"--branch b", "--dir ", "--force"},
+			argvLacks: []string{"--url"},
+		},
+		{
+			name: "no checkout refreshes the window's url", branch: "b", prURL: url, ran: true,
+			argvHas:   []string{"--url " + url},
+			argvLacks: []string{"--branch", "--dir", "--force"},
+		},
+		{
+			name: "a malformed url is forwarded for the poller to reject", branch: "b",
+			prURL: "https://example.com/pull/42", ran: true,
+			argvHas:   []string{"--url https://example.com/pull/42"},
+			argvLacks: []string{"--branch", "--dir", "--force"},
+		},
+		{name: "no url runs nothing", branch: "b"},
+		{name: "no branch runs nothing", prURL: url},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			binDir := filepath.Join(dir, "bin")
+			if err := os.Mkdir(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			argvFile := filepath.Join(dir, "argv")
+			writeStub(t, filepath.Join(binDir, "tmux-pr-enrich"),
+				"#!/bin/sh\nprintf '%s\\n' \"$*\" >>\""+argvFile+"\"\n")
+
+			tmux := startIsolatedTmux(t, "PATH="+binDir+":"+filepath.Dir(tmuxPath))
+			paneOut, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			pane := strings.TrimSpace(string(paneOut))
+			winOut, err := tmux("display-message", "-p", "-t", "w", "#{window_id}").Output()
+			if err != nil {
+				t.Fatalf("display-message: %v", err)
+			}
+			win := strings.TrimSpace(string(winOut))
+
+			if tc.branch != "" {
+				if out, err := tmux("set-option", "-w", "-t", win, "@branch", tc.branch).CombinedOutput(); err != nil {
+					t.Fatalf("set-option @branch: %v\n%s", err, out)
+				}
+			}
+			if tc.prURL != "" {
+				if out, err := tmux("set-option", "-w", "-t", win, "@pr_url", tc.prURL).CombinedOutput(); err != nil {
+					t.Fatalf("set-option @pr_url: %v\n%s", err, out)
+				}
+			}
+			if tc.checkout {
+				if out, err := tmux("set-option", "-w", "-t", win, "@worktree", dir).CombinedOutput(); err != nil {
+					t.Fatalf("set-option @worktree: %v\n%s", err, out)
+				}
+			}
+			// Otherwise neither @worktree nor @git_root is set: the checkout is gone.
+
+			cmds, err := verbs["enrich-refresh"].build(pane, win, "w", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cmds) != 1 {
+				t.Fatalf("want one command, got %v", cmds)
+			}
+			conf := filepath.Join(dir, "cmd.conf")
+			if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+				t.Fatalf("source-file: %v\n%s", err, out)
+			}
+
+			// run-shell -b is asynchronous: poll for the stub, and give a case
+			// that must not run one the same one-second window the sibling test
+			// gives its no-poller case, so "never ran" means never, not "not
+			// yet".
+			if tc.ran {
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(argvFile); err == nil {
+						break
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+			} else {
+				time.Sleep(time.Second)
+			}
+			got, _ := os.ReadFile(argvFile)
+			if !tc.ran {
+				if len(got) != 0 {
+					t.Fatalf("tmux-pr-enrich ran with %q, want no invocation", strings.TrimSpace(string(got)))
+				}
+				return
+			}
+			line := strings.TrimSpace(string(got))
+			if line == "" {
+				t.Fatalf("tmux-pr-enrich never ran: %s must reach the poller", tc.name)
+			}
+			if want := "--target " + win; !strings.Contains(line, want) {
+				t.Errorf("argv %q missing %q", line, want)
+			}
+			for _, want := range tc.argvHas {
+				if !strings.Contains(line, want) {
+					t.Errorf("argv %q missing %q", line, want)
+				}
+			}
+			for _, bad := range tc.argvLacks {
+				if strings.Contains(line, bad) {
+					t.Errorf("argv %q carries %s", line, bad)
+				}
 			}
 		})
 	}
