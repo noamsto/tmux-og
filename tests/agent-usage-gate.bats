@@ -318,13 +318,16 @@ claude'
 	REAL_SOCK="$BATS_TEST_TMPDIR/real.sock"
 	local realbin="$BATS_TEST_TMPDIR/realbin"
 	mkdir -p "$realbin"
+	# -f /dev/null: never load the ambient config. On a dev machine the tmux on
+	# PATH is the wrapper, whose 5s -B hooks would prune the shared
+	# /tmp/claude-status-<uid> and /tmp/og-pr trees (#603).
 	cat >"$realbin/tmux" <<-EOF
 		#!/bin/sh
-		exec "$real_tmux" -S "$REAL_SOCK" "\$@"
+		exec "$real_tmux" -S "$REAL_SOCK" -f /dev/null "\$@"
 	EOF
 	chmod +x "$realbin/tmux"
 
-	"$real_tmux" -S "$REAL_SOCK" new-session -d -s s -x 80 -y 24
+	"$real_tmux" -S "$REAL_SOCK" -f /dev/null new-session -d -s s -x 80 -y 24
 	local pane
 	pane=$("$real_tmux" -S "$REAL_SOCK" list-panes -t s -F '#{pane_id}')
 	"$real_tmux" -S "$REAL_SOCK" set-option -p -t "$pane" @og_pane_agent "$(printf 'x\nclaude|junk')"
@@ -332,4 +335,12 @@ claude'
 	run env PATH="$realbin:$PATH" bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ ! -s "$USAGE_LOG" ]
+
+	# Positive control: a bare tree agent on the same pane must still open it,
+	# so a wrap that swallowed every row cannot pass the assertion above.
+	"$real_tmux" -S "$REAL_SOCK" set-option -p -t "$pane" @og_pane_agent claude
+	rm -f "$USAGE_LOG"
+	run env PATH="$realbin:$PATH" bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$USAGE_LOG")" = "claude" ]
 }
