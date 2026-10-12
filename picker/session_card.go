@@ -33,17 +33,15 @@ func newCardSep() string {
 const cardRowFields = 40
 
 // sessionCardArgv builds the card's single tmux invocation: the session's pane
-// rows, its path, then a capture of capTarget. sess is addressed `=name:`: a
+// rows, then its path. sess is addressed `=name:`: a
 // bare `=name` falls back to a window/pane match, so a vanished numeric-named
 // session would list another session's panes instead of failing the chain.
-func sessionCardArgv(sess, capTarget, sep string) []string {
+func sessionCardArgv(sess, sep string) []string {
 	return []string{
 		"list-panes", "-s", "-t", "=" + sess + ":", "-f", notModalFilter, "-F",
 		windowsFormat + "|#{window_activity}|#{pane_id}",
 		";", "display-message", "-p", sep,
 		";", "display-message", "-p", "-t", "=" + sess + ":", "#{session_path}",
-		";", "display-message", "-p", sep,
-		";", "capture-pane", "-t", capTarget, "-p", "-e",
 	}
 }
 
@@ -59,19 +57,14 @@ type sessionCard struct {
 	name    string
 	path    string
 	windows []cardWindow
-	capture string
 }
 
 var cardPaneIDRe = regexp.MustCompile(`^[0-9]+$`)
 
 // parseSessionCard turns sessionCardArgv's output into a card. ok is false
-// when the output is not the expected three sections or has no window rows.
+// when the output is not the expected two sections or has no window rows.
 func parseSessionCard(out, sep string) (card sessionCard, panes map[string]paneMapping, ok bool) {
-	rowsPart, rest, found := strings.Cut("\n"+out, "\n"+sep+"\n")
-	if !found {
-		return sessionCard{}, nil, false
-	}
-	pathPart, capture, found := strings.Cut(rest, "\n"+sep+"\n")
+	rowsPart, pathPart, found := strings.Cut("\n"+out, "\n"+sep+"\n")
 	if !found {
 		return sessionCard{}, nil, false
 	}
@@ -112,7 +105,6 @@ func parseSessionCard(out, sep string) (card sessionCard, panes map[string]paneM
 	if windows[0].bridgeWin {
 		card.path = windows[0].path
 	}
-	card.capture = strings.TrimRight(capture, "\n ")
 	return card, panes, true
 }
 
@@ -188,12 +180,9 @@ var cardRun = func(argv []string) ([]byte, error) {
 // loadSessionCard fetches and renders the card for sess in one tmux call. ok
 // is false when tmux failed the chain or returned no windows, and the caller
 // falls back to the plain pane capture.
-func loadSessionCard(sess, capTarget string, opts map[string]string, theme string, width, height int) (string, bool) {
+func loadSessionCard(sess string, opts map[string]string, theme string, width int) (string, bool) {
 	sep := newCardSep()
-	if capTarget == sess {
-		capTarget = "=" + sess + ":"
-	}
-	out, err := cardRun(sessionCardArgv(sess, capTarget, sep))
+	out, err := cardRun(sessionCardArgv(sess, sep))
 	if err != nil {
 		return "", false
 	}
@@ -202,7 +191,7 @@ func loadSessionCard(sess, capTarget string, opts map[string]string, theme strin
 		return "", false
 	}
 	attachCardAgents(card.windows, panes)
-	return renderSessionCard(card, opts, theme, width, height, time.Now().Unix()), true
+	return renderSessionCard(card, opts, theme, width, time.Now().Unix()), true
 }
 
 // cardAge is a compact last-activity age ("now", "5m", "3h", "2d"); the window
@@ -226,7 +215,7 @@ func cardAge(now, ts int64) string {
 // renderSessionCard draws the window roster card at width cells. Every
 // untrusted string passes sanitizeStatusText before it is sized or coloured,
 // and every emitted line is clamped to width.
-func renderSessionCard(c sessionCard, opts map[string]string, theme string, width, height int, now int64) string {
+func renderSessionCard(c sessionCard, opts map[string]string, theme string, width int, now int64) string {
 	if width <= 0 {
 		return ""
 	}
@@ -372,18 +361,6 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		}
 	}
 
-	label := "── active pane "
-	lines = append(lines, "", clamp(cFaint+label+strings.Repeat("─", max(0, width-iconCellWidth(label)))+reset))
-	capLines := strings.Split(stripStringEscapes(c.capture), "\n")
-	room := max(height-len(lines), 3)
-	if len(capLines) > room {
-		capLines = capLines[len(capLines)-room:]
-	}
-	for _, l := range capLines {
-		// Reset background per line, as the plain capture preview does, so a
-		// pane's colour cannot bleed into the viewport padding.
-		lines = append(lines, truncateVisibleWidth(l, width)+"\033[49m")
-	}
 	return strings.Join(lines, "\n")
 }
 

@@ -2748,7 +2748,7 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 	// A local session row previews as a window roster card; the plain capture
 	// below stays its fallback and every other row's preview. A zero width
 	// (before the first WindowSizeMsg) has nothing to lay out.
-	cardSess, cardW, cardH := "", m.previewWidth(), m.previewHeight()
+	cardSess, cardW := "", m.previewWidth()
 	if !m.windowMode && !item.isHeader && item.session != "" && item.session == t && cardW > 0 {
 		cardSess = t
 	}
@@ -2759,7 +2759,7 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 			return nil // a newer request took over while this one waited its turn
 		}
 		if cardSess != "" {
-			if card, ok := loadSessionCard(cardSess, selfCaptureTarget(t), opts, theme, cardW, cardH); ok {
+			if card, ok := loadSessionCard(cardSess, opts, theme, cardW); ok {
 				return previewMsg{content: card, target: t, scrollTop: true}
 			}
 		}
