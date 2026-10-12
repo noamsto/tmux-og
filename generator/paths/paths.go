@@ -58,6 +58,7 @@ var RequiredScripts = []string{
 	"tmux-session-picker",
 	"tmux-shell-prompt",
 	"tmux-splash-maybe",
+	"tmux-status-fold",
 	"tmux-update-icons",
 	"tmux-which-key",
 	"tmux-window-nav",
