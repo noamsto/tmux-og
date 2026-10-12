@@ -530,6 +530,15 @@ enrich_repo_group() {
 	fi
 }
 
+# pr_url_wellformed URL — true when URL is exactly a PR url the poller can
+# refresh by: https://github.com/<owner>/<repo>/pull/<n>, <n> digits. The one
+# rule behind every url path — the full pass's url windows, the single-target
+# fallback for a --dir that no longer resolves a repo (#923), and the
+# single-target --url mode a mirror's [r] reaches (#958).
+pr_url_wellformed() {
+	[[ $1 =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]]
+}
+
 # refresh_url_pr URL WINDOWS — refresh a PR by its url for windows whose checkout
 # is gone. `gh pr view <url>` needs no repo context. The answer is cached as the
 # same one-element array shape as the branch caches (key derived from the url, so
@@ -611,7 +620,7 @@ run_full_pass() {
 		if [[ -z $key ]]; then
 			# Checkout gone (a merged PR's worktree was removed, the window stayed):
 			# last-known options would show the PR as open forever.
-			[[ $pu =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || continue
+			pr_url_wellformed "$pu" || continue
 			sk="url|$pu"
 			if [[ -z ${seen[$sk]:-} ]]; then
 				if ((total >= 30)); then
@@ -714,15 +723,11 @@ fi
 # --- url mode (single-target): --target T --url U ---
 # The window's checkout is gone (@worktree/@git_root empty), so its own @pr_url is
 # the only repo context left and `gh pr view <url>` needs no dir. The mirror's [r]
-# reaches this through the daemon's enrich-refresh ctl verb (#958). The wire
-# carries no --branch and no --force: an unrebuilt remote's poller drops the
-# unknown --url, and --branch with an empty --dir sends it into the single-target
-# path that runs gh in the tmux server's cwd, writing another repo's PR onto the
-# window (#598). So the mode tags with the window's own @branch, and refetches
-# regardless of TTL — it is the on-demand path, so a cached answer must not be
-# served in its place.
+# reaches this through the daemon's enrich-refresh ctl verb (#958), which puts no
+# --branch on the wire (that body's comment has the reason), so the mode tags with
+# the window's @branch — and refetches regardless of TTL, being the on-demand path.
 if [[ -n $target && -n $url ]]; then
-	[[ $url =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || exit 0
+	pr_url_wellformed "$url" || exit 0
 	[[ $(tmux show-options -t "$target" -wqv @bridge_win 2>/dev/null) == 1 ]] && exit 0
 	mkdir -p "$ENRICH_CACHE_DIR" 2>/dev/null
 	bt="$(tmux show-options -t "$target" -wqv @branch 2>/dev/null)"
@@ -744,7 +749,7 @@ if [[ -n $target && -n $branch ]]; then
 	[[ -n $dir ]] && repo="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
 	if [[ -z $repo ]]; then
 		url="$(tmux show-options -t "$target" -wqv @pr_url 2>/dev/null)"
-		[[ $url =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]] || exit 0
+		pr_url_wellformed "$url" || exit 0
 		refresh_url_pr "$url" "$target|$branch"
 		exit 0
 	fi

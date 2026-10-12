@@ -840,45 +840,34 @@ func carouselResolveScript(pane string) string {
 // tmux-pr-enrich reaches the remote tmux only through tmux-og's wrapper.
 // Parameter expansion is spelled ${p#*=} for that same reason: run-shell
 // format-expands the whole string first, where #P would become the pane index.
-// Every other literal # here is the shortest-match operator followed by a *
-// (${r#*/}, ${r#*pull/}), which survives for the same reason; a # followed by a
-// format code (##, #h, #P, #{ …) would have to be doubled instead.
+// That is the body's ONLY literal #, and it survives because #* is not one of
+// tmux's format codes; any # that would be read as one has to be doubled.
 //
 // The branch is guarded before the poller runs, and an empty one is not a
 // harmless no-op: it falls THROUGH the poller's single-target guard into tick
 // mode, where --force skips the age gate outright, touches the remote's
 // .last-tick and detaches a whole-server run_full_pass — one keypress enriching
-// every window on that host and resetting its tick clock. A dir-less branch
-// fetch is the other hazard: single-target mode skips the conditional cd, so
-// gh pr list --head would run in the remote tmux server's cwd, and a repo
-// sitting there gets its PR for the branch name written to the remote window's
-// own @pr_* and shipped home as @bridge_pr_* — a wrong value rather than an
-// absent one. So a dir that does not resolve is never fetched by branch. The
-// card's local [r] no-branch footer gate covers neither: it reads the value
-// carried home, on a different host, and never gates dir at all.
+// every window on that host and resetting its tick clock. A dir is required for
+// the branch fetch for the same kind of reason: single-target mode skips its
+// conditional cd, so gh pr list --head runs in the remote tmux server's cwd, and
+// a repo sitting there gets its PR for the branch name written to the remote
+// window's own @pr_* — a wrong value rather than an absent one. The card's own
+// [r] footer gate cannot stand in for these: it reads the value carried home,
+// on a different host.
 //
 // With no dir at all the checkout is gone (a removed worktree is cleared by
 // tmux-worktree-match, and a bridge-only remote runs no #() status job to stamp
 // @git_root), and the window's own @pr_url — which the mirror does carry home —
-// is the only repo context left. So dir selects the mode: with a checkout the
-// poller's single-target mode runs there as before, without one the poller's
-// --url mode refreshes the window from its url (#958). A url that is not the
-// exact PR shape never reaches the poller, so a malformed one still does
-// nothing.
-//
-// The well-formedness check is hand-rolled because this body is POSIX (no =~),
-// must stay quote-free, and has no grep to fork: a remote's PATH is restored,
-// not guaranteed, and a grep that did not resolve would silently disable the
-// fallback this body exists for. It is the rule the poller applies to a
-// window's @pr_url — the full pass's url windows and this mode's own gate:
-// https://github.com/<owner>/<repo>/pull/<n>, exactly, <n> digits.
+// is the only repo context left. So dir selects the mode (#958): with a
+// checkout, single-target mode as before; without one, --url, which the poller
+// validates against one shared rule and tags with the window's @branch. A
+// malformed url is therefore rejected there, and nothing is refreshed.
 //
 // The url call carries no --branch and no --force on purpose. An unrebuilt
-// remote's poller drops the unknown --url, and --branch with an empty --dir is
-// the wrong-cwd write above (--force would additionally skip its tick gate into
-// a whole-server pass). With neither on the wire that older poller only reaches
-// its own tick path — a pass it was about to run anyway; the --url mode tags the
-// data with the window's own @branch.
+// remote's poller drops the unknown --url and would then enter its single-target
+// mode on --branch alone — the wrong-cwd write above — while --force would skip
+// its tick gate into a whole-server pass. With neither on the wire that older
+// poller only reaches its own tick path, a pass it was about to run anyway.
 //
 // The target is win, never <sess>:<win>. Config.RemoteSession may contain spaces
 // (daemon.go), and quoting it through run-shell's expansion, two tmuxQuote
@@ -905,12 +894,7 @@ func enrichRefreshScript(win string) string {
 			"exit 0; "+
 			"fi; "+
 			"u=$(tmux show-options -wqv -t %s @pr_url); "+
-			"case \"$u\" in https://github.com/*) ;; *) exit 0;; esac; "+
-			"r=${u#*//github.com/}; o=${r%%%%/*}; r=${r#*/}; q=${r%%%%/*}; r=${r#*/}; "+
-			"[ -n \"$o\" ] && [ -n \"$q\" ] || exit 0; "+
-			"case \"$r\" in pull/*) n=${r#*pull/} ;; *) exit 0;; esac; "+
-			"case \"$n\" in \"\"|*[!0-9]*) exit 0;; esac; "+
-			"tmux-pr-enrich --target %s --url \"$u\"; "+
+			"[ -n \"$u\" ] && tmux-pr-enrich --target %s --url \"$u\"; "+
 			"exit 0",
 		win, win, win, win, win, win)
 }

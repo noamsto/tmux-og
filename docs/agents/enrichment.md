@@ -37,8 +37,9 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   the current window immediately. PR state is cached at `/tmp/og-pr/`
   (60s TTL) — except the `--url` mode a gone checkout reaches (#958, the
   mirror's `[r]`), which refetches regardless: it is the on-demand path, so a
-  cached answer must not be served in its place. A repo whose last applied rollup was still pending re-polls
-  checks alone via the `--tick-run-pending` pass, so a running check suite
+  cached answer must not be served in its place. A repo whose last applied
+  rollup was still pending re-polls checks alone via the `--tick-run-pending`
+  pass, so a running check suite
   doesn't sit stale for a whole `prCheckRefreshSeconds` window. The fast
   cadence is stepped and bounded: 30s for the first 10 minutes of a pending
   episode, 60s from 10 to 30 minutes, then `prCheckRefreshSeconds` until the

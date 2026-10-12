@@ -1835,35 +1835,51 @@ func TestEnrichRefreshVerbNeverOverlaysPane(t *testing.T) {
 	}
 }
 
-// The enrich card's [r] on a mirrored window whose remote checkout is gone: both
-// @worktree and @git_root are empty, and the body used to exit before the poller
-// ever ran (#958). It must fall back to the window's own well-formed @pr_url —
-// with an argv an unrebuilt remote's poller cannot misread: no --branch and no
-// --force, or that older poller (which drops unknown flags) enters its
-// single-target mode on the branch alone, runs gh in the remote tmux server's cwd
-// and writes another repo's PR onto the window (#598, the case the sibling test
-// guards). The poller's own --url mode has bats coverage; what this pins is the
-// routing the daemon owns.
-func TestEnrichRefreshVerbFallsBackToTheUrlWithoutACheckout(t *testing.T) {
+// The enrich card's [r] on a mirrored window: which of the poller's two
+// single-target modes the daemon routes to. With a checkout, the branch fetch;
+// with none (both @worktree and @git_root empty — a removed worktree cleared by
+// tmux-worktree-match, and no #() status job on a bridge-only remote), the
+// window's own @pr_url (#958), which the body used to skip entirely.
+//
+// The url call carries no --branch and no --force, and that absence is the
+// assertion, not an accident: an unrebuilt remote's poller drops the unknown
+// --url, and --branch alone would enter its single-target mode with an empty
+// --dir — gh in the remote tmux server's cwd, writing another repo's PR onto the
+// window (#598). The PR-url rule itself lives in the poller (pr_url_wellformed),
+// so this pins the routing and tests/enrich-url.bats pins the rejection.
+func TestEnrichRefreshVerbPicksTheModeFromTheCheckout(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Skip("tmux not on PATH")
 	}
 	const url = "https://github.com/acme/widgets/pull/42"
 	tests := []struct {
-		name   string
-		branch string
-		prURL  string
-		ran    bool
+		name      string
+		branch    string
+		prURL     string
+		checkout  bool
+		ran       bool
+		argvHas   []string
+		argvLacks []string
 	}{
-		{"well-formed url without a checkout refreshes by url", "b", url, true},
-		{"a malformed url runs nothing", "b", "https://example.com/pull/42", false},
-		{"a non-numeric pr number runs nothing", "b", "https://github.com/acme/widgets/pull/4x", false},
-		{"an empty owner or repo segment runs nothing", "b", "https://github.com//widgets/pull/42", false},
-		{"a trailing segment runs nothing", "b", "https://github.com/acme/widgets/pull/42/extra", false},
-		{"a non-https url runs nothing", "b", "http://github.com/acme/widgets/pull/42", false},
-		{"no url runs nothing", "b", "", false},
-		{"no branch runs nothing", "", url, false},
+		{
+			name: "a checkout fetches by branch", branch: "b", prURL: url, checkout: true, ran: true,
+			argvHas:   []string{"--branch b", "--dir ", "--force"},
+			argvLacks: []string{"--url"},
+		},
+		{
+			name: "no checkout refreshes the window's url", branch: "b", prURL: url, ran: true,
+			argvHas:   []string{"--url " + url},
+			argvLacks: []string{"--branch", "--dir", "--force"},
+		},
+		{
+			name: "a malformed url is forwarded for the poller to reject", branch: "b",
+			prURL: "https://example.com/pull/42", ran: true,
+			argvHas:   []string{"--url https://example.com/pull/42"},
+			argvLacks: []string{"--branch", "--dir", "--force"},
+		},
+		{name: "no url runs nothing", branch: "b"},
+		{name: "no branch runs nothing", prURL: url},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1898,7 +1914,12 @@ func TestEnrichRefreshVerbFallsBackToTheUrlWithoutACheckout(t *testing.T) {
 					t.Fatalf("set-option @pr_url: %v\n%s", err, out)
 				}
 			}
-			// No @worktree and no @git_root: the checkout is gone.
+			if tc.checkout {
+				if out, err := tmux("set-option", "-w", "-t", win, "@worktree", dir).CombinedOutput(); err != nil {
+					t.Fatalf("set-option @worktree: %v\n%s", err, out)
+				}
+			}
+			// Otherwise neither @worktree nor @git_root is set: the checkout is gone.
 
 			cmds, err := verbs["enrich-refresh"].build(pane, win, "w", nil)
 			if err != nil {
@@ -1939,16 +1960,19 @@ func TestEnrichRefreshVerbFallsBackToTheUrlWithoutACheckout(t *testing.T) {
 			}
 			line := strings.TrimSpace(string(got))
 			if line == "" {
-				t.Fatalf("tmux-pr-enrich never ran: a gone checkout with a well-formed @pr_url must refresh by url")
+				t.Fatalf("tmux-pr-enrich never ran: %s must reach the poller", tc.name)
 			}
-			for _, want := range []string{"--target " + win, "--url " + tc.prURL} {
+			if want := "--target " + win; !strings.Contains(line, want) {
+				t.Errorf("argv %q missing %q", line, want)
+			}
+			for _, want := range tc.argvHas {
 				if !strings.Contains(line, want) {
 					t.Errorf("argv %q missing %q", line, want)
 				}
 			}
-			for _, bad := range []string{"--branch", "--dir", "--force"} {
+			for _, bad := range tc.argvLacks {
 				if strings.Contains(line, bad) {
-					t.Errorf("argv %q carries %s: an older poller would take its wrong-cwd path", line, bad)
+					t.Errorf("argv %q carries %s", line, bad)
 				}
 			}
 		})
