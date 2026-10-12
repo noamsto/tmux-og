@@ -145,7 +145,10 @@ The remote publishes its own caches and the daemon ships them across (#743).
   value sits on the remote server — same as the local cache files, which also
   survive an all-closed period untouched. The daemon's live open gate (below)
   is what hides a closed agent from the mirror in the meantime, not the
-  publish side. A `jq` failure (a torn/garbage cache) leaves the option as it
+  publish side. The poller's own `OPEN` gate (`scan_open_agents`)
+  resolves each pane the same way as the subscription below — foreground
+  command, else `@og_pane_agent` (#963) — so a wrapper agent is polled and its
+  cache published. A `jq` failure (a torn/garbage cache) leaves the option as it
   was, the same "failed refresh keeps the previous value" posture every
   provider already has. Driven by the existing `@og-usage-tick` monitor hook,
   so it runs on a bridge-only remote too (#603). Global, not per-session:
@@ -153,16 +156,23 @@ The remote publishes its own caches and the daemon ships them across (#743).
 - **The `og_usage` subscription carries both the live open gate and the
   published JSON in one format**, session-scoped (empty `what`) beside
   `og_labels`/`og_agents`/`og_res`:
-  `#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{pane_current_command}},#{pane_current_command} ,}}}}|#{@og_agent_usage}`.
-  The `S:`/`W:`/`P:` loop walks every pane on the remote server and emits each
-  agent pane's `pane_current_command`, then `|`, then `@og_agent_usage`. tmux
-  re-evaluates a subscription every second and reports only on change, so
-  **the per-agent gate is live**: closing the last remote claude pane removes
-  claude's block from the mirror within ~1s, rather than lagging the poller's
-  own `refreshSeconds` (120s default) the way a gate sourced from the cache
-  files alone would. Verified on tmux 3.7c with a scratch server and a control
-  client (`%subscription-changed u $1 - - - : claude .pi-wrapped |{"x":1}`,
-  then the loop half updating on `kill-window`, the JSON half on `set -g`).
+  `#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{pane_current_command}},#{pane_current_command} ,#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{s/[|]/ /:@og_pane_agent}},#{s/[|]/ /:@og_pane_agent} ,}}}}}|#{@og_agent_usage}`.
+  The `S:`/`W:`/`P:` loop walks every pane on the remote server and resolves
+  each to its agent — the foreground `pane_current_command` when it is itself an
+  agent, else the per-pane process-tree agent the resource poller stamps on
+  `@og_pane_agent` (#956) — then `|`, then `@og_agent_usage`. So a wrapper that
+  keeps `bash` foreground still opens the agent it runs (#963), exactly as
+  `@bridge_proc` resolves it, and the tree value is pipe-stripped before it can
+  reach the `|` split. tmux re-evaluates a subscription every second and
+  reports only on change, so **the per-agent gate is live**: closing the last
+  remote claude pane removes claude's block from the mirror within ~1s, rather
+  than lagging the poller's own `refreshSeconds` (120s default) the way a gate
+  sourced from the cache files alone would. The tree half is only as fresh as
+  the resource poller's ~5s cadence (up to one poll late, and it persists if
+  the poller stops — the same accepted posture as `@bridge_proc`). Verified on
+  tmux 3.7c with a scratch server and a control client
+  (`%subscription-changed u $1 - - - : claude .pi-wrapped |{"x":1}`, then the
+  loop half updating on `kill-window`, the JSON half on `set -g`).
 - **`agentusage.go`'s `sanitizeUsage` re-types rather than filters the JSON.**
   It splits at the **first** `|` into the open half and the JSON half (no `|`
   at all → drop everything); the JSON half is then capped at `usageRawMaxLen`

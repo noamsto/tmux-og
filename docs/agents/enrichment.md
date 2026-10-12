@@ -329,17 +329,20 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   and more segment width — for a figure that already refreshes every
   `@og-usage-tick` poll and, on a failed fetch, simply leaves the previous
   cached figure in place rather than showing something wrong.
-- **Mirror/remote panes never count toward the *local* gate.** Both
-  `openAgents()` and `scan_open_agents` key strictly off
-  `pane_current_command`/the manifest basenames and never look at
-  `@bridge_proc`; #513 once let a bridge mirror's `@bridge_proc` open the
-  (then-global) gate. At per-agent granularity that would be actively wrong,
-  not just imprecise: it would show a remote agent's column sourced from a
-  *local* cache file the local poller never refreshes for that agent, since
-  the remote agent's usage lives on a different host entirely. This still
-  holds unchanged — what changed is that a mirror session no longer needs the
-  local gate at all: it renders through its own path (below) with the
-  remote's own gate and caches.
+- **Mirror/remote panes never count toward the *local* gate, and no gate reads
+  a mirror's `@bridge_proc`.** The renderer's `openAgents()` keys strictly off
+  the local `pane_current_command`; #513 once let a bridge mirror's
+  `@bridge_proc` open the (then-global) gate, which at per-agent granularity
+  would be actively wrong — a remote agent's column sourced from a *local*
+  cache file the local poller never refreshes, since its usage lives on
+  another host. The remote poller's `scan_open_agents` keeps the same #513
+  invariant (it reads `@og_pane_agent`, never `@bridge_proc`, and runs on the
+  host whose caches it gates), but resolves each pane to its foreground agent
+  else that process-tree agent (#963), so a wrapper pane counts; on a
+  local-only host `@og_pane_agent` is only stamped while a control client is
+  attached, so that fallback is inert there. What else changed is that a mirror
+  session no longer needs the local gate at all: it renders through its own
+  path (below) with the remote's own gate and caches.
 - **A mirror session renders `@bridge_usage`, not the local set, at all.**
   The poller (`tmux-agent-usage`) additionally publishes the surviving cache
   files onto the global `@og_agent_usage` option, and the bridge daemon ships

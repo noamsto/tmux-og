@@ -14,10 +14,14 @@ import (
 // off the remote's poller, which is what makes the gate live: the poller only
 // scans past its refresh window, so a closed remote agent would otherwise keep
 // rendering for up to two minutes where the local segment hides one within a
-// second. Keyed on pane_current_command, never @bridge_proc, exactly as the
-// local gate is.
+// second. Each pane contributes its resolved agent — the foreground command
+// when it is itself an agent, else the process-tree agent the remote resource
+// poller stamps on @og_pane_agent (#956), so a wrapper that keeps bash
+// foreground still opens the agent it runs. Keyed on that resolution, never on
+// @bridge_proc (the LOCAL mirror's copy, which this remote format cannot see).
+// The tree agent is pipe-stripped here because it is a remote-settable option.
 // Unquoted: it is a subscription format, and the call site owns the quoting.
-const agentUsageFormat = "#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{pane_current_command}},#{pane_current_command} ,}}}}|#{@og_agent_usage}"
+const agentUsageFormat = "#{S:#{W:#{P:#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{pane_current_command}},#{pane_current_command} ,#{?#{m/r:(^|/)[.]?(claude|codex|cursor-agent|pi)(-wrapped)?$,#{s/[|]/ /:@og_pane_agent}},#{s/[|]/ /:@og_pane_agent} ,}}}}}|#{@og_agent_usage}"
 
 // usageRawMaxLen caps the published caches (the JSON half, after the cut).
 // Four caches of a few windows each fit in well under half of it. The open

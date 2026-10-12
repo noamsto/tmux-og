@@ -42,6 +42,11 @@ setup() {
 
 last_tick() { echo "$OG_AGENT_USAGE_DIR/.last-tick"; }
 
+teardown() {
+	[ -n "${REAL_TMUX:-}" ] && [ -n "${REAL_SOCK:-}" ] && "$REAL_TMUX" -S "$REAL_SOCK" kill-server 2>/dev/null
+	return 0
+}
+
 # --- CACHE_DIR resolution (no OG_AGENT_USAGE_DIR override) ---
 
 @test "tick: with no override, resolves under XDG_RUNTIME_DIR and creates it 0700" {
@@ -273,4 +278,69 @@ claude'
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_SET_LOG" ]
+}
+
+# A wrapper keeps the shell foreground and the agent in its process tree; the
+# resource poller stamps that tree agent on @og_pane_agent, and the gate must
+# resolve it the same way the bridge does (#963). The fake prints the `cmd|tree`
+# line the new list-panes format emits.
+@test "tick: a wrapper pane's process-tree agent stamps .last-tick" {
+	export FAKE_PANES='bash|claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ "$status" -eq 0 ]
+	[ -e "$(last_tick)" ]
+}
+
+@test "tick-run: a wrapper pane's process-tree agent runs its provider" {
+	export FAKE_PANES='bash|claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$USAGE_LOG")" = "claude" ]
+}
+
+@test "tick-run: a shell pane with no tree agent runs no provider" {
+	export FAKE_PANES='bash|'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$USAGE_LOG" ]
+}
+
+# The fake tmux prints $FAKE_PANES verbatim, so only a real server can exercise
+# the ctlSafe wrap the gate applies to its -F read. A newline in the
+# remote-settable @og_pane_agent must not forge a phantom list-panes row that
+# opens an agent no pane runs (#963).
+@test "tick-run: a multi-line tree agent cannot forge a second pane row" {
+	local real_tmux
+	real_tmux=$(PATH="${PATH#"$FAKEBIN":}" command -v tmux)
+	[ -n "$real_tmux" ] || skip "no real tmux on PATH"
+
+	REAL_TMUX="$real_tmux"
+	REAL_SOCK="$BATS_TEST_TMPDIR/real.sock"
+	local realbin="$BATS_TEST_TMPDIR/realbin"
+	mkdir -p "$realbin"
+	# -f /dev/null: never load the ambient config. On a dev machine the tmux on
+	# PATH is the wrapper, whose 5s -B hooks would prune the shared
+	# /tmp/claude-status-<uid> and /tmp/og-pr trees (#603).
+	cat >"$realbin/tmux" <<-EOF
+		#!/bin/sh
+		exec "$real_tmux" -S "$REAL_SOCK" -f /dev/null "\$@"
+	EOF
+	chmod +x "$realbin/tmux"
+
+	"$real_tmux" -S "$REAL_SOCK" -f /dev/null new-session -d -s s -x 80 -y 24
+	local pane
+	pane=$("$real_tmux" -S "$REAL_SOCK" list-panes -t s -F '#{pane_id}')
+	"$real_tmux" -S "$REAL_SOCK" set-option -p -t "$pane" @og_pane_agent "$(printf 'x\nclaude|junk')"
+
+	run env PATH="$realbin:$PATH" bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$USAGE_LOG" ]
+
+	# Positive control: a bare tree agent on the same pane must still open it,
+	# so a wrap that swallowed every row cannot pass the assertion above.
+	"$real_tmux" -S "$REAL_SOCK" set-option -p -t "$pane" @og_pane_agent claude
+	rm -f "$USAGE_LOG"
+	run env PATH="$realbin:$PATH" bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$USAGE_LOG")" = "claude" ]
 }

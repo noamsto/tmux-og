@@ -233,6 +233,17 @@ func TestUsageAgentTablesAgree(t *testing.T) {
 			t.Errorf("agentUsageFormat alternation has %q with no usageAgentCmds entry", alt)
 		}
 	}
+
+	// Both gate branches (#963) carry the same alternation: the
+	// foreground-command check and the @og_pane_agent fallback, the latter
+	// pipe-stripped because it is a remote-settable option.
+	branch := "#{m/r:" + before0 + ","
+	if n := strings.Count(agentUsageFormat, branch); n != 2 {
+		t.Errorf("agentUsageFormat gates on the pattern %d times, want 2 (foreground and @og_pane_agent): %s", n, agentUsageFormat)
+	}
+	if !strings.Contains(agentUsageFormat, branch+"#{s/[|]/ /:@og_pane_agent}}") {
+		t.Errorf("agentUsageFormat missing the pipe-stripped @og_pane_agent branch: %s", agentUsageFormat)
+	}
 }
 
 // TestUsageShipperFlush walks one shipper through a sequence: its rules are
@@ -399,4 +410,109 @@ func TestAgentUsageSubscriptionReportsOpenAgents(t *testing.T) {
 	if !regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `\$\d+ - - - : `).MatchString(got) {
 		t.Errorf("line = %q, want a session-scoped '%s$N - - - : ' report", got, prefix)
 	}
+}
+
+// startUsageSubscription attaches a control client to the isolated server,
+// subscribes to the usage format, and returns the report channel and prefix. It
+// waits for the first report, so the caller knows tmux accepted the spec
+// (a bad spec is dropped with no %error, which is why this has to be live).
+func startUsageSubscription(t *testing.T, tmux func(...string) *exec.Cmd) (<-chan string, string) {
+	t.Helper()
+	ctl := tmux("-C", "attach-session", "-t", "w")
+	stdin, err := ctl.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := ctl.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctl.Start(); err != nil {
+		t.Fatalf("control client: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ctl.Process.Kill()
+		_ = ctl.Wait()
+	})
+
+	lines := make(chan string, 256)
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+
+	if _, err := fmt.Fprintln(stdin, subscribeCmd(usageSubName, "", agentUsageFormat)); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	prefix := "%subscription-changed " + usageSubName + " "
+	waitForLine(t, lines, func(l string) bool { return strings.HasPrefix(l, prefix) })
+	return lines, prefix
+}
+
+// TestAgentUsageSubscriptionReportsTreeAgentUnderWrapper is the #963 half of
+// the live contract: a pane whose foreground command is a plain shell but whose
+// process tree carries an agent — the #956 wrapper shape — must still open that
+// agent for the usage gate. The tree agent rides the remote poller's
+// @og_pane_agent; the test sets it directly, and clears it to prove the plain
+// shell reports no agent.
+func TestAgentUsageSubscriptionReportsTreeAgentUnderWrapper(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
+
+	// The default pane is the wrapper premise: a plain shell, not an agent.
+	raw, err := tmux("list-panes", "-t", "w", "-F", "#{pane_id}|#{pane_current_command}").Output()
+	if err != nil {
+		t.Fatalf("list-panes: %v", err)
+	}
+	fields := strings.SplitN(strings.TrimSpace(string(raw)), "|", 2)
+	if len(fields) != 2 {
+		t.Fatalf("list-panes output %q is not '<pane>|<cmd>'", raw)
+	}
+	pane, fg := fields[0], fields[1]
+	if len(usageOpenSet(fg)) != 0 {
+		t.Fatalf("fixture foreground command %q is itself an agent, not a wrapper", fg)
+	}
+	if out, err := tmux("set-option", "-p", "-t", pane, "@og_pane_agent", "claude").CombinedOutput(); err != nil {
+		t.Fatalf("set @og_pane_agent: %v\n%s", err, out)
+	}
+
+	lines, prefix := startUsageSubscription(t, tmux)
+	if out, err := tmux("set-option", "-g", "@og_agent_usage", `{"claude":{"windows":[{"label":"5h","pct":7}]}}`).CombinedOutput(); err != nil {
+		t.Fatalf("set @og_agent_usage: %v\n%s", err, out)
+	}
+	waitForLine(t, lines, func(l string) bool {
+		if !strings.HasPrefix(l, prefix) {
+			return false
+		}
+		v, ok := subscriptionValue(controlmode.ParseLine(l), usageSubName)
+		if !ok {
+			return false
+		}
+		c, ok := decodeUsage(t, sanitizeUsage(v, 0))["claude"]
+		return ok && len(c.Windows) == 1 && c.Windows[0].Pct == 7
+	})
+
+	// Clearing the tree agent returns the pane to no open agent: the JSON half
+	// still carries claude, so only the open gate can empty the segment.
+	if out, err := tmux("set-option", "-p", "-t", pane, "-u", "@og_pane_agent").CombinedOutput(); err != nil {
+		t.Fatalf("unset @og_pane_agent: %v\n%s", err, out)
+	}
+	waitForLine(t, lines, func(l string) bool {
+		if !strings.HasPrefix(l, prefix) {
+			return false
+		}
+		v, ok := subscriptionValue(controlmode.ParseLine(l), usageSubName)
+		if !ok {
+			return false
+		}
+		return sanitizeUsage(v, 0) == ""
+	})
 }
