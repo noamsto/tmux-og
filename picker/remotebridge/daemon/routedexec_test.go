@@ -488,7 +488,7 @@ func TestDrainHoldsStreamBehindUndispatchedLayoutChange(t *testing.T) {
 
 	var order []controlmode.Kind
 	within(t, 5*time.Second, func() {
-		async.drain(func(l controlmode.Line) bool {
+		async.drain(func(l controlmode.Line, _ bool) bool {
 			order = append(order, l.Kind)
 			if l.Kind == controlmode.WindowRenamed {
 				routeWhile(lines, router, async, st, func() { time.Sleep(50 * time.Millisecond) })
@@ -519,7 +519,7 @@ func TestDrainDefersLinesQueuedDuringDispatch(t *testing.T) {
 	late := controlmode.Line{Kind: controlmode.WindowAdd, Args: []string{"@2"}}
 
 	var dispatched []string
-	async.drain(func(l controlmode.Line) bool {
+	async.drain(func(l controlmode.Line, _ bool) bool {
 		dispatched = append(dispatched, l.Args[0])
 		if l.Args[0] == "@1" {
 			async.push(late)
@@ -547,7 +547,7 @@ func TestDrainCoalescesLayoutChanges(t *testing.T) {
 	async.push(last)
 
 	var got []controlmode.Line
-	async.drain(func(l controlmode.Line) bool {
+	async.drain(func(l controlmode.Line, _ bool) bool {
 		got = append(got, l)
 		return false
 	})
