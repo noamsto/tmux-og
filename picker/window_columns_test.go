@@ -485,6 +485,34 @@ func TestWindowGlyphOnlyLabelsKeepIdentityWide(t *testing.T) {
 	}
 }
 
+// Near the width where the word-label fit must drop Path to keep the identity
+// floor, the glyph-only fit keeps Path at the same floor with a smaller
+// identity column. Columns kept must win over identity width, so Path stays
+// and the labels fall back to glyph-only (#911).
+func TestWindowGlyphOnlyKeepsPathOverWordLabels(t *testing.T) {
+	t.Setenv("HOME", "/home/noams")
+	windows := []windowData{{
+		session: "s", index: 1, name: "a",
+		labelID: "L ENG-1", labelRest: " " + strings.Repeat("title ", 10),
+		cpuPct: 5, memMB: 9, resKnown: true, path: "/home/noams/src/proj",
+	}}
+	items := renderWindowItemsWith(windows, nil, map[string]string{}, nil, "dark", 62, false)
+	h := stripANSI(items[0].display)
+	if !strings.Contains(h, "Path") {
+		t.Fatalf("glyph-only labels fit with Path at width 62; header dropped it: %q", h)
+	}
+	if strings.Contains(h, "CPU") {
+		t.Fatalf("header should fall back to glyph-only labels to keep Path: %q", h)
+	}
+	row := stripANSI(windowRowsOf(items)[0].display)
+	if i, j := col(h, " / "), col(row, " / "); i != j {
+		t.Errorf("width 62: header separator at %d, row at %d\nhdr=%q\nrow=%q", i, j, h, row)
+	}
+	if i, j := col(h, iconDir), col(row, iconDir); i != j {
+		t.Errorf("width 62: path glyph at %d in the header, %d in a row\nhdr=%q\nrow=%q", i, j, h, row)
+	}
+}
+
 func TestListIndexAtGroupHeaderPinUnderQuery(t *testing.T) {
 	m := windowListModel(120, 8, 0)
 	m.visible = m.visible[1:]
