@@ -65,9 +65,9 @@ func TestClassifyKillErr(t *testing.T) {
 // The kill targets the probe-validated session id only: no remote-controlled
 // name reaches the login shell, which may be fish.
 func TestRemoteKillSessionBodyTargetsIDOnly(t *testing.T) {
-	body := remoteKillSessionBody("$3")
-	if !strings.HasSuffix(body, " _ kill-session '$3'") {
-		t.Fatalf("body = %q, want the id passed as a quoted positional arg", body)
+	body := remoteKillSessionBody("$3", "1700000000")
+	if !strings.HasSuffix(body, " _ kill-session '$3' '1700000000'") {
+		t.Fatalf("body = %q, want the id and created as quoted positional args", body)
 	}
 	assertFishSafeKillBody(t, body)
 }
@@ -92,7 +92,7 @@ func TestRemoteKillStopsAtFirstAnsweringServer(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "log")
 	shim := "#!/bin/sh\nprintf '%s %s\\n' \"$TMUX_TMPDIR\" \"$*\" >>" + log + "\n" +
-		"case \"$1\" in kill-session) exit 1 ;; esac\nexit 0\n"
+		"case \"$1\" in display) printf '%s\\n' 1700000000; exit 0 ;; kill-session) exit 1 ;; esac\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(shim), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestRemoteKillStopsAtFirstAnsweringServer(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
-	err := sshKillRemoteSessionCtx(context.Background(), "lab", "$7")
+	err := sshKillRemoteSessionCtx(context.Background(), "lab", "$7", "1700000000")
 	if !errors.Is(err, errRemoteSessionGone) {
 		t.Fatalf("kill = %v, want the gone class", err)
 	}
@@ -120,17 +120,144 @@ func TestRemoteKillStopsAtFirstAnsweringServer(t *testing.T) {
 	}
 }
 
-// Anything but a probe-validated $N id is refused before ssh is spawned.
+// Anything but a probe-validated $N id and a digits session_created is refused
+// before ssh is spawned.
 func TestSSHKillRemoteSessionRefusesNonID(t *testing.T) {
-	for _, s := range []string{`x\';id;#`, `a\b`, "=mono", "", "$", "$3x"} {
-		sentinel := fakeKillSSH(t, 0)
-		err := sshKillRemoteSessionCtx(context.Background(), "lab", s)
-		if !errors.Is(err, errRemoteKillNoID) {
-			t.Errorf("sshKillRemoteSessionCtx(%q) = %v, want errRemoteKillNoID", s, err)
+	cases := []struct{ name, id, created string }{
+		{"hostile id", `x\';id;#`, "1700000000"},
+		{"backslash id", `a\b`, "1700000000"},
+		{"equals id", "=mono", "1700000000"},
+		{"empty id", "", "1700000000"},
+		{"bare dollar", "$", "1700000000"},
+		{"id suffix", "$3x", "1700000000"},
+		// A valid id alone is not enough: the created guard needs digits too.
+		{"empty created", "$3", ""},
+		{"non-digit created", "$3", "abc"},
+		{"dollar created", "$3", "$4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sentinel := fakeKillSSH(t, 0)
+			err := sshKillRemoteSessionCtx(context.Background(), "lab", tc.id, tc.created)
+			if !errors.Is(err, errRemoteKillNoID) {
+				t.Errorf("sshKillRemoteSessionCtx(%q, %q) = %v, want errRemoteKillNoID", tc.id, tc.created, err)
+			}
+			if _, statErr := os.Stat(sentinel); statErr == nil {
+				t.Errorf("sshKillRemoteSessionCtx(%q, %q) spawned ssh", tc.id, tc.created)
+			}
+		})
+	}
+}
+
+// killGuardShim shadows ssh on PATH with a script that runs the kill body
+// against a `tmux` shim: list-sessions answers (so the script picks the first
+// leg), display prints displayOut and exits displayCode, and kill-session /
+// kill-window succeed. Every tmux invocation is appended to the returned log.
+func killGuardShim(t *testing.T, displayOut string, displayCode int) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "log")
+	shim := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>" + log + "\n" +
+		"case \"$1\" in display) printf '%s\\n' '" + displayOut + "'; exit " + fmt.Sprint(displayCode) + " ;; esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sshDir := t.TempDir()
+	fakeSSH := "#!/bin/sh\n" +
+		"while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -T) shift ;; --) shift; break ;; *) shift ;; esac; done\n" +
+		"export PATH=\"" + dir + ":$PATH\"\nexec bash -c \"$*\"\n"
+	if err := os.WriteFile(filepath.Join(sshDir, "ssh"), []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", sshDir+":"+os.Getenv("PATH"))
+	return log
+}
+
+// killLogLines returns the shim's recorded invocations, or nil if it never ran.
+func killLogLines(t *testing.T, log string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+// A server restart renumbers ids, so the probed $N may now name a different
+// session with a different session_created: the guard must refuse as the gone
+// class and never exec the kill.
+func TestKillSessionRefusesRenumberedID(t *testing.T) {
+	cases := []struct {
+		name        string
+		displayOut  string
+		displayCode int
+	}{
+		{"different created", "1700000001", 0},
+		{"gone session prints empty", "", 0},
+		{"display fails", "", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := killGuardShim(t, tc.displayOut, tc.displayCode)
+			err := sshKillRemoteSessionCtx(context.Background(), "lab", "$0", "1700000000")
+			if !errors.Is(err, errRemoteSessionGone) {
+				t.Fatalf("kill = %v, want the gone class", err)
+			}
+			for _, l := range killLogLines(t, log) {
+				if strings.Contains(l, "kill-session") {
+					t.Errorf("kill-session ran despite the guard: %q", l)
+				}
+			}
+		})
+	}
+}
+
+// The same kill still lands when the id's live session_created matches the probe.
+func TestKillSessionKillsWhenCreatedMatches(t *testing.T) {
+	log := killGuardShim(t, "1700000000", 0)
+	if err := sshKillRemoteSessionCtx(context.Background(), "lab", "$0", "1700000000"); err != nil {
+		t.Fatalf("kill = %v, want nil", err)
+	}
+	var kills []string
+	for _, l := range killLogLines(t, log) {
+		if strings.Contains(l, "kill-session") {
+			kills = append(kills, l)
 		}
-		if _, statErr := os.Stat(sentinel); statErr == nil {
-			t.Errorf("sshKillRemoteSessionCtx(%q) spawned ssh", s)
+	}
+	if len(kills) != 1 || !strings.HasSuffix(kills[0], "kill-session -t $0") {
+		t.Fatalf("kills = %q, want exactly one kill-session of $0", kills)
+	}
+}
+
+// The window kill carries the owning session's session_created, so a renumbered
+// session refuses it too — an @N is not reused within one server lifetime, so
+// the session check is the whole guard.
+func TestKillWindowRefusesRenumberedID(t *testing.T) {
+	log := killGuardShim(t, "1700000001", 0)
+	err := sshKillRemoteWindowCtx(context.Background(), "lab", "$1", "@3", "1700000000")
+	if !errors.Is(err, errRemoteSessionGone) {
+		t.Fatalf("kill = %v, want the gone class", err)
+	}
+	for _, l := range killLogLines(t, log) {
+		if strings.Contains(l, "kill-window") {
+			t.Errorf("kill-window ran despite the guard: %q", l)
 		}
+	}
+}
+
+func TestKillWindowKillsWhenCreatedMatches(t *testing.T) {
+	log := killGuardShim(t, "1700000000", 0)
+	if err := sshKillRemoteWindowCtx(context.Background(), "lab", "$1", "@3", "1700000000"); err != nil {
+		t.Fatalf("kill = %v, want nil", err)
+	}
+	var kills []string
+	for _, l := range killLogLines(t, log) {
+		if strings.Contains(l, "kill-window") {
+			kills = append(kills, l)
+		}
+	}
+	if len(kills) != 1 || !strings.HasSuffix(kills[0], "kill-window -t $1:@3") {
+		t.Fatalf("kills = %q, want exactly one kill-window of $1:@3", kills)
 	}
 }
 
@@ -216,6 +343,13 @@ func (s *scratchTmux) sessionID(name string) string {
 	return strings.TrimSpace(out)
 }
 
+// sessionCreated resolves a session name to its live #{session_created}, the
+// value the kill guard compares against.
+func (s *scratchTmux) sessionCreated(name string) string {
+	out, _ := s.tmux("display-message", "-p", "-t", "="+name+":", "#{session_created}")
+	return strings.TrimSpace(out)
+}
+
 func (s *scratchTmux) mustTmux(args ...string) {
 	s.t.Helper()
 	if out, err := s.tmux(args...); err != nil {
@@ -242,7 +376,7 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 	s.mustTmux("new-session", "-d", "-s", victim)
 	s.mustTmux("new-session", "-d", "-s", keep)
 
-	if err := sshKillRemoteSession("lab", s.sessionID(victim)); err != nil {
+	if err := sshKillRemoteSession("lab", s.sessionID(victim), s.sessionCreated(victim)); err != nil {
 		t.Fatalf("sshKillRemoteSession: %v", err)
 	}
 	s.requireShimRan()
@@ -256,9 +390,9 @@ func TestKillRemoteSessionReachesScratchServer(t *testing.T) {
 }
 
 func TestRemoteKillWindowBodyTargetsIDsOnly(t *testing.T) {
-	body := remoteKillWindowBody("$3", "@4")
-	if !strings.HasSuffix(body, " _ kill-window '$3:@4'") {
-		t.Fatalf("body = %q, want the ids passed as one quoted positional arg", body)
+	body := remoteKillWindowBody("$3", "@4", "1700000000")
+	if !strings.HasSuffix(body, " _ kill-window '$3:@4' '1700000000'") {
+		t.Fatalf("body = %q, want the ids and created passed as quoted positional args", body)
 	}
 	assertFishSafeKillBody(t, body)
 }
@@ -283,7 +417,7 @@ func TestKillRemoteWindowReachesScratchServer(t *testing.T) {
 		t.Fatalf("setup: windows = %q, want %q", before, want)
 	}
 
-	err := sshKillRemoteWindowCtx(context.Background(), "lab", aID, "@2")
+	err := sshKillRemoteWindowCtx(context.Background(), "lab", aID, "@2", s.sessionCreated(a))
 	if !errors.Is(err, errRemoteSessionGone) {
 		t.Fatalf("kill of @2 under %s = %v, want the gone class", a, err)
 	}
@@ -292,7 +426,7 @@ func TestKillRemoteWindowReachesScratchServer(t *testing.T) {
 		t.Errorf("a wrong-session kill changed the windows: before %q after %q", before, got)
 	}
 
-	if err := sshKillRemoteWindowCtx(context.Background(), "lab", bID, "@2"); err != nil {
+	if err := sshKillRemoteWindowCtx(context.Background(), "lab", bID, "@2", s.sessionCreated(b)); err != nil {
 		t.Fatalf("kill of @2 under %s: %v", b, err)
 	}
 	after := listWindows()
@@ -333,7 +467,7 @@ func TestSSHKillRemoteSessionCtxCancelReapsProcessGroup(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- sshKillRemoteSessionCtx(ctx, "lab", "$0") }()
+	go func() { done <- sshKillRemoteSessionCtx(ctx, "lab", "$0", "1700000000") }()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {

@@ -84,14 +84,14 @@ func remoteFixture() []listItem {
 		{isRemoteRow: true, target: "remote:lab", remoteHost: "lab", searchText: "lab", plain: "lab"},
 		{
 			isRemoteRow: true,
-			target:      "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteSessionID: "$1",
+			target:      "remote:lab:mono", remoteHost: "lab", remoteSess: "mono", remoteSessionID: "$1", remoteSessionCreated: "1700000001",
 			searchText: "lab/mono lab mono",
 			plain:      remoteTreeMid + " mono", plainEnd: remoteTreeEnd + " mono",
 			display: remoteTreeMid + " mono", displayEnd: remoteTreeEnd + " mono",
 		},
 		{
 			isRemoteRow: true,
-			target:      "remote:lab:other", remoteHost: "lab", remoteSess: "other", remoteSessionID: "$2",
+			target:      "remote:lab:other", remoteHost: "lab", remoteSess: "other", remoteSessionID: "$2", remoteSessionCreated: "1700000002",
 			searchText: "lab/other lab other",
 			plain:      remoteTreeMid + " other", plainEnd: remoteTreeEnd + " other",
 			display: remoteTreeMid + " other", displayEnd: remoteTreeEnd + " other",
@@ -1797,13 +1797,14 @@ func TestPrintableKeyText(t *testing.T) {
 // tests. display/plain are left minimal — nothing here renders the row.
 func killRemoteRow(host, sess string) listItem {
 	return listItem{
-		isRemoteRow:     true,
-		target:          "remote:" + host + ":" + sess,
-		remoteHost:      host,
-		remoteSess:      sess,
-		remoteSessionID: "$0",
-		searchText:      host + "/" + sess + " " + host + " " + sess,
-		plain:           sess,
+		isRemoteRow:          true,
+		target:               "remote:" + host + ":" + sess,
+		remoteHost:           host,
+		remoteSess:           sess,
+		remoteSessionID:      "$0",
+		remoteSessionCreated: "1700000000",
+		searchText:           host + "/" + sess + " " + host + " " + sess,
+		plain:                sess,
 	}
 }
 
@@ -2371,9 +2372,9 @@ func liveWindowKillModel(t *testing.T, wins ...remoteWindow) tuiModel {
 
 func killTestWindows() []remoteWindow {
 	return []remoteWindow{
-		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server"},
-		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs"},
-		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite"},
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server", SessionCreated: "1700000000"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs", SessionCreated: "1700000000"},
+		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite", SessionCreated: "1700000001"},
 	}
 }
 
@@ -2679,16 +2680,19 @@ func TestCtrlXRefusesMarksWhenAnyLacksID(t *testing.T) {
 func TestCtrlXOnMirrorRowUsesHostRowID(t *testing.T) {
 	useRemoteCache(t)
 	for _, tc := range []struct {
-		name string
-		ids  map[string]string
-		want string
+		name    string
+		ids     map[string]string
+		created map[string]string
+		want    string
 	}{
-		{"id known", map[string]string{"build": "$5"}, "$5"},
-		{"id unknown", nil, ""},
+		{"id known", map[string]string{"build": "$5"}, map[string]string{"build": "1700000000"}, "$5"},
+		{"id known, created missing", map[string]string{"build": "$5"}, nil, ""},
+		{"id unknown", nil, nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := scopeModel()
 			m.remoteItems[1].remoteHostSessionIDs = tc.ids
+			m.remoteItems[1].remoteHostSessionCreated = tc.created
 			m.scope = hostScope{kind: scopeHost, host: "alpha"}
 			m = m.recombine().withFilter()
 			m.cursor = findVisible(t, m, func(it listItem) bool { return it.remoteMirrorTarget != "" })

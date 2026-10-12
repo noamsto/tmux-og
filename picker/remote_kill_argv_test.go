@@ -18,7 +18,7 @@ func TestKillRunSessionRowCommand(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
-	r := newKillRun([]listItem{{isRemoteRow: true, remoteHost: "lab", remoteSess: `x\';id;#`, remoteSessionID: "$7"}})
+	r := newKillRun([]listItem{{isRemoteRow: true, remoteHost: "lab", remoteSess: `x\';id;#`, remoteSessionID: "$7", remoteSessionCreated: "1700000000"}})
 	r.run()
 	<-r.done
 
@@ -28,7 +28,7 @@ func TestKillRunSessionRowCommand(t *testing.T) {
 	}
 	argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	t.Logf("ssh argv: %q", argv)
-	if got, want := argv[len(argv)-1], remoteKillSessionBody("$7"); got != want {
+	if got, want := argv[len(argv)-1], remoteKillSessionBody("$7", "1700000000"); got != want {
 		t.Errorf("final arg = %q, want %q", got, want)
 	}
 	if joined := string(raw); strings.Contains(joined, `x\`) || strings.Contains(joined, "id;#") {
