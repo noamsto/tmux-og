@@ -845,17 +845,17 @@ func carouselResolveScript(pane string) string {
 // format code (##, #h, #P, #{ …) would have to be doubled instead.
 //
 // The branch is guarded before the poller runs, and an empty one is not a
-// harmless no-op: it falls THROUGH the poller's single-target guard
-// (tmux-pr-enrich.sh:463) into tick mode, where --force skips the age gate
-// outright, touches the remote's .last-tick and detaches a whole-server
-// run_full_pass (:405) — one keypress enriching every window on that host and
-// resetting its tick clock. An empty dir keeps single-target mode but skips the
-// conditional cd (:234), so gh pr list --head runs in the remote tmux server's
-// cwd; if that happens to sit in a repo, that repo's PR for the branch name is
-// written to the remote window's own @pr_* and ships home as @bridge_pr_* — a
-// wrong value rather than an absent one. The card's local [r] no-branch footer
-// gate does not cover either: it reads the value carried home, on a different
-// host, and never gates dir at all.
+// harmless no-op: it falls THROUGH the poller's single-target guard into tick
+// mode, where --force skips the age gate outright, touches the remote's
+// .last-tick and detaches a whole-server run_full_pass — one keypress enriching
+// every window on that host and resetting its tick clock. A dir-less branch
+// fetch is the other hazard: single-target mode skips the conditional cd, so
+// gh pr list --head would run in the remote tmux server's cwd, and a repo
+// sitting there gets its PR for the branch name written to the remote window's
+// own @pr_* and shipped home as @bridge_pr_* — a wrong value rather than an
+// absent one. So a dir that does not resolve is never fetched by branch. The
+// card's local [r] no-branch footer gate covers neither: it reads the value
+// carried home, on a different host, and never gates dir at all.
 //
 // With no dir at all the checkout is gone (a removed worktree is cleared by
 // tmux-worktree-match, and a bridge-only remote runs no #() status job to stamp
@@ -869,7 +869,8 @@ func carouselResolveScript(pane string) string {
 // The well-formedness check is hand-rolled because this body is POSIX (no =~),
 // must stay quote-free, and has no grep to fork: a remote's PATH is restored,
 // not guaranteed, and a grep that did not resolve would silently disable the
-// fallback this body exists for. It is the rule the poller applies at :605:
+// fallback this body exists for. It is the rule the poller applies to a
+// window's @pr_url — the full pass's url windows and this mode's own gate:
 // https://github.com/<owner>/<repo>/pull/<n>, exactly, <n> digits.
 //
 // The url call carries no --branch and no --force on purpose. An unrebuilt

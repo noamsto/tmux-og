@@ -1683,11 +1683,15 @@ func TestThemeVerbNeverOverlaysPane(t *testing.T) {
 }
 
 // Nothing under nix flake check ever runs this body against a real remote
-// run-shell, so these substring assertions are the only regression net the two
-// emptiness guards will ever have — and what they prevent is severe: an empty
-// branch falls through tmux-pr-enrich.sh:463 into tick mode, where --force
-// detaches a whole-server run_full_pass, and an empty dir skips the conditional
-// cd at :234, writing another repo's PR onto the remote window's own @pr_*.
+// run-shell, so these substring assertions are the only regression net the
+// branch guard will ever have — and what it prevents is severe: an empty branch
+// falls through the poller's single-target guard into tick mode, where --force
+// detaches a whole-server run_full_pass. A dir that does not resolve is the
+// other hazard (single-target mode skips the conditional cd, so gh pr list
+// --head runs in the remote tmux server's cwd), which is why the dir decides
+// the mode rather than being handed to the branch fetch: the assertion pins
+// that the --dir call sits under the non-empty test, and the real-tmux test
+// below owns the no-dir route to --url (#958).
 func TestEnrichRefreshVerbGuardsBranchAndDir(t *testing.T) {
 	v, ok := verbs["enrich-refresh"]
 	if !ok {
@@ -1697,9 +1701,9 @@ func TestEnrichRefreshVerbGuardsBranchAndDir(t *testing.T) {
 	if strings.Contains(script, "'") {
 		t.Fatalf("refresh script must have zero single quotes: %q", script)
 	}
-	for _, want := range []string{`[ -n "$b" ]`, `[ -n "$d" ]`, "|| exit 0"} {
+	for _, want := range []string{`[ -n "$b" ] || exit 0`, `if [ -n "$d" ]`, `--dir "$d"`} {
 		if !strings.Contains(script, want) {
-			t.Fatalf("script %q missing %q: an empty branch runs a whole-server pass, an empty dir writes another repo's PR", script, want)
+			t.Fatalf("script %q missing %q: an empty branch runs a whole-server pass, and a --dir call outside the non-empty test runs gh in the tmux server's cwd", script, want)
 		}
 	}
 	// run-shell format-expands the whole string before /bin/sh sees it, so the

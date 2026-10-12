@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Background PR enrichment poller. Three entry modes:
+# Background PR enrichment poller. Four entry modes:
 #   --tick                  cheap gate; daemonize a full pass if .last-tick stale
 #   --target T --branch B [--dir D]
 #                           enrich one window's branch (with --force to bypass
