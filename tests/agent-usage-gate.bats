@@ -308,7 +308,7 @@ claude'
 # The fake tmux prints $FAKE_PANES verbatim, so only a real server can exercise
 # the ctlSafe wrap the gate applies to its -F read. A newline in the
 # remote-settable @og_pane_agent must not forge a phantom list-panes row that
-# opens an agent no pane runs (#963 review round 1).
+# opens an agent no pane runs (#963).
 @test "tick-run: a multi-line tree agent cannot forge a second pane row" {
 	local real_tmux
 	real_tmux=$(PATH="${PATH#"$FAKEBIN":}" command -v tmux)

@@ -66,9 +66,9 @@ publish_usage() {
 	tmux set -g @og_agent_usage "$v"
 }
 
-# agent_of normalizes one command name the way the display gate does —
-# basename, a leading '.', a '-wrapped' suffix — and echoes the manifest command
-# it names, or returns 1. Used for the foreground command and the tree agent.
+# agent_of normalizes one command name the way the display gate does — basename,
+# a leading '.', a '-wrapped' suffix — and echoes the manifest command it names,
+# or returns 1.
 agent_of() {
 	local base=${1##*/} agent
 	base=${base#.}
