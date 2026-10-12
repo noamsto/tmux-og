@@ -170,9 +170,7 @@ gone_window() {
 
 # The mirror's [r] reaches the poller's --url mode (enrich-refresh in the
 # daemon): the remote window has no checkout dir, so the url is the only repo
-# context. The mode reads the window's own @branch — the daemon deliberately
-# puts neither --branch nor --force on the wire, so an unrebuilt remote's poller
-# cannot enter its empty-dir single-target path (#958).
+# context, and the mode reads the window's own @branch for the tag (#958).
 @test "single-target --url refreshes a gone-checkout window from the url" {
 	tmux set-option -t "$WIN" -w @branch feat/x
 	tmux set-option -t "$WIN" -w @pr_url "$PR_URL"

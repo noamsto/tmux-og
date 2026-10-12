@@ -1835,18 +1835,14 @@ func TestEnrichRefreshVerbNeverOverlaysPane(t *testing.T) {
 	}
 }
 
-// The enrich card's [r] on a mirrored window: which of the poller's two
-// single-target modes the daemon routes to. With a checkout, the branch fetch;
-// with none (both @worktree and @git_root empty — a removed worktree cleared by
-// tmux-worktree-match, and no #() status job on a bridge-only remote), the
-// window's own @pr_url (#958), which the body used to skip entirely.
-//
-// The url call carries no --branch and no --force, and that absence is the
-// assertion, not an accident: an unrebuilt remote's poller drops the unknown
-// --url, and --branch alone would enter its single-target mode with an empty
-// --dir — gh in the remote tmux server's cwd, writing another repo's PR onto the
-// window (#598). The PR-url rule itself lives in the poller (pr_url_wellformed),
-// so this pins the routing and tests/enrich-url.bats pins the rejection.
+// The enrich card's [r] on a mirrored window: which poller mode the daemon
+// routes to. With a checkout, the branch fetch; with none (both @worktree and
+// @git_root empty, #958), the window's own @pr_url, which the body used to skip.
+// The url call's missing --branch/--force is the assertion, not an accident: an
+// unrebuilt remote's poller drops the unknown --url, and --branch alone would
+// enter single-target mode with an empty --dir — gh in the remote tmux server's
+// cwd, writing another repo's PR onto the window (#598). The rule itself lives in
+// the poller (pr_url_wellformed); tests/enrich-url.bats pins the rejection.
 func TestEnrichRefreshVerbPicksTheModeFromTheCheckout(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {

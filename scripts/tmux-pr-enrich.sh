@@ -531,10 +531,8 @@ enrich_repo_group() {
 }
 
 # pr_url_wellformed URL — true when URL is exactly a PR url the poller can
-# refresh by: https://github.com/<owner>/<repo>/pull/<n>, <n> digits. The one
-# rule behind every url path — the full pass's url windows, the single-target
-# fallback for a --dir that no longer resolves a repo (#923), and the
-# single-target --url mode a mirror's [r] reaches (#958).
+# refresh by: https://github.com/<owner>/<repo>/pull/<n>, <n> digits. One rule
+# for every url path the poller has (#921, #923, #958).
 pr_url_wellformed() {
 	[[ $1 =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]]
 }
