@@ -28,38 +28,6 @@ func TestParseControlClients(t *testing.T) {
 	}
 }
 
-func TestParsePanePIDs(t *testing.T) {
-	tests := []struct {
-		name string
-		out  string
-		want map[string][]int
-	}{
-		{
-			name: "two sessions",
-			out:  "$0|101\n$0|102\n$3|203\n",
-			want: map[string][]int{"$0": {101, 102}, "$3": {203}},
-		},
-		{
-			name: "unusable pids skipped",
-			out:  "$0|0\n$0|-3\n$0|abc\n$0|7\n",
-			want: map[string][]int{"$0": {7}},
-		},
-		{
-			name: "empty",
-			out:  "",
-			want: map[string][]int{},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parsePanePIDs(tt.out)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parsePanePIDs(%q) = %v, want %v", tt.out, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestStampValue(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -135,6 +103,78 @@ func TestSetOptionArgv(t *testing.T) {
 	}
 	if nilArgv := setOptionArgv(map[string]string{}); nilArgv != nil {
 		t.Errorf("setOptionArgv(empty) = %#v, want nil", nilArgv)
+	}
+}
+
+func TestParsePaneRows(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want []paneRow
+	}{
+		{
+			name: "two sessions",
+			out:  "$0|%1|101\n$0|%2|102\n$3|%5|203\n",
+			want: []paneRow{{"$0", "%1", 101}, {"$0", "%2", 102}, {"$3", "%5", 203}},
+		},
+		{
+			name: "unusable rows skipped",
+			out:  "$0|%1|0\n$0|%2|-3\n$0|%3|abc\n$0||7\n$0|%4|7\n",
+			want: []paneRow{{"$0", "%4", 7}},
+		},
+		{
+			name: "empty",
+			out:  "",
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePaneRows(tt.out); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parsePaneRows(%q) = %v, want %v", tt.out, got, tt.want)
+			}
+		})
+	}
+}
+
+// paneAgentMap is the producer's per-pane resolution: every pane in the root
+// set gets an entry, and a pane whose tree carries no agent maps to "" — that
+// empty entry is what makes paneAgentArgv emit the UNSET that clears a stale
+// @og_pane_agent after the agent exits. A map that omits agentless panes (the
+// bug this test pins) leaves the option set and the daemon reading the pane as
+// an agent indefinitely.
+func TestPaneAgentMap(t *testing.T) {
+	ps := strings.Join([]string{
+		"  PID  PPID %CPU   RSS COMMAND",
+		"  100     1  0.0   512 fish",
+		"  200   100  1.0 65536 claude",
+		"  300     1  0.0   512 fish",
+	}, "\n")
+	got := paneAgentMap(map[string][]int{"%1": {100}, "%2": {300}}, ps)
+	want := map[string]string{"%1": "claude", "%2": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("paneAgentMap() = %v, want %v (an agentless pane must be present so it can be unset)", got, want)
+	}
+}
+
+// paneAgentArgv is the per-pane half of the stamp: a pane whose tree carries an
+// agent gets the agent name, a pane with none is UNSET so a stale value cannot
+// keep a shell pane reading as an agent, and the order is deterministic.
+func TestPaneAgentArgv(t *testing.T) {
+	panes := map[string]string{"%2": "", "%1": "claude"}
+	want := []string{
+		"set-option", "-p", "-t", "%1", paneAgentOption, "claude", ";",
+		"set-option", "-p", "-t", "%2", "-u", paneAgentOption,
+	}
+	got := paneAgentArgv(panes)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("paneAgentArgv() = %#v, want %#v", got, want)
+	}
+	if again := paneAgentArgv(panes); !reflect.DeepEqual(again, got) {
+		t.Errorf("paneAgentArgv() is not deterministic: %#v then %#v", got, again)
+	}
+	if nilArgv := paneAgentArgv(map[string]string{}); nilArgv != nil {
+		t.Errorf("paneAgentArgv(empty) = %#v, want nil", nilArgv)
 	}
 }
 

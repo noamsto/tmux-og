@@ -21,6 +21,13 @@ import (
 
 const resOption = "@og_session_res"
 
+// paneAgentOption is the per-pane companion of resOption: the agent command
+// found anywhere in that pane's process tree, or unset when there is none. It
+// is what lets a consumer (the bridge's paste gate, the mirror process icon)
+// see an agent a wrapper script runs as a child of the pane's foreground
+// shell, where pane_current_command only reports the shell.
+const paneAgentOption = "@og_pane_agent"
+
 // psBin is set at link time (picker/default.nix): the monitor hook this runs
 // from inherits the server's PATH, which a headless tmux-startup.service leaves
 // empty. It is the store's procps on Linux and Apple's own /bin/ps on darwin,
@@ -53,13 +60,19 @@ func main() {
 		return
 	}
 
-	panes, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_id}|#{pane_pid}").Output()
+	panes, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_id}|#{pane_id}|#{pane_pid}").Output()
 	if err != nil {
 		return
 	}
-	roots := parsePanePIDs(string(panes))
-	if len(roots) == 0 {
+	paneRows := parsePaneRows(string(panes))
+	if len(paneRows) == 0 {
 		return
+	}
+	sessionRoots := make(map[string][]int)
+	paneRoots := make(map[string][]int)
+	for _, r := range paneRows {
+		sessionRoots[r.session] = append(sessionRoots[r.session], r.pid)
+		paneRoots[r.pane] = append(paneRoots[r.pane], r.pid)
 	}
 
 	ps, err := exec.Command(psPath(), proctree.PSArgs...).Output() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
@@ -73,10 +86,18 @@ func main() {
 	cores := runtime.NumCPU()
 	now := time.Now().Unix()
 	rows := make(map[string]string)
-	for sess, t := range proctree.Aggregate(roots, string(ps)) {
+	for sess, t := range proctree.Aggregate(sessionRoots, string(ps)) {
 		rows[sess] = stampValue(t, cores, now)
 	}
+	// Per-pane tree agents from the same ps table; the session rows above keep
+	// their exact meaning.
+	paneAgents := paneAgentMap(paneRoots, string(ps))
 	argv := setOptionArgv(rows)
+	paneArgv := paneAgentArgv(paneAgents)
+	if len(argv) > 0 && len(paneArgv) > 0 {
+		argv = append(argv, ";")
+	}
+	argv = append(argv, paneArgv...)
 	if argv == nil {
 		return
 	}
@@ -97,27 +118,6 @@ func parseControlClients(out string) bool {
 	return false
 }
 
-// parsePanePIDs groups every pane's pid by session id, the root set proctree
-// walks from. Keyed by id, never name, because the id is what setOptionArgv
-// targets. Split at the LAST "|": pane_pid is the trailing field.
-func parsePanePIDs(out string) map[string][]int {
-	roots := make(map[string][]int)
-	for line := range strings.SplitSeq(out, "\n") {
-		line = strings.TrimSpace(line)
-		i := strings.LastIndex(line, "|")
-		if i < 0 {
-			continue
-		}
-		pid, err := strconv.Atoi(line[i+1:])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		sess := line[:i]
-		roots[sess] = append(roots[sess], pid)
-	}
-	return roots
-}
-
 // stampValue renders one session's "<cpu> <mem> <cores> <tick> <agents>". It
 // quantises, it does not render: the picker's formatCPU/formatMem stay the
 // sole owners of display precision. %.1f keeps a sub-1% session apart from an
@@ -132,6 +132,80 @@ func stampValue(t proctree.Totals, cores int, now int64) string {
 		agents = strings.Join(t.AgentCmds, ",")
 	}
 	return fmt.Sprintf("%.1f %.0f %d %d %s", t.CPUPct, t.MemMB, cores, now, agents)
+}
+
+// paneRow is one list-panes row: the pane's session id ($N), its pane id (%N)
+// and its root pid (one pid per pane).
+type paneRow struct {
+	session string
+	pane    string
+	pid     int
+}
+
+// parsePaneRows reads `#{session_id}|#{pane_id}|#{pane_pid}` lines. A row with
+// an unusable pid is skipped whole rather than contributing a zero root.
+func parsePaneRows(out string) []paneRow {
+	var rows []paneRow
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "|", 3)
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(parts[2])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		rows = append(rows, paneRow{session: parts[0], pane: parts[1], pid: pid})
+	}
+	return rows
+}
+
+// paneAgentMap resolves each pane's tree agent over one ps table: the first of
+// AgentCmds (already sorted and deduped by Aggregate), or "" when the tree
+// carries no agent. EVERY pane in paneRoots gets an entry, empty ones included
+// — omitting an agentless pane leaves its @og_pane_agent stale after the agent
+// exits, and the daemon keeps reading a plain shell as an agent.
+func paneAgentMap(paneRoots map[string][]int, psOut string) map[string]string {
+	found := make(map[string]string)
+	for pane, t := range proctree.Aggregate(paneRoots, psOut) {
+		if len(t.AgentCmds) > 0 {
+			found[pane] = t.AgentCmds[0]
+		}
+	}
+	out := make(map[string]string, len(paneRoots))
+	for pane := range paneRoots {
+		out[pane] = found[pane]
+	}
+	return out
+}
+
+// paneAgentArgv batches every pane's tree-agent stamp into one tmux argv,
+// keyed by pane id and sorted so the argv is deterministic. A pane with no
+// agent is UNSET, not written empty, so an option the pane's agent left behind
+// cannot keep a shell pane reading as an agent after the agent exits. Empty map
+// → nil, so the caller can join it to the session argv without a stray `;`.
+func paneAgentArgv(panes map[string]string) []string {
+	if len(panes) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(panes))
+	for id := range panes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	var argv []string
+	for _, id := range ids {
+		if len(argv) > 0 {
+			argv = append(argv, ";")
+		}
+		if agent := panes[id]; agent != "" {
+			argv = append(argv, "set-option", "-p", "-t", id, paneAgentOption, agent)
+		} else {
+			argv = append(argv, "set-option", "-p", "-t", id, "-u", paneAgentOption)
+		}
+	}
+	return argv
 }
 
 // setOptionArgv batches every session's stamp into one tmux argv. rows is keyed

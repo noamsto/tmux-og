@@ -502,6 +502,23 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   agent-pane liveness gate, and `statusline`'s top-right `<icon> <command>` unit
   — which read `pane_current_command` raw and so printed the renderer next to an
   icon already resolved from `@bridge_proc` (#590).
+  - **`@bridge_proc` resolves an agent running under a wrapper (#956).** A
+    wrapper script that keeps bash foreground and runs the agent as a child
+    reports `bash` from `pane_current_command`, which read as a plain shell and
+    made the mirror show a shell icon and the bridge's image-paste gate forward
+    `ctrl+v`. The remote's resource poller (`picker/sessionres`) now also
+    stamps each pane's own process-tree agent on the pane option
+    `@og_pane_agent` (the same `proctree` walk as `@og_session_res`, unset when
+    the tree carries no manifest agent). The shipper carries it in this format
+    and stamps `@bridge_proc` as the agent when the foreground command is not
+    itself one (a real foreground agent still wins), else the foreground
+    command as before. So every `@bridge_proc` reader — the icon, the paste
+    gate, the picker's procs column — sees the agent a wrapper runs, with no
+    consumer change. The value crosses the same remote-settable boundary as the
+    rest and is pipe-stripped remotely and regex/manifest-validated here. Known
+    limit: the tree agent arrives on the poller's ~5s cadence (up to one poll
+    late), and the option persists if the poller stops, the same accepted
+    posture as `@og_agent_usage`.
 - An **unchanged row is not rewritten**, so the local mark-seen hook's clearing
   of `unseen` survives until the remote's agent genuinely writes again — and the
   `@bridge_proc` stamp isn't re-asserted, which would be a fork per pane per

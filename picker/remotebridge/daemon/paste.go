@@ -48,6 +48,11 @@ const (
 // clipboard read at all; cursor-agent is unmeasured). A pane running anything
 // else gets the byte forwarded, preserving readline quoted-insert.
 //
+// A wrapper script that keeps bash foreground and runs the agent as a child
+// reports bash here; the daemon's shipper resolves such a pane's @bridge_proc
+// to the agent it finds in the remote process tree (#956), so this set is
+// matched against the resolved agent, not the raw foreground command.
+//
 // This is a usability heuristic, not a security boundary: @bridge_proc is
 // daemon-sanitized but remote-derived, like every other @bridge_* field, and
 // trusted the same way. A hostile remote that stamped @bridge_proc=claude on
@@ -104,9 +109,10 @@ type pasteHandler struct {
 	// a non-nil err means the probe could not tell, or the image is unusable,
 	// and the byte is forwarded with a notify.
 	probeClipboard func() (probe clipboardProbe, ok bool, err error)
-	// procFor reports the remote pane's foreground command (@bridge_proc); an
-	// error means the lookup could not say, which is not the same as "not an
-	// agent".
+	// procFor reports the remote pane's resolved command (@bridge_proc: the
+	// foreground command, or the agent found in the pane's process tree when the
+	// foreground is not itself an agent — #956); an error means the lookup could
+	// not say, which is not the same as "not an agent".
 	procFor func(remotePane string) (string, error)
 	// notify shows a message on the mirror session's client.
 	notify func(msg string)
@@ -446,9 +452,11 @@ func extractClipboardImage(tool clipboardTool, target string) func() ([]byte, er
 	}
 }
 
-// bridgeProc reads the mirror pane's @bridge_proc — the REMOTE pane's
-// foreground command, stamped by the agent shipper because the local pane
-// only ever runs a renderer. One fork per ctrl+v: the gesture is rare, so
+// bridgeProc reads the mirror pane's @bridge_proc — the REMOTE pane's agent
+// command, resolved from its process tree when a wrapper script keeps a shell
+// in the foreground (#956), else the foreground command itself. The remote
+// stamps it via the agent shipper because the local pane only ever runs a
+// renderer. One fork per ctrl+v: the gesture is rare, so
 // freshness beats caching. clipTimeout bounds the input pump's WAIT for this
 // call, not the underlying LocalTmuxOut exec itself (its signature carries no
 // context, so a genuinely wedged local tmux server leaks the goroutine and its

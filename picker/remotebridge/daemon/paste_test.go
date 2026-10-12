@@ -657,3 +657,42 @@ func TestBridgeProc(t *testing.T) {
 		})
 	}
 }
+
+// #956: a wrapper script keeps bash as the pane's foreground command while the
+// agent runs as its child, so the paste gate reads @bridge_proc == bash and
+// forwards 0x16. The shipper resolves the remote poller's per-pane tree agent
+// into @bridge_proc; this test drives that stamp through the real bridgeProc
+// lookup and the paste gate, so a wrong option name, a shifted format field or
+// a wrong pane mapping cannot pass unnoticed.
+func TestWrapperAgentPasteEndToEnd(t *testing.T) {
+	dir := privateDir(t)
+	a := &agentShipper{dir: dir, sess: "lab-mono", written: map[string]paneStatus{}}
+	stamped := ""
+	cfg := Config{
+		LocalPanes: func() map[string]string { return map[string]string{"%1": "%7"} },
+		LocalTmux: func(args ...string) error {
+			if len(args) == 6 && args[0] == "set-option" && args[4] == "@bridge_proc" {
+				stamped = args[5]
+			}
+			return nil
+		},
+		LocalTmuxOut: func(...string) (string, error) { return "%1|" + stamped + "\n", nil },
+	}
+	a.apply(cfg, []paneStatus{{pane: "%1", proc: "bash", treeAgent: "claude"}})
+	if stamped != "claude" {
+		t.Fatalf("shipper resolved @bridge_proc = %q, want claude", stamped)
+	}
+
+	f := newPasteFixture()
+	f.h.procFor = func(remotePane string) (string, error) { return bridgeProc(cfg, remotePane) }
+	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
+		t.Fatalf("wrapper pane forwarded the byte instead of pasting: %q", got)
+	}
+	sent, notified := f.awaitOutcome(t)
+	if notified != "" {
+		t.Fatalf("unexpected notify: %q", notified)
+	}
+	if sent == "" {
+		t.Fatal("wrapper paste injected no path")
+	}
+}

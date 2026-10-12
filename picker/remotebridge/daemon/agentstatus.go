@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/claudestatus"
+	"github.com/noamsto/tmux-og/picker/proctree"
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
@@ -36,14 +37,18 @@ const agentStatusBackstopInterval = 30 * time.Second
 // sit ahead of the free-form task, which goes last so a '|' inside it lands
 // in the final field instead of shifting the row. @claude_img_src (aeye's
 // carousel key) is reduced to a presence bit here so its value never crosses.
+// @og_pane_agent is the remote resource poller's per-pane process-tree agent
+// (#956) — the same walk @og_session_res uses. It is pipe-stripped on the
+// REMOTE like the crew trio, because it is an option a socket holder can set
+// even though the poller only ever writes a manifest command name.
 // Unquoted: it is both a -F argument and a subscription format, and only the
 // call site knows which quoting each needs.
 const agentStatusFormat = "#{pane_id}|#{pane_current_command}|#{@claude_status}|#{@agent_screen}|#{@claude_issues}|" +
-	"#{s/[|]/ /:@crew_role}|#{s/[|]/ /:@crew_state}|#{s/[|]/ /:@crew_role_color}|#{?@claude_img_src,1,}|#{@claude_task}"
+	"#{s/[|]/ /:@crew_role}|#{s/[|]/ /:@crew_state}|#{s/[|]/ /:@crew_role_color}|#{?@claude_img_src,1,}|#{s/[|]/ /:@og_pane_agent}|#{@claude_task}"
 
 // agentStatusFields is agentStatusFormat's field count, shared with the test
 // fixture so the parser and the fixture cannot drift apart.
-const agentStatusFields = 10
+const agentStatusFields = 11
 
 const (
 	crewRoleMaxRunes  = 24
@@ -51,6 +56,9 @@ const (
 	// crewColorRe's own bare-word alternative is unbounded; every tmux colour
 	// name fits here, as do "colour255" and a hex triplet.
 	crewColorMaxRunes = 16
+	// agentNameMaxRunes bounds the remote tree agent before it can become a
+	// @bridge_proc value; every manifest command is far shorter.
+	agentNameMaxRunes = 32
 )
 
 // crewWordRe shapes both the role and its state. Stricter than it looks: these
@@ -61,6 +69,14 @@ const (
 // later consumer could forget to apply.
 var crewWordRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// agentNameRe shapes the remote tree-agent name before it is stamped as
+// @bridge_proc: the poller writes a manifest command (procName output), but the
+// value crosses ssh and an option a socket holder can set, so it is validated
+// before it reaches a local format. procName's makeWrapper unwrap keeps
+// `.foo-wrapped` a valid spelling, and the class excludes '#', '|' and spaces
+// by construction.
+var agentNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // serverPIDRe is the shape the shell reader of a panes/ or screen/ file's
 // server= field requires; anything else would be written into the file as-is.
 var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
@@ -68,13 +84,18 @@ var serverPIDRe = regexp.MustCompile(`^[0-9]+$`)
 // paneStatus is one remote pane's foreground command and, when an agent runs
 // there, the state either the hook writer or the screen scraper stamped.
 type paneStatus struct {
-	pane   string // remote pane id, with %
-	proc   string // remote foreground command; the local pane only ever runs a renderer
-	state  string // "" when no hook-driven agent reported
-	ts     int64  // epoch on the REMOTE's clock
-	unseen bool
-	issues string
-	task   string
+	pane string // remote pane id, with %
+	proc string // remote foreground command; the local pane only ever runs a renderer
+	// treeAgent is the agent the remote resource poller found anywhere in this
+	// pane's process tree, "" when it found none (#956). A wrapper script that
+	// keeps bash foreground runs the agent as a child, which proc alone cannot
+	// see; @bridge_proc resolves to this when proc is not itself an agent.
+	treeAgent string
+	state     string // "" when no hook-driven agent reported
+	ts        int64  // epoch on the REMOTE's clock
+	unseen    bool
+	issues    string
+	task      string
 	// The dispatcher's pane decorations, "" on any pane it never decorated.
 	crewRole  string
 	crewState string
@@ -119,7 +140,8 @@ func parseAgentStatus(body string) []paneStatus {
 			crewState: matching(cleanLabelValueExact(at(6), crewStateMaxRunes), crewWordRe),
 			crewColor: matching(cleanLabelValueExact(at(7), crewColorMaxRunes), crewColorRe),
 			imgSrc:    at(8) == "1",
-			task:      at(9),
+			treeAgent: matching(cleanLabelValueExact(at(9), agentNameMaxRunes), agentNameRe),
+			task:      at(10),
 		}
 		row.readStatus(at(2))
 		row.readScreen(at(3))
@@ -331,8 +353,23 @@ func (a *agentShipper) stamp(cfg Config, rows []paneStatus) (map[string]bool, bo
 		// Its own call, not folded into the crew sequence below: it is the one
 		// carried pane value nothing validates, and tmux fails a whole ';'
 		// sequence on one argv it reads as a flag.
-		if !seen || prev.proc != r.proc {
-			_ = cfg.LocalTmux("set-option", "-p", "-t", localPane, "@bridge_proc", r.proc)
+		//
+		// Resolve an agent running under a wrapper (#956): when the foreground
+		// command is not itself an agent, a manifest agent anywhere in the
+		// pane's process tree wins, so the paste gate and the icon see the agent
+		// a wrapper script runs as a child instead of the wrapper's shell. The
+		// tree agent is regex-validated at parse and manifest-checked here, so a
+		// remote cannot turn an arbitrary option into a @bridge_proc value.
+		proc := r.proc
+		if !proctree.IsAgentCommand(proc) && proctree.IsAgentCommand(r.treeAgent) {
+			proc = r.treeAgent
+		}
+		prevProc := prev.proc
+		if !proctree.IsAgentCommand(prevProc) && proctree.IsAgentCommand(prev.treeAgent) {
+			prevProc = prev.treeAgent
+		}
+		if !seen || prevProc != proc {
+			_ = cfg.LocalTmux("set-option", "-p", "-t", localPane, "@bridge_proc", proc)
 		}
 		// Before the agent-less return below: a role pane the dispatcher
 		// decorated still draws a border when no agent ever reported on it.

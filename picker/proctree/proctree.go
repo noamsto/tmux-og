@@ -69,6 +69,13 @@ func procName(comm string) string {
 	return name
 }
 
+// IsAgentCommand reports whether name is one of the agent commands the embedded
+// manifests match, after the same makeWrapper/.foo-wrapped unwrapping procName
+// applies to a ps comm field. It is the single predicate behind the process-tree
+// agent set and the shell-side @AGENT_COMMANDS, so a caller can prefer a real
+// foreground agent over a tree one without re-deriving the list.
+func IsAgentCommand(name string) bool { return agentCommands()[procName(name)] }
+
 // Aggregate sums CPU% and RSS over each root PID's whole process tree, given
 // one `ps PSArgs` table, and collects the agent commands found in it. Pure,
 // and the only place the tree walk lives.
