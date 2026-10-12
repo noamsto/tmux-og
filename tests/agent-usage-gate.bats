@@ -42,6 +42,11 @@ setup() {
 
 last_tick() { echo "$OG_AGENT_USAGE_DIR/.last-tick"; }
 
+teardown() {
+	[ -n "${REAL_TMUX:-}" ] && [ -n "${REAL_SOCK:-}" ] && "$REAL_TMUX" -S "$REAL_SOCK" kill-server 2>/dev/null
+	return 0
+}
+
 # --- CACHE_DIR resolution (no OG_AGENT_USAGE_DIR override) ---
 
 @test "tick: with no override, resolves under XDG_RUNTIME_DIR and creates it 0700" {
@@ -296,6 +301,35 @@ claude'
 @test "tick-run: a shell pane with no tree agent runs no provider" {
 	export FAKE_PANES='bash|'
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$USAGE_LOG" ]
+}
+
+# The fake tmux prints $FAKE_PANES verbatim, so only a real server can exercise
+# the ctlSafe wrap the gate applies to its -F read. A newline in the
+# remote-settable @og_pane_agent must not forge a phantom list-panes row that
+# opens an agent no pane runs (#963 review round 1).
+@test "tick-run: a multi-line tree agent cannot forge a second pane row" {
+	local real_tmux
+	real_tmux=$(PATH="${PATH#"$FAKEBIN":}" command -v tmux)
+	[ -n "$real_tmux" ] || skip "no real tmux on PATH"
+
+	REAL_TMUX="$real_tmux"
+	REAL_SOCK="$BATS_TEST_TMPDIR/real.sock"
+	local realbin="$BATS_TEST_TMPDIR/realbin"
+	mkdir -p "$realbin"
+	cat >"$realbin/tmux" <<-EOF
+		#!/bin/sh
+		exec "$real_tmux" -S "$REAL_SOCK" "\$@"
+	EOF
+	chmod +x "$realbin/tmux"
+
+	"$real_tmux" -S "$REAL_SOCK" new-session -d -s s -x 80 -y 24
+	local pane
+	pane=$("$real_tmux" -S "$REAL_SOCK" list-panes -t s -F '#{pane_id}')
+	"$real_tmux" -S "$REAL_SOCK" set-option -p -t "$pane" @og_pane_agent "$(printf 'x\nclaude|junk')"
+
+	run env PATH="$realbin:$PATH" bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ ! -s "$USAGE_LOG" ]
 }

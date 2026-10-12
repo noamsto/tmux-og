@@ -89,7 +89,10 @@ agent_of() {
 # agent closed" (see the stale-cache guard in --tick-run below).
 scan_open_agents() {
 	local cmds line cmd tree agent
-	cmds=$(tmux list-panes -a -F '#{pane_current_command}|#{@og_pane_agent}' 2>/dev/null) || return
+	# ctlSafe-wrap the whole row exactly as the daemon's subscription does:
+	# @og_pane_agent is remote-settable, and an unescaped newline in it would
+	# forge a phantom list-panes row (a second agent open that no pane runs).
+	cmds=$(tmux list-panes -a -F '#{s/[[#{l::}cntrl#{l::}]]/ /:#{pane_current_command}|#{@og_pane_agent}}' 2>/dev/null) || return
 	while IFS= read -r line; do
 		# Split on the FIRST '|'; @og_pane_agent is a remote-settable option,
 		# so neutralize any further '|' before it can forge a second token.

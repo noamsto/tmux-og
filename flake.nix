@@ -263,7 +263,9 @@
 
           agent-usage-gate-tests =
             pkgs.runCommand "agent-usage-gate-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
+              # tmux: the multi-line @og_pane_agent case needs a real server to
+              # exercise the ctlSafe wrap the fake tmux's verbatim output skips.
+              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.tmux];
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
