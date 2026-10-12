@@ -11,7 +11,11 @@
 # (docs/agents/bridge-shipped-state.md).
 #
 # scan_open_agents populates OPEN[cmd]=1 per manifest-command pane seen, from
-# one `list-panes -a` call. Tick mode gates on "any agent open at all"
+# one `list-panes -a` call. Each pane resolves to its foreground command when
+# that is itself an agent, else to the process-tree agent the resource poller
+# stamps on @og_pane_agent (#956) — the same resolution the bridge uses, so a
+# wrapper that keeps a shell foreground still counts the agent it runs. Tick
+# mode gates on "any agent open at all"
 # (unchanged semantics: the display gate (tmux-statusline) hides the segment
 # when nothing's open, so polling would burn provider quota for an invisible
 # segment), and that gate precedes the .last-tick stamp — a gated-out tick
@@ -62,21 +66,42 @@ publish_usage() {
 	tmux set -g @og_agent_usage "$v"
 }
 
+# agent_of normalizes one command name the way the display gate does —
+# basename, a leading '.', a '-wrapped' suffix — and echoes the manifest command
+# it names, or returns 1. Used for the foreground command and the tree agent.
+agent_of() {
+	local base=${1##*/} agent
+	base=${base#.}
+	base=${base%-wrapped}
+	for agent in $AGENT_COMMANDS; do
+		if [[ $base == "$agent" ]]; then
+			echo "$agent"
+			return 0
+		fi
+	done
+	return 1
+}
+
 # scan_open_agents: populates the global OPEN[cmd]=1 map, one entry per
 # manifest-command basename with a pane open somewhere. One `list-panes`
 # fork, reached only past the refresh window in tick mode. A failed
 # `list-panes` leaves OPEN empty — callers must not read that as "every
 # agent closed" (see the stale-cache guard in --tick-run below).
 scan_open_agents() {
-	local cmds cmd base agent
-	cmds=$(tmux list-panes -a -F '#{pane_current_command}' 2>/dev/null) || return
-	while IFS= read -r cmd; do
-		base=${cmd##*/}
-		base=${base#.}
-		base=${base%-wrapped}
-		for agent in $AGENT_COMMANDS; do
-			[[ $base == "$agent" ]] && OPEN[$base]=1
-		done
+	local cmds line cmd tree agent
+	cmds=$(tmux list-panes -a -F '#{pane_current_command}|#{@og_pane_agent}' 2>/dev/null) || return
+	while IFS= read -r line; do
+		# Split on the FIRST '|'; @og_pane_agent is a remote-settable option,
+		# so neutralize any further '|' before it can forge a second token.
+		cmd=${line%%|*}
+		tree=${line#*|}
+		tree=${tree//|/ }
+		if agent=$(agent_of "$cmd"); then
+			OPEN[$agent]=1
+			continue
+		fi
+		agent=$(agent_of "$tree") || continue
+		OPEN[$agent]=1
 	done <<<"$cmds"
 }
 

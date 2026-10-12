@@ -274,3 +274,28 @@ claude'
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_SET_LOG" ]
 }
+
+# A wrapper keeps the shell foreground and the agent in its process tree; the
+# resource poller stamps that tree agent on @og_pane_agent, and the gate must
+# resolve it the same way the bridge does (#963). The fake prints the `cmd|tree`
+# line the new list-panes format emits.
+@test "tick: a wrapper pane's process-tree agent stamps .last-tick" {
+	export FAKE_PANES='bash|claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ "$status" -eq 0 ]
+	[ -e "$(last_tick)" ]
+}
+
+@test "tick-run: a wrapper pane's process-tree agent runs its provider" {
+	export FAKE_PANES='bash|claude'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$USAGE_LOG")" = "claude" ]
+}
+
+@test "tick-run: a shell pane with no tree agent runs no provider" {
+	export FAKE_PANES='bash|'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ ! -s "$USAGE_LOG" ]
+}
