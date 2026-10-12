@@ -601,7 +601,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = min(old, len(m.visible)-1)
 			}
 		}
-		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
+		if m.cursor < 0 || m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
 		}
 		if m.mode == modeWall {
@@ -620,7 +620,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.zoxideItems = msg.items
 		m.zoxideReady = true
 		m = m.recombine().withFilter()
-		if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
+		if m.cursor < 0 || m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 			m.cursor = m.firstSelectable(0)
 		}
 		if m.mode == modeWall {
@@ -1578,7 +1578,9 @@ func (m tuiModel) firstSelectable(from int) int {
 			return i
 		}
 	}
-	return from
+	// Nothing selectable: a negative cursor means "no selection", so callers
+	// never highlight or act on an unselectable column/group header (#911).
+	return -1
 }
 
 // cursorOnCurrent is the visible row marked current, or firstSelectable(0)
@@ -1625,9 +1627,9 @@ func (m tuiModel) restoreCursor(keep string) tuiModel {
 	// No row to re-find, but the rebuild can still have moved a header under a
 	// cursor resting on empty space: the Remote section arrives from an ssh probe
 	// seconds after the query is typed, so a query matching only a remote session
-	// selects nothing, stays at 0, and finds the Remote header there (#588).
+	// selects nothing and finds the Remote header under the cursor (#588).
 	// refreshMsg and zoxideMsg clamp on selectability for the same reason.
-	if m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
+	if m.cursor < 0 || m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
 		m.cursor = m.firstSelectable(0)
 	}
 	return m
@@ -3422,9 +3424,26 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		f.identityCap = identityCapFor(avail, maxLeadDW+maxZoomDW, f.iconCol, maxPrDW+optionalDW())
 		return f
 	}
+	optionalCols := func(f columnFit) int {
+		n := 0
+		if f.showHost {
+			n++
+		}
+		if f.showRes {
+			n++
+		}
+		if f.showPath {
+			n++
+		}
+		return n
+	}
 	cf := fit(lblProcs, lblCPU, lblMem)
 	if width > 0 {
-		if g := fit(iProcs, iCPU, iMem); g.identityCap > cf.identityCap {
+		// The glyph-only layout is narrower, so it can keep an optional column
+		// (usually Path) the word layout had to drop to reach the identity
+		// floor. Columns kept decide first; identity width only breaks a tie.
+		if g := fit(iProcs, iCPU, iMem); optionalCols(g) > optionalCols(cf) ||
+			(optionalCols(g) == optionalCols(cf) && g.identityCap > cf.identityCap) {
 			cf = g
 			lblProcs, lblCPU, lblMem = iProcs, iCPU, iMem
 		}

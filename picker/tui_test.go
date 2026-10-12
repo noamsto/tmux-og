@@ -1523,8 +1523,8 @@ func TestRestoreCursorLeavesHeaderWhenRemoteRowsArriveLate(t *testing.T) {
 	m := tuiModel{allItems: []listItem{remoteFixture()[0]}, query: "other"}
 	m = m.withFilter()
 	m.cursor = m.firstSelectable(0)
-	if m.cursor != 0 {
-		t.Fatalf("cursor = %d before the probe, want 0", m.cursor)
+	if m.cursor != -1 {
+		t.Fatalf("cursor = %d before the probe, want no selection (-1)", m.cursor)
 	}
 
 	m.allItems = remoteFixture()
@@ -2710,5 +2710,26 @@ func TestCtrlXOnMirrorRowUsesHostRowID(t *testing.T) {
 func TestRemoteKillFailureNoID(t *testing.T) {
 	if got := remoteKillFailure("kill lab/mono", errRemoteKillNoID); !strings.Contains(got, "no live session id") {
 		t.Errorf("got %q, want the no-id wording", got)
+	}
+}
+
+// Under ^a with no active agent in any window, every window row is filtered
+// out and only the pinned column-label row survives — unselectable. The cursor
+// must land on no row, not on the column-label row (#911).
+func TestAgentOnlyNoAgentsSelectsNoRow(t *testing.T) {
+	items := renderWindowItemsWith(mixedWindows(), nil, map[string]string{}, nil, "dark", 120, false)
+	m := newPickerModel(true, false, false, map[string]string{}, "dark", items, "")
+	m = m.toggleAgentOnly()
+	if len(m.visible) == 0 || !m.visible[0].isColumnHeader {
+		t.Fatalf("expected the pinned column-label row to survive ^a: %+v", m.visible)
+	}
+	if m.isSelectable(m.visible[0]) {
+		t.Fatalf("column-label row must stay unselectable: %+v", m.visible[0])
+	}
+	if m.cursor >= 0 && m.cursor < len(m.visible) {
+		t.Errorf("cursor %d lands on %q, want no selection", m.cursor, m.visible[m.cursor].target)
+	}
+	if got := m.currentTarget(); got != "" {
+		t.Errorf("currentTarget = %q, want empty while nothing is selectable", got)
 	}
 }
