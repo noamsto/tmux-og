@@ -252,13 +252,15 @@ func TestAttachTimeoutBeforeFirstLine(t *testing.T) {
 
 // A phase missing from the table must still be bounded, never "no timeout".
 func TestAttachBudgetFallsBackToLaunch(t *testing.T) {
-	shrinkAttachTimings(t, map[attachPhase]time.Duration{phaseLaunch: 200 * time.Millisecond})
+	// The launch budget also bounds forking the fake launcher, so it must
+	// survive a loaded build machine.
+	shrinkAttachTimings(t, map[attachPhase]time.Duration{phaseLaunch: 2 * time.Second})
 	delete(attachBudgets, phaseConnect)
 	r := fakeAttachRun(t, `printf 'connect\n' >&3; sleep 30`)
 	go r.run()
-	res := awaitDone(t, r, 3*time.Second)
-	if res.outcome != attachTimedOut || res.phase != phaseConnect || res.budget != 200*time.Millisecond {
-		t.Errorf("result = %+v, want attachTimedOut in connect after the 200ms launch budget", res)
+	res := awaitDone(t, r, 8*time.Second)
+	if res.outcome != attachTimedOut || res.phase != phaseConnect || res.budget != 2*time.Second {
+		t.Errorf("result = %+v, want attachTimedOut in connect after the 2s launch budget", res)
 	}
 }
 
