@@ -176,6 +176,7 @@ Press <kbd>prefix</kbd> then <kbd>C-Space</kbd> for the in-terminal cheatsheet.
 | <kbd>Y</kbd> | Yank pane's cwd to clipboard |
 | <kbd>I</kbd> | Toggle the image/diagram carousel |
 | <kbd>z</kbd> | Toggle pane zoom |
+| <kbd>Z</kbd> | Fold the status bar to one line, or unfold it (animated) |
 | <kbd>C-Space</kbd> | Welcome splash + cheatsheet |
 | <kbd>u</kbd> / <kbd>U</kbd> | Undo close / close-event picker |
 | <kbd>R</kbd> | Snapshot picker |

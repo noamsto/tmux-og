@@ -81,7 +81,9 @@ fi
 # collapsed all three fields into win_count, so prev_key was always empty (cache
 # never hit) and HEIGHT always 0 (the 4th status row could never unlock).
 # @bridge_nudge is last so a '|' in the path stays inside that field.
-IFS='|' read -r win_count prev_key HEIGHT NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}|#{@bridge_nudge}' 2>/dev/null)
+# @og_status_folded / @og_status_cap (prefix+Z, tmux-status-fold) are closed
+# tokens: the fold flag and the animation's temporary ceiling on `status`.
+IFS='|' read -r win_count prev_key HEIGHT FOLDED CAP NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@bridge_nudge}' 2>/dev/null)
 # Height only gates the extra window row, so a size-neutral client (empty
 # client_height) falls back to the baseline cap instead of skipping the reflow
 # the way an empty width has to. Resolve it before it reaches the cache key so
@@ -533,7 +535,20 @@ tmux_cmds+=("set -t '$SESSION' @window_per '$window_per'")
 tmux_cmds+=("set -t '$SESSION' @reflow_key '$applied_key'")
 tmux_cmds+=("set -t '$SESSION' @labels_mode '${labels_mode}'")
 
-tmux_cmds+=("set -t '$SESSION' status $((current_line + 2))")
+# prefix+Z: a folded session shows one line, and an unfold animation holds the
+# line count at its current step via @og_status_cap. @reflow_lines is the count
+# the grid wants, which tmux-status-fold animates toward. An empty/non-numeric
+# cap means none.
+status_lines=$((current_line + 2))
+tmux_cmds+=("set -t '$SESSION' @reflow_lines '$status_lines'")
+if [[ $FOLDED == 1 ]]; then
+	status_lines=1
+elif [[ $CAP =~ ^[1-9]$ ]] && ((CAP < status_lines)); then
+	status_lines=$CAP
+fi
+# tmux spells a one-line bar `on`; a bare 1 is rejected.
+((status_lines == 1)) && status_word=on || status_word=$status_lines
+tmux_cmds+=("set -t '$SESSION' status $status_word")
 
 # Single-line branch collapses into the same batch as an atomic unset of the
 # whole session-level status-format array. Doing this as one command matters:
@@ -543,7 +558,7 @@ tmux_cmds+=("set -t '$SESSION' status $((current_line + 2))")
 # [1..4] are still set — line 0 renders blank and the session name flashes
 # away. The per-index unsets that used to live here are redundant with the
 # bare `status-format` unset below.
-if ((! needs_multiline && current_line == 0)); then
+if ((! needs_multiline && current_line == 0 && FOLDED != 1)); then
 	tmux_cmds+=("set -u -t '$SESSION' status-format")
 fi
 
@@ -551,7 +566,7 @@ fi
 if log_enabled; then
 	log_event reflow event recompute forced "$FORCE" wins "$total" \
 		width "$WIDTH" height "$HEIGHT" split1 "$split1" split2 "$split2" \
-		split3 "$split3" lines "$((current_line + 2))" colws "${colws[*]}" \
+		split3 "$split3" lines "$status_lines" colws "${colws[*]}" \
 		labels_mode "$labels_mode" sess "$SESSION"
 fi
 {
@@ -617,7 +632,20 @@ ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDX}: ${CREW}${LABEL_Z}$
 # Multi-line branches stay on direct `tmux set` calls: FMT0 contains embedded
 # single quotes (e.g. '#{session_name}') that break outer-single-quoted
 # batched commands. See commit 60421e7.
-if ((! needs_multiline && current_line == 0)); then
+# prefix+Z fold: one compact line in place of the whole grid. A session-level
+# status-format[0] is all-or-nothing, so the rest stay empty, and at `status 1`
+# tmux never asks for them anyway. The 1s update-icons job (@og_icons_job) rides
+# along because it is what keeps @window_icon_display and the session tint live,
+# and the folded line is the only status line left to host it. Window rows are a
+# #{W:} format loop: the current window first, then every other window that
+# hosts an agent as `idx icon`, where the icon carries the state colour. The
+# agent test is status-format[1]'s own (a mirror window always counts).
+FOLD_LABEL="#{window_index}: #{=/40/…:#{@window_label_id}#{@window_label_rest_long}}"
+FOLD_AGENT="#{?#{?#{@bridge_win},1,#{@window_has_agent}}, #[fg=#{@thm_subtext_0}]#{window_index} #{@window_icon_display},}"
+FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[fg=#{@thm_mauve},bold]#{W:#{?window_active,${FOLD_LABEL},}}#[nobold]#{W:#{?window_active,,${FOLD_AGENT}}}"
+if [[ $FOLDED == 1 ]]; then
+	tmux set -t "$SESSION" status-format[0] "$FOLD_FMT"
+elif ((! needs_multiline && current_line == 0)); then
 	: # handled via batched unset above
 elif ((current_line == 0)); then
 	FMT0=$(tmux show -gv status-format[0] 2>/dev/null)

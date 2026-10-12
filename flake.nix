@@ -2118,6 +2118,34 @@
           picker-go-lint = goLintGate {} pickerChecked;
           generator-go-lint = goLintGate {race = true;} (pkgs.callPackage ./generator {});
 
+          # prefix + Z (#970): the real fold script and reflow on a private,
+          # config-less server, like reflow-fanout-tests.
+          status-fold-tests =
+            pkgs.runCommand "status-fold-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.tmux];
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/status-fold.bats
+              touch $out
+            '';
+
+          # The fold bind (#970) must flip the flag and hand the fold script the
+          # session and width reflow needs; a bind that drops either builds clean
+          # and folds nothing.
+          status-fold-conf-assertions =
+            pkgs.runCommand "status-fold-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
+              [ "$(grep -c "^set -g @og_icons_job \".*'#{pid}')\"\$" "$CONF")" -eq 1 ]
+              grep -Fq 'set -g status-format[0] "#{E:@og_icons_job}' "$CONF"
+              touch $out
+            '';
+
           reflow-fanout-tests =
             pkgs.runCommand "reflow-fanout-tests" {
               # tmux: the test drives a private, config-less tmux server so the

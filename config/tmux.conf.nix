@@ -245,7 +245,7 @@
   # Scripts that source only lib-log (gated event logging). Includes
   # claude-status-update, which is run RAW by tests/claude-issues.bats — its
   # source is guarded so the raw script defines no-op stubs.
-  scriptsWithLog = ["claude-status-update" "og-log-event" "og-debug"];
+  scriptsWithLog = ["claude-status-update" "og-log-event" "og-debug" "tmux-status-fold"];
 
   mkScriptWithLog = name: let
     raw = builtins.readFile ../scripts/${name}.sh;
@@ -293,6 +293,7 @@
     "claude-status"
     "claude-status-update"
     "tmux-reflow-windows"
+    "tmux-status-fold"
     "tmux-session-picker"
     "tmux-window-picker"
     "tmux-window-wall"
@@ -788,6 +789,7 @@
     "tmux-shell-prompt"
     "tmux-smart-nav"
     "tmux-splash-maybe"
+    "tmux-status-fold"
     "tmux-update-icons"
     "tmux-window-nav"
     "tmux-worktree-match"
