@@ -1514,12 +1514,12 @@ func TestCtrlXOnMirrorRowRoutesToBridgeCtl(t *testing.T) {
 
 // The Remote section arrives from an ssh probe seconds after the query was
 // typed, so a query matching only a remote session selects nothing at the time
-// it is typed and leaves the cursor at 0. When the probe's rows land, index 0
-// is the Remote header — restoreCursor must move off it rather than clamping on
-// bounds alone (#588).
-func TestRestoreCursorLeavesHeaderWhenRemoteRowsArriveLate(t *testing.T) {
+// it is typed. When the probe's rows land, restoreCursor must re-seat the
+// cursor whether it was left with no selection or on a header the rebuild moved
+// under it, rather than clamping on bounds alone (#588).
+func TestRestoreCursorReseatsFromEmptyOrHeader(t *testing.T) {
 	// Before the probe: only the local session exists, and "other" matches none
-	// of it.
+	// of it, so nothing is selectable.
 	m := tuiModel{allItems: []listItem{remoteFixture()[0]}, query: "other"}
 	m = m.withFilter()
 	m.cursor = m.firstSelectable(0)
@@ -1529,7 +1529,20 @@ func TestRestoreCursorLeavesHeaderWhenRemoteRowsArriveLate(t *testing.T) {
 
 	m.allItems = remoteFixture()
 	m = m.withFilter().restoreCursor("")
+	if !m.isSelectable(m.visible[m.cursor]) {
+		t.Fatalf("cursor %d sits on an unselectable row %+v", m.cursor, m.visible[m.cursor])
+	}
+	if got := m.visible[m.cursor].remoteSess; got != "other" {
+		t.Errorf("cursor landed on %q, want the matching remote row %q", got, "other")
+	}
 
+	// The header-under-cursor arm (#588): a rebuild can leave the cursor on a
+	// non-selectable header index, which restoreCursor must also move off.
+	m.cursor = 0
+	if m.isSelectable(m.visible[m.cursor]) {
+		t.Fatalf("fixture: index 0 should be an unselectable header, got %+v", m.visible[m.cursor])
+	}
+	m = m.restoreCursor("")
 	if !m.isSelectable(m.visible[m.cursor]) {
 		t.Fatalf("cursor %d sits on an unselectable row %+v", m.cursor, m.visible[m.cursor])
 	}
