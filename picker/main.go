@@ -28,7 +28,7 @@ import (
 	"github.com/noamsto/tmux-og/picker/proctree"
 )
 
-// Build-time constants injected via icons_generated.go:
+// Defined in icons.go; applyConfig replaces the first line from $TMUX_OG_CONFIG:
 //   iconMap, fallbackIcon, maxIconsPicker
 //   claudeSpinnerFrames, claudeIconWaiting, claudeIconCompacting,
 //   claudeIconDone, claudeIconIdle, claudeIconError, claudeIconDenied
@@ -132,6 +132,10 @@ type agentPaneInfo struct {
 }
 
 func main() {
+	if err := applyConfig(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	args := os.Args[1:]
 	flags := map[string]bool{}
 	for _, a := range args {

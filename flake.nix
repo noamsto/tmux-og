@@ -108,12 +108,7 @@
         # Reused (not just for its checkPhase) by the remote bridge integration
         # checks below, which need its binaries prebuilt and offline.
         pickerChecked =
-          (import ./picker {
-            inherit pkgs lib;
-            processIcons = import ./config/process-icons.nix;
-            fallbackIcon = "";
-            maxIconsPicker = "5";
-          }).overrideAttrs (old: {
+          (import ./picker {inherit pkgs lib;}).overrideAttrs (old: {
             doCheck = true;
             # tmux: TestReflowRunShellArgsSurvivesFormatInjection (#368) drives a
             # real run-shell call, same private config-less pattern as
@@ -2931,6 +2926,9 @@
           # check` never forces — without this alias CI builds nothing for it
           # and downstream consumers compile it from source.
           tmux-remux = inputs.tmux-remux.packages.${pkgs.system}.default;
+          # The module's Go tools: built here, against this flake's nixpkgs, so the
+          # copy CI pushes is the one every consumer resolves.
+          go-tools = import ./picker {inherit pkgs lib;};
           pi-hookyard-plugin =
             pkgs.runCommand "tmux-og-pi-hookyard-plugin" {
               nativeBuildInputs = [inputs.hookyard.packages.${pkgs.system}.hookyard];
@@ -3016,6 +3014,7 @@
               carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
               carouselPluginSkills = "${inputs.aeye}/adapters/claude-code/plugin/skills";
               piHookyardPlugin = inputs.self.packages.${pkgs.system}.pi-hookyard-plugin;
+              goTools = inputs.self.packages.${pkgs.system}.go-tools;
               prdash = inputs.prdash.packages.${pkgs.system}.prdash;
             });
       };

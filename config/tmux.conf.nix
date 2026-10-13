@@ -63,6 +63,9 @@
   carousel-aeye ? null,
   # prdash PR dashboard package (threaded from the flake input; used by the prefix+p popup).
   prdash ? null,
+  # Config-independent Go tools. The module passes the flake's own build so it
+  # comes from the binary cache rather than compiling against the consumer's pkgs.
+  goTools ? import ../picker {inherit pkgs lib;},
   # Welcome-buffer splash (threaded from the home-manager module).
   splashEnable ? true,
   splashTips ? [],
@@ -262,10 +265,20 @@
   claude-status-bin = "${claude-status-pkg}/bin/claude-status";
 
   # Go binary for fast session picker generation (~4ms vs ~85ms in bash)
-  picker-generate = import ../picker {
-    inherit pkgs lib processIcons fallbackIcon;
-    inherit maxIconsPicker;
-    inherit splashTips splashTimeout prefix;
+  goToolsConfig = pkgs.writeText "tmux-og-config.json" (builtins.toJSON {
+    inherit processIcons fallbackIcon splashTips splashTimeout;
+    maxIconsPicker = lib.toInt maxIconsPicker;
+    splashPrefix = prefix;
+  });
+  picker-generate = pkgs.symlinkJoin {
+    name = "tmux-og-go-tools-configured";
+    paths = [goTools];
+    nativeBuildInputs = [pkgs.makeBinaryWrapper];
+    postBuild = ''
+      for bin in tmux-picker-generate tmux-splash; do
+        wrapProgram "$out/bin/$bin" --set TMUX_OG_CONFIG ${goToolsConfig}
+      done
+    '';
   };
   picker-generate-bin = "${picker-generate}/bin/tmux-picker-generate";
   picker-splash-bin = "${picker-generate}/bin/tmux-splash";

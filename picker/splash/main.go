@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -30,6 +31,10 @@ func detectTheme() string {
 }
 
 func main() {
+	if err := applyConfig(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	// --no-timeout: dismiss on keypress only (for on-demand launch, where the
 	// auto-dismiss timeout of the fresh-session welcome would be wrong).
 	timeout := splashTimeoutSec

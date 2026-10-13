@@ -2,11 +2,10 @@ package main
 
 import "testing"
 
-// iconMap's actual glyphs are nix-injected (icons_generated.go) and vary
-// across picker/default.nix invocations in this flake (e.g. the
-// tmux-conf-extraction-assertions matrix overrides claude's icon to "C"), so
-// these cases compare against iconMap/fallbackIcon rather than a hardcoded
-// glyph.
+// iconMap's glyphs come from $TMUX_OG_CONFIG at runtime and vary by config
+// (e.g. the tmux-conf-extraction-assertions matrix overrides claude's icon to
+// "C"), so these cases compare against iconMap/fallbackIcon rather than a
+// hardcoded glyph.
 func TestBuildProcIconsNormalizesWrapped(t *testing.T) {
 	claudeIcon, ok := iconMap["claude"]
 	if !ok {

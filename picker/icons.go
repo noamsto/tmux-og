@@ -1,10 +1,20 @@
 package main
 
-// Default values for go build / go test outside of Nix.
-// The Nix build (picker/default.nix) overwrites this file in the build sandbox
-// with a freshly generated version from process-icons.nix.
+import "github.com/noamsto/tmux-og/picker/ogconfig"
+
+// Built-in defaults for a binary run without $TMUX_OG_CONFIG; the module's
+// wrapper always sets it, replacing iconMap, fallbackIcon and maxIconsPicker.
 //
 // Keep iconMap in sync with config/process-icons.nix when adding entries.
+
+func applyConfig() error {
+	cfg, ok, err := ogconfig.Load()
+	if !ok {
+		return err
+	}
+	iconMap, fallbackIcon, maxIconsPicker = cfg.ProcessIcons, cfg.FallbackIcon, cfg.MaxIconsPicker
+	return nil
+}
 
 var iconMap = map[string]string{
 	// Custom / project-specific
@@ -29,13 +39,13 @@ var iconMap = map[string]string{
 	"vim":   "",
 
 	// Version control
-	"git":    "",
-	"gh":     "",
-	"gitui":  "",
+	"git":     "",
+	"gh":      "",
+	"gitui":   "",
 	"lazygit": "",
-	"lazyjj": "",
-	"jj":     "",
-	"tig":    "",
+	"lazyjj":  "",
+	"jj":      "",
+	"tig":     "",
 
 	// Languages & runtimes
 	"cargo":   "",
@@ -111,13 +121,13 @@ var iconMap = map[string]string{
 	"sqlite": "",
 
 	// File managers & tools
-	"bat":   "󰭟",
-	"lf":    "",
+	"bat":    "󰭟",
+	"lf":     "",
 	"ranger": "",
-	"yazi":  "",
-	"rsync": "",
-	"zip":   "",
-	"unzip": "",
+	"yazi":   "",
+	"rsync":  "",
+	"zip":    "",
+	"unzip":  "",
 
 	// Terminals & multiplexers
 	"tmux":   "",
@@ -142,7 +152,7 @@ var claudeIconDone = "󰸞"
 var claudeIconIdle = "󰒲"
 var claudeIconError = "󰅚"
 var claudeIconDenied = "󰔟" // same clock as waiting, different color
-var claudeIconBG = "󰅐" // nf-md-timer_sand — background shells still running
+var claudeIconBG = "󰅐"     // nf-md-timer_sand — background shells still running
 
 // Default UI icons — overridden at runtime by env vars or tmux options.
 var iconSession = ""

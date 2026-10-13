@@ -40,8 +40,10 @@ command that opens a modal floating pane rather than an actual popup (#725,
   splash.
 - **On demand:** `prefix + C-Space` pops the splash directly (bypasses the gate),
   launched with `--no-timeout` so it dismisses on keypress only.
-- **Cheatsheet:** `splash.tips` (list of `{ key; label; }`) is codegen'd into the
-  binary at build time (`picker/splash/tips_generated.go`, like the picker's
-  `icons_generated.go`); the `prefix` token is substituted at render time.
+- **Cheatsheet:** `splash.tips` (list of `{ key; label; }`) reaches the binary at
+  runtime through the JSON file its wrapper names in `$TMUX_OG_CONFIG`
+  (`picker/ogconfig`; `picker/splash/tips.go` holds the unwrapped defaults), so
+  the binary itself stays cacheable; the `prefix` token is substituted at
+  render time.
 - **Dismiss:** any key or `splash.timeout` seconds (default 10).
 
