@@ -107,40 +107,34 @@
         # let new goroutine-spawning packages slip past it.
         # Reused (not just for its checkPhase) by the remote bridge integration
         # checks below, which need its binaries prebuilt and offline.
-        pickerChecked =
-          (import ./picker {
-            inherit pkgs lib;
-            processIcons = import ./config/process-icons.nix;
-            fallbackIcon = "";
-            maxIconsPicker = "5";
-          }).overrideAttrs (old: {
-            doCheck = true;
-            # tmux: TestReflowRunShellArgsSurvivesFormatInjection (#368) drives a
-            # real run-shell call, same private config-less pattern as
-            # reflow-fanout-tests. Kept here rather than picker/default.nix so it's
-            # scoped to this check alone — the package itself is reused for
-            # prebuilt binaries by the remote bridge integration checks, which
-            # don't need a test-only dependency.
-            #
-            # mkTmux, not pkgs.tmux, matching every other live-tmux check here:
-            # these tests assert version-sensitive command grammar, so the binary
-            # under them has to be the one that ships. 3.7c is not merely older,
-            # it is actively misleading — its `list-commands new-pane` advertises
-            # -A and -B while its parser rejects both, so a capability probe
-            # passes and the command still fails.
-            nativeBuildInputs = (old.nativeBuildInputs or []) ++ [(mkTmux pkgs)];
-            # Tells TestReflowRunShellArgsSurvivesFormatInjection (#368) to fail
-            # rather than skip if tmux is somehow still missing, so pruning the
-            # nativeBuildInputs entry above breaks loudly instead of silently
-            # dropping the regression check.
-            OG_REQUIRE_TMUX = "1";
-            checkPhase = ''
-              runHook preCheck
-              export GOFLAGS=''${GOFLAGS//-trimpath/}
-              go test -race ./...
-              runHook postCheck
-            '';
-          });
+        pickerChecked = (import ./picker {inherit pkgs lib;}).overrideAttrs (old: {
+          doCheck = true;
+          # tmux: TestReflowRunShellArgsSurvivesFormatInjection (#368) drives a
+          # real run-shell call, same private config-less pattern as
+          # reflow-fanout-tests. Kept here rather than picker/default.nix so it's
+          # scoped to this check alone — the package itself is reused for
+          # prebuilt binaries by the remote bridge integration checks, which
+          # don't need a test-only dependency.
+          #
+          # mkTmux, not pkgs.tmux, matching every other live-tmux check here:
+          # these tests assert version-sensitive command grammar, so the binary
+          # under them has to be the one that ships. 3.7c is not merely older,
+          # it is actively misleading — its `list-commands new-pane` advertises
+          # -A and -B while its parser rejects both, so a capability probe
+          # passes and the command still fails.
+          nativeBuildInputs = (old.nativeBuildInputs or []) ++ [(mkTmux pkgs)];
+          # Tells TestReflowRunShellArgsSurvivesFormatInjection (#368) to fail
+          # rather than skip if tmux is somehow still missing, so pruning the
+          # nativeBuildInputs entry above breaks loudly instead of silently
+          # dropping the regression check.
+          OG_REQUIRE_TMUX = "1";
+          checkPhase = ''
+            runHook preCheck
+            export GOFLAGS=''${GOFLAGS//-trimpath/}
+            go test -race ./...
+            runHook postCheck
+          '';
+        });
 
         # golangci-lint (.golangci.yml) + nilaway over a Go module, offline
         # against the vendored deps buildGoModule already resolved. Reuses the
@@ -2931,6 +2925,9 @@
           # check` never forces — without this alias CI builds nothing for it
           # and downstream consumers compile it from source.
           tmux-remux = inputs.tmux-remux.packages.${pkgs.system}.default;
+          # The module's Go tools: built here, against this flake's nixpkgs, so the
+          # copy CI pushes is the one every consumer resolves.
+          go-tools = import ./picker {inherit pkgs lib;};
           pi-hookyard-plugin =
             pkgs.runCommand "tmux-og-pi-hookyard-plugin" {
               nativeBuildInputs = [inputs.hookyard.packages.${pkgs.system}.hookyard];
@@ -3016,6 +3013,7 @@
               carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
               carouselPluginSkills = "${inputs.aeye}/adapters/claude-code/plugin/skills";
               piHookyardPlugin = inputs.self.packages.${pkgs.system}.pi-hookyard-plugin;
+              goTools = inputs.self.packages.${pkgs.system}.go-tools;
               prdash = inputs.prdash.packages.${pkgs.system}.prdash;
             });
       };

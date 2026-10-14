@@ -9,6 +9,7 @@
   carouselPluginSkills ? null,
   piHookyardPlugin ? null,
   prdash ? null,
+  goTools ? import ../picker {inherit pkgs lib;},
   ...
 }: let
   cfg = config.programs.tmux-og;
@@ -117,6 +118,7 @@
     inherit carousel-toggle;
     inherit carousel-aeye;
     inherit prdash;
+    inherit goTools;
     extraProcessIcons = cfg.processIcons;
     zoxideExclude = lib.concatStringsSep "," cfg.picker.zoxideExclude;
     pickerListRatio = cfg.picker.listRatio;

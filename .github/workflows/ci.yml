@@ -55,4 +55,5 @@ jobs:
           --flake .#
           --select 'f: f.checks.${{ matrix.system }} // {
           pkg-default = f.packages.${{ matrix.system }}.default;
+          pkg-go-tools = f.packages.${{ matrix.system }}.go-tools;
           pkg-tmux-remux = f.packages.${{ matrix.system }}.tmux-remux; }'
