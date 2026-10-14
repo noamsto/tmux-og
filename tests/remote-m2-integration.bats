@@ -56,6 +56,10 @@ setup() {
 	printf 'set -g base-index 1\nset -g pane-base-index 1\nset -g status on\nset -g pane-border-status top\nset -g window-size latest\nset -g aggressive-resize on\n' >"$SRC_CONF"
 	SRC="tmux -L m2src -f $SRC_CONF" # stands in for the "remote", full render config
 	DST="tmux -L m2dst -f $DST_CONF" # the local mirror target
+	# A second controller's mirror target, and the pty host for real attached
+	# clients (#979).
+	DST2="tmux -L m2dst2 -f $DST_CONF"
+	OBS="tmux -L m2obs"
 	# src_sock is SRC's own listening socket path — the park tests' outage_start
 	# renames it aside so a reattach dial gets ENOENT instead of reconnecting to
 	# the still-live SRC server (see outage_start below). teardown() needs this
@@ -93,11 +97,13 @@ setup() {
 }
 
 teardown() {
+	size_daemons_stop
 	# A park case that ends mid-outage leaves SRC's socket moved aside — kill
 	# that server too, or its process (and the tmpdir entry below) leaks.
 	[ -S "$src_sock.away" ] && tmux -S "$src_sock.away" kill-server 2>/dev/null || true
 	$SRC kill-server 2>/dev/null || true
 	$DST kill-server 2>/dev/null || true
+	$DST2 kill-server 2>/dev/null || true
 	tmux -L m2obs kill-server 2>/dev/null || true # pty host for the attached-client test
 	rm -rf "${OG_TMUX_DIR:-}"
 }
@@ -632,6 +638,282 @@ sorted_tiled_dims() {
 	# renderer paints into is exactly the screen it receives.
 	[ -n "$src_dims" ]
 	[ "$src_dims" = "$dst_dims" ]
+}
+
+# #979: size ownership across controllers. Two daemons mirror the same SRC
+# session from two local servers — S on m2dst behind a 100x30 client, B on
+# m2dst2 behind a 150x45 one — and the last controller whose local client typed
+# owns the remote's size. Each local client is a real attach hosted in an OBS
+# pane (the #201 pattern), so send-keys into that pane advances its
+# client_activity exactly as a keystroke does. Window heights depend on how many
+# status rows OBS and DST draw, so no case hard-codes one: each reads SRC once a
+# single controller has converged and derives the rest from that.
+
+# obs_attach <obs-session> <w> <h> <tmux-cmd> <target> hosts a client of
+# <tmux-cmd>'s server, attached to <target>, in a <w>x<h> OBS pane, and waits
+# until that server lists one more client.
+obs_attach() {
+	local obs_sess="$1" w="$2" h="$3" cmd="$4" target="$5" before n=0
+	before="$($cmd list-clients 2>/dev/null | wc -l | tr -d ' ')"
+	$OBS new-session -d -s "$obs_sess" -x "$w" -y "$h" "$cmd attach -t $target"
+	for _ in $(seq 1 40); do
+		n="$($cmd list-clients 2>/dev/null | wc -l | tr -d ' ')"
+		[ "$n" -gt "$before" ] && return 0
+		sleep 0.1
+	done
+	printf 'obs_attach(%s): %s clients on %s, wanted more than %s\n' "$obs_sess" "$n" "$cmd" "$before" >&3
+	return 1
+}
+
+# type_into <obs-session> is one key of activity on that hosted client; the
+# space reaches whatever pane is current there, harmlessly.
+type_into() {
+	# A key whose stamp shares a second with the seed or a previous counted stamp
+	# does not advance the mark; a second key a second later always does.
+	$OBS send-keys -t "$1" ' '
+	sleep 1.1
+	$OBS send-keys -t "$1" ' '
+}
+
+# size_daemon_up <tag> <dst-socket> <dst-cmd> <remote-session> starts a daemon
+# mirroring <remote-session> into <dst-cmd>'s host-sess, logging to <tag>.log,
+# and waits until every remote pane has a stamped mirror pane. Sets daemon_pid
+# and records it for size_daemons_stop.
+size_daemon_up() {
+	local tag="$1" dst_sock="$2" dst="$3" sess="$4" want stamped=0 deadline
+	"$DAEMON" --test-local --src-socket m2src --dst-socket "$dst_sock" \
+		--session "$sess" --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/$tag.sock" \
+		>"$BATS_TEST_TMPDIR/$tag.log" 2>&1 &
+	daemon_pid=$!
+	echo "$daemon_pid" >>"$BATS_TEST_TMPDIR/size-daemons.pids"
+	want="$($SRC list-panes -s -t "$sess" -F '#{pane_id}' | wc -l | tr -d ' ')"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS + want * BRIDGE_UP_PER_PANE_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		stamped="$($dst list-panes -s -t host-sess -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+		[ "$stamped" -eq "$want" ] && return 0
+		sleep 0.1
+	done
+	bridge_up_failed "$tag" "only $stamped/$want mirror panes carry @bridge_pane"
+	return 1
+}
+
+# size_daemons_stop ends every daemon size_daemon_up started. teardown calls it
+# too, so a failed case still reaps them; one may be SIGSTOPped, hence the CONT.
+size_daemons_stop() {
+	local pids="$BATS_TEST_TMPDIR/size-daemons.pids" pid
+	[ -f "$pids" ] || return 0
+	while read -r pid; do
+		kill -CONT "$pid" 2>/dev/null || true
+		kill "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+	done <"$pids"
+	rm -f "$pids"
+}
+
+# src_sizes [session] prints every SRC window's WxH, one per line.
+src_sizes() {
+	$SRC list-windows -t "${1:-rem}" -F '#{window_width}x#{window_height}'
+}
+
+# src_all_are <glob> [session]: every window has one and the same size, and it
+# matches <glob> ("100x*" while the height is still to be learned).
+src_all_are() {
+	local sizes
+	sizes="$(src_sizes "${2:-rem}" 2>/dev/null)" || return 1
+	[ -n "$sizes" ] || return 1
+	[ "$(printf '%s\n' "$sizes" | sort -u | wc -l | tr -d ' ')" -eq 1 ] || return 1
+	# shellcheck disable=SC2053 # $1 is a glob by design
+	[[ ${sizes%%$'\n'*} == $1 ]]
+}
+
+# size_failed <why> prints every SRC window's size and both daemons' logs.
+size_failed() {
+	local log
+	printf '%s\n--- SRC windows ---\n' "$1" >&3
+	$SRC list-windows -a -F '#{session_name}:#{window_index} #{window_width}x#{window_height}' >&3 2>&1 || true
+	for log in "$BATS_TEST_TMPDIR"/sz-*.log; do
+		[ -f "$log" ] || continue
+		printf -- '--- %s ---\n' "${log##*/}" >&3
+		tail -40 "$log" >&3
+	done
+}
+
+# wait_src_all <glob> [session] polls until src_all_are holds and sets src_size
+# to the size every window settled at.
+wait_src_all() {
+	local deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		if src_all_are "$1" "${2:-rem}"; then
+			src_size="$(src_sizes "${2:-rem}" | head -1)"
+			return 0
+		fi
+		sleep 0.1
+	done
+	size_failed "wait_src_all: wanted every ${2:-rem} window at $1 within ${RESIZE_CONVERGE_BUDGET_SECS}s"
+	return 1
+}
+
+# hold_src_all <size> <secs> [session] asserts every window stays at <size> at
+# each 0.2s sample for <secs> seconds: a snap-back can be transient.
+hold_src_all() {
+	for _ in $(seq 1 $(($2 * 5))); do
+		if ! src_all_are "$1" "${3:-rem}"; then
+			size_failed "hold_src_all: a ${3:-rem} window left $1"
+			return 1
+		fi
+		sleep 0.2
+	done
+}
+
+# wait_reconnect <pid> <old-transport> <dst-cmd> <tag> waits until that daemon
+# runs a replacement control client and its reattach repair has finished
+# (@bridge_state cleared, which is stamped before the re-dial).
+wait_reconnect() {
+	local deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS)) t state
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		t="$(transport_child_of "$1")"
+		state="$($3 show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+		[ -n "$t" ] && [ "$t" != "$2" ] && [ -z "$state" ] && return 0
+		sleep 0.1
+	done
+	size_failed "wait_reconnect($4): no repaired replacement for transport $2 within ${BRIDGE_UP_BUDGET_SECS}s"
+	return 1
+}
+
+# two_controllers_up is the first two cases' setup: SRC rem with two windows,
+# window 1 current; S's daemon alone first, learning `small` from SRC; then B's.
+# Sets s_pid, small and big.
+two_controllers_up() {
+	$SRC new-session -d -s rem -x 120 -y 40
+	$SRC new-window -t 'rem:{end}' -a
+	$SRC select-window -t rem:1
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$DST2 new-session -d -s host-sess -x 150 -y 45
+	obs_attach obs-s 100 30 "$DST" host-sess
+	obs_attach obs-b 150 45 "$DST2" host-sess
+
+	size_daemon_up sz-s m2dst "$DST" rem
+	s_pid=$daemon_pid
+	wait_src_all '100x*'
+	small=$src_size
+	# Both local servers load DST_CONF and both clients sit in OBS panes, so B's
+	# windows are S's plus the 15 rows B's client is taller by.
+	big="150x$((${small#*x} + 15))"
+
+	size_daemon_up sz-b m2dst2 "$DST2" rem
+	# Both daemons' reveal watchers must have seeded their marks before a
+	# keystroke can count.
+	sleep 2
+}
+
+@test "the last-active controller sizes a shared mirror (#979)" {
+	two_controllers_up
+	# B's first attach claims, so SRC goes big; pre-fix nothing claims and the
+	# two controllers' caps combine as a minimum (small). The typing below is
+	# the contract, but let that claim land so typing into S cannot race it.
+	for _ in $(seq 1 30); do
+		src_all_are "$big" && break
+		sleep 0.1
+	done
+
+	type_into obs-s
+	wait_src_all "$small"
+	type_into obs-b
+	wait_src_all "$big"
+	size_daemons_stop
+}
+
+@test "an idle controller does not reclaim when it wakes (#979)" {
+	two_controllers_up
+	type_into obs-b
+	wait_src_all "$big"
+
+	# S sleeps through B's activity and wakes on its old connection: its backlog
+	# reports it flagged under a foreign owner, so its sizes stay ignored.
+	kill -STOP "$s_pid"
+	type_into obs-b
+	kill -CONT "$s_pid"
+	hold_src_all "$big" 5
+
+	# A reconnect starts S on an unflagged control client, which must read B's
+	# record and flag itself before its first size assert.
+	old_transport="$(transport_child_of "$s_pid")"
+	[ -n "$old_transport" ]
+	kill -9 "$old_transport"
+	wait_reconnect "$s_pid" "$old_transport" "$DST" sz-s
+	hold_src_all "$big" 5
+
+	type_into obs-s
+	wait_src_all "$small"
+	size_daemons_stop
+}
+
+@test "a sleeping controller's client moved onto the session does not size it (#979)" {
+	$SRC new-session -d -s rem -x 120 -y 40
+	$SRC new-window -t 'rem:{end}' -a
+	$SRC select-window -t rem:1
+	$SRC new-session -d -s rem-a -x 120 -y 40
+	# Destroying rem-a then moves its clients onto rem instead of detaching them.
+	$SRC set -g detach-on-destroy off
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$DST2 new-session -d -s host-sess -x 150 -y 45
+	obs_attach obs-s 100 30 "$DST" host-sess
+	obs_attach obs-b 150 45 "$DST2" host-sess
+
+	size_daemon_up sz-b m2dst2 "$DST2" rem
+	wait_src_all '150x*'
+	big=$src_size
+	size_daemon_up sz-s m2dst "$DST" rem-a
+	s_pid=$daemon_pid
+	wait_src_all '100x*' rem-a
+	before="$($SRC list-clients -t rem | wc -l | tr -d ' ')"
+
+	# Asleep, S cannot flag its own client once it lands on rem: only B can.
+	kill -STOP "$s_pid"
+	$SRC kill-session -t rem-a
+	for _ in $(seq 1 40); do
+		n="$($SRC list-clients -t rem | wc -l | tr -d ' ')"
+		[ "$n" -gt "$before" ] && break
+		sleep 0.1
+	done
+	[ "$n" -gt "$before" ] # S's control client really moved onto rem
+
+	wait_src_all "$big"
+	hold_src_all "$big" 3
+	kill -CONT "$s_pid"
+	size_daemons_stop
+}
+
+@test "a non-current mirrored window converges after a client detaches (#979)" {
+	$SRC new-session -d -s rem -x 120 -y 40
+	$SRC new-window -t 'rem:{end}' -a
+	$SRC select-window -t rem:1
+	$DST new-session -d -s host-sess -x 150 -y 45
+	# A local client on host-sess: with none, the daemon's area falls back to the
+	# mirror window's own pin, which follows the human's smaller remote size.
+	obs_attach obs-d 150 45 "$DST" host-sess
+	size_daemon_up sz-b m2dst "$DST" rem
+	# The human: a real client on SRC itself, smaller than the mirror. Under
+	# window-size latest it sizes only the windows it is latest on: window 1 by
+	# attaching after the bridge, window 2 by typing while it is current.
+	obs_attach obs-h 100 30 "$SRC" rem
+	$SRC select-window -t rem:2
+	type_into obs-h
+	wait_src_all '100x*'
+	$SRC select-window -t rem:1
+
+	# Only the human leaves: detach-client -s rem would detach the bridge too.
+	$OBS kill-server
+	for _ in $(seq 1 40); do
+		modes="$($SRC list-clients -t rem -F '#{client_control_mode}' | sort -u)"
+		[ "$modes" = 1 ] && break
+		sleep 0.1
+	done
+	[ "$modes" = 1 ] # the human is gone and the bridge's control client stays
+
+	wait_src_all '150x*'
+	size_daemons_stop
 }
 
 # Regression for #185: a SIGTERM'd daemon must run teardown, not leave its unix
@@ -3535,8 +3817,12 @@ m2_pane_gate_failed() {
 # "show environment"), and no GNU-only `--no-headers`: the header row's PPID
 # column is the string "PPID", which no numeric pid ever equals.
 transport_child() {
+	transport_child_of "$daemon_pid"
+}
+
+transport_child_of() {
 	ps -Ao pid,ppid,args 2>/dev/null |
-		awk -v parent="$daemon_pid" '$2 == parent && /attach-session/ {print $1; exit}'
+		awk -v parent="$1" '$2 == parent && /attach-session/ {print $1; exit}'
 }
 
 # #729: park helpers. outage_start makes the remote unreachable in a way the
