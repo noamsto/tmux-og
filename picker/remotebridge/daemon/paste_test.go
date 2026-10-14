@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -594,6 +596,33 @@ func TestProbeClipboardImage(t *testing.T) {
 			},
 		},
 		{
+			name:    "osascript offers png",
+			stubs:   []stub{{name: "osascript", body: "«class PNGf», 12345, TIFF picture, 67890"}},
+			wantOK:  true,
+			wantExt: "png",
+		},
+		{
+			name:    "osascript offers only tiff",
+			stubs:   []stub{{name: "osascript", body: "TIFF picture, 67890"}},
+			wantOK:  true,
+			wantExt: "png",
+		},
+		{
+			name:    "osascript offers only jpeg",
+			stubs:   []stub{{name: "osascript", body: "JPEG picture, 30456"}},
+			wantOK:  true,
+			wantExt: "png",
+		},
+		{
+			name:  "osascript text only",
+			stubs: []stub{{name: "osascript", body: "«class utf8», 5, string, 5"}},
+		},
+		{
+			name:    "osascript fails with stderr",
+			stubs:   []stub{{name: "osascript", failErr: "execution error: not authorized"}},
+			wantErr: "osascript: execution error: not authorized",
+		},
+		{
 			name: "xclip text, wl-paste png",
 			stubs: []stub{
 				{name: "xclip", body: "text/plain\n"},
@@ -622,6 +651,47 @@ func TestProbeClipboardImage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtractOsascriptPNG(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3}
+	write := func(t *testing.T, data string) {
+		t.Helper()
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$2\" in\n'clipboard info') printf '%s' '«class PNGf», 11';;\n*) printf '%s' '" + data + "';;\nesac\n"
+		if err := os.WriteFile(filepath.Join(dir, "osascript"), []byte(script), 0o755); err != nil { //nolint:gosec // test stub must be executable
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir)
+	}
+	probe := func(t *testing.T) clipboardProbe {
+		t.Helper()
+		p, ok, err := probeClipboardImage()
+		if !ok || err != nil {
+			t.Fatalf("probe ok=%v err=%v", ok, err)
+		}
+		return p
+	}
+
+	t.Run("round trip", func(t *testing.T) {
+		write(t, "«data PNGf"+hex.EncodeToString(png)+"»")
+		got, err := probe(t).extract()
+		if err != nil || !bytes.Equal(got, png) {
+			t.Fatalf("extract = %x, %v; want %x", got, err, png)
+		}
+	})
+	t.Run("oversize rejected", func(t *testing.T) {
+		if _, err := decodeOsascriptPNG(make([]byte, osascriptReadLimit)); err == nil {
+			t.Fatal("oversize payload was accepted")
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		for _, in := range []string{"", "garbage", "«data PNGfzz»", "«data PNGf8950"} {
+			if _, err := decodeOsascriptPNG([]byte(in)); err == nil {
+				t.Errorf("decodeOsascriptPNG(%q) succeeded", in)
+			}
+		}
+	})
 }
 
 func TestBridgeProc(t *testing.T) {

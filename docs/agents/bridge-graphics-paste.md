@@ -279,15 +279,17 @@ carries the measured evidence.
   the accepted `@og_agent_usage` posture).
 - **Every pass-through on a possible agent pane says why.** **Silent**
   forwards: a non-agent `@bridge_proc` (shell quoted-insert), and an agent
-  pane whose clipboard listing succeeded with no `image/*` type (text — the
-  agent's own answer is accurate). **Notified** forwards (ONE `tmux-og:
+  pane whose clipboard listing succeeded with no `image/*` type (on macOS, no
+  PNG/TIFF/JPEG/GIF class) — text, the
+  agent's own answer is accurate. **Notified** forwards (ONE `tmux-og:
   ctrl+v forwarded to the remote: <reason>` per gesture, however many drops
   the frame carries): the `@bridge_proc` gate lookup failed (local
   `list-panes` error/timeout, pane row missing, `@bridge_proc` not yet
   stamped); on an agent pane, the clipboard probe can't tell (no
-  `xclip`/`wl-paste` on PATH, or every listing failed/timed out — the reason
-  is the tool's own stderr line, e.g. `wl-paste: Nothing is copied`, so an
-  empty clipboard notifies too); or the clipboard offers only an `image/*`
+  `xclip`/`wl-paste`/`osascript` on PATH, or every listing failed/timed out —
+  the reason is the tool's own stderr line, e.g. `wl-paste: Nothing is
+  copied`, so an empty clipboard notifies too under wl-paste; on macOS
+  `clipboard info` succeeds on an empty one, so that forward is silent); or the clipboard offers only an `image/*`
   type outside `imageTarget`'s table, e.g. `image/tiff` (named in the
   message). These forward because no image target was picked, and forwarding
   keeps a remote-side clipboard paste working; swallowing is reserved for
@@ -295,6 +297,12 @@ carries the measured evidence.
   table) is swallowed and reported, see "Failures are visible". These
   notifies run async so a wedged local tmux — the likely cause of a gate
   timeout, and what `notifyLocal` forks — can't freeze the pane's input.
+  **macOS controller:** none of the Linux tools exist, so `osascript` (always on
+  PATH) lists `clipboard info`; a PNG class or a `TIFF picture`/`JPEG picture`/`GIF picture` (how osascript
+  prints those types) counts as an image,
+  extracted with `the clipboard as «class PNGf»` — a hex `«data PNGf…»`
+  literal decoded in Go (read bounded at 2×`pasteMaxBytes`+overhead), so TIFF
+  screenshots paste as `.png` with no temp file and no `pngpaste`.
 - **The paste scan survives frame splits.** `splitPasteDrops` matches
   `ESC[200~`/`ESC[201~` even when a marker straddles input frames: a partial
   match is carried in the handler's state, while the bytes themselves are

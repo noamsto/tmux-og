@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -330,20 +331,75 @@ func imageTarget(targets []string) (target, ext string) {
 }
 
 // clipboardTool is one clipboard backend probeClipboardImage tries, in CC's
-// own preference order (xclip, then wl-paste).
+// own preference order (xclip, wl-paste, then macOS's osascript). pick maps the
+// tool's raw listing to an image target; decode, when set, turns the extract's
+// stdout into image bytes (osascript prints a hex literal, not raw bytes) and
+// readLimit bounds that stdout.
 type clipboardTool struct {
 	name       string
 	listArgs   []string
 	extractArg func(target string) []string
+	pick       func(listing string) (target, ext string)
+	decode     func(out []byte) ([]byte, error)
+	readLimit  int64
+}
+
+func pickMIMETarget(listing string) (target, ext string) {
+	return imageTarget(strings.Split(listing, "\n"))
+}
+
+// osascriptImageClasses are the image types `clipboard info` lists, as it
+// prints them: only PNG as a raw class code, the rest by terminology name.
+// Extraction coerces every one to PNG, so ext is always png.
+var osascriptImageClasses = []string{"«class PNGf»", "TIFF picture", "JPEG picture", "GIF picture"}
+
+func pickOsascriptTarget(listing string) (target, ext string) {
+	for _, class := range osascriptImageClasses {
+		if strings.Contains(listing, class) {
+			return "«class PNGf»", "png"
+		}
+	}
+	return "", ""
+}
+
+const (
+	osascriptDataPrefix = "«data PNGf"
+	osascriptDataSuffix = "»"
+	// osascriptReadLimit bounds the hex literal: two chars per byte plus the
+	// wrapper and a trailing newline, one byte past so oversize is detectable.
+	osascriptReadLimit = 2*pasteMaxBytes + 64 + 1
+)
+
+// decodeOsascriptPNG unwraps `«data PNGf<hex>»`, the form osascript prints for
+// a clipboard coerced to PNG.
+func decodeOsascriptPNG(out []byte) ([]byte, error) {
+	if int64(len(out)) >= osascriptReadLimit {
+		return nil, fmt.Errorf("image exceeds the %d MiB cap", pasteMaxBytes>>20)
+	}
+	body, ok := strings.CutPrefix(strings.TrimSpace(string(out)), osascriptDataPrefix)
+	if !ok {
+		return nil, errors.New("unexpected osascript output")
+	}
+	body, ok = strings.CutSuffix(body, osascriptDataSuffix)
+	if !ok {
+		return nil, errors.New("unexpected osascript output")
+	}
+	return hex.DecodeString(body)
 }
 
 var clipboardTools = []clipboardTool{
-	{"xclip",
-		[]string{"-selection", "clipboard", "-t", "TARGETS", "-o"},
-		func(t string) []string { return []string{"-selection", "clipboard", "-t", t, "-o"} }},
-	{"wl-paste",
-		[]string{"-l"},
-		func(t string) []string { return []string{"--type", t} }},
+	{name: "xclip",
+		listArgs:   []string{"-selection", "clipboard", "-t", "TARGETS", "-o"},
+		extractArg: func(t string) []string { return []string{"-selection", "clipboard", "-t", t, "-o"} },
+		pick:       pickMIMETarget, readLimit: pasteMaxBytes + 1},
+	{name: "wl-paste",
+		listArgs:   []string{"-l"},
+		extractArg: func(t string) []string { return []string{"--type", t} },
+		pick:       pickMIMETarget, readLimit: pasteMaxBytes + 1},
+	{name: "osascript",
+		listArgs:   []string{"-e", "clipboard info"},
+		extractArg: func(t string) []string { return []string{"-e", "the clipboard as " + t} },
+		pick:       pickOsascriptTarget, decode: decodeOsascriptPNG, readLimit: osascriptReadLimit},
 }
 
 // probeClipboardImage lists the local clipboard's TARGETS with the same tools
@@ -374,7 +430,7 @@ func probeClipboardImage() (probe clipboardProbe, ok bool, err error) {
 		}
 		listed = true
 		targets := strings.Split(string(out), "\n")
-		if target, ext := imageTarget(targets); target != "" {
+		if target, ext := tool.pick(string(out)); target != "" {
 			return clipboardProbe{ext: ext, extract: extractClipboardImage(tool, target)}, true, nil
 		}
 		if unsupported == "" {
@@ -389,7 +445,7 @@ func probeClipboardImage() (probe clipboardProbe, ok bool, err error) {
 	case len(failures) > 0:
 		return clipboardProbe{}, false, errors.New(strings.Join(failures, "; "))
 	default:
-		return clipboardProbe{}, false, errors.New("no clipboard tool (xclip or wl-paste) on PATH")
+		return clipboardProbe{}, false, errors.New("no clipboard tool (xclip, wl-paste or osascript) on PATH")
 	}
 }
 
@@ -424,7 +480,7 @@ func unsupportedImageTarget(targets []string) string {
 }
 
 // extractClipboardImage builds the bounded, async-only read of one clipboard
-// target: a LimitReader one byte past pasteMaxBytes so an oversize clipboard
+// target: a LimitReader one byte past the tool's cap so an oversize clipboard
 // is caught without ever buffering it whole (exec.Cmd.Output's unbounded
 // bytes.Buffer was the finding-4 gap), and its own clipTimeout so a wedged
 // selection owner cannot hang the goroutine indefinitely.
@@ -440,13 +496,18 @@ func extractClipboardImage(tool clipboardTool, target string) func() ([]byte, er
 		if err := cmd.Start(); err != nil {
 			return nil, err
 		}
-		data, readErr := io.ReadAll(io.LimitReader(pipe, pasteMaxBytes+1))
+		data, readErr := io.ReadAll(io.LimitReader(pipe, tool.readLimit))
 		waitErr := cmd.Wait()
 		if readErr != nil {
 			return nil, fmt.Errorf("%s extract %s: %w", tool.name, target, readErr)
 		}
 		if waitErr != nil {
 			return nil, fmt.Errorf("%s extract %s: %w", tool.name, target, waitErr)
+		}
+		if tool.decode != nil {
+			if data, err = tool.decode(data); err != nil {
+				return nil, fmt.Errorf("%s extract %s: %w", tool.name, target, err)
+			}
 		}
 		return data, nil
 	}

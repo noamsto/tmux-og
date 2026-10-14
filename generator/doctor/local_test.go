@@ -37,8 +37,8 @@ func TestCheckLocal(t *testing.T) {
 	if r := byName["gh"]; r.OK || r.Detail != "not found" {
 		t.Errorf("gh = %+v, want OK=false Detail=%q", r, "not found")
 	}
-	if r := byName["xclip/wl-paste"]; !r.OK {
-		t.Errorf("xclip/wl-paste = %+v, want OK=true (xclip present)", r)
+	if r := byName["xclip/wl-paste/osascript"]; !r.OK {
+		t.Errorf("xclip/wl-paste/osascript = %+v, want OK=true (xclip present)", r)
 	}
 	if r := byName[opener]; !r.OK {
 		t.Errorf("%s = %+v, want OK=true", opener, r)
@@ -54,6 +54,7 @@ func TestCheckClipboardEither(t *testing.T) {
 		{"both present", map[string]bool{"xclip": true, "wl-paste": true}, true},
 		{"only xclip", map[string]bool{"xclip": true}, true},
 		{"only wl-paste", map[string]bool{"wl-paste": true}, true},
+		{"only osascript", map[string]bool{"osascript": true}, true},
 		{"neither", map[string]bool{}, false},
 	}
 	for _, tt := range tests {
