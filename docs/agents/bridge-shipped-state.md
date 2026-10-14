@@ -29,8 +29,12 @@ the ssh `ps` leg survives only as the version-skew fallback
   `match_commands`, the same list `@AGENT_COMMANDS` and agent-detect read.
 - **`tmux-session-resources` is armed by the `@og-res-tick` monitor hook**
   (every 5s, `--tick`) on every tmux-og host, and a pass runs **only while the
-  server has a control-mode client attached** — i.e. only while something is
-  bridged to it, so an unbridged host pays nothing for a column nobody reads. It
+  server has a control-mode client attached** (something is bridged to it) **or
+  the `@og-usage-tick` hook is armed** (#969: the local usage segment and poller
+  read the per-pane `@og_pane_agent` stamp), so an unbridged host with agent
+  usage off pays nothing for a column nobody reads. A usage-only pass (no
+  control client) writes just the per-pane `@og_pane_agent` stamp; while
+  bridged it also
   stamps every session's own `@og_session_res`, targeting it by id (`-t '$N'`,
   never the name: `set-option -t` takes a target-pane, and a name like `0` also
   resolves as a pane index in the current window) with
