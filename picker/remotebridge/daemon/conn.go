@@ -762,9 +762,12 @@ func primeClient(cfg Config, c *ctlConn, reg *registry, ownerSess, ownerToken st
 	if ownerSess != "" {
 		l, ok := one(c.rt, ownerReadCmd(ownerSess))
 		if !ok {
+			fmt.Fprintf(os.Stderr, "daemon: size owner: %s: owner read failed while priming\n", ownerSess)
 			return false
 		}
-		if l.Kind != controlmode.Error {
+		if l.Kind == controlmode.Error {
+			fmt.Fprintf(os.Stderr, "daemon: size owner: %s: owner read errored while priming: %q\n", ownerSess, strings.TrimSpace(string(l.Data)))
+		} else {
 			self, token, _ := parseOwnerRead(string(l.Data))
 			switch {
 			case token == ownerToken:

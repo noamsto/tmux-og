@@ -151,15 +151,26 @@ today) size the windows.
   `list-clients -t $N -F '#{client_name}|#{client_control_mode}|#{client_flags}'`,
   then `refresh-client -t '<name>' -f ignore-size` for every **control-mode**
   client on the session that is not this daemon's own and not already flagged,
-  then the recalculation trigger if anything was flagged. Human tty clients
+  then the recalculation trigger if anything was flagged. The record rides the
+  same read batch, and a read naming another token sends nothing: the cached
+  owner belief that gated the call can lag a foreign claim by one subscription
+  tick. Human tty clients
   (`client_control_mode` 0) are never flagged, so #201's clamp story is
   unchanged. The same reply seeds the owner's **membership** set: the names of
   every other client on the pinned session, which the membership rows below need.
 - **Release** (driven by the survivors, never by the departing owner): on
   `%client-detached <name>` where `<name>` is the recorded owner's client and
-  the token is not ours, send one atomic
+  the token is not ours, hold a release for 30s (`ownerReleaseGrace`, longer
+  than a warm reattach), staying flagged meanwhile; a newer report or read
+  showing a different record drops it. Releasing at once made every network
+  blip on the active controller unflag the idle survivors and resize every
+  window to their size and back. When due, re-read the record and the
+  session's clients and send one atomic
   `if-shell -F -t '$N' '#{==:#{@og_bridge_owner},<token>|<name>}' 'set-option
-  -u -t $N @og_bridge_owner'`. The explicit target matters: `if-shell` expands
+  -u -t $N @og_bridge_owner ; refresh-client -t <c> -f !ignore-size ; …'`,
+  unflagging every flagged control-mode client on the session but our own: a
+  pre-fix daemon's or a `-CC` client's flag would otherwise outlive the owner.
+  The explicit target matters: `if-shell` expands
   its format against its target, which otherwise defaults to the issuing
   client's current session, and the survivor may be a moved stray. Every
   awake survivor then sees owner unset while flagged and unflags itself (one
@@ -259,10 +270,10 @@ switch-in from missing the window).
 | Re-opened `runMirror` (`cfg.reopened`) | the new-connection row, except that with the option unset it claims when no other control-mode client is on the session (a lone daemon after a server replacement keeps owning, so the membership rows keep covering it) |
 | Activity, not owner | **claim** |
 | Activity, owner | re-read; **claim** only if the record is not ours or our client is flagged, else nothing |
-| New connection (reattach after a drop, `replaceConn`'s `primeClient`) | one round-trip read of `#{@og_bridge_owner}` **before any size assert** on it. Our token → claim (rewrites the client name). Another token → `refresh-client -f ignore-size` first, then the usual asserts. Unset → claim if this daemon owned before the drop (the survivors released it when the old client went; the user's own mirror was down meanwhile, so nothing they see changed), else nothing. Then re-subscribe `og_self` (repair already re-subscribes everything) |
+| New connection (reattach after a drop, `replaceConn`'s `primeClient`) | one round-trip read of `#{@og_bridge_owner}` **before any size assert** on it. Our token → claim (rewrites the client name). Another token → `refresh-client -f ignore-size` first, then the usual asserts. Unset → claim if this daemon owned before the drop (the survivors released it when the old client went; the user's own mirror was down meanwhile, so nothing they see changed), else nothing. In `repair` this read runs before `cv.reset()`: reattach publishes the connection first, and after the reset a `watchLocalClient` tick during the read would assert sizes on the still-unflagged client. Then re-subscribe `og_self` (repair already re-subscribes everything) |
 | `og_self` report | reconcile (above) |
 | `%client-session-changed <name> $N`, `$N` our pinned session, name not ours, we own | enforce |
-| `%client-detached <name>`, `<name>` the recorded owner's client, not ours | release |
+| `%client-detached <name>`, `<name>` the recorded owner's client, not ours | hold the release; send it 30s later unless the record changed meanwhile (the owner reclaimed under its new client name) |
 | `%client-detached <name>`, we own, `<name>` in membership | drop it; recalculation trigger |
 | `%client-session-changed <name> $M`, we own, `$M` not ours, `<name>` in membership | drop it; recalculation trigger |
 
@@ -290,6 +301,10 @@ that matters.
 - **L wakes and reconnects.** The new client starts unflagged; the
   new-connection read finds M's token → `-f ignore-size` before `primeClient`
   or `repair` asserts a size. No snap-back.
+- **M's network blips.** M's client detaches; L holds the release and stays
+  flagged. M reattaches within 30s and reclaims under its new client name, so
+  L drops the release (and the conditional one would be a no-op anyway). No
+  resize.
 - **User returns to L.** L's local client activity advances → L claims and
   enforces (flags M) → size follows the user back.
 - **A sleeping controller's client is moved onto the session** (its own session
@@ -321,8 +336,8 @@ that matters.
   documented.
 - **Mixed versions**: both controllers need the fix. A pre-fix daemon's client
   is flagged by enforcement like any other control client, and it never claims,
-  so a user on a pre-fix controller gets no size back while a fixed owner
-  exists (under the old code it at least clamped everyone to the minimum).
+  so it is size-ignored while a fixed owner holds the record (under the old code
+  it at least clamped everyone to the minimum); the release clears its flag.
   Documented in `bridge-daemon.md`.
 - **A flagged client that is still `w->latest`** (a moved-in stray, or a former
   owner that created the window): `clients_with_window` no longer counts it,

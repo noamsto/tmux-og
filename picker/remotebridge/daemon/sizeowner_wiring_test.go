@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ownerReadReply is the two-reply batch ownerCtl.read and claim ask for: the
@@ -207,17 +208,78 @@ func TestOwnerCtlNewConnectionRows(t *testing.T) {
 	}
 }
 
-func TestOwnerCtlDetachedReleasesAForeignOwner(t *testing.T) {
+// detachedOwner is a survivor whose last report names client-b as the owner.
+func detachedOwner() *sizeOwner {
 	own := newSizeOwner(tokA)
 	own.queueReport("client-me|attached,control-mode,ignore-size|" + tokB + "|client-b")
-	o, sent := testOwnerCtl("", own, recordedCV())
+	return own
+}
+
+const flaggedSurvivorRows = "client-me|1|attached,control-mode,ignore-size\n" +
+	"client-c|1|attached,control-mode,ignore-size\n" +
+	"/dev/pts/3|0|attached,ignore-size"
+
+// TestOwnerCtlReleaseWaitsOutTheGrace: a blip on the active controller must not
+// unflag every survivor at once; the release goes out only once due, and then
+// also unflags the other flagged control clients.
+func TestOwnerCtlReleaseWaitsOutTheGrace(t *testing.T) {
+	own := detachedOwner()
+	o, sent := testOwnerCtl(ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows), own, recordedCV())
 	o.detached("client-x")
+	o.releaseDue(time.Now().Add(2 * ownerReleaseGrace))
 	if len(*sent) != 0 {
 		t.Fatalf("a non-owner client detaching sent %q", *sent)
 	}
 	o.detached("client-b")
-	if want := []string{ownerReleaseCmd("$1", tokB, "client-b")}; !reflect.DeepEqual(*sent, want) {
-		t.Errorf("owner detaching sent %q, want %q", *sent, want)
+	o.releaseDue(time.Now())
+	if len(*sent) != 0 {
+		t.Fatalf("release went out before its grace: %q", *sent)
+	}
+	o.releaseDue(time.Now().Add(ownerReleaseGrace + time.Second))
+	if want := []string{ownerReleaseCmd("$1", tokB, "client-b", []string{"client-c"})}; !reflect.DeepEqual(*sent, want) {
+		t.Errorf("due release sent %q, want %q", *sent, want)
+	}
+	*sent = nil
+	o.releaseDue(time.Now().Add(2 * ownerReleaseGrace))
+	if len(*sent) != 0 {
+		t.Errorf("a release went out twice: %q", *sent)
+	}
+}
+
+// TestOwnerCtlReleaseDroppedWhenTheRecordChanged: the owner reclaiming under a
+// new client name, seen in a report or in the due read, cancels the release.
+func TestOwnerCtlReleaseDroppedWhenTheRecordChanged(t *testing.T) {
+	due := time.Now().Add(ownerReleaseGrace + time.Second)
+	t.Run("report", func(t *testing.T) {
+		own := detachedOwner()
+		o, sent := testOwnerCtl("", own, recordedCV())
+		o.detached("client-b")
+		own.queueReport("client-me|attached,control-mode,ignore-size|" + tokB + "|client-b2")
+		o.releaseDue(due)
+		if len(*sent) != 0 {
+			t.Errorf("sent %q after the owner reclaimed", *sent)
+		}
+	})
+	t.Run("due read", func(t *testing.T) {
+		own := detachedOwner()
+		o, sent := testOwnerCtl(ownerReadReply("client-me", tokB+"|client-b2", flaggedSurvivorRows), own, recordedCV())
+		o.detached("client-b")
+		o.releaseDue(due)
+		if len(*sent) != 0 {
+			t.Errorf("sent %q after the owner reclaimed", *sent)
+		}
+	})
+}
+
+// TestOwnerCtlEnforceUnderStaleBelief: the isOwner belief that gates enforce
+// can lag a foreign claim; the fresh read naming another token wins.
+func TestOwnerCtlEnforceUnderStaleBelief(t *testing.T) {
+	own := newSizeOwner(tokA)
+	own.noteClaim("client-me")
+	o, sent := testOwnerCtl(ownerReadReply("client-me", tokB+"|client-b", sessionClientRows), own, recordedCV())
+	o.enforce()
+	if len(*sent) != 0 {
+		t.Errorf("enforce under a foreign record sent %q", *sent)
 	}
 }
 

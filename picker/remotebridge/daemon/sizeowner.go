@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
@@ -25,6 +26,11 @@ const (
 	bridgeOwnerOption = "@og_bridge_owner"
 	ownerSubName      = "og_self"
 	ownerSelfFormat   = "#{client_name}|#{client_flags}|#{@og_bridge_owner}"
+	// ownerReleaseGrace is longer than a warm reattach. The release stays
+	// conditional on <token>|<client>, so it is a no-op once the owner has
+	// reclaimed under its new client name; while waiting the survivor stays
+	// flagged.
+	ownerReleaseGrace = 30 * time.Second
 )
 
 // newOwnerToken mints the per-process token naming this daemon in the owner
@@ -35,10 +41,17 @@ func newOwnerToken() string {
 	return hex.EncodeToString(b)
 }
 
-// ownerValueRe is the only shape accepted from the remote's owner option: the
-// client name reaches refresh-client -t and the release condition, and this
-// charset holds nothing (#, ',', '}', a quote) that could break out of either.
-var ownerValueRe = regexp.MustCompile(`^([0-9a-f]{16})\|([A-Za-z0-9_./-]{1,64})$`)
+// clientNameChars is the only client-name shape put into a command: names
+// reach refresh-client -t and the release condition, and this charset holds
+// nothing (#, ',', '}', a quote) that could break out of either.
+const clientNameChars = `[A-Za-z0-9_./-]{1,64}`
+
+var (
+	ownerValueRe = regexp.MustCompile(`^([0-9a-f]{16})\|(` + clientNameChars + `)$`)
+	clientNameRe = regexp.MustCompile(`^` + clientNameChars + `$`)
+)
+
+func validClientName(name string) bool { return clientNameRe.MatchString(name) }
 
 // parseOwnerValue splits an owner record; anything malformed reads as unset.
 func parseOwnerValue(v string) (token, client string) {
@@ -90,14 +103,18 @@ func ownerClaimCmd(sessID, token, client string) string {
 	return "set-option -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption + " " + tmuxQuote(token+"|"+client)
 }
 
-// ownerReleaseCmd clears the record only while it still reads token|client, so
-// concurrent survivors are harmless and a newer claim survives. if-shell
-// expands its format against -t; without it the target defaults to the issuing
-// client's current session, which for a moved stray is not the pinned one.
-func ownerReleaseCmd(sessID, token, client string) string {
+// ownerReleaseCmd clears the record, and unflags the clients in unflag, only
+// while it still reads token|client, so concurrent survivors are harmless and a
+// newer claim survives. if-shell expands its format against -t; without it the
+// target defaults to the issuing client's current session, which for a moved
+// stray is not the pinned one.
+func ownerReleaseCmd(sessID, token, client string, unflag []string) string {
 	cond := "#{==:#{" + bridgeOwnerOption + "}," + token + "|" + client + "}"
-	unset := "set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption
-	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(unset)
+	branch := []string{"set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption}
+	for _, name := range unflag {
+		branch = append(branch, ignoreSizeCmd(name, false))
+	}
+	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(strings.Join(branch, " ; "))
 }
 
 // ownerReadCmd answers "<own client>|<owner record>" in one reply.
@@ -138,6 +155,19 @@ func enforceTargets(clients []sessionClient, self string) []string {
 	var out []string
 	for _, c := range clients {
 		if c.control && c.name != self && !c.flagged {
+			out = append(out, c.name)
+		}
+	}
+	return out
+}
+
+// releaseTargets names the flagged control clients a release unflags besides
+// our own, which reconcile unflags: a pre-fix daemon's or a -CC client's flag
+// would otherwise outlive the owner.
+func releaseTargets(clients []sessionClient, self string) []string {
+	var out []string
+	for _, c := range clients {
+		if c.control && c.flagged && c.name != self && validClientName(c.name) {
 			out = append(out, c.name)
 		}
 	}
@@ -202,6 +232,13 @@ func (m *activityMark) advance(rows []activityRow, now int64) bool {
 	return counted
 }
 
+// pendingRelease is a survivor's release of a departed owner's record, held
+// until due.
+type pendingRelease struct {
+	token, client string
+	due           time.Time
+}
+
 // sizeOwner is this daemon's view of the ownership race. Written from the
 // reveal watcher (activity), the control reader (reports) and the main loop.
 type sizeOwner struct {
@@ -215,6 +252,7 @@ type sizeOwner struct {
 	claimWanted   bool
 	members       map[string]bool
 	mark          activityMark
+	release       *pendingRelease
 	// wake is the main loop's nudge; the loop does the claim round-trips.
 	wake chan struct{}
 }
@@ -240,10 +278,37 @@ func (o *sizeOwner) queueReport(v string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.pendingReport = &r
-	o.ownerToken, o.ownerClient = r.ownerToken, r.ownerClient
-	if foreignOwner(r.ownerToken, o.token) {
+	o.setOwnerLocked(r.ownerToken, r.ownerClient)
+}
+
+// setOwnerLocked records the owner last seen, dropping a pending release the
+// record no longer matches.
+func (o *sizeOwner) setOwnerLocked(token, client string) {
+	o.ownerToken, o.ownerClient = token, client
+	if foreignOwner(token, o.token) {
 		o.ownedBefore = false
 	}
+	if o.release != nil && (o.release.token != token || o.release.client != client) {
+		o.release = nil
+	}
+}
+
+// holdRelease records the one pending release; a newer one replaces it.
+func (o *sizeOwner) holdRelease(token, client string, due time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.release = &pendingRelease{token: token, client: client, due: due}
+}
+
+func (o *sizeOwner) takeDueRelease(now time.Time) (pendingRelease, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.release == nil || now.Before(o.release.due) {
+		return pendingRelease{}, false
+	}
+	r := *o.release
+	o.release = nil
+	return r, true
 }
 
 func (o *sizeOwner) takeReport() (selfReport, bool) {
@@ -288,7 +353,7 @@ func (o *sizeOwner) takeClaim() bool {
 func (o *sizeOwner) noteClaim(self string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.ownerToken, o.ownerClient = o.token, self
+	o.setOwnerLocked(o.token, self)
 	o.ownedBefore = true
 }
 
@@ -346,10 +411,7 @@ func (o *sizeOwner) isOwnedBefore() bool {
 func (o *sizeOwner) noteOwner(token, client string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.ownerToken, o.ownerClient = token, client
-	if foreignOwner(token, o.token) {
-		o.ownedBefore = false
-	}
+	o.setOwnerLocked(token, client)
 }
 
 // ownerRead is one read of the pinned session from this daemon's own client.
@@ -406,7 +468,9 @@ func (o ownerCtl) read() (ownerRead, bool) {
 	next := o.rt(ownerReadCmd(o.sessID), sessionClientsCmd(o.sessID))
 	rec, okRec := next()
 	cl, okCl := next()
-	if !okRec || !okCl || rec.Kind == controlmode.Error || cl.Kind == controlmode.Error {
+	recErr, clErr := rec.Kind == controlmode.Error, cl.Kind == controlmode.Error
+	if !okRec || !okCl || recErr || clErr {
+		o.logf("owner read failed (record ok=%v error=%v, clients ok=%v error=%v)", okRec, recErr, okCl, clErr)
 		return ownerRead{}, false
 	}
 	var st ownerRead
@@ -476,10 +540,11 @@ func (o ownerCtl) claimWith(st ownerRead) {
 }
 
 // enforce flags every control client on the session that is neither ours nor
-// already flagged.
+// already flagged. The isOwner belief that gated the call can lag a foreign
+// claim by a subscription tick, so the fresh read decides.
 func (o ownerCtl) enforce() {
 	st, ok := o.read()
-	if !ok {
+	if !ok || st.ownerToken != o.own.token {
 		return
 	}
 	targets := enforceTargets(st.clients, st.self)
@@ -555,13 +620,33 @@ func (o ownerCtl) reopened() {
 
 // detached handles %client-detached. Survivors release a departed owner's
 // record because the owner cannot: its SIGTERM kills the transport before
-// teardown runs, and a crash runs nothing.
+// teardown runs, and a crash runs nothing. The release waits ownerReleaseGrace,
+// so a network blip on the active controller does not unflag every survivor
+// and resize every window to their size and back.
 func (o ownerCtl) detached(name string) {
 	token, client := o.own.recordedOwner()
-	if name == client && foreignOwner(token, o.own.token) && o.send(ownerReleaseCmd(o.sessID, token, client)) {
-		o.logf("released %s's record (client %s detached)", token, client)
+	if name == client && foreignOwner(token, o.own.token) {
+		o.own.holdRelease(token, client, time.Now().Add(ownerReleaseGrace))
+		o.logf("%s's client %s detached; releasing in %v unless it reclaims", token, client, ownerReleaseGrace)
 	}
 	o.dropped(name)
+}
+
+// releaseDue sends a held release once due, unflagging the other flagged
+// control clients in the same conditional branch.
+func (o ownerCtl) releaseDue(now time.Time) {
+	r, ok := o.own.takeDueRelease(now)
+	if !ok {
+		return
+	}
+	st, ok := o.read()
+	if !ok || st.ownerToken != r.token || st.ownerClient != r.client {
+		return
+	}
+	targets := releaseTargets(st.clients, st.self)
+	if o.send(ownerReleaseCmd(o.sessID, r.token, r.client, targets)) {
+		o.logf("released %s's record (client %s detached); unflagged %v", r.token, r.client, targets)
+	}
 }
 
 // sessionChanged handles %client-session-changed, which names only the new

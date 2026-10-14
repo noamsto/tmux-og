@@ -1560,6 +1560,8 @@ func runMirror(cfg Config) error {
 			}
 			if ownerOn {
 				owner.applyReport()
+				// loopTick bounds how late a due release can go out.
+				owner.releaseDue(time.Now())
 				if cfg.own.takeClaim() {
 					owner.claimIfStale()
 				}
@@ -1667,6 +1669,17 @@ func runMirror(cfg Config) error {
 	// anyway — and nothing drains the pump until the first round-trip below,
 	// which follows the resume loop.
 	repair := func() bool {
+		// Before cv.reset and the size sends below, which then recalculate with
+		// the flags in place: a client that is not the owner must be flagged
+		// before its first assert, or it snaps the windows to its size until the
+		// next report. With cv not yet reset, a watchLocalClient tick during this
+		// read only sends on a real size change; after the reset every cv.need
+		// is true and the tick would assert on the still-unflagged client. The
+		// recalculation here uses the pre-reset recorded size, harmless because
+		// the asserts below re-send right after.
+		if ownerOn {
+			owner.reconnected()
+		}
 		// The converger caches what THIS control client told the remote, and the
 		// fresh one has told it nothing. Reset wholesale rather than invalidating
 		// a key: only setupWindow and watchLocalClient write it, and neither runs for
@@ -1676,12 +1689,6 @@ func runMirror(cfg Config) error {
 		// remote was never told — carried across, it is not merely stale but
 		// actively wrong, and every symptom is a silently 80-column mirror.
 		cv.reset()
-		// Before the size sends below, which then recalculate with the flags in
-		// place: a client that is not the owner must be flagged before its first
-		// assert, or it snaps the windows to its size until the next report.
-		if ownerOn {
-			owner.reconnected()
-		}
 		// Every step below is serialized ssh round-trips on this goroutine, so
 		// the window the user is looking at goes first in each of them (#557).
 		activeWin := localActiveWindow(cfg)

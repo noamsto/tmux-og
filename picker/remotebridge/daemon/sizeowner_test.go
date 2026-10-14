@@ -94,8 +94,13 @@ func TestSizeOwnerCmdBuilders(t *testing.T) {
 		{"ignore other off", ignoreSizeCmd("/dev/pts/3", false), "refresh-client -t '/dev/pts/3' -f !ignore-size"},
 		{"claim", ownerClaimCmd("$4", tokA, "/dev/pts/3"),
 			"set-option -t '$4' @og_bridge_owner '" + tokA + "|/dev/pts/3'"},
-		{"release", ownerReleaseCmd("$4", tokB, "/dev/pts/9"),
+		{"release", ownerReleaseCmd("$4", tokB, "/dev/pts/9", nil),
 			"if-shell -F -t '$4' '#{==:#{@og_bridge_owner}," + tokB + "|/dev/pts/9}' 'set-option -u -t '\\''$4'\\'' @og_bridge_owner'"},
+		{"release unflagging", ownerReleaseCmd("$4", tokB, "/dev/pts/9", []string{"client-7", "/dev/pts/3"}),
+			"if-shell -F -t '$4' '#{==:#{@og_bridge_owner}," + tokB + "|/dev/pts/9}' " +
+				`'set-option -u -t '\''$4'\'' @og_bridge_owner ; ` +
+				`refresh-client -t '\''client-7'\'' -f !ignore-size ; ` +
+				`refresh-client -t '\''/dev/pts/3'\'' -f !ignore-size'`},
 		{"read", ownerReadCmd("$4"),
 			"display-message -p -t '$4' '" + ctlSafe("#{client_name}|#{@og_bridge_owner}") + "'"},
 		{"session clients", sessionClientsCmd("$4"),
@@ -151,6 +156,38 @@ func TestEnforceTargets(t *testing.T) {
 				t.Errorf("enforceTargets = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestReleaseTargets(t *testing.T) {
+	clients := []sessionClient{
+		{name: "client-me", control: true, flagged: true},
+		{name: "client-b", control: true},
+		{name: "client-c", control: true, flagged: true},
+		{name: "/dev/pts/4", control: true, flagged: true},
+		{name: "/dev/pts/3", flagged: true},
+		{name: "client#x", control: true, flagged: true},
+	}
+	want := []string{"client-c", "/dev/pts/4"}
+	if got := releaseTargets(clients, "client-me"); !reflect.DeepEqual(got, want) {
+		t.Errorf("releaseTargets = %q, want %q", got, want)
+	}
+}
+
+func TestValidClientName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"client-123":            true,
+		"/dev/pts/3":            true,
+		"":                      false,
+		"c#1":                   false,
+		"c'1":                   false,
+		"c 1":                   false,
+		strings.Repeat("a", 64): true,
+		strings.Repeat("a", 65): false,
+	} {
+		if got := validClientName(name); got != want {
+			t.Errorf("validClientName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 
