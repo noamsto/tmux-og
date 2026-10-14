@@ -167,10 +167,11 @@ today) size the windows.
   window to their size and back. When due, re-read the record and the
   session's clients and send one atomic
   `if-shell -F -t '$N' '#{==:#{@og_bridge_owner},<token>|<name>}' 'set-option
-  -u -t $N @og_bridge_owner ; refresh-client -t <c> -f !ignore-size ; …'`,
-  unflagging every flagged control-mode client on the session but our own: a
-  pre-fix daemon's or a `-CC` client's flag would otherwise outlive the owner.
-  The explicit target matters: `if-shell` expands
+  -u -t $N @og_bridge_owner'`. The release only clears the record; it does not
+  unflag other clients, because that would also clear an asleep fixed daemon's
+  flag (a suspended laptop whose ssh is still attached; the core #979 case) and
+  tmux cannot tell it from a pre-fix daemon's or a `-CC` client's. The explicit
+  target matters: `if-shell` expands
   its format against its target, which otherwise defaults to the issuing
   client's current session, and the survivor may be a moved stray. Every
   awake survivor then sees owner unset while flagged and unflags itself (one
@@ -337,8 +338,11 @@ that matters.
 - **Mixed versions**: both controllers need the fix. A pre-fix daemon's client
   is flagged by enforcement like any other control client, and it never claims,
   so it is size-ignored while a fixed owner holds the record (under the old code
-  it at least clamped everyone to the minimum); the release clears its flag.
-  Documented in `bridge-daemon.md`.
+  it at least clamped everyone to the minimum). Its flag, like an iTerm2 `-CC`
+  client's, outlives the owner until that client reconnects: the release only
+  clears the record, and fixed survivors unflag themselves via reconcile.
+  Accepted, because clearing other clients' flags at release would also clear an
+  asleep fixed daemon's flag, and tmux cannot tell the two apart. Documented in `bridge-daemon.md`.
 - **A flagged client that is still `w->latest`** (a moved-in stray, or a former
   owner that created the window): `clients_with_window` no longer counts it,
   but with an owner and a human tty both on the window `n > 1` and the first

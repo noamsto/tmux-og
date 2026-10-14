@@ -41,17 +41,7 @@ func newOwnerToken() string {
 	return hex.EncodeToString(b)
 }
 
-// clientNameChars is the only client-name shape put into a command: names
-// reach refresh-client -t and the release condition, and this charset holds
-// nothing (#, ',', '}', a quote) that could break out of either.
-const clientNameChars = `[A-Za-z0-9_./-]{1,64}`
-
-var (
-	ownerValueRe = regexp.MustCompile(`^([0-9a-f]{16})\|(` + clientNameChars + `)$`)
-	clientNameRe = regexp.MustCompile(`^` + clientNameChars + `$`)
-)
-
-func validClientName(name string) bool { return clientNameRe.MatchString(name) }
+var ownerValueRe = regexp.MustCompile(`^([0-9a-f]{16})\|([A-Za-z0-9_./-]{1,64})$`)
 
 // parseOwnerValue splits an owner record; anything malformed reads as unset.
 func parseOwnerValue(v string) (token, client string) {
@@ -103,18 +93,14 @@ func ownerClaimCmd(sessID, token, client string) string {
 	return "set-option -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption + " " + tmuxQuote(token+"|"+client)
 }
 
-// ownerReleaseCmd clears the record, and unflags the clients in unflag, only
-// while it still reads token|client, so concurrent survivors are harmless and a
-// newer claim survives. if-shell expands its format against -t; without it the
-// target defaults to the issuing client's current session, which for a moved
-// stray is not the pinned one.
-func ownerReleaseCmd(sessID, token, client string, unflag []string) string {
+// ownerReleaseCmd clears the record only while it still reads token|client, so
+// concurrent survivors are harmless and a newer claim survives. if-shell expands
+// its format against -t; without it the target defaults to the issuing client's
+// current session, which for a moved stray is not the pinned one.
+func ownerReleaseCmd(sessID, token, client string) string {
 	cond := "#{==:#{" + bridgeOwnerOption + "}," + token + "|" + client + "}"
-	branch := []string{"set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption}
-	for _, name := range unflag {
-		branch = append(branch, ignoreSizeCmd(name, false))
-	}
-	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(strings.Join(branch, " ; "))
+	unset := "set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption
+	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(unset)
 }
 
 // ownerReadCmd answers "<own client>|<owner record>" in one reply.
@@ -155,19 +141,6 @@ func enforceTargets(clients []sessionClient, self string) []string {
 	var out []string
 	for _, c := range clients {
 		if c.control && c.name != self && !c.flagged {
-			out = append(out, c.name)
-		}
-	}
-	return out
-}
-
-// releaseTargets names the flagged control clients a release unflags besides
-// our own, which reconcile unflags: a pre-fix daemon's or a -CC client's flag
-// would otherwise outlive the owner.
-func releaseTargets(clients []sessionClient, self string) []string {
-	var out []string
-	for _, c := range clients {
-		if c.control && c.flagged && c.name != self && validClientName(c.name) {
 			out = append(out, c.name)
 		}
 	}
@@ -632,8 +605,8 @@ func (o ownerCtl) detached(name string) {
 	o.dropped(name)
 }
 
-// releaseDue sends a held release once due, unflagging the other flagged
-// control clients in the same conditional branch.
+// releaseDue sends a held release once due. It only clears the record: each
+// fixed survivor unflags itself through reconcile.
 func (o ownerCtl) releaseDue(now time.Time) {
 	r, ok := o.own.takeDueRelease(now)
 	if !ok {
@@ -643,9 +616,8 @@ func (o ownerCtl) releaseDue(now time.Time) {
 	if !ok || st.ownerToken != r.token || st.ownerClient != r.client {
 		return
 	}
-	targets := releaseTargets(st.clients, st.self)
-	if o.send(ownerReleaseCmd(o.sessID, r.token, r.client, targets)) {
-		o.logf("released %s's record (client %s detached); unflagged %v", r.token, r.client, targets)
+	if o.send(ownerReleaseCmd(o.sessID, r.token, r.client)) {
+		o.logf("released %s's record (client %s detached)", r.token, r.client)
 	}
 }
 

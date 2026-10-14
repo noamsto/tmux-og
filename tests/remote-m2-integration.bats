@@ -839,7 +839,16 @@ two_controllers_up() {
 
 @test "an idle controller does not reclaim when it wakes (#979)" {
 	two_controllers_up
+	# B's first-attach claim must have landed, so S's typing below is a checked
+	# big-to-small transition.
+	wait_src_all "$big"
 	type_until obs-s "$small"
+
+	# S must be idle before it is stopped: past activityRecency (3s), one 1s
+	# reveal tick and the 1s stamp truncation, so no S key is still pending and
+	# S cannot legitimately reclaim on CONT.
+	sleep 5
+	src_all_are "$small"
 
 	# B takes over while S is stopped; S wakes on its old connection to a backlog
 	# that reports it flagged under a foreign owner, so its sizes stay ignored.

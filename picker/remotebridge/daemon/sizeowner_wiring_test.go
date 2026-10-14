@@ -220,8 +220,7 @@ const flaggedSurvivorRows = "client-me|1|attached,control-mode,ignore-size\n" +
 	"/dev/pts/3|0|attached,ignore-size"
 
 // TestOwnerCtlReleaseWaitsOutTheGrace: a blip on the active controller must not
-// unflag every survivor at once; the release goes out only once due, and then
-// also unflags the other flagged control clients.
+// unflag every survivor at once; the release goes out only once due.
 func TestOwnerCtlReleaseWaitsOutTheGrace(t *testing.T) {
 	own := detachedOwner()
 	o, sent := testOwnerCtl(ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows), own, recordedCV())
@@ -236,7 +235,7 @@ func TestOwnerCtlReleaseWaitsOutTheGrace(t *testing.T) {
 		t.Fatalf("release went out before its grace: %q", *sent)
 	}
 	o.releaseDue(time.Now().Add(ownerReleaseGrace + time.Second))
-	if want := []string{ownerReleaseCmd("$1", tokB, "client-b", []string{"client-c"})}; !reflect.DeepEqual(*sent, want) {
+	if want := []string{ownerReleaseCmd("$1", tokB, "client-b")}; !reflect.DeepEqual(*sent, want) {
 		t.Errorf("due release sent %q, want %q", *sent, want)
 	}
 	*sent = nil
