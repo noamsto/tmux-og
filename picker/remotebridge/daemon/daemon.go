@@ -1443,7 +1443,7 @@ func runMirror(cfg Config) error {
 			// reply. Acting here too would reseed twice.
 		case controlmode.Exit:
 			return true
-		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error:
+		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error, controlmode.ClientDetached, controlmode.ClientSessionChanged:
 			// Reply framing and unmodelled lines: reply readers consume them.
 		}
 		return false
