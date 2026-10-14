@@ -1669,14 +1669,10 @@ func runMirror(cfg Config) error {
 	// anyway — and nothing drains the pump until the first round-trip below,
 	// which follows the resume loop.
 	repair := func() bool {
-		// Before cv.reset and the size sends below, which then recalculate with
-		// the flags in place: a client that is not the owner must be flagged
-		// before its first assert, or it snaps the windows to its size until the
-		// next report. With cv not yet reset, a watchLocalClient tick during this
-		// read only sends on a real size change; after the reset every cv.need
-		// is true and the tick would assert on the still-unflagged client. The
-		// recalculation here uses the pre-reset recorded size, harmless because
-		// the asserts below re-send right after.
+		// A non-owner must be flagged before its first size assert, or it snaps
+		// the windows to its size. Hence before cv.reset too: once every cv.need
+		// is true, a watchLocalClient tick during this read would assert on the
+		// still-unflagged client.
 		if ownerOn {
 			owner.reconnected()
 		}

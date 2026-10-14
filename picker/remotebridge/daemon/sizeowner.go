@@ -298,8 +298,7 @@ func (o *sizeOwner) takeReport() (selfReport, bool) {
 // noteActivity asks the main loop for a claim on any counted activity, owner or
 // not: the believed owner comes from the last og_self report or our own claim and
 // can lag another daemon's claim by a subscription tick, so the loop re-reads the
-// record instead of trusting it. A keystroke the belief swallowed would be lost,
-// the stamp already consumed.
+// record instead of trusting it.
 func (o *sizeOwner) noteActivity(rows []activityRow, now int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
