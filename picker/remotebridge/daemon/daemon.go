@@ -1541,6 +1541,11 @@ func runMirror(cfg Config) error {
 		// been told; re-armed here rather than in repair for the reason the
 		// send site below documents.
 		pauseAfterSet := false
+		// Setup's reads skip notifications, so a client that attached meanwhile
+		// never reached sessionChanged; enforce's read refreshes the membership.
+		if ownerOn && cfg.own.isOwner() {
+			owner.enforce()
+		}
 		for {
 			// Settling before the blocking read is what makes a ctl gesture land
 			// without a timer: nextLine wakes on any line, and by the time it
@@ -1556,7 +1561,7 @@ func runMirror(cfg Config) error {
 			if ownerOn {
 				owner.applyReport()
 				if cfg.own.takeClaim() {
-					owner.claim()
+					owner.claimIfStale()
 				}
 			}
 			// Same wake-up for an agent, which redraws its pane before it changes

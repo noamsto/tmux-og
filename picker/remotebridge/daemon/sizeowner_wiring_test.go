@@ -131,6 +131,37 @@ func TestOwnerCtlClaimOrder(t *testing.T) {
 	}
 }
 
+func TestOwnerCtlClaimIfStale(t *testing.T) {
+	const flaggedSelf = "client-me|1|attached,control-mode,ignore-size\n" +
+		"client-b|1|attached,control-mode"
+	claimWant := []string{
+		ownerClaimCmd("$1", tokA, "client-me"),
+		ignoreSizeCmd("", false),
+		ignoreSizeCmd("client-b", true),
+		ClientSizeCmd(100, 40),
+	}
+	cases := []struct {
+		name    string
+		record  string
+		clients string
+		want    []string
+	}{
+		{"ours and unflagged sends nothing", tokA + "|client-me", sessionClientRows, nil},
+		{"ours but self flagged claims", tokA + "|client-me", flaggedSelf, claimWant},
+		{"foreign owner claims", tokB + "|client-b", sessionClientRows, claimWant},
+		{"unset claims", "", sessionClientRows, claimWant},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, sent := testOwnerCtl(ownerReadReply("client-me", c.record, c.clients), newSizeOwner(tokA), recordedCV())
+			o.claimIfStale()
+			if !reflect.DeepEqual(*sent, c.want) && (len(*sent) != 0 || len(c.want) != 0) {
+				t.Errorf("sent %q, want %q", *sent, c.want)
+			}
+		})
+	}
+}
+
 func TestOwnerCtlNewConnectionRows(t *testing.T) {
 	claim := ownerClaimCmd("$1", tokA, "client-me")
 	cases := []struct {
@@ -221,6 +252,22 @@ func TestOwnerCtlJoinEnforces(t *testing.T) {
 	want := []string{ignoreSizeCmd("client-b", true), ClientSizeCmd(100, 40)}
 	if !reflect.DeepEqual(*sent, want) {
 		t.Errorf("join sent %q, want %q", *sent, want)
+	}
+}
+
+// TestOwnerCtlEnforceRefreshesMembership: a client that attached while setup
+// skipped notifications is known to the owner after enforce, so its later
+// detach recalculates.
+func TestOwnerCtlEnforceRefreshesMembership(t *testing.T) {
+	own := newSizeOwner(tokA)
+	own.noteClaim("client-me")
+	o, sent := testOwnerCtl(ownerReadReply("client-me", tokA+"|client-me", sessionClientRows), own, recordedCV())
+
+	o.enforce()
+	*sent = nil
+	o.detached("/dev/pts/3")
+	if want := []string{ClientSizeCmd(100, 40)}; !reflect.DeepEqual(*sent, want) {
+		t.Errorf("detach of a client enforce discovered sent %q, want %q", *sent, want)
 	}
 }
 

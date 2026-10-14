@@ -244,8 +244,12 @@ switch-in from missing the window).
   (`errServerReplaced`), with nobody at the keyboard. A re-opened mirror takes
   the new-connection row instead (on a fresh server the option is unset, so it
   does nothing).
-- Activity while already owner (per the last `og_self` report, or an own claim
-  sent since) does nothing.
+- Counted activity always makes the main loop re-read the record, owner or not,
+  and claim unless this daemon already owns it with its client unflagged. The
+  believed owner (last `og_self` report, or an own claim) can lag another
+  daemon's claim by up to one subscription tick, and a keystroke swallowed by
+  that belief is lost, its stamp already consumed. A timing window instead would
+  let a controller steal ownership back after a fast machine switch.
 
 ### Transitions
 
@@ -254,7 +258,7 @@ switch-in from missing the window).
 | First `runMirror` of the process (`!cfg.reopened`) | **claim**, before `mirrorStartupWindows`; subscribe `og_self` with the other subscriptions |
 | Re-opened `runMirror` (`cfg.reopened`) | the new-connection row, except that with the option unset it claims when no other control-mode client is on the session (a lone daemon after a server replacement keeps owning, so the membership rows keep covering it) |
 | Activity, not owner | **claim** |
-| Activity, owner | nothing |
+| Activity, owner | re-read; **claim** only if the record is not ours or our client is flagged, else nothing |
 | New connection (reattach after a drop, `replaceConn`'s `primeClient`) | one round-trip read of `#{@og_bridge_owner}` **before any size assert** on it. Our token → claim (rewrites the client name). Another token → `refresh-client -f ignore-size` first, then the usual asserts. Unset → claim if this daemon owned before the drop (the survivors released it when the old client went; the user's own mirror was down meanwhile, so nothing they see changed), else nothing. Then re-subscribe `og_self` (repair already re-subscribes everything) |
 | `og_self` report | reconcile (above) |
 | `%client-session-changed <name> $N`, `$N` our pinned session, name not ours, we own | enforce |

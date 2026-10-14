@@ -301,7 +301,7 @@ func TestSizeOwnerNoteActivity(t *testing.T) {
 		wantWoken bool
 	}{
 		{"not owner wants a claim", false, true, true},
-		{"owner does not", true, false, false},
+		{"owner wants one too: the belief can lag", true, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

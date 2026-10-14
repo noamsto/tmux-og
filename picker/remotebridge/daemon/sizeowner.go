@@ -257,10 +257,15 @@ func (o *sizeOwner) takeReport() (selfReport, bool) {
 	return r, true
 }
 
+// noteActivity asks the main loop for a claim on any counted activity, owner or
+// not: the believed owner comes from the last og_self report or our own claim and
+// can lag another daemon's claim by a subscription tick, so the loop re-reads the
+// record instead of trusting it. A keystroke the belief swallowed would be lost,
+// the stamp already consumed.
 func (o *sizeOwner) noteActivity(rows []activityRow, now int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if !o.mark.advance(rows, now) || o.ownerToken == o.token {
+	if !o.mark.advance(rows, now) {
 		return
 	}
 	o.claimWanted = true
@@ -427,6 +432,31 @@ func (o ownerCtl) claim() {
 	if st, ok := o.read(); ok {
 		o.claimWith(st)
 	}
+}
+
+// claimIfStale is the activity-driven claim: it reads the record and claims
+// unless this daemon already owns it with its client unflagged. That costs one
+// small round-trip per counted activity (at most one per reveal tick, on any
+// daemon whose user is typing), which is what makes a stale ownership belief
+// harmless; it also heals an owner someone flagged.
+func (o ownerCtl) claimIfStale() {
+	st, ok := o.read()
+	if !ok {
+		return
+	}
+	if st.ownerToken == o.own.token && !selfFlagged(st) {
+		return
+	}
+	o.claimWith(st)
+}
+
+func selfFlagged(st ownerRead) bool {
+	for _, c := range st.clients {
+		if c.name == st.self {
+			return c.flagged
+		}
+	}
+	return false
 }
 
 // claimWith writes the record before unflagging this client, and flags every
