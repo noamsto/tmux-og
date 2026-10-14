@@ -665,16 +665,6 @@ obs_attach() {
 	return 1
 }
 
-# type_into <obs-session> is one key of activity on that hosted client; the
-# space reaches whatever pane is current there, harmlessly.
-type_into() {
-	# A key whose stamp shares a second with the seed or a previous counted stamp
-	# does not advance the mark; a second key a second later always does.
-	$OBS send-keys -t "$1" ' '
-	sleep 1.1
-	$OBS send-keys -t "$1" ' '
-}
-
 # size_daemon_up <tag> <dst-socket> <dst-cmd> <remote-session> starts a daemon
 # mirroring <remote-session> into <dst-cmd>'s host-sess, logging to <tag>.log,
 # and waits until every remote pane has a stamped mirror pane. Sets daemon_pid
@@ -754,6 +744,31 @@ wait_src_all() {
 	return 1
 }
 
+# type_until <obs-session> <glob> [session] types into that hosted client until
+# src_all_are <glob> holds, and sets src_size like wait_src_all. The space
+# reaches whatever pane is current there, harmlessly. One key is not enough on
+# a loaded runner: the reveal watcher's first poll only seeds its mark, a stamp
+# counts only within 3s of a poll and above the last counted second, so a key
+# can land before the watcher is up or age out before a late poll. Re-sending
+# every ~2s covers both without a fixed sleep.
+type_until() {
+	local deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS)) i=0
+	$OBS send-keys -t "$1" ' '
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		if src_all_are "$2" "${3:-rem}"; then
+			src_size="$(src_sizes "${3:-rem}" | head -1)"
+			return 0
+		fi
+		sleep 0.2
+		i=$((i + 1))
+		if [ $((i % 10)) -eq 0 ]; then
+			$OBS send-keys -t "$1" ' '
+		fi
+	done
+	size_failed "type_until($1): wanted every ${3:-rem} window at $2 within ${RESIZE_CONVERGE_BUDGET_SECS}s"
+	return 1
+}
+
 # hold_src_all <size> <secs> [session] asserts every window stays at <size> at
 # each 0.2s sample for <secs> seconds: a snap-back can be transient.
 hold_src_all() {
@@ -766,12 +781,18 @@ hold_src_all() {
 	done
 }
 
-# wait_reconnect <pid> <old-transport> <dst-cmd> <tag> waits until that daemon
-# runs a replacement control client and its reattach repair has finished
-# (@bridge_state cleared, which is stamped before the re-dial).
+# wait_reconnect <pid> <old-transport> <dst-cmd> <tag> <size> waits until that
+# daemon runs a replacement control client and its reattach repair has finished
+# (@bridge_state cleared, which is stamped before the re-dial). Every window must
+# stay at <size> at each sample meanwhile: a transient snap while the fresh
+# client is unflagged is the failure.
 wait_reconnect() {
 	local deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS)) t state
 	while [ "$SECONDS" -lt "$deadline" ]; do
+		if ! src_all_are "$5"; then
+			size_failed "wait_reconnect($4): a window left $5 during the reconnect"
+			return 1
+		fi
 		t="$(transport_child_of "$1")"
 		state="$($3 show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
 		[ -n "$t" ] && [ "$t" != "$2" ] && [ -z "$state" ] && return 0
@@ -783,7 +804,7 @@ wait_reconnect() {
 
 # two_controllers_up is the first two cases' setup: SRC rem with two windows,
 # window 1 current; S's daemon alone first, learning `small` from SRC; then B's.
-# Sets s_pid, small and big.
+# Sets s_pid, b_pid, small and big.
 two_controllers_up() {
 	$SRC new-session -d -s rem -x 120 -y 40
 	$SRC new-window -t 'rem:{end}' -a
@@ -802,50 +823,44 @@ two_controllers_up() {
 	big="150x$((${small#*x} + 15))"
 
 	size_daemon_up sz-b m2dst2 "$DST2" rem
-	# Both daemons' reveal watchers must have seeded their marks before a
-	# keystroke can count.
-	sleep 2
+	b_pid=$daemon_pid
 }
 
 @test "the last-active controller sizes a shared mirror (#979)" {
 	two_controllers_up
-	# B's first attach claims, so SRC goes big; pre-fix nothing claims and the
-	# two controllers' caps combine as a minimum (small). The typing below is
-	# the contract, but let that claim land so typing into S cannot race it.
-	for _ in $(seq 1 30); do
-		src_all_are "$big" && break
-		sleep 0.1
-	done
-
-	type_into obs-s
-	wait_src_all "$small"
-	type_into obs-b
-	wait_src_all "$big"
+	# Pre-fix nothing claims and the two controllers' caps combine as a minimum
+	# (small), so big is reachable only through ownership; B owning first makes
+	# S's step below a real transition.
+	type_until obs-b "$big"
+	type_until obs-s "$small"
+	type_until obs-b "$big"
 	size_daemons_stop
 }
 
 @test "an idle controller does not reclaim when it wakes (#979)" {
 	two_controllers_up
-	type_into obs-b
-	wait_src_all "$big"
+	type_until obs-s "$small"
 
-	# S sleeps through B's activity and wakes on its old connection: its backlog
-	# reports it flagged under a foreign owner, so its sizes stay ignored.
+	# B takes over while S is stopped; S wakes on its old connection to a backlog
+	# that reports it flagged under a foreign owner, so its sizes stay ignored.
 	kill -STOP "$s_pid"
-	type_into obs-b
+	type_until obs-b "$big"
 	kill -CONT "$s_pid"
 	hold_src_all "$big" 5
 
 	# A reconnect starts S on an unflagged control client, which must read B's
-	# record and flag itself before its first size assert.
+	# record and flag itself before its first size assert. B is stopped
+	# meanwhile, so its own client keeps sizing as owner but it cannot flag
+	# S's new client on join: big holds only if S flags itself.
+	kill -STOP "$b_pid"
 	old_transport="$(transport_child_of "$s_pid")"
 	[ -n "$old_transport" ]
 	kill -9 "$old_transport"
-	wait_reconnect "$s_pid" "$old_transport" "$DST" sz-s
+	wait_reconnect "$s_pid" "$old_transport" "$DST" sz-s "$big"
 	hold_src_all "$big" 5
+	kill -CONT "$b_pid"
 
-	type_into obs-s
-	wait_src_all "$small"
+	type_until obs-s "$small"
 	size_daemons_stop
 }
 
@@ -899,12 +914,12 @@ two_controllers_up() {
 	# attaching after the bridge, window 2 by typing while it is current.
 	obs_attach obs-h 100 30 "$SRC" rem
 	$SRC select-window -t rem:2
-	type_into obs-h
-	wait_src_all '100x*'
+	type_until obs-h '100x*'
 	$SRC select-window -t rem:1
 
-	# Only the human leaves: detach-client -s rem would detach the bridge too.
-	$OBS kill-server
+	# Only the human leaves: detach-client -s rem would detach the bridge too,
+	# and killing the OBS server would take obs-d, the local client, with it.
+	$OBS kill-session -t obs-h
 	for _ in $(seq 1 40); do
 		modes="$($SRC list-clients -t rem -F '#{client_control_mode}' | sort -u)"
 		[ "$modes" = 1 ] && break
