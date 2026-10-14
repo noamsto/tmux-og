@@ -14,6 +14,10 @@ import (
 //
 // The clamp only reaches a window that participates in sizing at all, so the
 // per-window form holds only alongside AggressiveResizeOffCmd below (#478).
+//
+// With several control clients the caps combine as a minimum, which size
+// ownership (sizeowner.go) resolves by flagging every non-owner control client
+// ignore-size.
 func ConvergeCmd(remoteID string, w, h int) string {
 	return fmt.Sprintf("refresh-client -C %s:%dx%d", remoteID, w, h)
 }
@@ -114,4 +118,25 @@ func (c *converger) forget(remoteID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.last, remoteID)
+}
+
+// asserted returns the size last recorded for key.
+func (c *converger) asserted(key string) (w, h int, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sz, ok := c.last[key]
+	return sz[0], sz[1], ok
+}
+
+// recalcCmd returns the whole-client size assert that makes tmux recalculate
+// every window right now, or false when nothing has been recorded yet. A
+// refresh-client -C is the only trigger: server_client_set_flags (an
+// ignore-size flip) does not recalculate, and a lost client recalculates only
+// the current window of an attached session (resize.c recalculate_size, now=0).
+func recalcCmd(cv *converger) (string, bool) {
+	w, h, ok := cv.asserted(clientSizeKey)
+	if !ok {
+		return "", false
+	}
+	return ClientSizeCmd(w, h), true
 }

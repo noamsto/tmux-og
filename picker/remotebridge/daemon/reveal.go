@@ -3,7 +3,9 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,8 +48,9 @@ func (q *revealQueue) take() []string {
 // "skip this row" test reads the same way. client_created is what tells two
 // attaches of the same client NAME apart — a detach/reattach gets a fresh
 // created stamp, and that is what a re-attach needs to look like a reveal
-// again rather than an unchanged view.
-const clientViewsFormat = "#{client_control_mode}|#{client_name}|#{client_created}|#{window_id}"
+// again rather than an unchanged view. client_flags and client_activity trail
+// for activityRows; clientViews reads only the first four fields.
+const clientViewsFormat = "#{client_control_mode}|#{client_name}|#{client_created}|#{window_id}|#{client_flags}|#{client_activity}"
 
 // clientViewsArgs returns the list-clients argv for sess.
 func clientViewsArgs(sess string) []string {
@@ -55,8 +58,8 @@ func clientViewsArgs(sess string) []string {
 }
 
 // clientViews parses list-clients output lines
-// "<control_mode>|<name>|<created>|<window_id>", skipping control-mode (1),
-// blank and malformed lines. The returned map is keyed by "<name>|<created>"
+// "<control_mode>|<name>|<created>|<window_id>[|...]", skipping control-mode
+// (1), blank and malformed lines. The returned map is keyed by "<name>|<created>"
 // — a view's identity — mapped to the window id that view is currently
 // looking at, which is what revealedWindows diffs against a prior poll.
 func clientViews(out string) map[string]string {
@@ -66,8 +69,8 @@ func clientViews(out string) map[string]string {
 		if line == "" {
 			continue
 		}
-		fields := strings.SplitN(line, "|", 4)
-		if len(fields) != 4 {
+		fields := strings.SplitN(line, "|", 6)
+		if len(fields) < 4 {
 			continue
 		}
 		control, name, created, winID := fields[0], fields[1], fields[2], fields[3]
@@ -77,6 +80,32 @@ func clientViews(out string) map[string]string {
 		views[name+"|"+created] = winID
 	}
 	return views
+}
+
+// activityRows parses the same list-clients output as clientViews into one
+// activityRow per non-control client, skipping blank and malformed lines and
+// rows whose activity stamp is missing or unparsable.
+func activityRows(out string) []activityRow {
+	var rows []activityRow
+	for line := range strings.SplitSeq(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "|", 6)
+		if len(fields) != 6 || fields[0] == "1" {
+			continue
+		}
+		stamp, err := strconv.ParseInt(fields[5], 10, 64)
+		if err != nil {
+			continue
+		}
+		rows = append(rows, activityRow{
+			focused: slices.Contains(strings.Split(fields[4], ","), "focused"),
+			stamp:   stamp,
+		})
+	}
+	return rows
 }
 
 // revealedWindows returns, sorted and deduped, the window ids of views in cur
@@ -127,7 +156,8 @@ func wakeCmd(remoteSession string) string {
 // per tick that queued at least one, so the main loop's next pass picks the
 // batch up together rather than being woken once per window.
 func watchReveal(query func() (string, error), isMirror func(localWin string) bool,
-	q *revealQueue, wake func() bool, stop <-chan struct{}, tick <-chan time.Time,
+	q *revealQueue, wake func() bool, activity func(rows []activityRow, now int64),
+	stop <-chan struct{}, tick <-chan time.Time,
 ) {
 	var prev map[string]string
 	for {
@@ -135,6 +165,10 @@ func watchReveal(query func() (string, error), isMirror func(localWin string) bo
 		case <-stop:
 			return
 		case <-tick:
+			// Taken before the fork: client_activity prints truncated to the
+			// second and is compared against now-3, so a now read after the
+			// fork would eat into that window.
+			now := time.Now().Unix()
 			out, err := query()
 			if err != nil {
 				continue
@@ -151,6 +185,9 @@ func watchReveal(query func() (string, error), isMirror func(localWin string) bo
 				wake()
 			}
 			prev = cur
+			if activity != nil {
+				activity(activityRows(out), now)
+			}
 		}
 	}
 }

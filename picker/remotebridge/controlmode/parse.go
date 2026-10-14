@@ -74,6 +74,8 @@ const (
 	Pause
 	Continue
 	SubscriptionChanged
+	ClientDetached
+	ClientSessionChanged
 )
 
 type Line struct {
@@ -208,6 +210,16 @@ func parseLine(raw []byte) Line {
 		}
 	case "%continue":
 		return Line{Kind: Continue, Args: fieldsToStrings(bytes.Fields(rest))}
+	case "%client-detached":
+		// Sent to the other control clients when a client detaches; the name is
+		// the client that left, not this one.
+		return Line{Kind: ClientDetached, Args: fieldsToStrings(bytes.Fields(rest))}
+	case "%client-session-changed":
+		// Names the NEW session only, and a session name may hold spaces, so
+		// the name and id are cut off the front and the rest is the session.
+		name, r, _ := cutSpace(rest)
+		id, sess, _ := cutSpace(r)
+		return Line{Kind: ClientSessionChanged, Args: []string{string(name), string(id)}, Data: bytes.Clone(sess)}
 	default:
 		return Line{Kind: Other}
 	}

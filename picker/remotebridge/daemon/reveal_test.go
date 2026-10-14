@@ -14,16 +14,37 @@ import (
 
 func TestClientViewsSkipsControlAndMalformed(t *testing.T) {
 	out := strings.Join([]string{
-		"1|ctl|100|@1",     // control-mode: skipped
-		"",                 // blank: skipped
-		"0|bad|only-three", // malformed (3 fields): skipped
-		"0|tty0|200|@7",    // kept
+		"1|ctl|100|@1|focused|5",  // control-mode: skipped
+		"",                        // blank: skipped
+		"0|bad|only-three",        // malformed (3 fields): skipped
+		"0|tty0|200|@7|focused|5", // kept
+		"0|tty1|300|@8",           // kept: views read only the first four fields
 	}, "\n") + "\n"
 
 	got := clientViews(out)
-	want := map[string]string{"tty0|200": "@7"}
+	want := map[string]string{"tty0|200": "@7", "tty1|300": "@8"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("clientViews = %v, want %v", got, want)
+	}
+}
+
+func TestActivityRows(t *testing.T) {
+	out := strings.Join([]string{
+		"0|tty0|1|@7|focused|100",
+		"0|tty1|2|@7|active,focused,UTF-8|101",
+		"0|tty2|3|@7|active,UTF-8|102",
+		"0|tty3|4|@7|unfocused|103",
+		"1|ctl|5|@7|focused|104",
+		"",
+		"0|tty4|6|@7|focused|not-a-number",
+		"0|tty5|7|@7|focused|",
+		"0|tty6|8|@7",
+	}, "\n") + "\n"
+
+	got := activityRows(out)
+	want := []activityRow{{true, 100}, {true, 101}, {false, 102}, {false, 103}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("activityRows = %v, want %v", got, want)
 	}
 }
 
@@ -72,7 +93,7 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchReveal(query, isMirror, q, wake, stop, tick)
+		watchReveal(query, isMirror, q, wake, nil, stop, tick)
 		close(done)
 	}()
 	step := func(out string) {
@@ -99,19 +120,60 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 	// No clients attached at all: an empty read reveals nothing.
 	step("")
 	// A control-mode client and a non-mirror window queue nothing and don't wake.
-	step(strings.Join([]string{"1|ctl|1|@9", "0|tty0|1|@3"}, "\n") + "\n")
+	step(strings.Join([]string{"1|ctl|1|@9|focused|5", "0|tty0|1|@3|focused|5"}, "\n") + "\n")
 	// The same client switches onto @7, a mirror window: queued once, one wake.
-	step("0|tty0|1|@7\n")
+	step("0|tty0|1|@7|focused|5\n")
 	// Unchanged view set: nothing new.
-	step("0|tty0|1|@7\n")
-	drain("0|tty0|1|@7\n", []string{"@7"}, 1)
+	step("0|tty0|1|@7|focused|5\n")
+	drain("0|tty0|1|@7|focused|5\n", []string{"@7"}, 1)
 
 	// The client leaves the mirror session and comes back to the same window.
 	// No hook need fire for either move: polling every tick sees the view
 	// disappear and reappear, which is a reveal.
 	step("")
-	step("0|tty0|1|@7\n")
-	drain("0|tty0|1|@7\n", []string{"@7"}, 2)
+	step("0|tty0|1|@7|focused|5\n")
+	drain("0|tty0|1|@7|focused|5\n", []string{"@7"}, 2)
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchReveal did not return after stop was closed")
+	}
+}
+
+// TestWatchRevealReportsActivity pins that the activity callback gets each
+// successful poll's rows with a now taken before the query ran.
+func TestWatchRevealReportsActivity(t *testing.T) {
+	tick := make(chan time.Time)
+	stop := make(chan struct{})
+	var queryAt int64
+	query := func() (string, error) {
+		queryAt = time.Now().Unix()
+		return "0|tty0|1|@7|focused|42\n", nil
+	}
+	type call struct {
+		rows []activityRow
+		now  int64
+	}
+	calls := make(chan call)
+	activity := func(rows []activityRow, now int64) { calls <- call{rows, now} }
+
+	done := make(chan struct{})
+	go func() {
+		watchReveal(query, func(string) bool { return false }, &revealQueue{}, func() bool { return true }, activity, stop, tick)
+		close(done)
+	}()
+
+	before := time.Now().Unix()
+	tick <- time.Now()
+	got := <-calls
+	if want := []activityRow{{true, 42}}; !reflect.DeepEqual(got.rows, want) {
+		t.Fatalf("rows = %v, want %v", got.rows, want)
+	}
+	if got.now < before || got.now > queryAt {
+		t.Fatalf("now = %d, want within [%d, query time %d]", got.now, before, queryAt)
+	}
 
 	close(stop)
 	select {

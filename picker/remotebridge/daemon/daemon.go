@@ -129,6 +129,10 @@ type Config struct {
 	// machine (injected; prod = BrowserOpener). nil disables the og_open
 	// subscription entirely.
 	OpenURL func(url string) error
+	// own is the size-ownership state (#979), set once by Run so the token and
+	// activity mark survive re-opens. nil (tests that call runMirror directly)
+	// turns ownership off.
+	own *sizeOwner
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -979,6 +983,20 @@ func runMirror(cfg Config) error {
 	hold.set(c)
 	setPhase(cfg, "attached to %s", cfg.RemoteHost)
 
+	// Size ownership needs the pinned session id to target the owner record.
+	ownerOn := cfg.own != nil && pin.id != ""
+	owner := ownerCtl{own: cfg.own, sessID: pin.id, rt: rt, send: sendCtl, cv: cv}
+	// Ahead of every size assert on this client, which then recalculate with the
+	// flags already in place. A process start is the user acting on this
+	// controller; a re-open is not, nobody is at the keyboard.
+	if ownerOn {
+		if cfg.reopened {
+			owner.reopened()
+		} else {
+			owner.claim()
+		}
+	}
+
 	// The first thing the remote might act on: give this control client a size,
 	// so a window created on the remote is born at the local client's size
 	// instead of tmux's 80-column control-client default (#449). It follows the
@@ -1335,10 +1353,15 @@ func runMirror(cfg Config) error {
 			}
 			return false
 		}
+		// Only marks a claim wanted and wakes the main loop, which claims.
+		var activity func(rows []activityRow, now int64)
+		if ownerOn {
+			activity = cfg.own.noteActivity
+		}
 		revealTicker := time.NewTicker(resizePollInterval)
 		go func() {
 			defer revealTicker.Stop()
-			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, stopWatch, revealTicker.C)
+			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, activity, stopWatch, revealTicker.C)
 		}()
 	}
 
@@ -1358,7 +1381,13 @@ func runMirror(cfg Config) error {
 	// have none, and could not trust the answer anyway — a spec tmux cannot
 	// parse is dropped with no %error. opener re-seeds and re-registers the
 	// og_open subscription the same way.
-	subscribe := func() { labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt); opener.connect(rt) }
+	subscribe := func() {
+		labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt)
+		opener.connect(rt)
+		if ownerOn {
+			sendSubscription(rt, ownerSubName, "", ownerSelfFormat)
+		}
+	}
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
 	// its floor on every reconnect.
@@ -1433,6 +1462,10 @@ func runMirror(cfg Config) error {
 			if v, ok := subscriptionValue(l, openSubName); ok && len(l.Args) > 1 {
 				opener.handle(l.Args[1], v)
 			}
+			// Queued like the shippers: only the newest report is reconciled.
+			if v, ok := subscriptionValue(l, ownerSubName); ok && ownerOn {
+				cfg.own.queueReport(v)
+			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
 				handlePause(router, rt, l.Args[0])
@@ -1443,6 +1476,14 @@ func runMirror(cfg Config) error {
 			// reply. Acting here too would reseed twice.
 		case controlmode.Exit:
 			return true
+		case controlmode.ClientDetached:
+			if ownerOn && len(l.Args) > 0 {
+				owner.detached(l.Args[0])
+			}
+		case controlmode.ClientSessionChanged:
+			if ownerOn && len(l.Args) > 1 {
+				owner.sessionChanged(l.Args[0], l.Args[1])
+			}
 		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error:
 			// Reply framing and unmodelled lines: reply readers consume them.
 		}
@@ -1488,6 +1529,11 @@ func runMirror(cfg Config) error {
 		}
 	}
 
+	// nil unless ownership is on, and a nil channel never fires.
+	var ownWake <-chan struct{}
+	if ownerOn {
+		ownWake = cfg.own.wake
+	}
 	// runConn is the main loop for one control connection, from a live attach to
 	// whichever of the endings finishes it.
 	runConn := func(c *ctlConn) connVerdict {
@@ -1495,6 +1541,11 @@ func runMirror(cfg Config) error {
 		// been told; re-armed here rather than in repair for the reason the
 		// send site below documents.
 		pauseAfterSet := false
+		// Setup's reads skip notifications, so a client that attached meanwhile
+		// never reached sessionChanged; enforce's read refreshes the membership.
+		if ownerOn && cfg.own.isOwner() {
+			owner.enforce()
+		}
 		for {
 			// Settling before the blocking read is what makes a ctl gesture land
 			// without a timer: nextLine wakes on any line, and by the time it
@@ -1506,6 +1557,14 @@ func runMirror(cfg Config) error {
 			c.st.dropParked()
 			if settle(c) {
 				return connEnd
+			}
+			if ownerOn {
+				owner.applyReport()
+				// loopTick bounds how late a due release can go out.
+				owner.releaseDue(time.Now())
+				if cfg.own.takeClaim() {
+					owner.claimIfStale()
+				}
 			}
 			// Same wake-up for an agent, which redraws its pane before it changes
 			// state; a window option carries no such traffic, which is what the
@@ -1593,6 +1652,8 @@ func runMirror(cfg Config) error {
 				// mainLoopTickInterval backstop it exists to shortcut.
 				death.fired()
 				sweeper.force()
+			case <-ownWake:
+				// Activity wants a claim; the top of the pass makes it.
 			}
 		}
 	}
@@ -1608,6 +1669,13 @@ func runMirror(cfg Config) error {
 	// anyway — and nothing drains the pump until the first round-trip below,
 	// which follows the resume loop.
 	repair := func() bool {
+		// A non-owner must be flagged before its first size assert, or it snaps
+		// the windows to its size. Hence before cv.reset too: once every cv.need
+		// is true, a watchLocalClient tick during this read would assert on the
+		// still-unflagged client.
+		if ownerOn {
+			owner.reconnected()
+		}
 		// The converger caches what THIS control client told the remote, and the
 		// fresh one has told it nothing. Reset wholesale rather than invalidating
 		// a key: only setupWindow and watchLocalClient write it, and neither runs for

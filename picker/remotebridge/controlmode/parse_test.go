@@ -185,3 +185,37 @@ func TestParseSubscriptionChanged(t *testing.T) {
 		t.Errorf("separatorless kind = %v, want Other", l.Kind)
 	}
 }
+
+func TestParseClientNotifications(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		kind     Kind
+		args     []string
+		wantData string
+	}{
+		{"client-detached", "%client-detached /dev/ttys004", ClientDetached, []string{"/dev/ttys004"}, ""},
+		{"client-session-changed", "%client-session-changed /dev/ttys004 $3 work", ClientSessionChanged, []string{"/dev/ttys004", "$3"}, "work"},
+		{"session name with spaces", "%client-session-changed /dev/ttys004 $3 my proj", ClientSessionChanged, []string{"/dev/ttys004", "$3"}, "my proj"},
+		{"truncated, no id", "%client-session-changed /dev/ttys004", ClientSessionChanged, []string{"/dev/ttys004", ""}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l := ParseLine(c.raw)
+			if l.Kind != c.kind {
+				t.Fatalf("kind = %v, want %v", l.Kind, c.kind)
+			}
+			if len(l.Args) != len(c.args) {
+				t.Fatalf("args = %q, want %q", l.Args, c.args)
+			}
+			for i := range c.args {
+				if l.Args[i] != c.args[i] {
+					t.Errorf("args[%d] = %q, want %q", i, l.Args[i], c.args[i])
+				}
+			}
+			if string(l.Data) != c.wantData {
+				t.Errorf("data = %q, want %q", l.Data, c.wantData)
+			}
+		})
+	}
+}
