@@ -22,15 +22,16 @@ func checkLookup(lookup func(string) (string, error), name, feature string) Resu
 	return Result{Name: name, Feature: feature, OK: true}
 }
 
-// checkClipboard is an either/or: xclip or wl-paste satisfies image paste.
+// checkClipboard is an either/or: xclip, wl-paste or (macOS) osascript satisfies image paste.
 // Absence isn't a hard failure the way other local checks are — the paste
 // path degrades to forwarding the raw byte rather than breaking outright.
 func checkClipboard(lookup func(string) (string, error)) Result {
-	const name = "xclip/wl-paste"
+	const name = "xclip/wl-paste/osascript"
 	const feature = "image paste (ctrl+v)"
 	_, xclipErr := lookup("xclip")
 	_, wlPasteErr := lookup("wl-paste")
-	if xclipErr == nil || wlPasteErr == nil {
+	_, osascriptErr := lookup("osascript")
+	if xclipErr == nil || wlPasteErr == nil || osascriptErr == nil {
 		return Result{Name: name, Feature: feature, OK: true}
 	}
 	return Result{Name: name, Feature: feature, Detail: "paste forwards the raw byte instead (documented degrade)"}

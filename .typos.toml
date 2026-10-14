@@ -5,3 +5,5 @@ thm = "thm"
 ba = "ba"
 # tmux's sixel terminfo capability (TTYC_SXL), quoted from tty-features.c
 sxl = "sxl"
+# AppleScript clipboard class «class PNGf» (the fourcc "PNGf"), split by typos at the case boundary
+PN = "PN"
