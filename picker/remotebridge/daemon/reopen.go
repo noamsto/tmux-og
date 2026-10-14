@@ -51,6 +51,7 @@ func Run(cfg Config) error {
 	if p, ok := pinLocalSession(cfg); ok {
 		cfg.local = p
 	}
+	cfg.own = newSizeOwner(newOwnerToken())
 	return runLoop(cfg, runMirror)
 }
 

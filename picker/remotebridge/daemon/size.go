@@ -14,6 +14,10 @@ import (
 //
 // The clamp only reaches a window that participates in sizing at all, so the
 // per-window form holds only alongside AggressiveResizeOffCmd below (#478).
+//
+// With several control clients the caps combine as a minimum, which size
+// ownership (sizeowner.go) resolves by flagging every non-owner control client
+// ignore-size.
 func ConvergeCmd(remoteID string, w, h int) string {
 	return fmt.Sprintf("refresh-client -C %s:%dx%d", remoteID, w, h)
 }

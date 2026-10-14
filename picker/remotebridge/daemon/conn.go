@@ -686,7 +686,11 @@ func replaceConn(cfg Config, router *Router, hold *connHolder, want remoteIdenti
 			cfg.RemoteSession, id.pid, id.sessionID, want.pid, want.sessionID)
 		return nil, notReplaced
 	}
-	if !primeClient(cfg, next, reg) {
+	ownerSess, ownerToken := "", ""
+	if cfg.own != nil {
+		ownerSess, ownerToken = want.sessionID, cfg.own.token
+	}
+	if !primeClient(cfg, next, reg, ownerSess, ownerToken) {
 		// The new connection died while it was being primed. Nothing of the old
 		// connection has been touched yet, so this is the same verdict as a
 		// failed dial or identity read: keep the current backend.
@@ -735,26 +739,50 @@ func replaceConn(cfg Config, router *Router, hold *connHolder, want remoteIdenti
 // re-sends both anyway, so that stays the single authoritative record and these
 // are idempotent asserts of a size already in force.
 //
+// Size ownership (#979, ownerSess non-empty) rides the same batch, after one
+// read of the owner record on c: the old client is closed before repair() runs,
+// so a record still naming it would read to every survivor as its owner
+// detaching, and they would release it. Our token is rewritten to name c's
+// client; another daemon's flags c before its first size assert. repair()'s
+// own claim follows, records it and re-flags the strays.
+//
 // Reports whether the batch completed on a still-live connection. Nothing else
 // drains an unbound connection's pump, so a reply that never arrives would
 // otherwise park the replacement forever; a false here keeps the current
 // connection instead. An unset LocalArea is not a failure: there is nothing to
 // assert, and the replacement may proceed.
-func primeClient(cfg Config, c *ctlConn, reg *registry) bool {
-	w, h := cfg.LocalArea()
-	if w <= 0 || h <= 0 {
-		return c.live()
-	}
-	cmds := []string{ClientSizeCmd(w, h)}
-	for _, remoteID := range reg.remoteIDs() {
-		cmds = append(cmds, ConvergeCmd(remoteID, w, h))
-	}
-	// One deadline for the whole batch, write included: every command here is a
-	// small size assert on an unbound connection. A fired guard closes c, the
-	// reads below then fail closed, and this reports false.
+func primeClient(cfg Config, c *ctlConn, reg *registry, ownerSess, ownerToken string) bool {
+	// One deadline for the whole priming, writes included: every command here is
+	// a small read or assert on an unbound connection. A fired guard closes c,
+	// the reads below then fail closed, and this reports false.
 	d := cfg.replyTimeout()
 	disarm := c.armStall(d, fmt.Sprintf("reply deadline %v exceeded during client priming", d))
 	defer disarm()
+	var cmds []string
+	if ownerSess != "" {
+		l, ok := one(c.rt, ownerReadCmd(ownerSess))
+		if !ok {
+			return false
+		}
+		if l.Kind != controlmode.Error {
+			self, token, _ := parseOwnerRead(string(l.Data))
+			switch {
+			case token == ownerToken:
+				cmds = append(cmds, ownerClaimCmd(ownerSess, ownerToken, self))
+			case foreignOwner(token, ownerToken):
+				cmds = append(cmds, ignoreSizeCmd("", true))
+			}
+		}
+	}
+	if w, h := cfg.LocalArea(); w > 0 && h > 0 {
+		cmds = append(cmds, ClientSizeCmd(w, h))
+		for _, remoteID := range reg.remoteIDs() {
+			cmds = append(cmds, ConvergeCmd(remoteID, w, h))
+		}
+	}
+	if len(cmds) == 0 {
+		return c.live()
+	}
 	reply := c.rt(cmds...)
 	for range cmds {
 		if _, ok := reply(); !ok {

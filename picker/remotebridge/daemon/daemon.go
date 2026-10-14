@@ -129,6 +129,10 @@ type Config struct {
 	// machine (injected; prod = BrowserOpener). nil disables the og_open
 	// subscription entirely.
 	OpenURL func(url string) error
+	// own is the size-ownership state (#979), set once by Run so the token and
+	// activity mark survive re-opens. nil (tests that call runMirror directly)
+	// turns ownership off.
+	own *sizeOwner
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -979,6 +983,20 @@ func runMirror(cfg Config) error {
 	hold.set(c)
 	setPhase(cfg, "attached to %s", cfg.RemoteHost)
 
+	// Size ownership needs the pinned session id to target the owner record.
+	ownerOn := cfg.own != nil && pin.id != ""
+	owner := ownerCtl{own: cfg.own, sessID: pin.id, rt: rt, send: sendCtl, cv: cv}
+	// Ahead of every size assert on this client, which then recalculate with the
+	// flags already in place. A process start is the user acting on this
+	// controller; a re-open is not, nobody is at the keyboard.
+	if ownerOn {
+		if cfg.reopened {
+			owner.reopened()
+		} else {
+			owner.claim()
+		}
+	}
+
 	// The first thing the remote might act on: give this control client a size,
 	// so a window created on the remote is born at the local client's size
 	// instead of tmux's 80-column control-client default (#449). It follows the
@@ -1335,10 +1353,15 @@ func runMirror(cfg Config) error {
 			}
 			return false
 		}
+		// Only marks a claim wanted and wakes the main loop, which claims.
+		var activity func(rows []activityRow, now int64)
+		if ownerOn {
+			activity = cfg.own.noteActivity
+		}
 		revealTicker := time.NewTicker(resizePollInterval)
 		go func() {
 			defer revealTicker.Stop()
-			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, nil, stopWatch, revealTicker.C)
+			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, activity, stopWatch, revealTicker.C)
 		}()
 	}
 
@@ -1358,7 +1381,13 @@ func runMirror(cfg Config) error {
 	// have none, and could not trust the answer anyway — a spec tmux cannot
 	// parse is dropped with no %error. opener re-seeds and re-registers the
 	// og_open subscription the same way.
-	subscribe := func() { labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt); opener.connect(rt) }
+	subscribe := func() {
+		labels.subscribed, agents.subscribed, _, _ = subscribeFormats(rt)
+		opener.connect(rt)
+		if ownerOn {
+			sendSubscription(rt, ownerSubName, "", ownerSelfFormat)
+		}
+	}
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
 	// its floor on every reconnect.
@@ -1433,6 +1462,10 @@ func runMirror(cfg Config) error {
 			if v, ok := subscriptionValue(l, openSubName); ok && len(l.Args) > 1 {
 				opener.handle(l.Args[1], v)
 			}
+			// Queued like the shippers: only the newest report is reconciled.
+			if v, ok := subscriptionValue(l, ownerSubName); ok && ownerOn {
+				cfg.own.queueReport(v)
+			}
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
 				handlePause(router, rt, l.Args[0])
@@ -1443,7 +1476,15 @@ func runMirror(cfg Config) error {
 			// reply. Acting here too would reseed twice.
 		case controlmode.Exit:
 			return true
-		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error, controlmode.ClientDetached, controlmode.ClientSessionChanged:
+		case controlmode.ClientDetached:
+			if ownerOn && len(l.Args) > 0 {
+				owner.detached(l.Args[0])
+			}
+		case controlmode.ClientSessionChanged:
+			if ownerOn && len(l.Args) > 1 {
+				owner.sessionChanged(l.Args[0], l.Args[1])
+			}
+		case controlmode.Other, controlmode.Begin, controlmode.End, controlmode.Error:
 			// Reply framing and unmodelled lines: reply readers consume them.
 		}
 		return false
@@ -1488,6 +1529,11 @@ func runMirror(cfg Config) error {
 		}
 	}
 
+	// nil unless ownership is on, and a nil channel never fires.
+	var ownWake <-chan struct{}
+	if ownerOn {
+		ownWake = cfg.own.wake
+	}
 	// runConn is the main loop for one control connection, from a live attach to
 	// whichever of the endings finishes it.
 	runConn := func(c *ctlConn) connVerdict {
@@ -1506,6 +1552,12 @@ func runMirror(cfg Config) error {
 			c.st.dropParked()
 			if settle(c) {
 				return connEnd
+			}
+			if ownerOn {
+				owner.applyReport()
+				if cfg.own.takeClaim() {
+					owner.claim()
+				}
 			}
 			// Same wake-up for an agent, which redraws its pane before it changes
 			// state; a window option carries no such traffic, which is what the
@@ -1593,6 +1645,8 @@ func runMirror(cfg Config) error {
 				// mainLoopTickInterval backstop it exists to shortcut.
 				death.fired()
 				sweeper.force()
+			case <-ownWake:
+				// Activity wants a claim; the top of the pass makes it.
 			}
 		}
 	}
@@ -1617,6 +1671,12 @@ func runMirror(cfg Config) error {
 		// remote was never told — carried across, it is not merely stale but
 		// actively wrong, and every symptom is a silently 80-column mirror.
 		cv.reset()
+		// Before the size sends below, which then recalculate with the flags in
+		// place: a client that is not the owner must be flagged before its first
+		// assert, or it snaps the windows to its size until the next report.
+		if ownerOn {
+			owner.reconnected()
+		}
 		// Every step below is serialized ssh round-trips on this goroutine, so
 		// the window the user is looking at goes first in each of them (#557).
 		activeWin := localActiveWindow(cfg)

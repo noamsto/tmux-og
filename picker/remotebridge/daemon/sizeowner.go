@@ -3,9 +3,13 @@ package daemon
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
 // Of the control clients on one remote session, the one whose user was last
@@ -311,4 +315,249 @@ func (o *sizeOwner) dropMember(name string) bool {
 	was := o.members[name]
 	delete(o.members, name)
 	return was
+}
+
+// recordedOwner is the owner last seen, from a report, a read or our own claim.
+func (o *sizeOwner) recordedOwner() (token, client string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.ownerToken, o.ownerClient
+}
+
+func (o *sizeOwner) selfName() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.self
+}
+
+func (o *sizeOwner) isOwnedBefore() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.ownedBefore
+}
+
+// noteOwner records an owner read back from the remote, as queueReport does
+// for a report.
+func (o *sizeOwner) noteOwner(token, client string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ownerToken, o.ownerClient = token, client
+	if foreignOwner(token, o.token) {
+		o.ownedBefore = false
+	}
+}
+
+// ownerRead is one read of the pinned session from this daemon's own client.
+type ownerRead struct {
+	self                    string
+	ownerToken, ownerClient string
+	clients                 []sessionClient
+}
+
+func (st ownerRead) others() []string {
+	var out []string
+	for _, c := range st.clients {
+		if c.name != st.self {
+			out = append(out, c.name)
+		}
+	}
+	return out
+}
+
+// otherControl reports whether another control-mode client is on the session.
+func (st ownerRead) otherControl() bool {
+	for _, c := range st.clients {
+		if c.control && c.name != st.self {
+			return true
+		}
+	}
+	return false
+}
+
+// parseOwnerRead splits ownerReadCmd's "<own client>|<owner record>" reply.
+func parseOwnerRead(body string) (self, token, client string) {
+	self, rec, _ := strings.Cut(strings.TrimSpace(body), "|")
+	token, client = parseOwnerValue(rec)
+	return self, token, client
+}
+
+// ownerCtl runs the ownership transitions for one mirror. Every method that
+// round-trips must run on the main-loop goroutine, like any other round-trip.
+type ownerCtl struct {
+	own    *sizeOwner
+	sessID string
+	rt     roundTrip
+	send   func(cmds ...string) bool
+	cv     *converger
+}
+
+func (o ownerCtl) logf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "daemon: size owner: %s: %s\n", o.sessID, fmt.Sprintf(format, args...))
+}
+
+// read asks for the owner record and the session's clients in one batch; both
+// replies are always claimed.
+func (o ownerCtl) read() (ownerRead, bool) {
+	next := o.rt(ownerReadCmd(o.sessID), sessionClientsCmd(o.sessID))
+	rec, okRec := next()
+	cl, okCl := next()
+	if !okRec || !okCl || rec.Kind == controlmode.Error || cl.Kind == controlmode.Error {
+		return ownerRead{}, false
+	}
+	var st ownerRead
+	st.self, st.ownerToken, st.ownerClient = parseOwnerRead(string(rec.Data))
+	st.clients = parseSessionClients(string(cl.Data))
+	o.own.setSelf(st.self)
+	o.own.setMembers(st.others())
+	o.own.noteOwner(st.ownerToken, st.ownerClient)
+	return st, true
+}
+
+// withRecalc follows a flag change with the size assert that makes tmux
+// recalculate, when one is recorded. When none is, the asserts that follow on
+// the same connection recalculate instead.
+func (o ownerCtl) withRecalc(cmds []string) []string {
+	if cmd, ok := recalcCmd(o.cv); ok {
+		cmds = append(cmds, cmd)
+	}
+	return cmds
+}
+
+func (o ownerCtl) claim() {
+	if st, ok := o.read(); ok {
+		o.claimWith(st)
+	}
+}
+
+// claimWith writes the record before unflagging this client, and flags every
+// other control client, so the takeover needs nothing from the previous owner,
+// which may be asleep.
+func (o ownerCtl) claimWith(st ownerRead) {
+	targets := enforceTargets(st.clients, st.self)
+	cmds := []string{ownerClaimCmd(o.sessID, o.own.token, st.self), ignoreSizeCmd("", false)}
+	for _, name := range targets {
+		cmds = append(cmds, ignoreSizeCmd(name, true))
+	}
+	if !o.send(o.withRecalc(cmds)...) {
+		return
+	}
+	o.own.noteClaim(st.self)
+	o.logf("claimed as %s; flagged %v", st.self, targets)
+}
+
+// enforce flags every control client on the session that is neither ours nor
+// already flagged.
+func (o ownerCtl) enforce() {
+	st, ok := o.read()
+	if !ok {
+		return
+	}
+	targets := enforceTargets(st.clients, st.self)
+	if len(targets) == 0 {
+		return
+	}
+	cmds := make([]string, 0, len(targets)+1)
+	for _, name := range targets {
+		cmds = append(cmds, ignoreSizeCmd(name, true))
+	}
+	if o.send(o.withRecalc(cmds)...) {
+		o.logf("flagged %v", targets)
+	}
+}
+
+func (o ownerCtl) flagSelf() {
+	if o.send(o.withRecalc([]string{ignoreSizeCmd("", true)})...) {
+		o.logf("flagged self, another daemon owns")
+	}
+}
+
+// applyReport reconciles the newest og_self report only.
+func (o ownerCtl) applyReport() {
+	r, ok := o.own.takeReport()
+	if !ok {
+		return
+	}
+	o.own.setSelf(r.client)
+	cmd, ok := reconcileCmd(r, o.own.token)
+	if !ok {
+		return
+	}
+	what := "flagged self"
+	if r.flagged {
+		what = "unflagged self"
+	}
+	if o.send(o.withRecalc([]string{cmd})...) {
+		o.logf("%s (owner %q)", what, r.ownerToken)
+	}
+}
+
+// reconnected is the new-connection row, run before the connection asserts
+// any size. Unset after a drop means the survivors released our record when
+// the old client went, so a daemon that owned before takes it back.
+func (o ownerCtl) reconnected() {
+	st, ok := o.read()
+	if !ok {
+		return
+	}
+	switch {
+	case st.ownerToken == o.own.token, st.ownerToken == "" && o.own.isOwnedBefore():
+		o.claimWith(st)
+	case foreignOwner(st.ownerToken, o.own.token):
+		o.flagSelf()
+	}
+}
+
+// reopened is the new-connection row for a mirror re-opened onto a replaced
+// server, where nothing owned before: a lone daemon keeps owning, so the
+// membership rows keep covering it.
+func (o ownerCtl) reopened() {
+	st, ok := o.read()
+	if !ok {
+		return
+	}
+	switch {
+	case st.ownerToken == o.own.token, st.ownerToken == "" && !st.otherControl():
+		o.claimWith(st)
+	case foreignOwner(st.ownerToken, o.own.token):
+		o.flagSelf()
+	}
+}
+
+// detached handles %client-detached. Survivors release a departed owner's
+// record because the owner cannot: its SIGTERM kills the transport before
+// teardown runs, and a crash runs nothing.
+func (o ownerCtl) detached(name string) {
+	token, client := o.own.recordedOwner()
+	if name == client && foreignOwner(token, o.own.token) && o.send(ownerReleaseCmd(o.sessID, token, client)) {
+		o.logf("released %s's record (client %s detached)", token, client)
+	}
+	o.dropped(name)
+}
+
+// sessionChanged handles %client-session-changed, which names only the new
+// session: a client leaving ours is recognised by membership.
+func (o ownerCtl) sessionChanged(name, sid string) {
+	if name == o.own.selfName() {
+		return
+	}
+	if sid != o.sessID {
+		o.dropped(name)
+		return
+	}
+	o.own.addMember(name)
+	if o.own.isOwner() {
+		o.enforce()
+	}
+}
+
+// dropped recalculates when a client leaves the owner's session: tmux resizes
+// only the current window for a lost client (resize.c, now=0), and the
+// non-current ones would keep its clamp.
+func (o ownerCtl) dropped(name string) {
+	if !o.own.isOwner() || !o.own.dropMember(name) {
+		return
+	}
+	if cmd, ok := recalcCmd(o.cv); ok {
+		o.send(cmd)
+	}
 }
