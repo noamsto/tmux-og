@@ -102,24 +102,38 @@ func openAgents() map[string]bool {
 	open := map[string]bool{}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_current_command}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{s/[[#{l::}cntrl#{l::}]]/ /:#{pane_current_command}|#{@og_pane_agent}}").Output()
 	if err != nil {
 		for _, agent := range usageAgentOrder {
 			open[agent] = true
 		}
 		return open
 	}
-	known := map[string]string{"claude": "claude", "codex": "codex", "cursor-agent": "cursor", "pi": "pi"}
 	for line := range strings.Lines(string(out)) {
-		base := path.Base(strings.TrimSpace(line))
+		markOpenAgent(open, line)
+	}
+	return open
+}
+
+var knownUsageAgents = map[string]string{"claude": "claude", "codex": "codex", "cursor-agent": "cursor", "pi": "pi"}
+
+// markOpenAgent marks the agent a list-panes row names: its foreground
+// command, else the process-tree agent tmux-session-resources stamps on
+// @og_pane_agent — which is how a wrapper-launched agent (#969) is seen, with
+// no process-tree walk on this 1s path. Only the first '|' splits, since the
+// option is remote-settable.
+func markOpenAgent(open map[string]bool, row string) {
+	cmd, tree, _ := strings.Cut(strings.TrimSpace(row), "|")
+	for _, c := range []string{cmd, tree} {
+		base := path.Base(strings.TrimSpace(c))
 		if m := wrappedRe.FindStringSubmatch(base); m != nil {
 			base = m[1]
 		}
-		if agent, ok := known[base]; ok {
+		if agent, ok := knownUsageAgents[base]; ok {
 			open[agent] = true
+			return
 		}
 	}
-	return open
 }
 
 // parseBridgeUsage decodes a mirror session's @bridge_usage option into the

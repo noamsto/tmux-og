@@ -28,6 +28,26 @@ func TestParseControlClients(t *testing.T) {
 	}
 }
 
+func TestUsagePollerArmed(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{"armed", "@og-pr-tick \"x\"\n@og-usage-tick \"run-shell -b y\"\n", true},
+		{"unarmed", "@og-pr-tick \"x\"\n@og-res-tick \"y\"\n", false},
+		{"empty", "", false},
+		{"only a lookalike prefix", "@og-usage-tick-x \"y\"\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := usagePollerArmed(tt.out); got != tt.want {
+				t.Errorf("usagePollerArmed(%q) = %v, want %v", tt.out, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestStampValue(t *testing.T) {
 	tests := []struct {
 		name   string

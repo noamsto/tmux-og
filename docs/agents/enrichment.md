@@ -330,17 +330,19 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `@og-usage-tick` poll and, on a failed fetch, simply leaves the previous
   cached figure in place rather than showing something wrong.
 - **Mirror/remote panes never count toward the *local* gate, and no gate reads
-  a mirror's `@bridge_proc`.** The renderer's `openAgents()` keys strictly off
-  the local `pane_current_command`; #513 once let a bridge mirror's
+  a mirror's `@bridge_proc`.** The renderer's `openAgents()` keys off the local
+  `pane_current_command`, else `@og_pane_agent` (#969, one `list-panes`, no
+  process-tree walk on the 1s path); #513 once let a bridge mirror's
   `@bridge_proc` open the (then-global) gate, which at per-agent granularity
   would be actively wrong — a remote agent's column sourced from a *local*
   cache file the local poller never refreshes, since its usage lives on
   another host. The remote poller's `scan_open_agents` keeps the same #513
   invariant (it reads `@og_pane_agent`, never `@bridge_proc`, and runs on the
   host whose caches it gates), but resolves each pane to its foreground agent
-  else that process-tree agent (#963), so a wrapper pane counts; on a
-  local-only host `@og_pane_agent` is only stamped while a control client is
-  attached, so that fallback is inert there. What else changed is that a mirror
+  else that process-tree agent (#963), so a wrapper pane counts. On a
+  local-only host `tmux-session-resources` stamps `@og_pane_agent` whenever the
+  `@og-usage-tick` hook is armed (agent usage enabled), not only while a control
+  client is attached (#969). What else changed is that a mirror
   session no longer needs the local gate at all: it renders through its own
   path (below) with the remote's own gate and caches.
 - **A mirror session renders `@bridge_usage`, not the local set, at all.**

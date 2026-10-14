@@ -691,6 +691,35 @@ func TestLoadUsageCachesReadsPrivateDir(t *testing.T) {
 	}
 }
 
+func TestMarkOpenAgent(t *testing.T) {
+	tests := []struct {
+		name string
+		row  string
+		want []string
+	}{
+		{"foreground agent", "claude|", []string{"claude"}},
+		{"wrapper shell with tree agent", "bash|codex", []string{"codex"}},
+		{"nix wrapped tree agent", "bash|.claude-wrapped", []string{"claude"}},
+		{"plain bash", "bash|", nil},
+		{"bash with unrelated tree agent value", "bash|vim", nil},
+		{"extra pipe does not forge a second token", "bash|vim|claude", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			open := map[string]bool{}
+			markOpenAgent(open, tt.row)
+			if len(open) != len(tt.want) {
+				t.Fatalf("open = %v, want %v", open, tt.want)
+			}
+			for _, a := range tt.want {
+				if !open[a] {
+					t.Fatalf("open = %v, want %v", open, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestOpenAgentsFailOpen(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "tmux")

@@ -231,6 +231,27 @@ pane_agent_absent() { [ -z "$(t display-message -p -t "$1" '#{@og_pane_agent}')"
 	wait_for 20 pane_agent_absent "$pane"
 }
 
+@test "pane agent stamp lands on a local-only host while agent usage is armed, session rows stay unstamped" {
+	# #969: the local status line and the usage poller read @og_pane_agent, so a
+	# host with no control client still needs the per-pane stamp. The session
+	# rows keep their bridged-only gate.
+	cp -L "$(command -v bash)" "$BATS_TEST_TMPDIR/claude"
+	chmod +x "$BATS_TEST_TMPDIR/claude"
+	cat >"$BATS_TEST_TMPDIR/wrap" <<-EOF
+		#!/bin/sh
+		"$BATS_TEST_TMPDIR/claude" -c 'while :; do sleep 0.5; done'
+		read x
+	EOF
+	chmod +x "$BATS_TEST_TMPDIR/wrap"
+	t new-window -t s:97 -c "$PWD" -- sh "$BATS_TEST_TMPDIR/wrap"
+
+	local pane
+	pane=$(t list-panes -t s:97 -F '#{pane_id}')
+	[[ $(t display-message -p -t "$pane" '#{pane_current_command}') != claude ]]
+	wait_for 20 pane_agent_is "$pane" claude
+	[ -z "$(t display-message -p -t s '#{@og_session_res}')" ]
+}
+
 @test "upstream assumption: a status-format #() job never expands for a control-mode client, only for a real one" {
 	# This does NOT go red if the #603 fix is reverted -- it is not the
 	# regression net for this change (the recovery tests above are). It pins

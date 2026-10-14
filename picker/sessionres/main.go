@@ -1,6 +1,8 @@
 // Command tmux-session-resources stamps each local session's own CPU/memory
 // totals onto the session option @og_session_res, so a remote bridge can
-// subscribe to them instead of paying an `ssh ps` round-trip per host (#693).
+// subscribe to them instead of paying an `ssh ps` round-trip per host (#693),
+// and each pane's tree agent on @og_pane_agent, which the local usage segment
+// also reads (#969).
 // It runs on every tmux-og host, armed by the @og-res-tick monitor hook: a
 // control client renders no status line, so nothing driven from
 // status-format[0] ever runs on a host whose only clients are bridges.
@@ -55,8 +57,8 @@ func main() {
 	// Every failure below exits 0 in silence: this is a 5s background poller
 	// with no terminal of its own, so a complaint lands in whatever pane the
 	// monitor hook happens to run under.
-	clients, err := exec.Command("tmux", "list-clients", "-F", "#{client_control_mode}").Output()
-	if err != nil || !parseControlClients(string(clients)) {
+	bridged, usage := stampGates()
+	if !bridged && !usage {
 		return
 	}
 
@@ -86,8 +88,10 @@ func main() {
 	cores := runtime.NumCPU()
 	now := time.Now().Unix()
 	rows := make(map[string]string)
-	for sess, t := range proctree.Aggregate(sessionRoots, string(ps)) {
-		rows[sess] = stampValue(t, cores, now)
+	if bridged {
+		for sess, t := range proctree.Aggregate(sessionRoots, string(ps)) {
+			rows[sess] = stampValue(t, cores, now)
+		}
 	}
 	// Per-pane tree agents from the same ps table; the session rows above keep
 	// their exact meaning.
@@ -104,11 +108,38 @@ func main() {
 	_ = exec.Command("tmux", argv...).Run() //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 }
 
-// parseControlClients is the gate: a pass runs only while something is bridged
-// to this host, so a host nobody mirrors pays nothing. A control-mode client is
-// exactly what a remote bridge attaches, and it is the only consumer of what
-// this binary stamps. Anything that is not a literal "1" — no clients, a failed
-// read's empty string, garbage — reads as "nobody is watching".
+// stampGates decides what a pass writes: the session rows only while a control
+// client is bridged (their sole reader), the per-pane agent stamp also while
+// the usage poller is armed (#969) — the poller's gate and the local status
+// line both read @og_pane_agent, so a local-only host with agent usage enabled
+// needs it though nobody mirrors it. Hooks are read only when no control client
+// is attached, so a bridged host pays no extra fork.
+func stampGates() (bridged, usage bool) {
+	clients, err := exec.Command("tmux", "list-clients", "-F", "#{client_control_mode}").Output()
+	if err == nil && parseControlClients(string(clients)) {
+		return true, true
+	}
+	hooks, err := exec.Command("tmux", "show-hooks", "-g").Output()
+	return false, err == nil && usagePollerArmed(string(hooks))
+}
+
+// usagePollerArmed reports whether `show-hooks -g` lists the @og-usage-tick
+// monitor hook, which the config arms only when agent usage is enabled.
+func usagePollerArmed(out string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, usageTickHook+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+const usageTickHook = "@og-usage-tick"
+
+// parseControlClients reports whether a control-mode client (a remote bridge)
+// is attached — the sole reader of the session rows. Anything that is not a
+// literal "1" — no clients, a failed read's empty string, garbage — reads as
+// "nobody is watching".
 func parseControlClients(out string) bool {
 	for line := range strings.SplitSeq(out, "\n") {
 		if strings.TrimSpace(line) == "1" {
