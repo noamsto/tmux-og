@@ -31,6 +31,9 @@ const (
 	// reclaimed under its new client name; while waiting the survivor stays
 	// flagged.
 	ownerReleaseGrace = 30 * time.Second
+	// ownerReleaseRetry spaces the retries of a release whose read or send
+	// failed; the loop passes once per line, so it must not retry at once.
+	ownerReleaseRetry = 5 * time.Second
 )
 
 // newOwnerToken mints the per-process token naming this daemon in the owner
@@ -271,6 +274,15 @@ func (o *sizeOwner) holdRelease(token, client string, due time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.release = &pendingRelease{token: token, client: client, due: due}
+}
+
+// rehold puts a taken release back unless a newer one was held meanwhile.
+func (o *sizeOwner) rehold(r pendingRelease, due time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.release == nil {
+		o.release = &pendingRelease{token: r.token, client: r.client, due: due}
+	}
 }
 
 func (o *sizeOwner) takeDueRelease(now time.Time) (pendingRelease, bool) {
@@ -612,12 +624,18 @@ func (o ownerCtl) releaseDue(now time.Time) {
 		return
 	}
 	st, ok := o.read()
-	if !ok || st.ownerToken != r.token || st.ownerClient != r.client {
+	if !ok {
+		o.own.rehold(r, now.Add(ownerReleaseRetry))
 		return
 	}
-	if o.send(ownerReleaseCmd(o.sessID, r.token, r.client)) {
-		o.logf("released %s's record (client %s detached)", r.token, r.client)
+	if st.ownerToken != r.token || st.ownerClient != r.client {
+		return
 	}
+	if !o.send(ownerReleaseCmd(o.sessID, r.token, r.client)) {
+		o.own.rehold(r, now.Add(ownerReleaseRetry))
+		return
+	}
+	o.logf("released %s's record (client %s detached)", r.token, r.client)
 }
 
 // sessionChanged handles %client-session-changed, which names only the new
