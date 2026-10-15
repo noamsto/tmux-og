@@ -195,24 +195,7 @@ setup() {
 			# of #{session_name} targets $TMUX_PANE or nothing, never a $N id, and
 			# must keep coming back empty.
 			*'-t $'*'#{session_name}'*) [ -n "${FAKE_PAIR_NAME:-}" ] && printf '%s\n' "$FAKE_PAIR_NAME" ;;
-			*'-t $'*'#{@bridge_sock}'*) [ -n "${FAKE_PAIR_SOCK:-}" ] && printf '%s\n' "$FAKE_PAIR_SOCK" ;;
-			# A session's own pair defaults to what its FAKE_LIST_SESSIONS line
-			# claims; set FAKE_PAIR_HOST/FAKE_PAIR_SESSION (even empty) to make
-			# that line a forgery.
-			*'-t $'*'#{@bridge_host}'*)
-				if [ -n "${FAKE_PAIR_HOST+set}" ]; then
-					printf '%s\n' "$FAKE_PAIR_HOST"
-				else
-					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -F'|' -v id="$4" '$1 == id { print $2; exit }'
-				fi
-				;;
-			*'-t $'*'#{@bridge_session}'*)
-				if [ -n "${FAKE_PAIR_SESSION+set}" ]; then
-					printf '%s\n' "$FAKE_PAIR_SESSION"
-				else
-					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -v id="$4" 'index($0, id "|") == 1 { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }'
-				fi
-				;;
+			*'-t $'*'#{pid}'*) printf '%s\n' "${FAKE_SERVER_PID:-4242}" ;;
 			*"#{client_width} #{client_height} #{status}"*)
 				[ -n "${FAKE_CLIENT_SIZE:-}" ] && printf '%s\n' "$FAKE_CLIENT_SIZE"
 				;;
@@ -220,11 +203,36 @@ setup() {
 			;;
 		show-options*)
 			case "$*" in
+			# Session-scoped reads by id: the pair verify, retire_mirror and the
+			# --into host refusal. A session's own pair defaults to what its
+			# FAKE_LIST_SESSIONS line claims; set FAKE_PAIR_HOST/FAKE_PAIR_SESSION
+			# (even empty) to make that line a forgery.
+			*'-t $'*'@bridge_sock') [ -n "${FAKE_PAIR_SOCK:-}" ] && printf '%s\n' "$FAKE_PAIR_SOCK" ;;
+			*'-t $'*'@bridge_host')
+				if [ -n "${FAKE_PAIR_HOST+set}" ]; then
+					printf '%s\n' "$FAKE_PAIR_HOST"
+				else
+					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -F'|' -v id="$4" '$1 == id { print $2; exit }'
+				fi
+				;;
+			*'-t $'*'@bridge_session')
+				if [ -n "${FAKE_PAIR_SESSION+set}" ]; then
+					printf '%s\n' "$FAKE_PAIR_SESSION"
+				else
+					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -v id="$4" 'index($0, id "|") == 1 { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }'
+				fi
+				;;
 			*"@bridge_host"*) [ -n "${FAKE_BRIDGE_HOST:-}" ] && printf '%s\n' "$FAKE_BRIDGE_HOST" ;;
 			*"@bridge_session"*) [ -n "${FAKE_BRIDGE_SESSION:-}" ] && printf '%s\n' "$FAKE_BRIDGE_SESSION" ;;
 			esac
 			;;
-		list-sessions*) [ -n "${FAKE_LIST_SESSIONS:-}" ] && printf '%s\n' "$FAKE_LIST_SESSIONS" ;;
+		list-sessions*)
+			case "$*" in
+			# The --into exact-name resolve; the pair lookup reads the other list.
+			*'#{session_id}|#{session_name}') [ -n "${FAKE_LOCAL_SESSIONS:-}" ] && printf '%s\n' "$FAKE_LOCAL_SESSIONS" ;;
+			*) [ -n "${FAKE_LIST_SESSIONS:-}" ] && printf '%s\n' "$FAKE_LIST_SESSIONS" ;;
+			esac
+			;;
 		esac
 		exit 0
 	EOF
@@ -258,6 +266,7 @@ teardown() {
 	if [[ -n ${DAEMON_PID:-} ]]; then
 		kill "$DAEMON_PID" 2>/dev/null || true
 	fi
+	reap_into_daemons
 	if [[ -n ${PROBE_TMUX_DIR:-} ]]; then
 		probe_tmux kill-server 2>/dev/null || true
 		rm -rf "$PROBE_TMPDIR"
@@ -1531,4 +1540,247 @@ $0|tp-g6|main' FAKE_PAIR_NAME='my.proj' FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
 	local pid pgid
 	read -r pid pgid <"$DAEMON_PGID_FILE"
 	[ "$pid" = "$pgid" ]
+}
+
+# --- #985: --into places the mirror's windows in an existing local session ---
+
+# Per-test fakes: the setup() daemon is `exit 0` and its ctl answers every
+# ping, but --into waits for a daemon that is really listening. This daemon
+# logs its launch env, "listens" (pidfile + .live) only after
+# $FAKE_LISTEN_DELAY, and the ctl pings it as up only while .live exists and
+# the pidfile's pid is alive.
+install_into_fakes() {
+	export LAUNCH_LOG="$BATS_TEST_TMPDIR/launch.log"
+	: >"$LAUNCH_LOG"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		printf 'pid=%s into=%s remote_open=%s local=%s\n' "$$" "${OG_DAEMON_INTO-}" "${OG_DAEMON_REMOTE_OPEN-<unset>}" "${OG_DAEMON_LOCAL_SESS-}" >>"$LAUNCH_LOG"
+		if [ -n "${FAKE_DAEMON_DIES:-}" ]; then
+			echo "fake daemon: dial failed" >&2
+			exit 1
+		fi
+		sleep "${FAKE_LISTEN_DELAY:-0.5}"
+		printf '%s\n' "$$" >"${OG_DAEMON_SOCK}.pid"
+		: >"${OG_DAEMON_SOCK}.live"
+		exec sleep 600
+	EOF
+	cat >"$FAKEBIN/og-remote-bridge-ctl" <<-'EOF'
+		#!/bin/sh
+		echo "$*" >>"$CTL_LOG"
+		if [ -n "${FAKE_CTL_TERM:-}" ]; then
+			kill -TERM "$(cat "$LAUNCHER_PID_FILE")" 2>/dev/null || true
+			exit 1
+		fi
+		sock="$2"
+		[ -e "$sock.live" ] && kill -0 "$(cat "$sock.pid" 2>/dev/null)" 2>/dev/null && exit 0
+		echo "og-remote-bridge-ctl: bridge daemon unreachable: connect: no such file or directory" >&2
+		exit 1
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon" "$FAKEBIN/og-remote-bridge-ctl"
+	touch "$REMOTE_SERVER"
+	export FAKE_LOCAL_SESSIONS='$3|dispatch'
+}
+
+# Every fake daemon a case launched, from the pids its launch lines record.
+reap_into_daemons() {
+	[[ -f ${LAUNCH_LOG:-} ]] || return 0
+	local line pid
+	while IFS= read -r line; do
+		pid="${line#pid=}"
+		pid="${pid%% *}"
+		[[ $pid =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null
+	done <"$LAUNCH_LOG"
+	return 0
+}
+
+# The placed socket for host/session/server-pid/session-id (spec "Launcher" 4).
+into_sock() { # host sess server_pid session_id
+	local k
+	k="$(printf '%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" | cksum)"
+	printf '%s/og-into-%s.sock\n' "$TMUX_TMPDIR" "${k%% *}"
+}
+
+@test "into: a missing local session fails before any ssh" {
+	install_into_fakes
+	export FAKE_LOCAL_SESSIONS='$1|other
+$2|nosuch-2'
+
+	run bash "$LAUNCHER" tp-g6 workstation --into nosuch
+	[ "$status" -eq 1 ]
+	[[ $output == *"no local session 'nosuch'"* ]]
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: the local session resolves by exact name, a | inside it kept whole" {
+	install_into_fakes
+	export FAKE_LOCAL_SESSIONS='$2|a
+$4|a|b'
+
+	run bash "$LAUNCHER" tp-g6 workstation --into 'a|b'
+	[ "$status" -eq 0 ]
+	grep -qE '^pid=[0-9]+ into=\$4 remote_open=<unset> local=a\|b$' "$LAUNCH_LOG"
+}
+
+@test "into: a dedicated mirror session is refused as the host" {
+	install_into_fakes
+	export FAKE_LOCAL_SESSIONS='$3|tp-g6-workstation'
+
+	FAKE_PAIR_HOST=tp-g6 run bash "$LAUNCHER" tp-g6 workstation --into tp-g6-workstation
+	[ "$status" -eq 1 ]
+	FAKE_PAIR_SOCK=/tmp/og-daemon-x.sock run bash "$LAUNCHER" tp-g6 workstation --into tp-g6-workstation
+	[ "$status" -eq 1 ]
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: a window argument, OG_REMOTE_NEW_DIR or OG_REMOTE_RESTORE is rejected" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch 2
+	[ "$status" -eq 1 ]
+	run bash "$LAUNCHER" tp-g6 workstation 2 --into dispatch
+	[ "$status" -eq 1 ]
+	OG_REMOTE_NEW_DIR=/srv/proj run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 1 ]
+	OG_REMOTE_RESTORE=1 run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 1 ]
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: an empty remote or local session name is rejected" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 '' --into dispatch
+	[ "$status" -eq 1 ]
+	run bash "$LAUNCHER" tp-g6 --into dispatch
+	[ "$status" -eq 1 ]
+	run bash "$LAUNCHER" tp-g6 workstation --into ''
+	[ "$status" -eq 1 ]
+	run bash "$LAUNCHER" tp-g6 workstation --into
+	[ "$status" -eq 1 ]
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: a host outside the placed-host charset is rejected before any ssh" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" 'bad|host' workstation --into dispatch
+	[ "$status" -eq 1 ]
+	run bash "$LAUNCHER" -x workstation --into dispatch
+	[ "$status" -eq 1 ]
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: the first call waits for the daemon to listen and touches no session" {
+	install_into_fakes
+	# Inherited from a daemon's own environment, it must not reach a placed
+	# daemon: that would arm the hand-off that opens a new session.
+	export OG_DAEMON_REMOTE_OPEN=/inherited/og-remote-open
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	grep -qE '^pid=[0-9]+ into=\$3 remote_open=<unset> local=dispatch$' "$LAUNCH_LOG"
+	local sock
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+	grep -qxF -- "--sock $sock ping _" "$CTL_LOG"
+	[ ! -e "${sock}.lock" ]
+	run grep -E '^(new-session|kill-session|switch-client|set-option)' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "into: a second call while the daemon is live launches nothing" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	run grep -E '^(new-session|kill-session|switch-client|set-option)' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "into: two concurrent calls for one key launch exactly one daemon" {
+	install_into_fakes
+	export FAKE_LISTEN_DELAY=1
+
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/a.out" 2>&1 &
+	local p1=$!
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/b.out" 2>&1 &
+	local p2=$!
+	local s1=0 s2=0
+	wait "$p1" || s1=$?
+	wait "$p2" || s2=$?
+
+	[ "$s1" -eq 0 ]
+	[ "$s2" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+}
+
+@test "into: a daemon that exits at once fails the launch with its log" {
+	install_into_fakes
+	export FAKE_DAEMON_DIES=1
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 1 ]
+	[[ $output == *"fake daemon: dial failed"* ]]
+	[ ! -e "$(into_sock tp-g6 workstation 4242 '$3').lock" ]
+}
+
+@test "into: a stale lock whose owner is dead is taken over" {
+	install_into_fakes
+	local sock
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+	mkdir "${sock}.lock"
+	echo 4194304 >"${sock}.lock/owner"
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	[ ! -e "${sock}.lock" ]
+	local stale=("${sock}".lock.stale.*)
+	[ ! -e "${stale[0]}" ]
+}
+
+@test "into: a lock whose owner stays empty goes stale after 5s" {
+	install_into_fakes
+	local sock
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+	mkdir "${sock}.lock"
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	[ ! -e "${sock}.lock" ]
+}
+
+@test "into: TERM while waiting reaps the daemon and releases the lock, killing no session" {
+	install_into_fakes
+	export FAKE_CTL_TERM=1 FAKE_LISTEN_DELAY=0.2
+	local sock
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+
+	run_launcher_bg tp-g6 workstation --into dispatch
+	[ "$status" -eq 143 ]
+
+	local pid
+	pid="$(sed -n 's/^pid=\([0-9]*\) .*/\1/p' "$LAUNCH_LOG")"
+	[ -n "$pid" ]
+	run kill -0 "$pid"
+	[ "$status" -ne 0 ]
+	[ ! -e "${sock}.pid" ]
+	[ ! -e "${sock}.lock" ]
+	run grep -E '^(kill-session|kill-window)' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
 }

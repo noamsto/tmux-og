@@ -3,6 +3,10 @@
 # M2 multi-window bridge daemon detached: it enumerates every remote window and
 # mirrors each into its own local window (live add/close/rename/active-changed).
 # Resolves remote tmux path + TMUX_TMPDIR for the ssh control connection.
+#
+# `og-remote-open <host> <sess> --into <local-session>` instead places the
+# mirror's windows in an existing local session (#985): no session is created,
+# killed or switched to, and the call returns once the daemon is listening.
 set -euo pipefail
 
 # @lib_remote@ is substituted at Nix build time; in bats the lib is pre-sourced.
@@ -93,7 +97,7 @@ probe_daemon() {
 # parse as a target.
 retire_mirror() {
 	local id="$1" old pid
-	old="$(tmux display-message -p -t "$id" '#{@bridge_sock}' 2>/dev/null || true)"
+	old="$(tmux show-options -qv -t "$id" @bridge_sock 2>/dev/null || true)"
 	if [[ -n $old ]]; then
 		probe_daemon "$old"
 		if [[ -n $REPLY ]]; then
@@ -113,9 +117,18 @@ retire_mirror() {
 # (a socket dir, maybe a mirror session) worth tearing down; attached means the
 # commit point (one of the two switch-clients) has already run, so a racing
 # signal is reported as success — a complete mirror exists either way.
-mirror_created="" attached="" daemon_started=""
+mirror_created="" attached="" daemon_started="" placed=""
 on_signal() {
 	[[ -n $attached ]] && exit 0
+	# Placed (--into): the host session is the user's, so only the daemon this
+	# call launched and its files are undone; the EXIT trap releases the lock.
+	if [[ -n $placed ]]; then
+		if [[ -n $daemon_started && -n ${!:-} ]]; then
+			reap_daemon "$!"
+			rm -f "$sock" "${sock}.pid" "${sock}.phase"
+		fi
+		exit 143
+	fi
 	if [[ -n $mirror_created ]]; then
 		# daemon_started is set before the launch attempt: set after the `&`, a
 		# signal in between would leave a launched daemon unreaped. $! is unset
@@ -131,9 +144,67 @@ on_signal() {
 }
 trap on_signal TERM INT HUP
 
+# The --into per-key lock, released on every exit of its holder (an EXIT trap
+# armed before the lock is taken).
+lock_held=""
+release_lock() {
+	[[ -n $lock_held ]] && rm -rf "$lock"
+	return 0
+}
+
 host="$1"
 sess="${2:-}"
 win="${3:-}"
+
+# --into <local-session>: everything that can refuse a placed open runs here,
+# before any ssh. A placed mirror takes every remote window, so it names none,
+# and it never pre-creates the remote session the way a restore/new-dir does.
+into_name="" into_id=""
+if [[ $sess == --into ]]; then
+	echo "og-remote-open: --into needs both a remote session and a local session name" >&2
+	exit 1
+fi
+if [[ $win == --into || ${4:-} == --into ]]; then
+	if [[ $win != --into || $# -gt 4 ]]; then
+		echo "og-remote-open: --into takes no window argument" >&2
+		exit 1
+	fi
+	placed=1
+	win=""
+	into_name="${4:-}"
+	if [[ -n ${OG_REMOTE_NEW_DIR:-} || -n ${OG_REMOTE_RESTORE:-} ]]; then
+		echo "og-remote-open: --into cannot be combined with OG_REMOTE_NEW_DIR or OG_REMOTE_RESTORE" >&2
+		exit 1
+	fi
+	if [[ -z $sess || -z $into_name ]]; then
+		echo "og-remote-open: --into needs both a remote session and a local session name" >&2
+		exit 1
+	fi
+	# A placed window renders its host on its tab and in reflow's |-split row.
+	if [[ ! $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]]; then
+		echo "og-remote-open: --into needs a host matching [A-Za-z0-9][A-Za-z0-9._@-]*, got: $host" >&2
+		exit 1
+	fi
+	# Exact name, split on the first `|` so a name holding one stays whole.
+	local_rows="$(tmux list-sessions -F '#{session_id}|#{session_name}' 2>/dev/null || true)"
+	while IFS= read -r local_row; do
+		[[ ${local_row#*|} == "$into_name" ]] || continue
+		into_id="${local_row%%|*}"
+		break
+	done <<<"$local_rows"
+	if [[ -z $into_id ]]; then
+		echo "og-remote-open: no local session '$into_name'" >&2
+		exit 1
+	fi
+	# A dedicated mirror's own daemon kills its session on teardown, placed
+	# windows included.
+	into_host_opt="$(tmux show-options -qv -t "$into_id" @bridge_host 2>/dev/null || true)"
+	into_sock_opt="$(tmux show-options -qv -t "$into_id" @bridge_sock 2>/dev/null || true)"
+	if [[ -n $into_host_opt || -n $into_sock_opt ]]; then
+		echo "og-remote-open: '$into_name' is a bridge mirror session; --into needs a local one" >&2
+		exit 1
+	fi
+fi
 
 # Opt-in progress channel for the picker: one phase name per line on this fd,
 # never on stdout (which a remote command can forge).
@@ -528,6 +599,125 @@ loading="@loading@"
 [[ $reflow == @* ]] && reflow="$(command -v tmux-reflow-windows)"
 [[ $loading == @* ]] && loading="$(command -v og-remote-loading || true)"
 
+# Placed open: the windows go into $into_id, which this script never creates,
+# stamps, kills or switches to. It ends here; nothing below runs for it.
+if [[ -n $placed ]]; then
+	# Keyed by the local server's pid and the session id: a rename keeps the
+	# key, a recreated namesake gets a new one. The short fixed prefix keeps the
+	# path under AF_UNIX's 104 bytes.
+	server_pid="$(tmux display-message -p -t "$into_id" '#{pid}')"
+	sock_key="$(printf '%s\0%s\0%s\0%s' "$host" "$sess" "$server_pid" "$into_id" | cksum)"
+	sock="${TMUX_TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}/og-into-${sock_key%% *}.sock"
+	lock="${sock}.lock"
+
+	# The daemon listens only after its ssh dial and first remote reads, so two
+	# calls for one key would both probe no daemon and both launch: serialise
+	# them. mkdir is the atomic test-and-set (macOS has no flock). A lock is
+	# stale when its owner pid is dead, or owner is still unwritten after 5s.
+	trap release_lock EXIT
+	empty_ticks=0
+	for ((tick = 0; ; tick++)); do
+		if mkdir "$lock" 2>/dev/null; then
+			lock_held=1
+			printf '%s\n' "$$" >"${lock}/owner"
+			break
+		fi
+		if ((tick >= 600)); then
+			echo "og-remote-open: timed out waiting for another --into of $host:$sess into '$into_name'" >&2
+			exit 1
+		fi
+		owner="$(cat "${lock}/owner" 2>/dev/null || true)"
+		stale=""
+		if [[ -z $owner ]]; then
+			empty_ticks=$((empty_ticks + 1))
+			((empty_ticks >= 50)) && stale=1
+		else
+			empty_ticks=0
+			kill -0 "$owner" 2>/dev/null || stale=1
+		fi
+		# A rename is atomic: of several waiters judging one lock stale, only
+		# one's mv succeeds, and a loser keeps waiting.
+		if [[ -n $stale ]] && mv "$lock" "${lock}.stale.$$" 2>/dev/null; then
+			rm -rf "${lock}.stale.$$"
+			empty_ticks=0
+			continue
+		fi
+		sleep 0.1
+	done
+
+	probe_daemon "$sock"
+	[[ $REPLY == live ]] && exit 0
+	if [[ -n $REPLY ]]; then
+		daemon_pid="$(<"${sock}.pid")"
+		[[ $daemon_pid =~ ^[0-9]+$ ]] && reap_daemon "$daemon_pid"
+	fi
+	rm -f "$sock" "${sock}.pid" "${sock}.phase"
+
+	# The dedicated launch below documents each of these; the differences are
+	# OG_DAEMON_INTO and no OG_DAEMON_REMOTE_OPEN, whose hand-off would open a
+	# new session and switch the user's client to it.
+	export OG_BRIDGE_HOST="$host"
+	export OG_BRIDGE_SESSION="$sess"
+	export OG_BRIDGE_WINDOW="$win"
+	export OG_BRIDGE_TMUX="$remote_tmux"
+	export OG_BRIDGE_TMPDIR="$remote_tmpdir"
+	export OG_DAEMON_LOCAL_SESS="$into_name"
+	export OG_DAEMON_INTO="$into_id"
+	export OG_DAEMON_SOCK="$sock"
+	export OG_DAEMON_RENDERER="$renderer"
+	export OG_DAEMON_REFLOW="$reflow"
+	unset OG_DAEMON_REMOTE_OPEN
+	client_target=()
+	[[ -n ${TMUX_PANE:-} ]] && client_target=(-t "$TMUX_PANE")
+	term_raw="$(tmux display-message -p "${client_target[@]}" '#{client_termname}|#{client_termfeatures}|#{I/f:sixel}' 2>/dev/null || true)"
+	IFS='|' read -r term termfeatures sixel_flag <<<"$term_raw"
+	export OG_BRIDGE_TERM="$term"
+	export OG_BRIDGE_TERMFEATURES="$termfeatures"
+	export OG_BRIDGE_SIXEL="$sixel_flag"
+	cur_sess="$(tmux display-message -p "${client_target[@]}" '#{session_name}' 2>/dev/null || true)"
+	colorterm="" term_program=""
+	read_session_env "$cur_sess" COLORTERM && colorterm="$REPLY" || true
+	read_session_env "$cur_sess" TERM_PROGRAM && term_program="$REPLY" || true
+	export OG_BRIDGE_COLORTERM="$colorterm"
+	export OG_BRIDGE_TERM_PROGRAM="$term_program"
+	if [[ -n $progress_fd ]]; then
+		exec {progress_fd}>&-
+		progress_fd=""
+	fi
+
+	daemon_started=1
+	if command -v setsid >/dev/null 2>&1; then     # portable-ok: guard, verified fallback below
+		setsid "$daemon" >/dev/null 2>"${sock}.log" & # portable-ok: guarded above; else branch is the verified macOS fallback
+	else
+		set -m
+		nohup "$daemon" >/dev/null 2>"${sock}.log" &
+		set +m
+		disown 2>/dev/null || true
+	fi
+	daemon_pid=$!
+
+	# Synchronous, unlike dedicated mode: there is no loading pane to watch, so
+	# the caller gets a real exit code instead of a daemon that died unseen, and
+	# a retry can never race a daemon that is not listening yet.
+	for ((tick = 0; tick < 600; tick++)); do
+		probe_daemon "$sock"
+		if [[ $REPLY == live ]]; then
+			attached=1
+			exit 0
+		fi
+		if ! kill -0 "$daemon_pid" 2>/dev/null; then
+			echo "og-remote-open: the bridge daemon for $host:$sess exited before listening:" >&2
+			tail -n 20 "${sock}.log" >&2 || true
+			exit 1
+		fi
+		sleep 0.1
+	done
+	echo "og-remote-open: the bridge daemon for $host:$sess was not listening after 60s" >&2
+	reap_daemon "$daemon_pid"
+	rm -f "$sock" "${sock}.pid" "${sock}.phase"
+	exit 1
+fi
+
 # The local name reaches stock `run-shell -C` menus, which re-parse it as
 # commands, and every target parser, which splits on `.`/`:` — so only inert
 # bytes survive (#783). Identity lives in the raw @bridge_host/@bridge_session.
@@ -543,7 +733,7 @@ base_local_sess="${host_part}-${sess_part}"
 # session named `x|` would come back as `x`. Session last, so a `|` inside it
 # stays in the final field.
 local_sess=""
-pairs="$(tmux list-sessions -F '#{session_id}|#{@bridge_host}|#{@bridge_session}' 2>/dev/null || true)"
+pairs="$(tmux list-sessions -F '#{session_id}|#{?#{@bridge_placed},,#{@bridge_host}}|#{?#{@bridge_placed},,#{@bridge_session}}' 2>/dev/null || true)"
 while IFS= read -r pair_line; do
 	pair_id="${pair_line%%|*}"
 	pair_rest="${pair_line#*|}"
@@ -552,9 +742,10 @@ while IFS= read -r pair_line; do
 	[[ $pair_host == "$host" && $pair_sess == "$sess" ]] || continue
 	# A @bridge_session stored before control bytes were rejected can hold a
 	# newline, forging a line above whose id names an unrelated session: act
-	# only once that session's own options claim this pair.
-	pair_own_host="$(tmux display-message -p -t "$pair_id" '#{@bridge_host}' 2>/dev/null || true)"
-	pair_own_sess="$(tmux display-message -p -t "$pair_id" '#{@bridge_session}' 2>/dev/null || true)"
+	# only once that session's own options claim this pair. Session-scoped: a
+	# placed window's copies would otherwise make a shared session claim it.
+	pair_own_host="$(tmux show-options -qv -t "$pair_id" @bridge_host 2>/dev/null || true)"
+	pair_own_sess="$(tmux show-options -qv -t "$pair_id" @bridge_session 2>/dev/null || true)"
 	[[ $pair_own_host == "$host" && $pair_own_sess == "$sess" ]] || continue
 	pair_name="$(tmux display-message -p -t "$pair_id" '#{session_name}' 2>/dev/null || true)"
 	mirror_name_part "$pair_name"
