@@ -352,6 +352,70 @@ stamp_mirror() {
 	[ "$first" -eq "$below" ]
 }
 
+# Host badge on a placed mirror (#985): a mirror window placed into a local
+# session carries @bridge_placed, and reflow stamps "<@icon_remote> <host> " into
+# @window_host_disp for it alone, charging that width wherever the crew badge is.
+stamp_placed() {
+	local w=$1 host=$2
+	tmux set -wq -t "S:$w" @bridge_win 1
+	tmux set -wq -t "S:$w" @bridge_placed 1
+	tmux set -wq -t "S:$w" @bridge_host "$host"
+	tmux set -wq -t "S:$w" @bridge_label_id x
+	tmux set-window-option -t "S:$w" automatic-rename off
+}
+
+@test "a placed window gets the host badge, a local one none" {
+	tmux set -g @icon_remote "R"
+	tmux new-window -d
+	stamp_placed 1 lab
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	[ "$(tmux show -wv -t S:1 @window_host_disp)" = "R lab " ]
+	[ -z "$(tmux show -wv -t S:0 @window_host_disp)" ]
+}
+
+@test "the host badge is charged to the placed window's row" {
+	tmux set -g @icon_remote "R"
+	tmux new-window -d
+	stamp_mirror 0 aaaa "" ""
+	stamp_mirror 1 x "" ""
+
+	# Control: the two ids are exactly 50 cells of slots plus separator, which is
+	# all a 55-wide client leaves after the 5-cell tree prefix.
+	bash "$REFLOW" S 55 --force >/dev/null 2>&1
+	[ "$(tmux show -v @reflow_lines)" -eq 2 ]
+	[ "$(tmux show -v @window_per)" -eq 2 ]
+
+	# The 6-cell badge ("R lab ") no longer fits the same row.
+	stamp_placed 1 lab
+	bash "$REFLOW" S 55 --force >/dev/null 2>&1
+	[ "$(tmux show -v @window_per)" -lt 2 ]
+}
+
+@test "a dedicated mirror window gets no host badge" {
+	tmux set -g @icon_remote "R"
+	tmux set -wq -t S:0 @bridge_win 1
+	tmux set -wq -t S:0 @bridge_host lab
+	tmux set -wq -t S:0 @bridge_label_id x
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	[ -z "$(tmux show -wv -t S:0 @window_host_disp)" ]
+}
+
+@test "a '|' in a non-placed window's @bridge_host does not shift the row" {
+	tmux set -g @icon_remote "R"
+	stamp_mirror 0 "G #4" " title" ""
+	tmux set -wq -t S:0 @bridge_host 'a|b|c'
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	[ "$(tmux show -wv -t S:0 @window_label_id)" = "G #4" ]
+	[ "$(tmux show -wv -t S:0 @window_label_rest_long)" = " title" ]
+	[ -z "$(tmux show -wv -t S:0 @window_host_disp)" ]
+}
+
 @test "an unset @issue_branch does not suppress the stamp" {
 	tmux new-window -d
 	tmux set -wq -t S:1 @branch feat/123-a-thing

@@ -80,10 +80,12 @@ fi
 # client without a UTF-8 locale, exactly as it does a tab (#373) — which
 # collapsed all three fields into win_count, so prev_key was always empty (cache
 # never hit) and HEIGHT always 0 (the 4th status row could never unlock).
-# @bridge_nudge is last so a '|' in the path stays inside that field.
+# @icon_remote (the placed-window host badge's glyph, read once per pass) sits
+# ahead of @bridge_nudge for the same reason; @bridge_nudge is last so a '|' in
+# the path stays inside that field.
 # @og_status_folded / @og_status_cap (prefix+Z, tmux-status-fold) are closed
 # tokens: the fold flag and the animation's temporary ceiling on `status`.
-IFS='|' read -r win_count prev_key HEIGHT FOLDED CAP NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@bridge_nudge}' 2>/dev/null)
+IFS='|' read -r win_count prev_key HEIGHT FOLDED CAP ICON_REMOTE NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@icon_remote}|#{@bridge_nudge}' 2>/dev/null)
 # Height only gates the extra window row, so a size-neutral client (empty
 # client_height) falls back to the baseline cap instead of skipping the reflow
 # the way an empty width has to. Resolve it before it reaches the cache key so
@@ -164,16 +166,22 @@ has_zoom=0
 # right beside @crew_name — it gates the non-bridge crew badge below.
 # @bridge_win/window_name sit after it: bridge_win is "1" or empty, and a
 # window_name containing '|' is no worse off here than at the very end.
+# @bridge_host is read only for a @bridge_placed window (a mirror placed into a
+# local session, #985) and sits in the same token-safe region: every other window
+# yields an empty field, so a '|' in a stray window-scoped value cannot shift the
+# columns after it.
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
+declare -A win_host win_host_dw win_host_disp
+host_any=0  # 1 when some window is placed (gates the badge fragment in ENTRY)
 crew_colw=0 # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wai bridge bid brest bpr bcrew wname bname wtask; do
+while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wai bridge bid brest bpr bcrew bhost wname bname wtask; do
 	indices+=("$idx")
 	win_clip_prev[$idx]="$wclip"
 	# The zoom marker (" 󰁌", 2 cells) is emitted inline by LABEL_Z on zoomed
@@ -283,6 +291,19 @@ while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum p
 		win_crew_dw[$idx]=0
 	fi
 
+	# Host badge: "<icon> <host> " on a placed mirror window, so it reads as a
+	# remote tab among local ones. Charged beside the crew badge everywhere (fit
+	# totals, column floor) and dropped with it when a column overflows.
+	if [[ -n $bhost ]]; then
+		win_host[$idx]="${ICON_REMOTE} ${bhost} "
+		measure_display_width "${win_host[$idx]}"
+		win_host_dw[$idx]=$REPLY_DW
+		host_any=1
+	else
+		win_host[$idx]=""
+		win_host_dw[$idx]=0
+	fi
+
 	((total++))
 done < <(tmux list-windows -t "$SESSION" -F "$FMT")
 
@@ -351,7 +372,7 @@ pr_list=""
 total_long=0
 total_short=0
 for idx in "${indices[@]}"; do
-	floor=$((win_id_dw[$idx] + win_crew_dw[$idx] + win_zoom_dw[$idx]))
+	floor=$((win_id_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx] + win_zoom_dw[$idx]))
 	rest_long=$((win_long_dw[$idx] - win_id_dw[$idx]))
 	rest_long_list+="${rest_long_list:+ }$rest_long"
 	rest_short=$((win_short_dw[$idx] - win_id_dw[$idx]))
@@ -359,8 +380,8 @@ for idx in "${indices[@]}"; do
 	pr_list+="${pr_list:+ }${win_pr_dw[$idx]}"
 	want_long_list+="${want_long_list:+ }$((floor + rest_long))"
 	want_short_list+="${want_short_list:+ }$((floor + rest_short))"
-	((total_long += win_long_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_crew_dw[$idx]))
-	((total_short += win_short_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_crew_dw[$idx]))
+	((total_long += win_long_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx]))
+	((total_short += win_short_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx]))
 done
 total_long=$((total_long + (total - 1) * SEP_WIDTH))
 total_short=$((total_short + (total - 1) * SEP_WIDTH))
@@ -401,6 +422,7 @@ for pos in "${!indices[@]}"; do
 	if ((! needs_multiline)); then
 		win_id_disp[$idx]="${win_id[$idx]}"
 		win_crew_disp[$idx]="${win_crew[$idx]}"
+		win_host_disp[$idx]="${win_host[$idx]}"
 		# Empty unless rung 1.5 shaved this row to fit. The clip lands on the
 		# display copy alone — @window_label_rest_long stays the full identity
 		# the pickers and tmux-statusline read.
@@ -425,11 +447,15 @@ for pos in "${!indices[@]}"; do
 	identity_avail=$((colw - win_zoom_dw[$idx]))
 	cur_crew="${win_crew[$idx]}"
 	cur_crew_dw=${win_crew_dw[$idx]}
+	cur_host="${win_host[$idx]}"
+	cur_host_dw=${win_host_dw[$idx]}
 	cur_id="${win_id[$idx]}"
 	cur_id_dw=${win_id_dw[$idx]}
-	if ((cur_crew_dw + cur_id_dw > identity_avail)); then
+	if ((cur_host_dw + cur_crew_dw + cur_id_dw > identity_avail)); then
 		cur_crew=""
 		cur_crew_dw=0
+		cur_host=""
+		cur_host_dw=0
 	fi
 	if ((cur_id_dw > identity_avail)); then
 		truncate_to_width "$cur_id" "$identity_avail"
@@ -442,8 +468,9 @@ for pos in "${!indices[@]}"; do
 	# ENTRY). Blank for untagged windows, which then render a pristine full-width
 	# label with no leading gap.
 	win_crew_disp[$idx]="$cur_crew"
+	win_host_disp[$idx]="$cur_host"
 
-	rest_avail=$((identity_avail - cur_crew_dw - cur_id_dw))
+	rest_avail=$((identity_avail - cur_host_dw - cur_crew_dw - cur_id_dw))
 	((rest_avail < 0)) && rest_avail=0
 	if ((rest_avail == 0)); then
 		cur_rest=""
@@ -523,7 +550,8 @@ for idx in "${indices[@]}"; do
 		set -w -t "$target" @window_pr_glyph "${win_pr_glyph[$idx]}" ';' \
 		set -w -t "$target" @window_pr_num "${win_pr_num[$idx]}" ';' \
 		set -w -t "$target" @window_pr_pad "${win_pr_pad[$idx]}" ';' \
-		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" \
+		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" ';' \
+		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" \
 		"${clip_argv[@]}"
 done
 
@@ -627,7 +655,11 @@ AGO=" #[fg=#{@thm_overlay_1}]#{p-3:@window_claude_ago}"
 # windows carry an empty @window_crew_disp and render a gapless full-width label.
 CREW=""
 ((crew_colw > 0)) && CREW="#{?${bopt[crew_color]},#[fg=${bopt[crew_color]}#,bg=#{@thm_bg}],}#{@window_crew_disp}${BASE}"
-ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDX}: ${CREW}${LABEL_Z}${ICONFG} ${ICON}${PRCOLOR}#{@window_pr_glyph}${PRNUM}#{@window_pr_num}#[nounderscore]#{@window_pr_pad}${AGO}#[norange]"
+# Host badge of a placed mirror window, peach, before the crew badge. Emitted only
+# when some window carries one (host_any), like the crew badge.
+HOST=""
+((host_any)) && HOST="#[fg=#{@thm_peach}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
+ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDX}: ${HOST}${CREW}${LABEL_Z}${ICONFG} ${ICON}${PRCOLOR}#{@window_pr_glyph}${PRNUM}#{@window_pr_num}#[nounderscore]#{@window_pr_pad}${AGO}#[norange]"
 
 # Multi-line branches stay on direct `tmux set` calls: FMT0 contains embedded
 # single quotes (e.g. '#{session_name}') that break outer-single-quoted
