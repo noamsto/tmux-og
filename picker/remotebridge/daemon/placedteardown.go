@@ -25,6 +25,7 @@ func killOwnWindows(cfg Config) {
 	}
 	own, ok := ownWindows(cfg)
 	if !ok {
+		fmt.Fprintf(os.Stderr, "daemon: list-windows %s failed; own windows not killed\n", cfg.target())
 		return
 	}
 	for _, w := range own {
@@ -56,6 +57,7 @@ func sweepStrayOwnWindows(cfg Config, reg *registry) {
 	}
 	own, ok := ownWindows(cfg)
 	if !ok {
+		fmt.Fprintf(os.Stderr, "daemon: list-windows %s failed; stray own windows kept\n", cfg.target())
 		return
 	}
 	keep := map[string]bool{}
