@@ -276,7 +276,7 @@ bind-key -N 'Kill window' & if-shell -F '{{.BridgeGate}}' { confirm-before -p "k
 # -b is load-bearing, not just responsiveness: the script waits for the
 # daemon's teardown to kill the mirror session, and that teardown issues its
 # kill-session through the same command queue a foreground run-shell holds.
-bind-key -N 'Detach client' d if-shell -F '{{.BridgeGate}}' { run-shell -b "{{index .Paths.Scripts "og-remote-detach"}} #{qs:session_name}" } { detach-client }
+bind-key -N 'Detach client' d if-shell -F '{{.BridgeGate}}' { run-shell -b "{{index .Paths.Scripts "og-remote-detach"}} #{qs:session_name} #{q:window_id}" } { detach-client }
 set -g detach-on-destroy off
 # tmux's own default menus, re-bound so that on a mirror window every
 # structural item goes through the bridge's ctl verbs and acts on the remote

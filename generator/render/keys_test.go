@@ -105,3 +105,11 @@ func TestEnrichCardBindUsesRawIcons(t *testing.T) {
 		t.Fatalf("card must carry the raw dialect: %q", got)
 	}
 }
+
+// reference.nix and the placed-mirror daemon read this exact value.
+func TestBridgeGateNotPlacedValue(t *testing.T) {
+	const want = "#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{!:#{@bridge_placed}}}"
+	if bridgeGateNotPlaced != want {
+		t.Fatalf("bridgeGateNotPlaced = %q, want %q", bridgeGateNotPlaced, want)
+	}
+}

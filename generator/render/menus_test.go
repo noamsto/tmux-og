@@ -197,10 +197,13 @@ func TestEveryMenuBindHasNote(t *testing.T) {
 // between the gate and the quoted stock branch, braces included.
 func mirrorBranches(t *testing.T) map[string]string {
 	t.Helper()
-	gate := "'" + bridgeGate + "' "
 	out := map[string]string{}
 	for i, line := range menuBindLines(t) {
 		head, _ := trailingQuoted(t, line)
+		gate := "'" + bridgeGate + "' "
+		if strings.HasSuffix(menuKeys[i], "MouseDown3StatusLeft") {
+			gate = "'" + bridgeGateNotPlaced + "' "
+		}
 		g := strings.Index(head, gate)
 		if g < 0 {
 			t.Fatalf("%s: no gate: %q", menuKeys[i], head)
@@ -467,9 +470,13 @@ func TestPaneMenuLocalItemsAreStock(t *testing.T) {
 
 func TestMouseMenusGateOnTheEventTarget(t *testing.T) {
 	for i, line := range menuBindLines(t) {
-		want := "-T " + menuKeys[i] + " if-shell -F '" + bridgeGate + "' "
+		gate := bridgeGate
+		if strings.HasSuffix(menuKeys[i], "MouseDown3StatusLeft") {
+			gate = bridgeGateNotPlaced
+		}
+		want := "-T " + menuKeys[i] + " if-shell -F '" + gate + "' "
 		if strings.HasPrefix(menuKeys[i], "root ") {
-			want = "-T " + menuKeys[i] + " if-shell -F -t = '" + bridgeGate + "' "
+			want = "-T " + menuKeys[i] + " if-shell -F -t = '" + gate + "' "
 		}
 		if !strings.Contains(line, want) {
 			t.Fatalf("%s: gate is not %q: %q", menuKeys[i], want, line[:min(160, len(line))])

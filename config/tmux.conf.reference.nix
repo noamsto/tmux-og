@@ -129,6 +129,7 @@
   # else branch — a regression in normal keybind behavior would defeat the whole
   # point of the bridge (zero blast radius on the human's live session).
   bridgeGate = "#{&&:#{@bridge_win},#{@bridge_pane}}";
+  bridgeGateNotPlaced = "#{&&:${bridgeGate},#{!:#{@bridge_placed}}}";
   # @bridge_sock is always in --sock= form, never word-initial; bridgeGate guarantees it is non-empty.
   bridgeCtl = "${picker-bridge-ctl-bin} --display-error=#{q:client_name} --sock=#{q:@bridge_sock}";
 
@@ -283,10 +284,12 @@
     "root MouseDown3StatusLeft" = {
       note = "Display session menu";
       mirror = mirrorSessionMenu;
+      gate = bridgeGateNotPlaced;
     };
     "root M-MouseDown3StatusLeft" = {
       note = "Display session menu";
       mirror = mirrorSessionMenu;
+      gate = bridgeGateNotPlaced;
     };
     "root MouseDown3Empty" = {
       note = "Display new pane/window menu";
@@ -311,7 +314,7 @@
     + notePart
     + "-T ${s.table} ${s.key} if-shell -F "
     + targetPart
-    + "'${bridgeGate}' { "
+    + "'${m.gate or bridgeGate}' { "
     + m.mirror
     + " } "
     + menuQuote s.cmd;
@@ -875,7 +878,7 @@
     # -b is load-bearing, not just responsiveness: the script waits for the
     # daemon's teardown to kill the mirror session, and that teardown issues its
     # kill-session through the same command queue a foreground run-shell holds.
-    bind-key -N 'Detach client' d if-shell -F '${bridgeGate}' { run-shell -b "${script.og-remote-detach}/bin/og-remote-detach #{qs:session_name}" } { detach-client }
+    bind-key -N 'Detach client' d if-shell -F '${bridgeGate}' { run-shell -b "${script.og-remote-detach}/bin/og-remote-detach #{qs:session_name} #{q:window_id}" } { detach-client }
     set -g detach-on-destroy off
     # tmux's own default menus, re-bound so that on a mirror window every
     # structural item goes through the bridge's ctl verbs and acts on the remote
