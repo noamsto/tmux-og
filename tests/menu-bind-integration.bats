@@ -69,6 +69,13 @@ setup() {
 teardown() {
 	inner kill-server 2>/dev/null || true
 	outer kill-server 2>/dev/null || true
+	# The raw-binary servers of the tripwire and gate tests. A failing assertion
+	# skips their inline kill-server, and a surviving daemonized server keeps
+	# bats' output pipe open, so the run hangs instead of reporting the failure.
+	local sock
+	while IFS= read -r sock; do
+		"$TMUX_RAW" -S "$sock" kill-server 2>/dev/null || true
+	done < <(find "$BATS_TEST_TMPDIR" -type s -path '*/tmux-*/*' 2>/dev/null)
 	[[ -n ${RECORDER_PID:-} ]] && kill "$RECORDER_PID" 2>/dev/null
 	return 0
 }
@@ -500,7 +507,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 		while IFS= read -r line; do
 			table="$(printf '%s' "$line" | awk '{print $3}')"
 			key="$(printf '%s' "$line" | awk '{print $4}')"
-			TMUX_TMPDIR="$rawT" "$TMUX_RAW" -f /dev/null -L rawsm list-keys -T "$table" "$key"
+			TMUX_TMPDIR="$rawT" "$TMUX_RAW" -f /dev/null -L rawsm list-keys -T "$table" "$key" 3>&-
 		done <"$stock" >"$raw_out"
 		diff "$stock" "$raw_out"
 	done
@@ -510,7 +517,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	conf_version="$(grep -m1 -oE '%if "#\{==:#\{version\},[^}]+\}"' "$CONF" | sed -E 's/.*version\},([^}]+)\}.*/\1/')"
 	local verT="$BATS_TEST_TMPDIR/ver-tmux"
 	mkdir -p "$verT"
-	TMUX_TMPDIR="$verT" "$TMUX_RAW" -f /dev/null -L versm new-session -d
+	TMUX_TMPDIR="$verT" "$TMUX_RAW" -f /dev/null -L versm new-session -d 3>&-
 	raw_version="$(TMUX_TMPDIR="$verT" "$TMUX_RAW" -L versm display-message -p '#{version}')"
 	TMUX_TMPDIR="$verT" "$TMUX_RAW" -L versm kill-server 2>/dev/null || true
 	[ "$raw_version" = "$conf_version" ]
@@ -525,7 +532,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 
 	local gT="$BATS_TEST_TMPDIR/gate-tmux"
 	mkdir -p "$gT"
-	TMUX_TMPDIR="$gT" "$TMUX_RAW" -f /dev/null -L gatesm new-session -d
+	TMUX_TMPDIR="$gT" "$TMUX_RAW" -f /dev/null -L gatesm new-session -d 3>&-
 	TMUX_TMPDIR="$gT" "$TMUX_RAW" -L gatesm source-file "$block"
 	local got
 	got="$(TMUX_TMPDIR="$gT" "$TMUX_RAW" -L gatesm list-keys -T prefix '<')"
@@ -542,7 +549,7 @@ assert_wire_argv() { # payload_file verb [arg...]
 	sed "s/${block_version//./\\.}/next-0.0/" "$block" >"$other"
 	local gT2="$BATS_TEST_TMPDIR/gate-tmux2"
 	mkdir -p "$gT2"
-	TMUX_TMPDIR="$gT2" "$TMUX_RAW" -f /dev/null -L gatesm2 new-session -d
+	TMUX_TMPDIR="$gT2" "$TMUX_RAW" -f /dev/null -L gatesm2 new-session -d 3>&-
 	TMUX_TMPDIR="$gT2" "$TMUX_RAW" -L gatesm2 source-file "$other"
 	local line table key line_got
 	while IFS= read -r line; do
