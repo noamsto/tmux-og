@@ -361,18 +361,19 @@ func identityIndex(calls [][]string, win, opt string) int {
 	return -1
 }
 
-// Every mirror window carries its daemon's identity before @bridge_win, the
+// A placed mirror window carries its daemon's identity before @bridge_win, the
 // gate half a keybind fires on: a window that is a mirror but has no window
 // socket yet would hand the gate the session's, which in a shared host session
 // is nobody's. A claimed placeholder was not made by createMirrorWindow, so the
-// stamp re-applies the identity there too.
+// stamp re-applies the identity there too. A dedicated window carries none: the
+// session-scoped copies are the mirror's.
 func TestStampMirrorWindowStampsIdentityBeforeBridgeWin(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		placed bool
 		opts   [][2]string
 	}{
-		{"dedicated", false, [][2]string{{"@bridge_sock", "/s|1.sock"}, {"@bridge_host", "lab"}, {"@bridge_session", "rem sess"}}},
+		{"dedicated", false, nil},
 		{"placed", true, [][2]string{{"@bridge_sock", "/s|1.sock"}, {"@bridge_host", "lab"}, {"@bridge_session", "rem sess"}, {"@bridge_placed", "1"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -400,20 +401,23 @@ func TestStampMirrorWindowStampsIdentityBeforeBridgeWin(t *testing.T) {
 				}
 				prev = i
 			}
+			for _, opt := range []string{"@bridge_sock", "@bridge_host", "@bridge_session", placedOption} {
+				if !tc.placed && identityIndex(calls, "@7", opt) >= 0 {
+					t.Errorf("a dedicated mirror window was stamped %s: %q", opt, calls)
+				}
+			}
 			if win := identityIndex(calls, "@7", "@bridge_win"); win <= prev {
 				t.Errorf("@bridge_win stamped at call %d, want after the identity (call %d)", win, prev)
-			}
-			if !tc.placed && identityIndex(calls, "@7", placedOption) >= 0 {
-				t.Errorf("a dedicated mirror window was stamped %s: %q", placedOption, calls)
 			}
 		})
 	}
 }
 
-// createMirrorWindow stamps the identity in the same tmux invocation as the
-// new-window: one command list runs to its end before the server's next
-// redraw, so no client ever sees the window unmarked. `{end}` is the window
-// `-a` just appended; `;` is its own argv element, tmux's command separator.
+// createMirrorWindow stamps a placed window's identity in the same tmux
+// invocation as the new-window: one command list runs to its end before the
+// server's next redraw, so no client ever sees the window unmarked. `{end}` is
+// the window `-a` just appended; `;` is its own argv element, tmux's command
+// separator. A dedicated window's argv is the bare new-window.
 func TestCreateMirrorWindowStampsIdentityInTheSameCall(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -423,12 +427,7 @@ func TestCreateMirrorWindowStampsIdentityInTheSameCall(t *testing.T) {
 		{
 			"dedicated",
 			Config{LocalSess: "h-s", SockPath: "/s.sock", RemoteHost: "h", RemoteSession: "r s"},
-			[]string{
-				"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", "h-s:{end}", ";",
-				"set-option", "-w", "-t", "h-s:{end}", "@bridge_sock", "/s.sock", ";",
-				"set-option", "-w", "-t", "h-s:{end}", "@bridge_host", "h", ";",
-				"set-option", "-w", "-t", "h-s:{end}", "@bridge_session", "r s",
-			},
+			[]string{"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", "h-s:{end}"},
 		},
 		{
 			"placed",

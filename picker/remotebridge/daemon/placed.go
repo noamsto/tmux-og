@@ -11,20 +11,21 @@ const placedOption = "@bridge_placed"
 // daemon stamps. The sock goes last because a socket path may hold '|'.
 const hostWindowsFormat = "#{window_id}|#{@bridge_placed}|#{@bridge_sock}"
 
-// mirrorIdentity is the window-scoped identity every mirror window carries, in
-// stamp order: the socket a keybind dials, the raw host and remote session a
-// window-level reader shows, and the placed marker in placed mode. A window is
-// a mirror iff its window-scoped @bridge_host is set.
+// mirrorIdentity is the window-scoped identity a placed mirror window carries,
+// in stamp order: the socket a keybind dials, the raw host and remote session a
+// window-level reader shows, and the placed marker. A placed window is a mirror
+// iff its window-scoped @bridge_host is set. A dedicated session stamps none:
+// every window there is the mirror's, and the session-scoped copies identify it.
 func mirrorIdentity(cfg Config) [][2]string {
-	id := [][2]string{
+	if !cfg.Placed {
+		return nil
+	}
+	return [][2]string{
 		{"@bridge_sock", cfg.SockPath},
 		{"@bridge_host", cfg.RemoteHost},
 		{"@bridge_session", cfg.RemoteSession},
+		{placedOption, "1"},
 	}
-	if cfg.Placed {
-		id = append(id, [2]string{placedOption, "1"})
-	}
-	return id
 }
 
 type hostWindow struct {

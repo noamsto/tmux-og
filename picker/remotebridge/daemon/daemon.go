@@ -276,8 +276,8 @@ func (c Config) reflow() {
 // {end} rather than at an index of our own choosing is what leaves the
 // re-indexing to tmux, so a mirror never grows the gaps a local session can't.
 //
-// The window identity is stamped in the same invocation, aimed at {end} — the
-// window -a just appended. One command list runs to its end before the
+// A placed mirror's window identity is stamped in the same invocation, aimed at
+// {end} — the window -a just appended. One command list runs to its end before the
 // server's next redraw, so no client ever sees the window unmarked; stdout is
 // still just the new-window's id (measured).
 func createMirrorWindow(cfg Config) (string, error) {
@@ -337,9 +337,10 @@ func parseWindowID(s string) (string, error) {
 // session with it (#547). A dead pane instead of a lost session is the
 // difference; healDeadRenderers repairs it from there.
 //
-// The identity goes on before @bridge_win, so no gate fires on a window with
-// no socket of its own. createMirrorWindow already stamped it; a claimed
-// placeholder (the launcher's window, a placed rebuild's) was not made there.
+// A placed window's identity goes on before @bridge_win, so no gate fires on a
+// window with no socket of its own. createMirrorWindow already stamped it; a
+// claimed placeholder (the launcher's window, a placed rebuild's) was not made
+// there.
 func stampMirrorWindow(cfg Config, localWin, remoteName string) {
 	for _, o := range mirrorIdentity(cfg) {
 		_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, o[0], o[1])

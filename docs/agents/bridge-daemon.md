@@ -67,20 +67,23 @@ windows and other daemons' mirrors, which the daemon never creates, kills or
 switches a client into. Several placed daemons share one host session. Spec:
 `docs/superpowers/specs/2026-10-15-bridge-into-session-design.md`.
 
-- **Every mirror window carries its identity window-scoped**: `@bridge_sock`,
-  `@bridge_host`, `@bridge_session` and, placed only, `@bridge_placed` `1`.
+- **Every placed mirror window carries its identity window-scoped**:
+  `@bridge_sock`, `@bridge_host`, `@bridge_session` and `@bridge_placed` `1`
+  (`mirrorIdentity`, nil in dedicated mode).
   `createMirrorWindow` stamps them in the same tmux command list as its
   `new-window -a -t <host>:{end}` (`;`-joined `set-option -w -t …:{end}`), so no
   redraw sees the window unmarked; `stampMirrorWindow` re-stamps them before
-  `@bridge_win` (idempotent) because a claimed placeholder (the dedicated
-  launcher window, a placed rebuild's) was not made there. Dedicated mode keeps
-  its session-scoped copies as well, holding the same values; a placed host
-  session gets none.
-- **Programmatic test: a window is a bridge mirror iff its window-scoped
-  `@bridge_host` is non-empty** (`show-options -wqv -t @N @bridge_host`;
-  `@bridge_placed` then says which mode). `#{@bridge_host}` in `list-windows -F`
-  falls back to a session copy, so it is equivalent only where none exists
-  (always true placed). `@bridge_win` is not the test: it is set last, once the
+  `@bridge_win` (idempotent) because a placed rebuild's claimed placeholder was
+  not made there. A dedicated window gets none (its `new-window` and stamp
+  calls are as before, AC4): the session-scoped copies `og-remote-open` writes
+  identify the mirror, since every window of a dedicated session is the
+  mirror's. A placed host session gets no session copy.
+- **Programmatic test: a placed window is a bridge mirror iff its
+  window-scoped `@bridge_host` is non-empty** (`show-options -wqv -t @N
+  @bridge_host`; `@bridge_placed` then says which mode). A dedicated mirror is
+  identified by its session-scoped `@bridge_host`. `#{@bridge_host}` in
+  `list-windows -F` falls back to the session copy, so it answers both.
+  `@bridge_win` is not the test: it is set last, once the
   renderer is up, and the rebuild placeholder lacks it.
 - **Session-level readers must ignore placed windows.** Measured (pinned tmux):
   `format_find` resolves server, pane→window→global-window, session; and
@@ -554,7 +557,7 @@ is the one requirement that reports itself: the asking side prints
   only when no other daemon's placed window remains in `$N`; a race between two
   exiting daemons leaves either the option set (one cheap `touch` per hook) or a
   survivor on its 30s `resizeFallbackInterval`, both benign.
-- **`@bridge_host`** — the ssh host the mirror's windows really live on. Dedicated: session-scoped, stamped by `og-remote-open`, with a window-scoped copy on each window; placed: window-scoped only (stamped by the daemon with `@bridge_sock`/`@bridge_session`, `@bridge_placed` marking the mode), and the programmatic "is this window a mirror" test (see "Placed mirrors"). `tmux-statusline` renders it after the session pill on `@bridge_win` windows, so a mirror is never read as local; a placed window's tab also shows it (`status-bar.md`).
+- **`@bridge_host`** — the ssh host the mirror's windows really live on. Dedicated: session-scoped, stamped by `og-remote-open`, nothing on the windows; placed: window-scoped only (stamped by the daemon with `@bridge_sock`/`@bridge_session`, `@bridge_placed` marking the mode), and the programmatic "is this window a mirror" test (see "Placed mirrors"). `tmux-statusline` renders it after the session pill on `@bridge_win` windows, so a mirror is never read as local; a placed window's tab also shows it (`status-bar.md`).
 - **`@bridge_session_path`** — remote `#{session_path}`, stamped once per bridge by the daemon (session-scoped; placed: window-scoped on each own window). The mirror session's own `session_path` is the launcher's cwd (`og-remote-open` passes no `-c`), so the session picker's Path column reads this instead on a `@bridge_host` row, and renders nothing when it is unset.
 - **`get-clipboard request`** (`set -s`, next to `set-clipboard on`, #694): tmux answers an app's OSC 52 *read* per `get-clipboard`, not `set-clipboard`. The default `buffer` replies synchronously from the server's own newest paste buffer, so on a mirrored host the query never crosses the bridge and the remote app pastes stale remote content. With `request`, a server whose only clients are control-mode stays silent, the query propagates through the bridge, and the local tmux asks the local terminal. Tradeoff: on a terminal with no OSC 52 read support an app's read now returns nothing instead of tmux's newest buffer — tmux has no fallback. Asserted in `float-conf-assertions`.
 

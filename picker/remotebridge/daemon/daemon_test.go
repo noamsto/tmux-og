@@ -1121,11 +1121,9 @@ func TestCreateMirrorWindowReturnsAnID(t *testing.T) {
 	if err != nil || got != "@42" {
 		t.Fatalf("createMirrorWindow = %q, %v; want @42", got, err)
 	}
-	// The identity stamps chained after it are pinned by
-	// TestCreateMirrorWindowStampsIdentityInTheSameCall.
-	want := []string{"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", "h-s:{end}", ";"}
-	if len(gotArgs) < len(want) || !reflect.DeepEqual(gotArgs[:len(want)], want) {
-		t.Errorf("LocalTmuxOut called with %v, want it to lead with %v", gotArgs, want)
+	want := []string{"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", "h-s:{end}"}
+	if !reflect.DeepEqual(gotArgs, want) {
+		t.Errorf("LocalTmuxOut called with %v, want %v", gotArgs, want)
 	}
 }
 

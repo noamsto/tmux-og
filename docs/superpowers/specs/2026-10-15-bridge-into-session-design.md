@@ -63,22 +63,24 @@ infers "this session is a mirror" from `@bridge_host`/`@bridge_session`/
 window is a placed mirror window. `og-remote-open`'s pair lookup would then
 `kill-session` the user's session.
 
-## Window-scoped contract (both modes)
+## Window-scoped contract (placed mode)
 
-`stampMirrorWindow` stamps these on every mirror window, **before**
+`stampMirrorWindow` stamps these on every **placed** mirror window, **before**
 `@bridge_win`, so no gate can fire on a window that lacks a socket:
 
 | option | value | modes |
 |---|---|---|
-| `@bridge_sock` | the daemon's socket path | both |
-| `@bridge_host` | raw ssh host | both |
-| `@bridge_session` | raw remote session name | both |
+| `@bridge_sock` | the daemon's socket path | placed only |
+| `@bridge_host` | raw ssh host | placed only |
+| `@bridge_session` | raw remote session name | placed only |
 | `@bridge_placed` | `1` | placed only |
 | `@bridge_win` | `1` (existing) | both |
 
-Dedicated mode keeps its session-scoped `@bridge_sock`/`@bridge_host`/
-`@bridge_session` as well. The window copies hold the same values, so every
-session-level read in dedicated mode returns the same answer as before.
+Dedicated mode stamps none of the identity on a window: it keeps its
+session-scoped `@bridge_sock`/`@bridge_host`/`@bridge_session` and adds
+nothing, so its `new-window` and `stampMirrorWindow` calls are unchanged
+(AC4). Every window of a dedicated session is the mirror's, and a pane- or
+window-context `#{@bridge_*}` read resolves to the session copy.
 
 `@bridge_placed` is the marker a session-level reader uses to ignore a
 window's per-mirror values: `#{?#{@bridge_placed},,#{@bridge_host}}`. In a
@@ -111,19 +113,21 @@ degradation every label field already has.
 
 ## Telling a placed window from a local one (owner requirement)
 
-**Programmatic test.** A window is a bridge mirror iff its **window-scoped**
-`@bridge_host` is non-empty. The exact test is
-`show-options -wqv -t @N @bridge_host`. `#{@bridge_host}` per window in
-`list-windows -F` falls back to the session copy, so it is equivalent only
-where no session copy exists:
+**Programmatic test.** A placed window is a bridge mirror iff its
+**window-scoped** `@bridge_host` is non-empty. The exact test is
+`show-options -wqv -t @N @bridge_host`. A dedicated mirror is identified by its
+session-scoped `@bridge_host`; every window of a dedicated session is the
+mirror's. `#{@bridge_host}` per window in `list-windows -F` answers both, since
+it falls back to the session copy:
 
-- a placed host session never has one (launcher step 2);
-- in a dedicated session every window reads the host, which is also correct,
-  since every window there is the mirror's.
+- a placed host session never has a session copy (launcher step 2), so the
+  window-scoped value decides;
+- in a dedicated session every window reads the session's host, which is also
+  correct, since every window there is the mirror's.
 
-The test works in both modes. `@bridge_placed` then says which mode the mirror
-runs in. No local window ever carries a window-scoped `@bridge_host`, and no
-new marker is needed for this test.
+`@bridge_placed` then says which mode the mirror runs in. No local window ever
+carries a window-scoped `@bridge_host`, and no new marker is needed for this
+test.
 
 `#{@bridge_win}` is not that test. The daemon sets it last, after
 `setupWindow`'s renderer spawn, as the gate's "renderer is up" half. The rebuild
@@ -131,8 +135,9 @@ placeholder deliberately lacks it.
 
 **Set before the window is first drawn.** `createMirrorWindow` issues
 `new-window -d -P -F '#{window_id}' -a -t <T>:{end}` and, in the same `tmux`
-invocation (`;`-joined), `set-option -w -t <T>:{end}` for `@bridge_sock`,
-`@bridge_host`, `@bridge_session` and, in placed mode, `@bridge_placed`. One
+invocation (`;`-joined), in placed mode only, `set-option -w -t <T>:{end}` for
+`@bridge_sock`, `@bridge_host`, `@bridge_session` and `@bridge_placed`. A
+dedicated `new-window` carries no such list. One
 invocation is one command list: the server runs it to the end before its next
 redraw. `after-new-window` hooks are inserted after `new-window`, and one of
 them runs synchronously, between `new-window` and the joined `set-option`s:
@@ -150,10 +155,10 @@ those (#598). Accepted: switching those opt-outs to `@bridge_host` would
 change three scripts' local behaviour for no reader-visible gain. `{end}`
 names the window `-a` just appended, since `-a` after the session's last
 window makes it the new last one. `stampMirrorWindow` still re-stamps all
-four afterwards (idempotent), because the claimed placeholders (dedicated
-launcher window, placed rebuild placeholder) were not created by
-`createMirrorWindow`. `rebuildPlaceholder` stamps the same four identity
-options in its own create command, so the placeholder is marked from birth.
+four afterwards (idempotent, placed only), because the claimed placeholder of
+a placed rebuild was not created by `createMirrorWindow`. `rebuildPlaceholder`
+stamps the same four identity options in its own create command, so the
+placeholder is marked from birth.
 
 **Visible: host badge on the tab.** A placed window's tab shows
 `<@icon_remote> <@bridge_host>` in `@thm_peach`, right after `index: ` and
@@ -215,7 +220,7 @@ the session every own window lives in, pinned by id.
 | `createMirrorWindow` (`daemon.go:258`) `new-window -a -t <sess>:{end}` | unchanged | `-t $N:{end}` |
 | `firstMirrorWindow` / startup placeholder (`daemon.go:270`, `:879`) | reuse the launcher's first window | **no placeholder from the session**. Startup uses `cfg.placeholder` when set (only a rebuild sets it), otherwise every window is created. The user's first window is never touched. |
 | `dropUnclaimedPlaceholder` (`daemon.go:923`) | unchanged | kills `cfg.placeholder` if unclaimed |
-| `stampMirrorWindow` (`daemon.go:310`) | plus window `@bridge_sock`/`_host`/`_session` before `@bridge_win` | same, plus `@bridge_placed`. Also applies the current placed-mode window values (below). |
+| `stampMirrorWindow` (`daemon.go:310`) | unchanged | window `@bridge_sock`/`_host`/`_session`/`@bridge_placed` before `@bridge_win`. Also applies the current placed-mode window values (below). |
 | `@bridge_sock`/`_host`/`_session` session stamps (`daemon.go:1144`) | unchanged | not written |
 | `@bridge_session_path` (`daemon.go:1062`) | unchanged | window-scoped (placed values) |
 | `@bridge_state` (`conn.go:820`) | unchanged | window-scoped (placed values) |
@@ -506,8 +511,9 @@ dedicated-mode code paths):
 - **Distinguishability**:
   - m2 placed suite: every placed window has a non-empty window-scoped
     `@bridge_host` and the local window has none;
-  - a Go unit: `createMirrorWindow` issues `new-window` and the four identity
-    `set-option`s in **one** `LocalTmuxOut` call;
+  - a Go unit: a placed `createMirrorWindow` issues `new-window` and the four
+    identity `set-option`s in **one** `LocalTmuxOut` call; a dedicated one
+    issues the bare `new-window`;
   - reflow bats (`tests/reflow.bats` style, fake/scratch server): a session
     with one local and one placed window → the placed window's
     `@window_host_disp` carries `<icon> <host>` and the local one's is empty,
@@ -524,26 +530,19 @@ dedicated-mode code paths):
   - the `localViewing` placed predicate;
   - the `mirrorOpts` placed write.
 - **Regression**: every existing remote suite passes unchanged, since
-  dedicated-mode argv is byte-identical except the added window-scoped stamps.
-  Existing tests that read `show-options -t host-sess @bridge_*` keep reading
-  the session copies dedicated mode still writes.
+  dedicated-mode argv is byte-identical (AC4). Existing tests that read
+  `show-options -t host-sess @bridge_*` keep reading the session copies
+  dedicated mode still writes.
 
 ## Risks
 
-- **Fork count per window creation.** Up to four more `set-option` per mirror
-  window (sock, host, session, placed) plus the placed values. Window creation
-  is rare and already ~5 forks; this does not touch any per-keystroke or
+- **Fork count per window creation (placed only).** Up to four more
+  `set-option` per placed mirror window (sock, host, session, placed) plus the
+  placed values; dedicated adds none. Window creation is rare and already ~5
+  forks; this does not touch any per-keystroke or
   per-tick path. These can be one `tmux` invocation joined with `;`, as the
   label stamp already does.
 - **The pair-lookup guard** is the one dedicated-mode behaviour change
   outside the daemon. Its regression test is the "shared session is never
   adopted" case.
 - **tmux-remux skip** (above) is the one known gap left to another repo.
-- **A dedicated window moved into another session.** Its window-scoped
-  `@bridge_host`/`@bridge_session` come without `@bridge_placed`, so until the
-  daemon's #487 retire path reclaims it (one sweep), a session-level reader
-  sees that session as a mirror whenever the moved window is current. The one
-  destructive reader is already closed: the pair lookup verifies with
-  session-scoped `show-options`, which a window copy cannot satisfy, so
-  `og-remote-open` never adopts or kills that session. The picker's session
-  row may show the host label for that one sweep. Accepted as transient.
