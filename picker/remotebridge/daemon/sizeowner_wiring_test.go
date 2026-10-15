@@ -270,6 +270,62 @@ func TestOwnerCtlReleaseDroppedWhenTheRecordChanged(t *testing.T) {
 	})
 }
 
+// TestOwnerCtlReleaseRetriedAfterAFailure: a read or send lost at the due
+// moment keeps the release pending, so it goes out once the retry delay passes.
+func TestOwnerCtlReleaseRetriedAfterAFailure(t *testing.T) {
+	due := time.Now().Add(ownerReleaseGrace + time.Second)
+	want := []string{ownerReleaseCmd("$1", tokB, "client-b")}
+	okRead := ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows)
+	cases := []struct {
+		name        string
+		failingRead string
+		failSend    bool
+	}{
+		{"read", "", false},
+		{"send", okRead, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			own := detachedOwner()
+			failing, sent := testOwnerCtl(tc.failingRead, own, recordedCV())
+			if tc.failSend {
+				failing.send = func(...string) bool { return false }
+			}
+			failing.detached("client-b")
+			failing.releaseDue(due)
+			if len(*sent) != 0 {
+				t.Fatalf("a failed attempt sent %q", *sent)
+			}
+			failing.releaseDue(due)
+			if len(*sent) != 0 {
+				t.Fatalf("the retry came before its delay: %q", *sent)
+			}
+			retry, sent := testOwnerCtl(okRead, own, recordedCV())
+			retry.releaseDue(due.Add(ownerReleaseRetry))
+			if !reflect.DeepEqual(*sent, want) {
+				t.Errorf("retry sent %q, want %q", *sent, want)
+			}
+		})
+	}
+}
+
+// TestSizeOwnerReholdKeepsANewerRelease: a detach for another owner landing
+// between the take and the put-back must not be replaced by the stale one.
+func TestSizeOwnerReholdKeepsANewerRelease(t *testing.T) {
+	own := detachedOwner()
+	now := time.Now()
+	own.holdRelease(tokB, "client-b", now)
+	r, ok := own.takeDueRelease(now)
+	if !ok {
+		t.Fatal("release not due")
+	}
+	own.holdRelease(tokB, "client-b2", now.Add(ownerReleaseGrace))
+	own.rehold(r, now.Add(ownerReleaseRetry))
+	if got, _ := own.takeDueRelease(now.Add(ownerReleaseGrace)); got.client != "client-b2" {
+		t.Errorf("pending release = %q, want client-b2", got.client)
+	}
+}
+
 // TestOwnerCtlEnforceUnderStaleBelief: the isOwner belief that gates enforce
 // can lag a foreign claim; the fresh read naming another token wins.
 func TestOwnerCtlEnforceUnderStaleBelief(t *testing.T) {
