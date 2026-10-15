@@ -156,10 +156,12 @@ var (
 	prDraftRe = regexp.MustCompile(`^1$`)
 	branchRe  = regexp.MustCompile(`^\S+$`)
 	// crewBranchRe and crewIDRe gate values the crew dispatcher stamps and the
-	// local picker later passes on as git/CLI arguments, so a leading '-' or any
-	// shell or tmux metacharacter is dropped rather than carried.
+	// local picker later passes on as git/CLI arguments, so any shell or tmux
+	// metacharacter is dropped rather than carried. Both anchor an alphanumeric
+	// first character: that drops a leading '-' (as cleanLabelValueExact
+	// already does) and a crew id of '.' or '..', which names a directory.
 	crewBranchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/+-]*$`)
-	crewIDRe     = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	crewIDRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	// dirRe rejects a path containing a space, which is a legal worktree path:
 	// the value crosses a '|'-delimited row and, for the card, a --dir argument,
 	// and an absent dir line is correct-but-incomplete where a shifted row is

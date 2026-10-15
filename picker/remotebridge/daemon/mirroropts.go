@@ -11,7 +11,9 @@ import (
 // session holds them as session options; a placed mirror shares its session
 // with local windows, so each value goes on every window this daemon owns
 // instead. The values are remembered so a window created later is stamped with
-// the current state rather than a blank.
+// the current state rather than a blank. A nil *mirrorOpts is a bare test
+// Config and writes session-scoped in either mode; each method inlines that
+// check so nilaway can see the guard.
 type mirrorOpts struct {
 	mu   sync.Mutex
 	vals map[string]string
@@ -19,13 +21,9 @@ type mirrorOpts struct {
 
 func newMirrorOpts() *mirrorOpts { return &mirrorOpts{vals: map[string]string{}} }
 
-// session reports whether a write is the session-scoped one: a nil receiver is
-// a bare test Config, which keeps today's behaviour in either mode.
-func (o *mirrorOpts) session(cfg Config) bool { return o == nil || !cfg.Placed }
-
 // set writes opt=val.
 func (o *mirrorOpts) set(cfg Config, opt, val string) {
-	if o.session(cfg) {
+	if o == nil || !cfg.Placed {
 		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, opt, val)
 		return
 	}
@@ -37,7 +35,7 @@ func (o *mirrorOpts) set(cfg Config, opt, val string) {
 
 // unset removes opt.
 func (o *mirrorOpts) unset(cfg Config, opt string) {
-	if o.session(cfg) {
+	if o == nil || !cfg.Placed {
 		_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, opt)
 		return
 	}
@@ -51,7 +49,7 @@ func (o *mirrorOpts) unset(cfg Config, opt string) {
 // was written. Placed only: a dedicated mirror's values are session-scoped and
 // reach every window of it already.
 func (o *mirrorOpts) applyTo(cfg Config, localWin string) {
-	if o.session(cfg) {
+	if o == nil || !cfg.Placed {
 		return
 	}
 	o.mu.Lock()

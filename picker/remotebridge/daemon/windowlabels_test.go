@@ -184,6 +184,7 @@ func TestWindowLabelValidation(t *testing.T) {
 		{"crewID", 21, []struct{ in, want string }{
 			{"1791968080-89470", "1791968080-89470"}, {"a.b_c-d", "a.b_c-d"},
 			{"x y", ""}, {"a/b", ""}, {"a#b", ""}, {"", ""},
+			{".", ""}, {"..", ""}, {"-x", ""},
 			{"12#[x]34", ""}, // strips to a valid "1234"
 			{strings.Repeat("1", crewIDMaxRunes), strings.Repeat("1", crewIDMaxRunes)},
 			{strings.Repeat("1", crewIDMaxRunes+1), ""},

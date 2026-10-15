@@ -7015,3 +7015,56 @@ local_win_intact() {
 	[ "$($DST list-windows -t host -F '#{window_id}')" = "$local_win" ]
 	local_win_intact
 }
+
+@test "into: a relaunch after a SIGKILLed daemon sweeps its dead windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	into_host_up
+	bridge_up_into in12 rem
+	old="$(placed_wins "$sock")"
+	[ "$(wc -l <<<"$old" | tr -d ' ')" -eq 2 ]
+
+	# No teardown runs: remain-on-exit keeps each window, its renderer dead,
+	# stamped with the socket path the relaunch below reuses.
+	kill -KILL "$daemon_pid"
+	wait "$daemon_pid" 2>/dev/null || true
+	dead=0
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		dead="$($DST list-panes -s -t host -F '#{pane_dead}' | grep -c '^1$' || true)"
+		[ "$dead" -eq 2 ] && break
+		sleep 0.1
+	done
+	[ "$dead" -eq 2 ]
+	[ "$(placed_wins "$sock")" = "$old" ]
+
+	bridge_up_into in12 rem
+	# Painted output only proves the new windows are wired; the sweep follows
+	# the startup reconcile, so wait for the corpses to go.
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		placed_wins "$sock" | grep -qxF "$old" || break
+		sleep 0.1
+	done
+	[ -z "$(placed_wins "$sock" | grep -xF "$old" || true)" ]
+	[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq "$($SRC list-windows -t rem -F '#{window_id}' | wc -l | tr -d ' ')" ]
+	[ "$($DST list-panes -s -t host -F '#{pane_dead}' | grep -c '^1$' || true)" -eq 0 ]
+	local_win_intact
+}
+
+@test "into: detaching a placed window whose daemon is gone kills its windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	into_host_up
+	bridge_up_into in13 rem
+	placed="$(placed_wins "$sock" | head -1)"
+
+	# SIGKILL leaves the pidfile naming a dead pid and the windows behind: the
+	# detach has no teardown to wait for and must kill them itself.
+	kill -KILL "$daemon_pid"
+	wait "$daemon_pid" 2>/dev/null || true
+
+	run_detach host "$placed"
+	[ "$status" -eq 0 ]
+
+	[ -z "$(placed_wins "$sock")" ]
+	local_win_intact
+}

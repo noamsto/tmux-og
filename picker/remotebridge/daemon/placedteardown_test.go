@@ -14,9 +14,10 @@ const placedTestSock = "/tmp/og-into-1|x.sock"
 
 // placedTeardownConfig is a placed Config over recording fakes: the pin
 // answers owned unless lost, and the host session holds a local window (@1),
-// two of ours (@2, @4), another daemon's mirror (@3) and, once rebuilt, our
-// placeholder (@9).
+// two of ours (@2, @4), another daemon's mirror (@3) and, once a new-window
+// has run, our placeholder (@9).
 func placedTeardownConfig(log *callLog, lost bool) Config {
+	placeholder := ""
 	return Config{
 		LocalSess:     "work",
 		LocalTarget:   "$1",
@@ -34,8 +35,9 @@ func placedTeardownConfig(log *callLog, lost bool) Config {
 				}
 				return ownedAnswer, nil
 			case "list-windows":
-				return "@1||\n@2|1|" + placedTestSock + "\n@3|1|/tmp/og-into-2.sock\n@4|1|" + placedTestSock + "\n@9|1|" + placedTestSock + "\n", nil
+				return "@1||\n@2|1|" + placedTestSock + "\n@3|1|/tmp/og-into-2.sock\n@4|1|" + placedTestSock + "\n" + placeholder, nil
 			case "new-window":
+				placeholder = "@9|1|" + placedTestSock + "\n"
 				return "@9\n", nil
 			}
 			return "", nil
@@ -60,7 +62,7 @@ func killedWindows(calls [][]string) []string {
 func TestKillOwnWindows(t *testing.T) {
 	var log callLog
 	killOwnWindows(placedTeardownConfig(&log, false))
-	if got, want := killedWindows(log.snapshot()), []string{"@2", "@4", "@9"}; !slices.Equal(got, want) {
+	if got, want := killedWindows(log.snapshot()), []string{"@2", "@4"}; !slices.Equal(got, want) {
 		t.Errorf("killed %v, want only our own %v", got, want)
 	}
 	if kill := findCall(log.snapshot(), "kill-session"); kill != nil {
@@ -80,9 +82,10 @@ func TestKillOwnWindowsWithALostPinKillsNothing(t *testing.T) {
 	}
 }
 
-// The placeholder is made and stamped in one call, before any kill, so a host
-// session holding only our windows never empties mid-rebuild. It carries our
-// identity but no @bridge_win, and survives the kill of every other own window.
+// The own windows are listed first, then the placeholder is made and stamped
+// in one call, before any kill, so a host session holding only our windows
+// never empties mid-rebuild. It carries our identity but no @bridge_win, and
+// survives the kill of every other own window.
 func TestRebuildPlaceholder(t *testing.T) {
 	var log callLog
 	id, ok := rebuildPlaceholder(placedTeardownConfig(&log, false))
@@ -103,6 +106,9 @@ func TestRebuildPlaceholder(t *testing.T) {
 	if slices.ContainsFunc(calls[:nw], func(c []string) bool { return c[0] == "kill-window" }) {
 		t.Errorf("a window was killed before the placeholder stood: %v", calls)
 	}
+	if !slices.ContainsFunc(calls[:nw], func(c []string) bool { return c[0] == "list-windows" }) {
+		t.Errorf("own windows were not listed before the placeholder was made: %v", calls)
+	}
 	if got, want := killedWindows(calls), []string{"@2", "@4"}; !slices.Equal(got, want) {
 		t.Errorf("killed %v, want the other own windows %v", got, want)
 	}
@@ -117,6 +123,87 @@ func TestRebuildPlaceholderWithALostPinMakesNothing(t *testing.T) {
 		if c[0] != "display-message" {
 			t.Errorf("rebuildPlaceholder over a lost pin ran %v", c)
 		}
+	}
+}
+
+// A listing that fails makes no placeholder: a window added then could never be
+// told from the ones to kill.
+func TestRebuildPlaceholderWithAFailedListingMakesNothing(t *testing.T) {
+	var log callLog
+	cfg := placedTeardownConfig(&log, false)
+	answer := cfg.LocalTmuxOut
+	cfg.LocalTmuxOut = func(args ...string) (string, error) {
+		if args[0] == "list-windows" {
+			log.add(args)
+			return "", errors.New("no server")
+		}
+		return answer(args...)
+	}
+	if id, ok := rebuildPlaceholder(cfg); ok || id != "" {
+		t.Errorf("rebuildPlaceholder over a failed listing = (%q, %v), want (\"\", false)", id, ok)
+	}
+	for _, c := range log.snapshot() {
+		if c[0] == "new-window" || c[0] == "kill-window" {
+			t.Errorf("rebuildPlaceholder over a failed listing ran %v", c)
+		}
+	}
+}
+
+// A placed startup sweeps the own windows a SIGKILLed predecessor left under
+// the same socket, keeping every window the registry mirrors into and touching
+// nothing that is not ours.
+func TestSweepStrayOwnWindows(t *testing.T) {
+	var log callLog
+	cfg := placedTeardownConfig(&log, false)
+	reflowed := 0
+	cfg.Reflow = func() { reflowed++ }
+	reg := newRegistry()
+	reg.add("@1", "@2")
+	sweepStrayOwnWindows(cfg, reg)
+	if got, want := killedWindows(log.snapshot()), []string{"@4"}; !slices.Equal(got, want) {
+		t.Errorf("swept %v, want only the stray own window %v", got, want)
+	}
+	if reflowed != 1 {
+		t.Errorf("reflowed %d times after a sweep, want 1", reflowed)
+	}
+}
+
+func TestSweepStrayOwnWindowsKeepsAllMirrored(t *testing.T) {
+	var log callLog
+	cfg := placedTeardownConfig(&log, false)
+	reflowed := 0
+	cfg.Reflow = func() { reflowed++ }
+	reg := newRegistry()
+	reg.add("@1", "@2")
+	reg.add("@5", "@4")
+	sweepStrayOwnWindows(cfg, reg)
+	if got := killedWindows(log.snapshot()); len(got) != 0 {
+		t.Errorf("swept %v with every own window mirrored", got)
+	}
+	if reflowed != 0 {
+		t.Errorf("reflowed %d times with nothing swept", reflowed)
+	}
+}
+
+func TestSweepStrayOwnWindowsWithALostPinKillsNothing(t *testing.T) {
+	var log callLog
+	sweepStrayOwnWindows(placedTeardownConfig(&log, true), newRegistry())
+	for _, c := range log.snapshot() {
+		if c[0] != "display-message" {
+			t.Errorf("sweepStrayOwnWindows over a lost pin ran %v", c)
+		}
+	}
+}
+
+// A dedicated session's windows all resolve the session-scoped @bridge_sock,
+// so a sweep there would read every window as its own: it never runs.
+func TestSweepStrayOwnWindowsSkipsADedicatedMirror(t *testing.T) {
+	var log callLog
+	cfg := placedTeardownConfig(&log, false)
+	cfg.Placed = false
+	sweepStrayOwnWindows(cfg, newRegistry())
+	if calls := log.snapshot(); len(calls) != 0 {
+		t.Errorf("sweepStrayOwnWindows on a dedicated mirror ran %v", calls)
 	}
 }
 

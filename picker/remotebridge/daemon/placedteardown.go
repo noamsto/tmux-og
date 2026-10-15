@@ -3,7 +3,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"slices"
 )
 
 // serverReplaced is a placed runMirror's errServerReplaced: it carries the
@@ -44,13 +43,50 @@ func closeOwnWindows(cfg Config, why string) {
 	killOwnWindows(cfg)
 }
 
-// rebuildPlaceholder is a placed rebuild's resetMirrorSession: it adds one
-// `sleep 2147483647` window to the host session, stamped with this daemon's
-// identity but no @bridge_win, then kills every other own window, and returns
-// the new window's id for the next run to claim. The window comes first so a
-// host session made only of our windows never empties mid-rebuild.
+// sweepStrayOwnWindows kills every own window a placed startup did not mirror
+// into: a daemon that died without its teardown (SIGKILL, a crash) left its
+// windows in the host session stamped with the socket path a relaunch reuses,
+// so they would otherwise count as this run's. It runs once the registry's
+// windows stand — the claimed placeholder among them, an unclaimed one already
+// dropped — so the host session never empties. Gated on the pin, as
+// killOwnWindows is.
+func sweepStrayOwnWindows(cfg Config, reg *registry) {
+	if !cfg.Placed || !ownsLocalSession(cfg) {
+		return
+	}
+	own, ok := ownWindows(cfg)
+	if !ok {
+		return
+	}
+	keep := map[string]bool{}
+	for _, w := range reg.all() {
+		keep[w.localWin] = true
+	}
+	swept := false
+	for _, w := range own {
+		if !keep[w] {
+			_ = cfg.LocalTmux("kill-window", "-t", w)
+			swept = true
+		}
+	}
+	if swept {
+		cfg.reflow()
+	}
+}
+
+// rebuildPlaceholder is a placed rebuild's resetMirrorSession: it lists the own
+// windows, adds one `sleep 2147483647` window to the host session, stamped
+// with this daemon's identity but no @bridge_win, then kills the listed ones,
+// and returns the new window's id for the next run to claim. The window comes
+// first so a host session made only of our windows never empties mid-rebuild;
+// the listing comes before it, so one that fails adds nothing.
 func rebuildPlaceholder(cfg Config) (string, bool) {
 	if !ownsLocalSession(cfg) {
+		return "", false
+	}
+	own, ok := ownWindows(cfg)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "daemon: list-windows %s failed; no rebuild placeholder\n", cfg.target())
 		return "", false
 	}
 	end := cfg.target() + ":{end}"
@@ -68,8 +104,7 @@ func rebuildPlaceholder(cfg Config) (string, bool) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return "", false
 	}
-	own, _ := ownWindows(cfg)
-	for _, w := range slices.DeleteFunc(own, func(w string) bool { return w == id }) {
+	for _, w := range own {
 		_ = cfg.LocalTmux("kill-window", "-t", w)
 	}
 	return id, true

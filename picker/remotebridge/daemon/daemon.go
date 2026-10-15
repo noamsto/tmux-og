@@ -338,9 +338,9 @@ func parseWindowID(s string) (string, error) {
 // difference; healDeadRenderers repairs it from there.
 //
 // A placed window's identity goes on before @bridge_win, so no gate fires on a
-// window with no socket of its own. createMirrorWindow already stamped it; a
-// claimed placeholder (the launcher's window, a placed rebuild's) was not made
-// there.
+// window with no socket of its own. createMirrorWindow and rebuildPlaceholder
+// already stamped it at creation; the re-stamp is an idempotent
+// belt-and-braces step.
 func stampMirrorWindow(cfg Config, localWin, remoteName string) {
 	for _, o := range mirrorIdentity(cfg) {
 		_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, o[0], o[1])
@@ -1398,6 +1398,7 @@ func runMirror(cfg Config) error {
 		return nil
 	}
 	dropUnclaimedPlaceholder(cfg, reg, placeholder)
+	sweepStrayOwnWindows(cfg, reg)
 
 	// Re-converge the remote whenever the local client resizes. A local resize
 	// emits no control-stream event, so poll (cheaply — see watchLocalClient);
