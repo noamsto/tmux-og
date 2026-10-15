@@ -47,7 +47,7 @@ var runTmuxOut = func(args ...string) (string, error) {
 
 var panePattern = regexp.MustCompile(`^%[0-9]+$`)
 
-const dragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}|#{P:#{pane_id}=#{@bridge_pane} }|#{window_layout}"
+const dragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{window_width}|#{window_height}|#{P:#{pane_id}=#{@bridge_pane} }|#{window_layout}|#{@bridge_sock}"
 
 // resolveDrag turns the local pane id a drag-end bind stashed into a daemon
 // request: float-geom for a float, tile-layout for a tiled pane. The bind
@@ -55,25 +55,28 @@ const dragFormat = "#{@bridge_pane}|#{pane_floating_flag}|#{pane_left}|#{pane_to
 // was released, and a `-t '#{…}'` target is never format-expanded. One
 // display-message reads the id map and the layout, so both describe the same
 // instant; mapping through @bridge_pane makes a desynced mirror an error
-// rather than a reshape of the wrong remote panes.
-func resolveDrag(localPane string) ([]string, error) {
+// rather than a reshape of the wrong remote panes. The returned sock is the
+// stashed pane's own daemon: in a shared session the release pane may belong
+// to another daemon, whose %N would collide. It is the last field because a
+// socket path may hold a |.
+func resolveDrag(localPane string) (args []string, sock string, err error) {
 	if !panePattern.MatchString(localPane) {
-		return nil, fmt.Errorf("drag: bad local pane %q", localPane)
+		return nil, "", fmt.Errorf("drag: bad local pane %q", localPane)
 	}
 	out, err := runTmuxOut("display-message", "-p", "-t", localPane, dragFormat)
 	if err != nil {
-		return nil, fmt.Errorf("drag: resolve %s: %w", localPane, err)
+		return nil, "", fmt.Errorf("drag: resolve %s: %w", localPane, err)
 	}
-	fields := strings.SplitN(strings.TrimSpace(out), "|", 10)
-	if len(fields) != 10 {
-		return nil, fmt.Errorf("drag: %s: want 10 fields, got %q", localPane, out)
+	fields := strings.SplitN(strings.TrimSpace(out), "|", 11)
+	if len(fields) != 11 {
+		return nil, "", fmt.Errorf("drag: %s: want 11 fields, got %q", localPane, out)
 	}
-	bridgePane, floating := fields[0], fields[1]
+	bridgePane, floating, sock := fields[0], fields[1], fields[10]
 	if !panePattern.MatchString(bridgePane) {
-		return nil, fmt.Errorf("drag: %s: not a mirror pane (bad @bridge_pane %q)", localPane, bridgePane)
+		return nil, "", fmt.Errorf("drag: %s: not a mirror pane (bad @bridge_pane %q)", localPane, bridgePane)
 	}
 	if floating == "1" {
-		return append([]string{"float-geom", bridgePane, localPane}, fields[2:8]...), nil
+		return append([]string{"float-geom", bridgePane, localPane}, fields[2:8]...), sock, nil
 	}
 
 	remoteByLocal := make(map[string]string)
@@ -90,9 +93,18 @@ func resolveDrag(localPane string) ([]string, error) {
 	}
 	L, err := controlmode.TiledLayout(fields[9], lookup)
 	if err != nil {
-		return nil, fmt.Errorf("drag: %s: %w", localPane, err)
+		return nil, "", fmt.Errorf("drag: %s: %w", localPane, err)
 	}
-	return []string{"tile-layout", bridgePane, L.Raw}, nil
+	return []string{"tile-layout", bridgePane, L.Raw}, sock, nil
+}
+
+// dialSock prefers the stashed pane's own daemon over the --sock the release
+// pane's context supplied.
+func dialSock(flagSock, stashed string) string {
+	if stashed != "" {
+		return stashed
+	}
+	return flagSock
 }
 
 func main() {
@@ -100,14 +112,12 @@ func main() {
 	displayError := flag.String("display-error", "", "tmux client to show request failures in")
 	flag.Parse()
 
-	if *sock == "" {
-		fail("no --sock (is this a bridge window?)")
-	}
 	if flag.NArg() < 2 {
 		fail("usage: ctl --sock <path> <verb> <remote-pane-id> [args...] | drag <local-pane-id>")
 	}
 
 	args := flag.Args()
+	dial := *sock
 	// The focus hook runs backgrounded, so its requests can reach the daemon out
 	// of order. Stamp a sequence here rather than in the keybind — tmux formats
 	// have no monotonic counter — so the daemon can drop a stale one.
@@ -115,7 +125,7 @@ func main() {
 		args = append(args, strconv.FormatInt(time.Now().UnixNano(), 10))
 	}
 	if args[0] == "drag" && len(args) == 2 {
-		resolved, err := resolveDrag(args[1])
+		resolved, stashed, err := resolveDrag(args[1])
 		if err != nil {
 			if *displayError != "" && showError(*displayError, err) == nil {
 				return
@@ -123,9 +133,13 @@ func main() {
 			fail(err.Error())
 		}
 		args = resolved
+		dial = dialSock(dial, stashed)
+	}
+	if dial == "" {
+		fail("no --sock (is this a bridge window?)")
 	}
 
-	if err := run(*sock, args); err != nil {
+	if err := run(dial, args); err != nil {
 		if *displayError != "" && showError(*displayError, err) == nil {
 			return
 		}

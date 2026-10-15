@@ -438,6 +438,12 @@ func bridgeSessionLegacyKey(name string) string {
 	return "legacy\x00" + name
 }
 
+// bridgeSessionFormat is the `list-sessions -F` every session-level bridge
+// reader shares. A shared session whose current window is a placed mirror
+// reads the window-scoped @bridge_*, so the guard blanks them: that session
+// is the user's own, never a mirror target.
+const bridgeSessionFormat = "#{session_name}|#{?#{@bridge_placed},,#{@bridge_host}}|#{?#{@bridge_placed},,#{@bridge_session}}"
+
 // parseBridgeSessions reads the session options that identify local mirror
 // sessions. Ordinary local sessions are deliberately ignored, even when their
 // names happen to equal the old <host>-<session> convention.
@@ -458,8 +464,7 @@ func parseBridgeSessions(raw string) map[string]bool {
 }
 
 func collectBridgeSessions() map[string]bool {
-	out, err := exec.Command("tmux", "list-sessions", "-F",
-		"#{session_name}|#{@bridge_host}|#{@bridge_session}").Output()
+	out, err := exec.Command("tmux", "list-sessions", "-F", bridgeSessionFormat).Output()
 	if err != nil {
 		return nil
 	}
@@ -471,7 +476,7 @@ func bridgeSessionPresent(bridges map[string]bool, host, sess string) bool {
 }
 
 // parseBridgeMirrors is the pure parse of `tmux list-sessions -F
-// "#{session_name}|#{@bridge_host}|#{@bridge_session}"` output into the
+// bridgeSessionFormat` output into the
 // mirrors it describes. A row with no @bridge_host isn't a mirror. A row
 // with @bridge_session empty (legacy bridge, no option set) derives sess by
 // stripping the "<host>-" prefix off the session name — same convention
@@ -501,8 +506,7 @@ func parseBridgeMirrors(raw string) []bridgeMirror {
 // collectBridgeMirrors runs the tmux call. Off-thread only — see tui.go's
 // refreshDataCmd, the same rule as every other tmux/ps fork here.
 func collectBridgeMirrors() []bridgeMirror {
-	out, err := exec.Command("tmux", "list-sessions", "-F",
-		"#{session_name}|#{@bridge_host}|#{@bridge_session}").Output()
+	out, err := exec.Command("tmux", "list-sessions", "-F", bridgeSessionFormat).Output()
 	if err != nil {
 		return nil
 	}
@@ -1400,23 +1404,33 @@ func bridgePIDFromFile(raw string) (pid int, ok bool) {
 	return n, true
 }
 
-// stopBridgeDaemon best-effort SIGTERMs the remote-bridge daemon mirroring
-// sess, found via the @bridge_sock session option the daemon stamps on
-// itself. All failures are swallowed: this is opportunistic cleanup, not a
-// required step — og-remote-open.sh's stale-daemon check self-heals on
-// the next reopen regardless of whether this signal lands. The daemon's own
-// SIGTERM handler already tears itself down (removes its socket/pidfile,
-// exits), so this only needs to deliver the signal.
+// stopBridgeDaemon best-effort SIGTERMs every remote-bridge daemon mirroring
+// into sess, found via the @bridge_sock each daemon stamps: on the session in
+// dedicated mode (one daemon), on its own windows in a shared session (one
+// per placed mirror, all of which die with the session). All failures are
+// swallowed: this is opportunistic cleanup, not a required step —
+// og-remote-open.sh's stale-daemon check self-heals on the next reopen
+// regardless of whether this signal lands. The daemon's own SIGTERM handler
+// already tears itself down (removes its socket/pidfile, exits), so this only
+// needs to deliver the signal.
 func stopBridgeDaemon(sess string) {
 	logEvent("picker", "event", "stop_bridge_daemon", "target", sess)
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", sess, "#{@bridge_sock}").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
+	out, err := exec.Command("tmux", "list-panes", "-s", "-t", sess, "-F", "#{@bridge_sock}").Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
 		return
 	}
-	sock := strings.TrimSpace(string(out))
-	if sock == "" {
-		return
+	signalled := make(map[string]bool)
+	for line := range strings.SplitSeq(string(out), "\n") {
+		sock := strings.TrimSpace(line)
+		if sock == "" || signalled[sock] {
+			continue
+		}
+		signalled[sock] = true
+		signalBridgeDaemon(sock)
 	}
+}
+
+func signalBridgeDaemon(sock string) {
 	raw, err := os.ReadFile(sock + ".pid") //nolint:gosec // G304: path built from trusted local state, not user input
 	if err != nil {
 		return

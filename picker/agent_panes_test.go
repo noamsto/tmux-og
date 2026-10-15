@@ -182,7 +182,7 @@ func TestCollectAgentPanesUntrustedDirReturnsNil(t *testing.T) {
 	writePaneStateFile(t, filepath.Join(root, "panes"), "1", "processing", 1000, "session=s\n")
 	t.Setenv("CLAUDE_STATUS_DIR", root)
 
-	snap := panesSnapshot{"%1|s|0||||||||"}
+	snap := panesSnapshot{"%1|s|0|||||||||"}
 	if panes := collectAgentPanes(snap); panes != nil {
 		t.Fatalf("collectAgentPanes() on an untrusted root = %+v, want nil", panes)
 	}
@@ -198,7 +198,7 @@ func TestCollectAgentPanesTrustedDirReturnsPanes(t *testing.T) {
 	writePaneStateFile(t, filepath.Join(root, "panes"), "1", "processing", 1000, "session=s\n")
 	t.Setenv("CLAUDE_STATUS_DIR", root)
 
-	snap := panesSnapshot{"%1|s|0||||||||"}
+	snap := panesSnapshot{"%1|s|0|||||||||"}
 	panes := collectAgentPanes(snap)
 	if len(panes) != 1 || panes[0].state != "processing" {
 		t.Fatalf("collectAgentPanes() on a trusted root = %+v, want one processing pane", panes)

@@ -26,15 +26,18 @@ fi
 [[ $(tmux show-options -gv @og_theme_applied 2>/dev/null) == "$theme" ]] && exit 0
 tmux set-option -g @og_theme_applied "$theme"
 
-# The socket leads so a session name holding the delimiter cannot shift it: read
-# gives everything after the first | to the last variable.
-while IFS='|' read -r sock sess; do
-	[[ -n $sock ]] || continue
-	# Any mirrored pane in the session reaches the daemon; the verb is
-	# session-wide, and the pane only rides along because every verb takes one.
-	pane="$(tmux list-panes -s -t "=$sess" -F '#{@bridge_pane}' 2>/dev/null | grep -m1 .)" || continue
+# One verb per daemon socket: a host session may carry several placed mirrors,
+# each with its own daemon. The verb is daemon-wide, and the pane only rides
+# along because every verb takes one, so the first mirrored pane of a socket is
+# enough. Split on the last | (a socket path may hold one, a pane id never does).
+declare -A sent
+while IFS= read -r row; do
+	sock="${row%|*}"
+	pane="${row##*|}"
+	[[ -n $sock && -n $pane && -z ${sent[$sock]:-} ]] || continue
+	sent[$sock]=1
 	"$ctl" --sock "$sock" theme "$pane" "$theme" >/dev/null 2>&1
-done < <(tmux list-sessions -F '#{@bridge_sock}|#{session_name}' 2>/dev/null)
+done < <(tmux list-panes -a -F '#{@bridge_sock}|#{@bridge_pane}' 2>/dev/null)
 
 # An unreachable daemon leaves one mirror in the old flavour; it does not make
 # the reload that called this a failure.

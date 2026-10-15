@@ -601,6 +601,31 @@ func TestRenderWindowItemsBridgeName(t *testing.T) {
 	}
 }
 
+// A placed mirror window sits in a session the user owns, so its host shows on
+// the window row; the session's local windows beside it show none.
+func TestRenderWindowItemsPlacedWindowShowsHostCell(t *testing.T) {
+	windows := []windowData{
+		{session: "s", index: 1, name: "local", labelID: "L ENG-1"},
+		{session: "s", index: 2, name: "remote", bridgeName: "ZULU", bridgeHost: "lab"},
+	}
+	items := renderWindowItems(windows, map[string]string{}, nil, "dark", 0, false)
+	var rows []string
+	for _, it := range items {
+		if !it.isHeader && !it.isColumnHeader {
+			rows = append(rows, it.plain)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want 2 window rows, got %d", len(rows))
+	}
+	if !strings.Contains(rows[1], "lab") {
+		t.Errorf("placed window row should render its host cell; got %q", rows[1])
+	}
+	if strings.Contains(rows[0], "lab") {
+		t.Errorf("local window row must not render a host cell; got %q", rows[0])
+	}
+}
+
 func TestRenderWindowItemsBridgeNameOutrankedByIssueAndBranch(t *testing.T) {
 	// bridgeName must sit after issue and non-default-branch identity in the
 	// chain, matching the status bar's priority (though a real bridge window

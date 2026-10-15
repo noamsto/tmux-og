@@ -84,8 +84,8 @@ func TestDecodeBridgeName(t *testing.T) {
 func TestSessionHeaderLabelsAndAlignment(t *testing.T) {
 	t.Setenv("HOME", "/home/noams")
 	snap := panesSnapshot{
-		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
-		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src|",
+		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1||||",
+		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src||",
 	}
 	items := buildSessionItems(nil, snap, nil, "dark", false, "")
 	hdr := items[0]
@@ -129,8 +129,8 @@ func TestSessionHeaderLabelsAndAlignment(t *testing.T) {
 // when non-empty (#513).
 func TestSessionsBridgeProcOverride(t *testing.T) {
 	snap := panesSnapshot{
-		"%1|mirror-sess|0|/home/noams/git/tmux-og|1900000300|tp-g6|fish|1|claude|/srv/remote/repo|",
-		"%2|local-sess|0|/home/noams/src|1900000200||bash|2||/ignored|",
+		"%1|mirror-sess|0|/home/noams/git/tmux-og|1900000300|tp-g6|fish|1|claude|/srv/remote/repo||",
+		"%2|local-sess|0|/home/noams/src|1900000200||bash|2||/ignored||",
 	}
 	sessions := snap.sessions()
 	byName := map[string]sessionData{}
@@ -220,8 +220,8 @@ func TestSortSessionsForDisplay(t *testing.T) {
 // the flag sinkCurrentMatchBelowPeer reads once a query is typed.
 func TestBuildSessionItemsMarksCurrent(t *testing.T) {
 	snap := panesSnapshot{
-		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
-		"%2|g6-tmux-og|0|/home/noams/src|1900000100|g6|fish|2||/home/noams/src|",
+		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1||||",
+		"%2|g6-tmux-og|0|/home/noams/src|1900000100|g6|fish|2||/home/noams/src||",
 	}
 	items := buildSessionItems(nil, snap, nil, "dark", false, "tmux-og")
 	// items[0] is the column-header row.
@@ -583,8 +583,8 @@ func TestWindowCursorFallsBackWithoutCurrent(t *testing.T) {
 func TestSessionRowsDeclutter(t *testing.T) {
 	t.Setenv("HOME", "/home/noams")
 	snap := panesSnapshot{
-		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1|||",
-		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src|",
+		"%1|tmux-og|0|/home/noams/git/tmux-og|1900000300||fish|1||||",
+		"%2|tp-g6-money|0|/home/noams/src|1900000200|tp-g6|fish|1||/home/noams/src||",
 	}
 	items := buildSessionItems(nil, snap, nil, "dark", false, "")
 	for _, it := range items[1:] {
@@ -637,5 +637,77 @@ func TestSessionResourceColors(t *testing.T) {
 		if cpu != c.wantCPU || mem != c.mem {
 			t.Errorf("%s: got cpu=%q mem=%q, want cpu=%q mem=%q", c.name, cpu, mem, c.wantCPU, c.mem)
 		}
+	}
+}
+
+// @bridge_placed is the snapshot's last field so no earlier field shifts.
+func TestPanesSnapshotArgvEndsWithBridgePlaced(t *testing.T) {
+	argv := panesSnapshotArgv()
+	format := argv[len(argv)-1]
+	if !strings.HasSuffix(format, "|#{@bridge_placed}") {
+		t.Fatalf("snapshot format = %q, want it to end with |#{@bridge_placed}", format)
+	}
+	if n := strings.Count(format, "|") + 1; n != 12 {
+		t.Fatalf("snapshot format has %d fields, want 12", n)
+	}
+}
+
+// A placed mirror window lives in the user's own session, so its host, path and
+// resources must not label the whole session as a mirror. A later unflagged row
+// of the same session still sets them (a dedicated session never has the flag).
+func TestSessionsIgnorePlacedRowsForSessionLevelFields(t *testing.T) {
+	snap := panesSnapshot{
+		"%1|shared|0|/home/noams/src|1900000300|lab|renderer|1|claude|/srv/r|9.0 100 10 1 claude|1",
+		"%2|shared|1|/home/noams/src|1900000200||fish|2||||",
+		"%3|dedicated|0|/home/noams/src|1900000100|lab|renderer|3|claude|/srv/d|1.0 10 1 1 claude|",
+	}
+	byName := map[string]sessionData{}
+	for _, s := range snap.sessions() {
+		byName[s.name] = s
+	}
+	shared := byName["shared"]
+	if shared.bridgeHost != "" || shared.bridgeRes != "" {
+		t.Errorf("shared session took a placed row's host/res: %+v", shared)
+	}
+	if shared.path != "/home/noams/src" {
+		t.Errorf("shared session path = %q, want the local session_path", shared.path)
+	}
+	if len(shared.procs) != 2 {
+		t.Errorf("shared procs = %v, want the placed row's process still counted", shared.procs)
+	}
+	if d := byName["dedicated"]; d.bridgeHost != "lab" || d.path != "/srv/d" || !strings.HasPrefix(d.bridgeRes, "1.0 ") {
+		t.Errorf("dedicated mirror lost its session-level fields: %+v", d)
+	}
+}
+
+func TestSessionsLaterUnplacedRowSetsSessionFields(t *testing.T) {
+	snap := panesSnapshot{
+		"%1|mixed|0|/p|1900000300|lab|renderer|1|claude|/srv/r|9.0 100 10 1 claude|1",
+		"%2|mixed|1|/p|1900000200|lab|renderer|2|claude|/srv/d|1.0 10 1 1 claude|",
+	}
+	got := snap.sessions()
+	if len(got) != 1 {
+		t.Fatalf("sessions() = %+v, want one", got)
+	}
+	if got[0].bridgeHost != "lab" || got[0].path != "/srv/d" || !strings.HasPrefix(got[0].bridgeRes, "1.0 ") {
+		t.Errorf("later unflagged row did not set the session fields: %+v", got[0])
+	}
+}
+
+func TestPaneMapReadsTwelveFieldRows(t *testing.T) {
+	snap := panesSnapshot{
+		"%4|shared|3|/p|1900000300|lab|renderer|1|claude|/srv/r|9.0 100 10 1 claude|1",
+		"%5|local|0|/p|1900000300||fish|2||||",
+		"%6|stale|0|/p|1900000300||fish|2||",
+	}
+	pm := snap.paneMap()
+	if got := pm["4"]; got.session != "shared" || got.winIdx != 3 {
+		t.Errorf("paneMap()[4] = %+v, want shared window 3 (placed rows are still panes)", got)
+	}
+	if got := pm["5"]; got.session != "local" {
+		t.Errorf("paneMap()[5] = %+v, want local", got)
+	}
+	if _, ok := pm["6"]; ok {
+		t.Error("paneMap() accepted an 11-field row")
 	}
 }

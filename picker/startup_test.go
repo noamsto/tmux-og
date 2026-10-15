@@ -150,7 +150,7 @@ func TestDumpFirstFrameChainsTmuxReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	paneRow := func(id, sess string) string {
-		return strings.Join([]string{id, sess, "0", plain, "100", "", "fish", "0", "", "", ""}, "|")
+		return strings.Join([]string{id, sess, "0", plain, "100", "", "fish", "0", "", "", "", ""}, "|")
 	}
 	winRow := func(sess, path string) string {
 		return windowPaneRow(sess, "0", "name", "0", "fish", "1", "", path)
