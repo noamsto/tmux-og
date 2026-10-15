@@ -37,18 +37,21 @@ const mainLoopTickInterval = 5 * time.Second
 // @window_label_rest_long is the one free-form field left unwrapped, and must
 // stay last: a '|' inside it then lands in itself instead of shifting the row.
 // Position 14 resolves worktree||git_root on the remote — one field, one
-// authority — so no consumer re-implements that fallback.
+// authority — so no consumer re-implements that fallback. Positions 20 and 21
+// are the dispatcher's @crew_branch/@crew_id, placed before the label pair so
+// that rest_long stays last.
 // Unquoted: it is both a -F argument and a subscription format, and only the
 // call site knows which quoting each needs.
 const windowLabelFormat = "#{window_id}|#{@crew_name}|#{@crew_color}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@window_pr_plain}|" +
 	"#{s/[|]/ /:@issue_provider}|#{s/[|]/ /:@issue_id}|#{s/[|]/ /:@issue_url}|#{s/[|]/ /:@pr_url}|#{s/[|]/ /:@pr_draft}|" +
 	"#{s/[|]/ /:@branch}|#{s/[|]/ /:#{?@worktree,#{@worktree},#{@git_root}}}|#{s/[|]/ /:@issue_title}|#{s/[|]/ /:@pr_title}|" +
 	"#{s/[|]/ /:@pr_review}|#{s/[|]/ /:@pr_auto_merge}|#{s/[|]/ /:@pr_check_progress}|" +
+	"#{s/[|]/ /:@crew_branch}|#{s/[|]/ /:@crew_id}|" +
 	"#{@window_label_id}|#{@window_label_rest_long}"
 
 // windowLabelFields is windowLabelFormat's field count, shared with the test
 // fixture so the parser and the fixture cannot drift apart.
-const windowLabelFields = 22
+const windowLabelFields = 24
 
 // labelRow is one remote window's carried label state, already sanitized and
 // validated. Comparable, so the unchanged-row check is a struct compare.
@@ -73,6 +76,8 @@ type labelRow struct {
 	prReview      string
 	prAutoMerge   string
 	prProgress    string
+	crewBranch    string
+	crewID        string
 	labelID       string
 	labelRest     string
 }
@@ -91,6 +96,8 @@ var bridgeLabelOptions = []struct {
 }{
 	{"@bridge_crew_name", func(r labelRow) string { return r.crewName }},
 	{"@bridge_crew_color", func(r labelRow) string { return r.crewColor }},
+	{"@bridge_crew_branch", func(r labelRow) string { return r.crewBranch }},
+	{"@bridge_crew_id", func(r labelRow) string { return r.crewID }},
 	{"@bridge_pr_number", func(r labelRow) string { return r.prNumber }},
 	{"@bridge_pr_state", func(r labelRow) string { return r.prState }},
 	{"@bridge_pr_check_state", func(r labelRow) string { return r.prCheck }},
@@ -122,12 +129,14 @@ const (
 	// sharing labelTextMaxRunes: a Linear issue URL routinely passes 120, 255 is
 	// git's refname limit and 4096 is PATH_MAX. A value over its cap is dropped,
 	// so a cap that is too small is a field that silently never arrives.
-	providerMaxRunes = 16
-	issueIDMaxRunes  = 64
-	urlMaxRunes      = 512
-	prDraftMaxRunes  = 1
-	branchMaxRunes   = 255
-	dirMaxRunes      = 4096
+	providerMaxRunes   = 16
+	issueIDMaxRunes    = 64
+	urlMaxRunes        = 512
+	prDraftMaxRunes    = 1
+	branchMaxRunes     = 255
+	crewBranchMaxRunes = 255
+	crewIDMaxRunes     = 64
+	dirMaxRunes        = 4096
 
 	reviewMaxRunes   = 17 // len("changes_requested")
 	progressMaxRunes = 16
@@ -146,6 +155,11 @@ var (
 	urlRe     = regexp.MustCompile(`^https?://\S+$`)
 	prDraftRe = regexp.MustCompile(`^1$`)
 	branchRe  = regexp.MustCompile(`^\S+$`)
+	// crewBranchRe and crewIDRe gate values the crew dispatcher stamps and the
+	// local picker later passes on as git/CLI arguments, so a leading '-' or any
+	// shell or tmux metacharacter is dropped rather than carried.
+	crewBranchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/+-]*$`)
+	crewIDRe     = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	// dirRe rejects a path containing a space, which is a legal worktree path:
 	// the value crosses a '|'-delimited row and, for the card, a --dir argument,
 	// and an absent dir line is correct-but-incomplete where a shifted row is
@@ -200,8 +214,10 @@ func parseWindowLabels(body string) []labelRow {
 			prReview:      matching(cleanLabelValueExact(at(17), reviewMaxRunes), reviewRe),
 			prAutoMerge:   matching(cleanLabelValueExact(at(18), prDraftMaxRunes), prDraftRe),
 			prProgress:    matching(cleanLabelValueExact(at(19), progressMaxRunes), progressRe),
-			labelID:       cleanLabelValue(at(20), labelTextMaxRunes),
-			labelRest:     cleanLabelValue(at(21), labelTitleMaxRunes),
+			crewBranch:    matching(cleanLabelValueExact(at(20), crewBranchMaxRunes), crewBranchRe),
+			crewID:        matching(cleanLabelValueExact(at(21), crewIDMaxRunes), crewIDRe),
+			labelID:       cleanLabelValue(at(22), labelTextMaxRunes),
+			labelRest:     cleanLabelValue(at(23), labelTitleMaxRunes),
 		})
 	}
 	return out
