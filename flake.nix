@@ -2617,7 +2617,7 @@
               # gawk splits a stockmenus.txt line into its table/key fields;
               # gnused extracts the %if…%endif block and the conf's version
               # literal. grep -P finds the verb after `--sock=#+{q:@bridge_sock}`.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
               TMUX_BIN = "${menuBindTmuxConfig.tmux-wrapped}/bin/tmux";
               TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
               CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
@@ -2640,7 +2640,9 @@
               CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
               [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
               export CTL_PROTOCOL_VERSION
-              bats tests/menu-bind-integration.bats
+              # A server leaked by a failing case holds bats' pipe open and
+              # stalls the run to the job timeout; bound it instead.
+              timeout 600 bats tests/menu-bind-integration.bats
               touch $out
             '';
 
