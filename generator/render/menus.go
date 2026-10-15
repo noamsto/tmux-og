@@ -85,6 +85,7 @@ func mirrorWindowMenu(p *paths.Paths, pos string) string {
 const paneMenuLocalItems = `"#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}" < { send-keys -X history-top }` +
 	` "#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Bottom,}" > { send-keys -X history-bottom } ''` +
 	` "#{?#{==:#{pane_mode},copy-mode},#{?copy_line_numbers,Hide Line Numbers,Show Line Numbers},}" L { send-keys -X line-numbers-toggle }` +
+	` "#{?#{==:#{pane_mode},copy-mode},Edit,}" e { if-shell -F "#{selection_present}" { send-keys -X open-selection } { send-keys -X open-output } }` +
 	` "#{?#{==:#{pane_mode},copy-mode},#{?refresh_active,Refresh Off,Refresh On},}" r { send-keys -X refresh-toggle } ''` +
 	` "#{?#{&&:#{buffer_size},#{!:#{pane_in_mode}}},Paste #[underscore]#{=/9/...:buffer_sample},}" p { paste-buffer } ''` +
 	` "#{?mouse_word,Search For #[underscore]#{=/9/...:mouse_word},}" C-r { if-shell -F "#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}" "copy-mode -t=" ; send-keys -X -t = search-backward -- "#{q:mouse_word}" }` +
@@ -97,7 +98,8 @@ const paneMenuLocalItems = `"#{?#{m/r:(copy|view)-mode,#{pane_mode}},Go To Top,}
 // mirrorPaneMenu keeps two distinct gestures: Respawn asks the REMOTE to
 // restart the program in the pane (stock label and key), and Reconnect redials
 // the local renderer (#547) — the un-wedge gesture, moved off R because one
-// menu cannot carry two items on one key.
+// menu cannot carry two items on one key. In copy mode the stock Edit item
+// also holds e and wins the keypress, so Reconnect is mouse-only there.
 func mirrorPaneMenu(p *paths.Paths, pos string) string {
 	return `display-menu -T "#[align=centre]#{pane_index} (#{pane_id})" ` + pos + " " + paneMenuLocalItems +
 		` "#{?#{!:#{pane_floating_flag}},Horizontal Split,}" h { ` + esc1(ctlRun(p, "split-h", "")) + ` }` +

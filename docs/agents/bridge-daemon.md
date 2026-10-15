@@ -528,7 +528,7 @@ Inventory, measured with `list-keys` on a scratch server of the pinned
 
 | Item | Stock command | On a mirror |
 |---|---|---|
-| Go To Top/Bottom, Line Numbers, Refresh, Search For / Copy word, line, hyperlink | copy-mode `send-keys -X …`, `set-buffer` | local — the renderer pane's own copy mode |
+| Go To Top/Bottom, Line Numbers, Edit, Refresh, Search For / Copy word, line, hyperlink | copy-mode `send-keys -X …`, `set-buffer` | local — the renderer pane's own copy mode. Edit (`e`, next-3.9: `open-selection`/`open-output`) shows only in copy mode and opens a local modal editor float, like any popup; there it shadows Reconnect's `e` (mouse still reaches Reconnect) |
 | Paste, Type word / hyperlink | `paste-buffer`, `send-keys -l` | local — pane input, already forwarded by the renderer |
 | Move, Move & Resize, Tile, Float | `move-pane -P`, `resize-pane -x/-y`, `join-pane`, `break-pane -W` | hidden — no ctl verb for the presets or for tiling (a mouse border drag does route: a float's via `float-geom`, #797, a tiled divider via `tile-layout`, #823) |
 | Horizontal Split / Vertical Split | `split-window -h` / `-v` | ctl `split-h` / `split-v` |
