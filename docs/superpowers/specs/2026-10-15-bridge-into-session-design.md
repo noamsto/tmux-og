@@ -129,9 +129,10 @@ it falls back to the session copy:
 carries a window-scoped `@bridge_host`, and no new marker is needed for this
 test.
 
-`#{@bridge_win}` is not that test. The daemon sets it last, after
-`setupWindow`'s renderer spawn, as the gate's "renderer is up" half. The rebuild
-placeholder deliberately lacks it.
+`#{@bridge_win}` is not that test. `stampMirrorWindow` sets it in a separate
+`set-option` after the `new-window` (before `setupWindow` spawns the
+renderer), so a redraw could see the window without it. The rebuild
+placeholder never gets it.
 
 **Set before the window is first drawn.** `createMirrorWindow` issues
 `new-window -d -P -F '#{window_id}' -a -t <T>:{end}` and, in the same `tmux`
@@ -147,18 +148,17 @@ them runs synchronously, between `new-window` and the joined `set-option`s:
 
 The local per-window scripts that opt out of mirrors
 (`tmux-reconcile-window`, `tmux-issue-stamp`, `tmux-pr-enrich`) key on
-`@bridge_win`, which is set only once the renderer is up. They can therefore
+`@bridge_win`, which a separate `set-option` sets after the `new-window`. They can therefore
 stamp `@issue_*`/`@pr_*` on a fresh placed window from its cwd before it opts
 out. That residue is the one dedicated mirrors already carry. Every reader of
 a `@bridge_win` window prefers `@bridge_*`, and the enrich card reads only
 those (#598). Accepted: switching those opt-outs to `@bridge_host` would
 change three scripts' local behaviour for no reader-visible gain. `{end}`
 names the window `-a` just appended, since `-a` after the session's last
-window makes it the new last one. `stampMirrorWindow` still re-stamps all
-four afterwards (idempotent, placed only), because the claimed placeholder of
-a placed rebuild was not created by `createMirrorWindow`. `rebuildPlaceholder`
-stamps the same four identity options in its own create command, so the
-placeholder is marked from birth.
+window makes it the new last one. `rebuildPlaceholder` stamps the same four
+identity options in its own create command, so the placeholder is marked from
+birth, and its ownership depends on that. `stampMirrorWindow` still re-stamps
+all four afterwards (placed only), an idempotent belt-and-braces step.
 
 **Visible: host badge on the tab.** A placed window's tab shows
 `<@icon_remote> <@bridge_host>` in `@thm_peach`, right after `index: ` and
@@ -324,11 +324,14 @@ unrelated window.
   tombstone ending also sends one `notifyLocal` message with
   `tombstoneText`/`reopenFailedText`. No tombstone window is left: the
   contract says all of the daemon's windows close when it exits.
-- **Rebuild** (`errServerReplaced`): create one `sleep 2147483647` window in
-  `$N` stamped with our `@bridge_sock` and `@bridge_placed` (no
-  `@bridge_win`), kill every other own window, and carry the new window's id
-  into the next run as `cfg.placeholder`. Creating it first means a host
-  session made only of our windows never empties mid-rebuild. The next run's
+- **Rebuild** (`errServerReplaced`): list the own windows, create one
+  `sleep 2147483647` window in `$N` stamped with our `@bridge_sock` and
+  `@bridge_placed` (no `@bridge_win`), kill the listed windows, and carry the
+  new window's id into the next run as `cfg.placeholder`. Creating it first
+  means a host session made only of our windows never empties mid-rebuild.
+  Listing before it means a failed listing logs and adds nothing, as
+  `resetMirrorSession` does, rather than leaving a window that cannot be told
+  from the ones to kill. The next run's
   startup claims it exactly as dedicated mode claims the launcher's window.
   Until it is claimed it has no `@bridge_win`, so `after-new-window` and the
   local pollers treat it as a local window and may stamp `@issue_*`/`@pr_*`
@@ -338,6 +341,14 @@ unrelated window.
   the placeholder lives for one rebuild's dial.
 - **Host session gone** (`localSessionVanished`): skip every kill. The windows
   went with it.
+- **Relaunch after a crash.** A daemon that died without teardown (SIGKILL, a
+  crash) leaves its windows in `$N`, dead renderers kept by `remain-on-exit`,
+  stamped with the `@bridge_sock` a relaunch reuses, so they would count as the
+  new run's own. Once placed startup has mirrored its windows
+  (`mirrorStartupWindows`, `reconcileWindows`, `dropUnclaimedPlaceholder`),
+  `sweepStrayOwnWindows` kills every own window the registry does not hold,
+  gated on the pin. Running after startup keeps the host session from ever
+  emptying.
 - **A host session made only of our windows.** The user may have closed every
   local window. tmux then destroys the session when the exit path kills our
   last window. This is accepted. The daemon still never runs `kill-session`,
@@ -371,36 +382,52 @@ Placed flow, in order:
 2. **Refuse a dedicated mirror session as host.** If session-scoped
    `show-options -qv -t $N @bridge_host` or `@bridge_sock` is set, exit 1. That
    session's own daemon would kill it on teardown.
-3. **Remote probe**, as today: the `sess` canonicalisation and the `win`
-   lookup. The cold-start, restore and new-dir branches are not reachable
-   (rejected above). A remote session that does not exist has no active
-   window, which is today's "session '…' has no window on <host>" exit 1.
-4. **Socket key.** `sock="$sock_dir/og-into-<k>.sock"`, where `<k>` is
-   `cksum` (POSIX) over host, canonical session, local server pid and `$N`,
-   NUL-separated. The id and pid make the key survive a rename of the host
-   session and tell apart a recreated namesake. The fixed short prefix keeps
-   the path under the 104-byte `AF_UNIX` limit.
-5. **Serialise per key.** The daemon listens and writes its pidfile only
-   after its ssh dial and first remote reads (`daemon.go:1074-1093`). Until
-   then a probe reads it as absent, so two concurrent calls for one key would
-   both launch. The launcher therefore takes a per-key lock, `mkdir
-   "${sock}.lock"`, before probing. `flock` is absent on macOS; `mkdir` is
-   atomic on every platform. The lock directory holds the holder's pid in
-   `owner`. A waiter polls every 0.1s for at most 60s, which is above the
-   daemon's 30s identity deadline plus its startup reads. A lock is stale when
-   its `owner` pid is dead, or when `owner` is still empty after 5s (the
-   window between `mkdir` and the `owner` write).
-   - The waiter takes over a stale lock by `mv`-ing it to a name unique to
-     itself (`${sock}.lock.stale.$$`). That rename is atomic, so exactly one
-     of several waiters wins it. The winner removes the moved directory and
-     retries `mkdir`.
-   - A loser's `mv` fails and it keeps waiting, so it can never remove a
-     lock that another waiter has just re-acquired.
-   - `on_signal` and every exit path of the holder remove the lock (an `EXIT`
-     trap).
-6. **Idempotence** (under the lock). `probe_daemon "$sock"` `live` → release,
-   exit 0. No `switch-client`, no new window, nothing else touched.
-   `outdated` or a recycled pid → reap it and fall through. Stale files → `rm`.
+3. **Socket key.** `sock="$sock_dir/og-into-<k>.sock"`, where `<k>` is
+   `cksum` (POSIX) over host, the caller's exact remote session, local server
+   pid and `$N`, NUL-separated. Placed mode never canonicalises the remote
+   name (step 6), so the key needs no ssh. The id and pid make the key survive
+   a rename of the host session and tell apart a recreated namesake. The fixed
+   short prefix keeps the path under the 104-byte `AF_UNIX` limit.
+4. **Serialise per key**, before any ssh. The daemon listens and writes its
+   pidfile only after its ssh dial and first remote reads
+   (`daemon.go:1074-1093`). Until then a probe reads it as absent, so two
+   concurrent calls for one key would both launch. The launcher therefore
+   takes a per-key lock, `mkdir "${sock}.lock"`, and holds it through steps
+   5-8. `flock` is absent on macOS; `mkdir` is atomic on every platform. The
+   lock directory holds the holder's pid in `owner`. A waiter polls every 0.1s
+   for at most 60s, which is above the daemon's 30s identity deadline plus its
+   startup reads. A lock is stale when its `owner` pid is dead, or when
+   `owner` stays empty for 5s on the same directory (the window between
+   `mkdir` and the `owner` write).
+   - A rename alone does not make takeover safe. Waiter B judges the lock
+     stale; waiter A takes it over and re-acquires it; B's `mv` then succeeds
+     on A's fresh lock, and both hold it. So breaking is serialised by a
+     second mutex, `mkdir "${sock}.lock.break"`: only its holder may break.
+   - Under that mutex the breaker re-checks that the lock still has the
+     identity it judged stale: the same `owner` pid, or, for an empty
+     `owner`, the same directory inode (`ls -di`) recorded when it was first
+     judged. Only then does it `mv` the lock to `${sock}.lock.stale.$$`,
+     remove that, and `rmdir` the mutex. A waiter that cannot take the mutex
+     keeps waiting.
+   - A breaker killed inside its millisecond critical section leaves the
+     mutex behind. A waiter that finds it older than 5s (mtime by GNU `stat
+     -c %Y`, falling back to BSD `stat -f %m`) removes it.
+   - `on_signal` and every exit path of the holder release the lock (an
+     `EXIT` trap), and only while `owner` still holds the holder's own `$$`.
+     A holder whose `owner` write failed may have had its lock broken, and
+     the lock at that path is then another caller's.
+5. **Idempotence** (under the lock, before any ssh). `probe_daemon "$sock"`
+   `live` → release, exit 0. No ssh, no `switch-client`, no new window,
+   nothing else touched, so a repeat call succeeds even while the host is
+   unreachable. `outdated` or a recycled pid → reap it and fall through. Stale
+   files → `rm`.
+6. **Remote probe** (under the lock), without today's prefix fallback: the
+   placed probe resolves only the active window of exactly `=$sess`. An empty
+   window means the remote has no session by that exact name: exit 1
+   (`og-remote-open: no session named exactly '<sess>' on <host>`), with no
+   daemon launched. The probe's echoed session name never replaces the
+   caller's. The cold-start, restore and new-dir branches are not reachable
+   (rejected above).
 7. **Launch** the daemon detached, exactly as today, with:
    - `OG_DAEMON_LOCAL_SESS=<name>`;
    - `OG_DAEMON_INTO=$N`;
@@ -496,7 +523,11 @@ dedicated-mode code paths):
     `@bridge_sock` reaches its own daemon (a ctl verb through each lands on the
     right remote), and each daemon's exit removes only its own windows;
   - a `host` holding only placed windows: daemon exit ends the session, and no
-    `kill-session` is issued (accepted behaviour, pinned).
+    `kill-session` is issued (accepted behaviour, pinned);
+  - a relaunch on the same `--sock` after a SIGKILLed daemon sweeps the dead
+    windows it left: the window count equals the remote's, no dead pane left;
+  - detaching a placed window whose daemon was SIGKILLed kills its windows and
+    leaves the local window intact.
 - **Launcher** (`tests/mirror-session-name-integration.bats`'s
   real-launcher/fake-daemon harness, or `tests/remote.bats`):
   - missing local session → exit 1 with no ssh;

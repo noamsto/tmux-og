@@ -1593,7 +1593,7 @@ reap_into_daemons() {
 	return 0
 }
 
-# The placed socket for host/session/server-pid/session-id (spec "Launcher" 4).
+# The placed socket for host/session/server-pid/session-id (spec "Launcher" 3).
 into_sock() { # host sess server_pid session_id
 	local k
 	k="$(printf '%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" | cksum)"
@@ -1783,4 +1783,120 @@ $4|a|b'
 	[ ! -e "${sock}.lock" ]
 	run grep -E '^(kill-session|kill-window)' "$TMUX_LOG"
 	[ "$status" -ne 0 ]
+}
+
+@test "into: two waiters on a dead owner's lock break it once and launch one daemon" {
+	install_into_fakes
+	# Listens well after the stalled rename below completes, so a second holder
+	# would still probe no daemon and launch its own.
+	export FAKE_LISTEN_DELAY=3
+	local sock real_mv
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+	mkdir "${sock}.lock"
+	echo 4194304 >"${sock}.lock/owner"
+	# The first rename of the lock stalls for 1s: without a breaker mutex the
+	# other waiter takes the lock over and re-acquires it meanwhile, and the
+	# stalled rename then moves that fresh lock.
+	real_mv="$(PATH="${PATH//$FAKEBIN:/}" command -v mv)"
+	cat >"$FAKEBIN/mv" <<-SHIM
+		#!/bin/sh
+		mkdir "$BATS_TEST_TMPDIR/mv-stalled" 2>/dev/null && sleep 1
+		exec "$real_mv" "\$@"
+	SHIM
+	chmod +x "$FAKEBIN/mv"
+
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/a.out" 2>&1 &
+	local p1=$!
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/b.out" 2>&1 &
+	local p2=$!
+	local s1=0 s2=0
+	wait "$p1" || s1=$?
+	wait "$p2" || s2=$?
+
+	[ -d "$BATS_TEST_TMPDIR/mv-stalled" ]
+	[ "$s1" -eq 0 ]
+	[ "$s2" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	[ ! -e "${sock}.lock" ]
+	[ ! -e "${sock}.lock.break" ]
+}
+
+@test "into: a breaker mutex left behind by a killed breaker goes stale" {
+	install_into_fakes
+	local sock
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+	mkdir "${sock}.lock" "${sock}.lock.break"
+	echo 4194304 >"${sock}.lock/owner"
+	touch -t 202001010000 "${sock}.lock.break"
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	[ ! -e "${sock}.lock" ]
+	[ ! -e "${sock}.lock.break" ]
+}
+
+@test "into: a holder whose lock was taken from it leaves the new holder's lock alone" {
+	install_into_fakes
+	export FAKE_LISTEN_DELAY=1
+	local sock
+	sock="$(into_sock tp-g6 workstation 4242 '$3')"
+
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >/dev/null 2>&1 &
+	local p=$!
+	for _ in {1..50}; do
+		[[ "$(cat "${sock}.lock/owner" 2>/dev/null)" == "$p" ]] && break
+		sleep 0.1
+	done
+	[ "$(cat "${sock}.lock/owner")" = "$p" ]
+	sleep 600 &
+	DAEMON_PID=$!
+	mv "${sock}.lock" "$BATS_TEST_TMPDIR/taken-lock"
+	mkdir "${sock}.lock"
+	echo "$DAEMON_PID" >"${sock}.lock/owner"
+
+	local s=0
+	wait "$p" || s=$?
+	[ "$s" -eq 0 ]
+	[ "$(cat "${sock}.lock/owner")" = "$DAEMON_PID" ]
+}
+
+@test "into: a live daemon answers a repeat call before any ssh, even to an unreachable host" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+
+	cat >"$FAKEBIN/ssh" <<-'SHIM'
+		#!/bin/sh
+		printf '===SSH-CALL===\n%s\n' "$*" >>"$SSH_LOG"
+		exit 255
+	SHIM
+	: >"$SSH_LOG"
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+	[ ! -s "$SSH_LOG" ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+}
+
+@test "into: a remote with no exact session match fails, never mirroring a prefix sibling" {
+	setup_probe_server
+	install_into_fakes
+	probe_tmux new-session -d -s w10
+	# The real probe, run against the scratch server instead of a remote.
+	cat >"$FAKEBIN/ssh" <<-'SHIM'
+		#!/bin/sh
+		printf '===SSH-CALL===\n%s\n' "$*" >>"$SSH_LOG"
+		PATH="$PROBE_TMUX_DIR:$PATH" exec bash -s
+	SHIM
+
+	run bash "$LAUNCHER" tp-g6 w1 --into dispatch
+	[ "$status" -eq 1 ]
+	[[ $output == *"no session named exactly 'w1' on tp-g6"* ]]
+	[ ! -s "$LAUNCH_LOG" ]
+
+	# Positive control: the exact name opens through the same real probe.
+	run bash "$LAUNCHER" tp-g6 w10 --into dispatch
+	[ "$status" -eq 0 ]
+	grep -qE '^pid=[0-9]+ into=\$3 ' "$LAUNCH_LOG"
 }
