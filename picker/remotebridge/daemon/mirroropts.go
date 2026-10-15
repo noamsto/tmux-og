@@ -21,7 +21,6 @@ type mirrorOpts struct {
 
 func newMirrorOpts() *mirrorOpts { return &mirrorOpts{vals: map[string]string{}} }
 
-// set writes opt=val.
 func (o *mirrorOpts) set(cfg Config, opt, val string) {
 	if o == nil || !cfg.Placed {
 		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, opt, val)
@@ -33,7 +32,6 @@ func (o *mirrorOpts) set(cfg Config, opt, val string) {
 	o.writeOwn(cfg, opt, val, false)
 }
 
-// unset removes opt.
 func (o *mirrorOpts) unset(cfg Config, opt string) {
 	if o == nil || !cfg.Placed {
 		_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, opt)
@@ -68,10 +66,9 @@ func (o *mirrorOpts) applyTo(cfg Config, localWin string) {
 	}
 }
 
-// writeOwn writes (or unsets) opt on every window carrying
-// this daemon's socket in one tmux call. The listing is skipped over, not
-// guessed at, when it fails: the recorded value reaches new windows through
-// applyTo, and the next write reaches the rest.
+// writeOwn writes (or unsets) opt on every window carrying this daemon's
+// socket in one tmux call. A failed listing writes nothing: applyTo carries
+// the recorded value to new windows, and the next write reaches the rest.
 func (o *mirrorOpts) writeOwn(cfg Config, opt, val string, unset bool) {
 	own, ok := ownWindows(cfg)
 	if !ok {

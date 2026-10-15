@@ -3,11 +3,10 @@
 # daemon's own teardown drop the mirror. Non-destructive by design — the remote
 # session only loses a control-mode client, so everything running on it keeps
 # running and prefix+s reopens the bridge. The shell twin of the picker's
-# stopBridgeDaemon (picker/remotebridge), for the keybind path.
+# stopBridgeDaemon (picker/remote.go), for the keybind path.
 #
 # og-remote-detach <session-name> [<window-id>]
 #
-# A dedicated mirror owns its whole session, so the teardown drops the session.
 # A placed mirror (@bridge_placed, --into) lives as windows inside the user's own
 # session: only those windows may go, never the session. The keybind passes the
 # window id, expanded at the keypress, so this run-shell -b script cannot race a

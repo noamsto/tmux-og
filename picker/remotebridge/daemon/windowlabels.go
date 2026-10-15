@@ -37,9 +37,7 @@ const mainLoopTickInterval = 5 * time.Second
 // @window_label_rest_long is the one free-form field left unwrapped, and must
 // stay last: a '|' inside it then lands in itself instead of shifting the row.
 // Position 14 resolves worktree||git_root on the remote — one field, one
-// authority — so no consumer re-implements that fallback. Positions 20 and 21
-// are the dispatcher's @crew_branch/@crew_id, placed before the label pair so
-// that rest_long stays last.
+// authority — so no consumer re-implements that fallback.
 // Unquoted: it is both a -F argument and a subscription format, and only the
 // call site knows which quoting each needs.
 const windowLabelFormat = "#{window_id}|#{@crew_name}|#{@crew_color}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@window_pr_plain}|" +
@@ -155,11 +153,8 @@ var (
 	urlRe     = regexp.MustCompile(`^https?://\S+$`)
 	prDraftRe = regexp.MustCompile(`^1$`)
 	branchRe  = regexp.MustCompile(`^\S+$`)
-	// crewBranchRe and crewIDRe gate values the crew dispatcher stamps and the
-	// local picker later passes on as git/CLI arguments, so any shell or tmux
-	// metacharacter is dropped rather than carried. Both anchor an alphanumeric
-	// first character: that drops a leading '-' (as cleanLabelValueExact
-	// already does) and a crew id of '.' or '..', which names a directory.
+	// crewBranchRe and crewIDRe drop any shell or tmux metacharacter. The
+	// alphanumeric first character also rules out a crew id of '.' or '..'.
 	crewBranchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/+-]*$`)
 	crewIDRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	// dirRe rejects a path containing a space, which is a legal worktree path:

@@ -438,10 +438,9 @@ func bridgeSessionLegacyKey(name string) string {
 	return "legacy\x00" + name
 }
 
-// bridgeSessionFormat is the `list-sessions -F` every session-level bridge
-// reader shares. A shared session whose current window is a placed mirror
-// reads the window-scoped @bridge_*, so the guard blanks them: that session
-// is the user's own, never a mirror target.
+// bridgeSessionFormat blanks @bridge_host/@bridge_session for a session whose
+// current window is a placed mirror: a session-level read falls back to that
+// window's copies, but the session is the user's own, never a mirror target.
 const bridgeSessionFormat = "#{session_name}|#{?#{@bridge_placed},,#{@bridge_host}}|#{?#{@bridge_placed},,#{@bridge_session}}"
 
 // parseBridgeSessions reads the session options that identify local mirror
@@ -476,12 +475,11 @@ func bridgeSessionPresent(bridges map[string]bool, host, sess string) bool {
 }
 
 // parseBridgeMirrors is the pure parse of `tmux list-sessions -F
-// bridgeSessionFormat` output into the
-// mirrors it describes. A row with no @bridge_host isn't a mirror. A row
-// with @bridge_session empty (legacy bridge, no option set) derives sess by
-// stripping the "<host>-" prefix off the session name — same convention
-// localBridgeSession assumes; a name that doesn't carry the prefix is
-// skipped (nothing to resolve).
+// bridgeSessionFormat` output into the mirrors it describes. A row with no
+// @bridge_host isn't a mirror. A row with @bridge_session empty (legacy
+// bridge, no option set) derives sess by stripping the "<host>-" prefix off
+// the session name — same convention localBridgeSession assumes; a name that
+// doesn't carry the prefix is skipped (nothing to resolve).
 func parseBridgeMirrors(raw string) []bridgeMirror {
 	var mirrors []bridgeMirror
 	for line := range strings.SplitSeq(strings.TrimRight(raw, "\n"), "\n") {

@@ -91,7 +91,7 @@ check_mirror_name_vectors() {
 
 # A display-message read of @bridge_* falls back to the current window's copy,
 # so a session holding a placed (--into) window would read as that mirror and
-# be adopted or killed (#985).
+# be adopted or killed.
 @test "the launcher reads @bridge_* options session-scoped, never via display-message" {
 	run grep -nE 'display-message.*@bridge_' "${BATS_TEST_DIRNAME}/../scripts/og-remote-open.sh"
 	[ "$status" -ne 0 ]

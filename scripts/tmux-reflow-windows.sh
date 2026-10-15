@@ -167,9 +167,8 @@ has_zoom=0
 # @bridge_win/window_name sit after it: bridge_win is "1" or empty, and a
 # window_name containing '|' is no worse off here than at the very end.
 # @bridge_host is read only for a @bridge_placed window (a mirror placed into a
-# local session, #985) and sits in the same token-safe region: every other window
-# yields an empty field, so a '|' in a stray window-scoped value cannot shift the
-# columns after it.
+# local session): every other window yields an empty field, so a '|' in a stray
+# window-scoped value cannot shift the columns after it.
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only

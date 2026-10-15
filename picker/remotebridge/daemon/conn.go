@@ -831,8 +831,7 @@ func clearBridgeState(cfg Config) {
 	cfg.opts.unset(cfg, "@bridge_state")
 }
 
-// clearBridgeRes is a no-op placed: a shared session has no per-mirror figure
-// to show, so the daemon never wrote one.
+// clearBridgeRes is a no-op placed: resShipper.flush never writes one there.
 func clearBridgeRes(cfg Config) {
 	if cfg.LocalSess == "" || cfg.Placed {
 		return

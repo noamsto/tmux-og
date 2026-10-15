@@ -264,12 +264,3 @@ func TestShowErrorWithTmuxServer(t *testing.T) {
 		t.Fatalf("tmux messages = %q, want %q", out, want)
 	}
 }
-
-func TestDialSock(t *testing.T) {
-	if got := dialSock("/flag.sock", "/stashed.sock"); got != "/stashed.sock" {
-		t.Fatalf("dialSock(flag, stashed) = %q, want the stashed socket", got)
-	}
-	if got := dialSock("/flag.sock", ""); got != "/flag.sock" {
-		t.Fatalf("dialSock(flag, \"\") = %q, want the --sock fallback", got)
-	}
-}

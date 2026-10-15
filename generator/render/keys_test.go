@@ -106,7 +106,7 @@ func TestEnrichCardBindUsesRawIcons(t *testing.T) {
 	}
 }
 
-// reference.nix and the placed-mirror daemon read this exact value.
+// config/tmux.conf.reference.nix spells out the same gate by hand.
 func TestBridgeGateNotPlacedValue(t *testing.T) {
 	const want = "#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{!:#{@bridge_placed}}}"
 	if bridgeGateNotPlaced != want {

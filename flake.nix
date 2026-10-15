@@ -786,11 +786,8 @@
               touch $out
             '';
 
-          # Host badge on a placed mirror window (#985): status-format[1]'s
-          # single-line list renders "<icon> <host> " in peach right after
-          # "index: ", gated on @bridge_placed so no other window (dedicated
-          # mirrors included) shows it. Same static grep-a-derivation shape as
-          # crew-badge-conf-assertions above.
+          # status-format[1]'s peach host badge is gated on @bridge_placed, so
+          # no other window, dedicated mirrors included, shows it.
           host-badge-conf-assertions =
             pkgs.runCommand "host-badge-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];

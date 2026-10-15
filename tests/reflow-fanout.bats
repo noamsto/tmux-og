@@ -352,8 +352,8 @@ stamp_mirror() {
 	[ "$first" -eq "$below" ]
 }
 
-# Host badge on a placed mirror (#985): a mirror window placed into a local
-# session carries @bridge_placed, and reflow stamps "<@icon_remote> <host> " into
+# Host badge on a placed mirror: a mirror window placed into a local session
+# carries @bridge_placed, and reflow stamps "<@icon_remote> <host> " into
 # @window_host_disp for it alone, charging that width wherever the crew badge is.
 stamp_placed() {
 	local w=$1 host=$2

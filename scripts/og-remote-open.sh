@@ -5,8 +5,8 @@
 # Resolves remote tmux path + TMUX_TMPDIR for the ssh control connection.
 #
 # `og-remote-open <host> <sess> --into <local-session>` instead places the
-# mirror's windows in an existing local session (#985): no session is created,
-# killed or switched to, and the call returns once the daemon is listening.
+# mirror's windows in an existing local session: no session is created, killed
+# or switched to, and the call returns once the daemon is listening.
 set -euo pipefail
 
 # @lib_remote@ is substituted at Nix build time; in bats the lib is pre-sourced.
@@ -721,8 +721,8 @@ loading="@loading@"
 [[ $loading == @* ]] && loading="$(command -v og-remote-loading || true)"
 
 # Placed open: the windows go into $into_id, which this script never creates,
-# stamps, kills or switches to. It ends here; nothing below runs for it. The
-# per-key lock taken before the probe is still held.
+# stamps, kills or switches to. The per-key lock taken before the probe is
+# still held.
 if [[ -n $placed ]]; then
 	# The dedicated launch below documents each of these; the differences are
 	# OG_DAEMON_INTO and no OG_DAEMON_REMOTE_OPEN, whose hand-off would open a

@@ -9,6 +9,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -98,15 +99,6 @@ func resolveDrag(localPane string) (args []string, sock string, err error) {
 	return []string{"tile-layout", bridgePane, L.Raw}, sock, nil
 }
 
-// dialSock prefers the stashed pane's own daemon over the --sock the release
-// pane's context supplied.
-func dialSock(flagSock, stashed string) string {
-	if stashed != "" {
-		return stashed
-	}
-	return flagSock
-}
-
 func main() {
 	sock := flag.String("sock", os.Getenv("OG_DAEMON_SOCK"), "bridge daemon unix socket")
 	displayError := flag.String("display-error", "", "tmux client to show request failures in")
@@ -133,7 +125,7 @@ func main() {
 			fail(err.Error())
 		}
 		args = resolved
-		dial = dialSock(dial, stashed)
+		dial = cmp.Or(stashed, dial)
 	}
 	if dial == "" {
 		fail("no --sock (is this a bridge window?)")

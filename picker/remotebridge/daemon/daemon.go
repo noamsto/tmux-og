@@ -139,10 +139,8 @@ type Config struct {
 	// window instead of the session's first window, which is the user's. Only
 	// a rebuild leaves one; empty creates every window.
 	placeholder string
-	// opts routes the per-mirror option writes (@bridge_state, @bridge_usage,
-	// @bridge_session_path): session-scoped in a dedicated session, on every
-	// own window in a placed one. Set by runMirror; nil (a bare test Config)
-	// keeps the session write.
+	// opts is set by runMirror; nil (a bare test Config) keeps the session
+	// write.
 	opts *mirrorOpts
 }
 
@@ -338,9 +336,7 @@ func parseWindowID(s string) (string, error) {
 // difference; healDeadRenderers repairs it from there.
 //
 // A placed window's identity goes on before @bridge_win, so no gate fires on a
-// window with no socket of its own. createMirrorWindow and rebuildPlaceholder
-// already stamped it at creation; the re-stamp is an idempotent
-// belt-and-braces step.
+// window with no socket of its own.
 func stampMirrorWindow(cfg Config, localWin, remoteName string) {
 	for _, o := range mirrorIdentity(cfg) {
 		_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, o[0], o[1])

@@ -497,7 +497,7 @@ open_into() { # remote-sess-name local-sess-name
 	kill -0 "$SLEEP_PID"
 }
 
-# --- #985: a session shared with placed (--into) mirror windows -------------
+# --- a session shared with placed (--into) mirror windows -------------------
 
 @test "identity: a shared session whose current window is placed is never adopted" {
 	inner new-session -d -s work

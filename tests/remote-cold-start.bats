@@ -1542,7 +1542,7 @@ $0|tp-g6|main' FAKE_PAIR_NAME='my.proj' FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
 	[ "$pid" = "$pgid" ]
 }
 
-# --- #985: --into places the mirror's windows in an existing local session ---
+# --- --into places the mirror's windows in an existing local session --------
 
 # Per-test fakes: the setup() daemon is `exit 0` and its ctl answers every
 # ping, but --into waits for a daemon that is really listening. This daemon
@@ -1593,7 +1593,7 @@ reap_into_daemons() {
 	return 0
 }
 
-# The placed socket for host/session/server-pid/session-id (spec "Launcher" 3).
+# The placed socket for host/session/server-pid/session-id.
 into_sock() { # host sess server_pid session_id
 	local k
 	k="$(printf '%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" | cksum)"

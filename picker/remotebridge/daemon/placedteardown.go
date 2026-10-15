@@ -33,9 +33,9 @@ func killOwnWindows(cfg Config) {
 	}
 }
 
-// closeOwnWindows ends a placed mirror that will not come back: why, when set,
-// reaches a client while one is still on the host session — no tombstone
-// window is left there — and then every own window goes.
+// closeOwnWindows ends a placed mirror that will not come back. No tombstone
+// window is left in the user's session, so why, when set, goes to a client on
+// it before every own window is killed.
 func closeOwnWindows(cfg Config, why string) {
 	if why != "" {
 		notifyLocal(cfg, why)
@@ -76,12 +76,12 @@ func sweepStrayOwnWindows(cfg Config, reg *registry) {
 	}
 }
 
-// rebuildPlaceholder is a placed rebuild's resetMirrorSession: it lists the own
-// windows, adds one `sleep 2147483647` window to the host session, stamped
-// with this daemon's identity but no @bridge_win, then kills the listed ones,
-// and returns the new window's id for the next run to claim. The window comes
-// first so a host session made only of our windows never empties mid-rebuild;
-// the listing comes before it, so one that fails adds nothing.
+// rebuildPlaceholder is a placed rebuild's resetMirrorSession: it replaces the
+// own windows with one `sleep` placeholder stamped with this daemon's identity
+// but no @bridge_win, and returns its id for the next run to claim. The
+// placeholder goes in before the kills so a host session made only of our
+// windows never empties; the listing precedes both, so one that fails adds
+// nothing.
 func rebuildPlaceholder(cfg Config) (string, bool) {
 	if !ownsLocalSession(cfg) {
 		return "", false

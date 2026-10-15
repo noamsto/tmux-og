@@ -6744,10 +6744,10 @@ m2_panes_match() {
 	wait "$daemon_pid" 2>/dev/null || true
 }
 
-# --into (#985): a placed mirror lives as windows inside an existing local
-# session (`host`, into_host_up) next to the user's own window, local_win. Every
-# case below starts its daemon through bridge_up_into, so teardown reaps it even
-# when an assertion fails first.
+# --into: a placed mirror lives as windows inside an existing local session
+# (`host`, into_host_up) next to the user's own window, local_win. Every case
+# below starts its daemon through bridge_up_into, so teardown reaps it even when
+# an assertion fails first.
 
 # into_statusline renders `host`'s statusline against DST, with the agent-usage
 # case's env and args, and prints its output.

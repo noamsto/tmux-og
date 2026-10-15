@@ -1276,7 +1276,7 @@ func TestBridgeCollectorsSkipPlacedSession(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not available")
 	}
-	dir, err := os.MkdirTemp("/tmp", "og-c7b-")
+	dir, err := os.MkdirTemp("/tmp", "og-placed-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,11 +65,11 @@ func TestMirrorOptsDedicatedKeepsTheSessionWrite(t *testing.T) {
 	}
 }
 
-func TestMirrorOptsNilReceiverIgnoresPlacedLikeToday(t *testing.T) {
+func TestMirrorOptsNilReceiverWritesTheSessionWhenPlaced(t *testing.T) {
 	r := newOptsRig(true)
 	var o *mirrorOpts
 	o.set(r.cfg, "@bridge_state", "x")
-	// A nil receiver is a bare test Config: today's session write, on the name.
+	// A nil receiver is a bare test Config: a session write, by name.
 	want := [][]string{{"set-option", "-t", "host-sess", "@bridge_state", "x"}}
 	if !reflect.DeepEqual(r.calls, want) {
 		t.Errorf("calls = %v, want %v", r.calls, want)

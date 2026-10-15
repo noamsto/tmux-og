@@ -364,9 +364,8 @@ func identityIndex(calls [][]string, win, opt string) int {
 // A placed mirror window carries its daemon's identity before @bridge_win, the
 // gate half a keybind fires on: a window that is a mirror but has no window
 // socket yet would hand the gate the session's, which in a shared host session
-// is nobody's. A claimed placeholder was not made by createMirrorWindow, so the
-// stamp re-applies the identity there too. A dedicated window carries none: the
-// session-scoped copies are the mirror's.
+// is nobody's. A dedicated window carries none: the session-scoped copies are
+// the mirror's.
 func TestStampMirrorWindowStampsIdentityBeforeBridgeWin(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -413,11 +412,8 @@ func TestStampMirrorWindowStampsIdentityBeforeBridgeWin(t *testing.T) {
 	}
 }
 
-// createMirrorWindow stamps a placed window's identity in the same tmux
-// invocation as the new-window: one command list runs to its end before the
-// server's next redraw, so no client ever sees the window unmarked. `{end}` is
-// the window `-a` just appended; `;` is its own argv element, tmux's command
-// separator. A dedicated window's argv is the bare new-window.
+// A placed window's identity rides the new-window's own invocation, `;` as its
+// own argv element; a dedicated window's argv is the bare new-window.
 func TestCreateMirrorWindowStampsIdentityInTheSameCall(t *testing.T) {
 	for _, tc := range []struct {
 		name string
