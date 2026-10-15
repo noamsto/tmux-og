@@ -123,11 +123,18 @@ func (f *focusEdge) poll() bool {
 }
 
 // localViewing reports whether any local client is attached to cfg.LocalSess.
-// A failed read answers false, which can only miss a focus wake, never cause
-// one.
+// In placed mode it is whether some client of the host session shows one of
+// this daemon's windows: a user on a local window there is not viewing the
+// mirror, and reading them as viewing would keep the false-to-true focus edge
+// from ever firing. A failed read answers false, which can only miss a focus
+// wake, never cause one.
 func localViewing(cfg Config) bool {
 	if cfg.LocalTmuxOut == nil || cfg.LocalSess == "" {
 		return false
+	}
+	if cfg.Placed {
+		out, err := cfg.LocalTmuxOut("list-clients", "-t", cfg.target(), "-F", "#{@bridge_sock}")
+		return err == nil && placedViewing(out, cfg.SockPath)
 	}
 	out, err := cfg.LocalTmuxOut("list-clients", "-F", "#{client_session}")
 	if err != nil {
@@ -135,6 +142,17 @@ func localViewing(cfg Config) bool {
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == cfg.LocalSess {
+			return true
+		}
+	}
+	return false
+}
+
+// placedViewing reports whether a list-clients '#{@bridge_sock}' listing
+// holds a client whose current window carries sock.
+func placedViewing(out, sock string) bool {
+	for line := range strings.SplitSeq(out, "\n") {
+		if line == sock {
 			return true
 		}
 	}

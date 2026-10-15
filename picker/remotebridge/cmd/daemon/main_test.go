@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -599,7 +601,7 @@ list-clients)
 display-message) echo "138 40" ;;
 esac
 `)
-	w, h := localArea([]string{tmux}, "mirror")
+	w, h := localArea([]string{tmux}, "mirror", "")
 	if w != 200 || h != 60 {
 		t.Errorf("localArea = %dx%d, want 200x60 — the attached client, not the 138x40 pin", w, h)
 	}
@@ -615,7 +617,7 @@ list-clients) exit 0 ;;
 display-message) echo "138 40" ;;
 esac
 `)
-	w, h := localArea([]string{tmux}, "mirror")
+	w, h := localArea([]string{tmux}, "mirror", "")
 	if w != 138 || h != 40 {
 		t.Errorf("localArea = %dx%d, want 138x40 — the pin, not the 80x24 default", w, h)
 	}
@@ -638,7 +640,7 @@ list-clients)
 display-message) echo "138 40" ;;
 esac
 `)
-	w, h := localArea([]string{tmux}, "mirror")
+	w, h := localArea([]string{tmux}, "mirror", "")
 	if w != 197 || h != 63 {
 		t.Errorf("localArea = %dx%d, want 197x63 — the client last active, not the narrow one", w, h)
 	}
@@ -659,7 +661,7 @@ list-clients)
 display-message) echo "138 40" ;;
 esac
 `)
-	w, h := localArea([]string{tmux}, "mirror")
+	w, h := localArea([]string{tmux}, "mirror", "")
 	if w != 197 || h != 63 {
 		t.Errorf("localArea = %dx%d, want 197x63 — the larger client on an activity tie", w, h)
 	}
@@ -674,9 +676,94 @@ list-clients) printf '197 65 2 300\n63 65 2 100\n' ;;
 display-message) echo "138 40" ;;
 esac
 `)
-	w, h := localArea([]string{tmux}, "mirror")
+	w, h := localArea([]string{tmux}, "mirror", "")
 	if w != 63 || h != 63 {
 		t.Errorf("localArea = %dx%d, want 63x63 — the smallest client showing this session", w, h)
+	}
+}
+
+// A placed host session's current window may be a local one or another
+// daemon's mirror, so the detached fallback reads the first window stamped
+// with this daemon's socket instead of the session's current window.
+func TestLocalAreaPlacedFallsBackToTheFirstOwnWindow(t *testing.T) {
+	tmux := fakeTmuxScript(t, `
+case "$1" in
+list-clients) exit 0 ;;
+display-message) echo "138 40" ;;
+list-windows)
+	case "$*" in
+	*'-t $4 -F #{window_width} #{window_height}|#{@bridge_sock}'*) printf '200 50|/other\n120 30|\n100 40|/s|1\n90 20|/s|1\n' ;;
+	esac
+	;;
+esac
+`)
+	if w, h := localArea([]string{tmux}, "$4", "/s|1"); w != 100 || h != 40 {
+		t.Errorf("placed localArea = %dx%d, want 100x40 — the first own window, not the session's 138x40", w, h)
+	}
+	if w, h := localArea([]string{tmux}, "$4", ""); w != 138 || h != 40 {
+		t.Errorf("dedicated localArea = %dx%d, want the session's 138x40", w, h)
+	}
+}
+
+func TestOwnWinSize(t *testing.T) {
+	for _, tc := range []struct {
+		name, out string
+		w, h      int
+	}{
+		{"first own row wins", "200 50|/other\n100 40|/s|1\n90 20|/s|1\n", 100, 40},
+		{"no own row", "200 50|/other\n120 30|\n", 0, 0},
+		{"malformed own row", "abc|/s|1\n", 0, 0},
+		{"no output", "", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if w, h := ownWinSize(tc.out, "/s|1"); w != tc.w || h != tc.h {
+				t.Errorf("ownWinSize = %dx%d, want %dx%d", w, h, tc.w, tc.h)
+			}
+		})
+	}
+}
+
+// Remote pane ids collide across daemons sharing a host session: another
+// daemon's %3 must not re-key this one's agent state.
+func TestOwnPaneMap(t *testing.T) {
+	out := "%3|%40|/other\n%3|%41|/s|1\n%4|%42|/s|1\n|%43|/s|1\n%5|%44|\n"
+	want := map[string]string{"%3": "%41", "%4": "%42"}
+	if got := ownPaneMap(out, "/s|1"); !maps.Equal(got, want) {
+		t.Errorf("ownPaneMap = %v, want %v", got, want)
+	}
+}
+
+func TestLocalPaneMapAsksForTheSock(t *testing.T) {
+	tmux := fakeTmuxScript(t, `
+case "$*" in
+'list-panes -s -t $4 -F #{@bridge_pane}|#{pane_id}|#{@bridge_sock}') printf '%%3|%%40|/other\n%%3|%%41|/s\n' ;;
+esac
+`)
+	if got, want := localPaneMap([]string{tmux}, "$4", "/s"), map[string]string{"%3": "%41"}; !maps.Equal(got, want) {
+		t.Errorf("localPaneMap = %v, want %v", got, want)
+	}
+}
+
+// A placed host session is the user's to rename, so reflow resolves its name
+// per call; a dedicated mirror's name is fixed and needs no read.
+func TestReflowSession(t *testing.T) {
+	var asked []string
+	out := func(args ...string) (string, error) {
+		asked = args
+		return "work\n", nil
+	}
+	if name, ok := reflowSession(out, "mirror", false); !ok || name != "mirror" || asked != nil {
+		t.Errorf("dedicated = (%q, %v) after asking %q, want (mirror, true) and no read", name, ok, asked)
+	}
+	if name, ok := reflowSession(out, "$4", true); !ok || name != "work" {
+		t.Errorf("placed = (%q, %v), want (work, true)", name, ok)
+	}
+	if want := []string{"display-message", "-p", "-t", "$4", "#{session_name}"}; !slices.Equal(asked, want) {
+		t.Errorf("placed asked %q, want %q", asked, want)
+	}
+	gone := func(...string) (string, error) { return "", errors.New("no session") }
+	if name, ok := reflowSession(gone, "$4", true); ok {
+		t.Errorf("placed over a failed read = (%q, true), want no reflow", name)
 	}
 }
 
@@ -716,5 +803,51 @@ func TestSeedViewFallsBackToFlagsWhenUnresolvable(t *testing.T) {
 	}
 	if !view.Relay.Load().Sixel() {
 		t.Error("Relay was not seeded from the -sixel flag")
+	}
+}
+
+// --into names the host session by its "$N" id and nothing else: a name would
+// resolve by prefix, and the value reaches tmux -t targets as is.
+func TestValidInto(t *testing.T) {
+	for in, want := range map[string]bool{
+		"$0":       true,
+		"$42":      true,
+		"":         false,
+		"$":        false,
+		"4":        false,
+		"work":     false,
+		"$4 ":      false,
+		"$4\n":     false,
+		"$-1":      false,
+		"=$4":      false,
+		"$4:{end}": false,
+	} {
+		if got := validInto(in); got != want {
+			t.Errorf("validInto(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A placed window's host is rendered on its tab and read from '|'-split rows,
+// so with --into the host must be a plain ssh destination: no format or
+// delimiter bytes, no leading '-' an argv would read as a flag.
+func TestValidPlacedHost(t *testing.T) {
+	for in, want := range map[string]bool{
+		"lab":             true,
+		"user@lab.local":  true,
+		"lab-2_x.example": true,
+		"10.0.0.1":        true,
+		"":                false,
+		"-x":              false,
+		"bad|host":        false,
+		"#{pid}":          false,
+		"lab host":        false,
+		"lab\n":           false,
+		".lab":            false,
+		"lab:22":          false,
+	} {
+		if got := validPlacedHost(in); got != want {
+			t.Errorf("validPlacedHost(%q) = %v, want %v", in, got, want)
+		}
 	}
 }

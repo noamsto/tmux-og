@@ -229,6 +229,30 @@ func TestResShipperFlush(t *testing.T) {
 	}
 }
 
+// A placed mirror shares its session, so no per-mirror CPU/Mem figure is
+// shown: the shipper writes nothing and its clear touches nothing.
+func TestSessionResPlacedWritesNothing(t *testing.T) {
+	var calls [][]string
+	cfg := Config{
+		LocalSess:   "host-sess",
+		Placed:      true,
+		LocalTarget: "$4",
+		opts:        newMirrorOpts(),
+		LocalTmux: func(args ...string) error {
+			calls = append(calls, append([]string(nil), args...))
+			return nil
+		},
+		LocalTmuxOut: func(...string) (string, error) { return "@2||" + "\n", nil },
+	}
+	r := newResShipper("$0", 0)
+	r.queue("$0", "12.5 340 32 "+strconv.FormatInt(time.Now().Unix(), 10)+" -")
+	r.flush(cfg)
+	r.clear(cfg)
+	if len(calls) != 0 {
+		t.Errorf("placed res wrote %v, want nothing", calls)
+	}
+}
+
 // TestSessionResSubscriptionIsSessionScoped is the one assertion a unit test
 // cannot make: cmd_refresh_client_update_subscription silently REMOVES a
 // subscription whose spec it cannot parse and returns no %error, so

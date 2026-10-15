@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,61 @@ func TestFocusEdgeNoSecondWakeWhileStillViewing(t *testing.T) {
 	mtime = mtime.Add(time.Second) // another touch; still viewing, not a new edge
 	if f.poll() {
 		t.Error("must not wake again while still viewing")
+	}
+}
+
+func TestPlacedViewing(t *testing.T) {
+	const sockA = "/tmp/og-into-a|b.sock"
+	for _, tc := range []struct {
+		name, out string
+		want      bool
+	}{
+		{"a client on an own window", "/tmp/og-into-other.sock\n\n" + sockA + "\n", true},
+		{"only other socks and local windows", "/tmp/og-into-other.sock\n\n", false},
+		{"no clients", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := placedViewing(tc.out, sockA); got != tc.want {
+				t.Errorf("placedViewing(%q) = %v, want %v", tc.out, got, tc.want)
+			}
+		})
+	}
+}
+
+// Placed viewing asks the host session's clients for their window's sock by
+// session id; dedicated keeps its server-wide session-name read.
+func TestLocalViewingPlacedReadsOwnWindowsOnly(t *testing.T) {
+	var argv []string
+	reply := ""
+	cfg := Config{
+		LocalSess:   "work",
+		LocalTarget: "$4",
+		Placed:      true,
+		SockPath:    "/tmp/og-into-1.sock",
+		LocalTmuxOut: func(args ...string) (string, error) {
+			argv = args
+			return reply, nil
+		},
+	}
+	reply = "\n/tmp/og-into-2.sock\n"
+	if localViewing(cfg) {
+		t.Error("placed: a client on a local window or another daemon's mirror read as viewing")
+	}
+	if want := []string{"list-clients", "-t", "$4", "-F", "#{@bridge_sock}"}; !reflect.DeepEqual(argv, want) {
+		t.Errorf("placed asked %q, want %q", argv, want)
+	}
+	reply = "\n/tmp/og-into-1.sock\n"
+	if !localViewing(cfg) {
+		t.Error("placed: a client on an own window did not read as viewing")
+	}
+
+	cfg.Placed, cfg.LocalTarget = false, ""
+	reply = "work\n"
+	if !localViewing(cfg) {
+		t.Error("dedicated: a client on the mirror session did not read as viewing")
+	}
+	if want := []string{"list-clients", "-F", "#{client_session}"}; !reflect.DeepEqual(argv, want) {
+		t.Errorf("dedicated asked %q, want %q", argv, want)
 	}
 }
 

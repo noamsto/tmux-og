@@ -66,8 +66,10 @@ func reconcileWindows(cfg Config, send func(string), router *Router, waitHellos 
 	// Follow the remote's selection only when a window appeared. A local
 	// `prefix c` makes the new remote window active, and without this the human
 	// would stay on the old window while the remote moved; gating on "added"
-	// keeps it from fighting ordinary local window navigation.
-	if added && activeRemote != "" {
+	// keeps it from fighting ordinary local window navigation. In a placed host
+	// session it follows only from one of our own windows, never pulling the
+	// user off a local window or another daemon's mirror.
+	if added && activeRemote != "" && hostCurrentIsOwn(cfg) {
 		if mw, ok := reg.byRemoteID(activeRemote); ok {
 			_ = cfg.LocalTmux("select-window", "-t", mw.localWin)
 		}
@@ -146,7 +148,7 @@ func mirrorPaneRows(cfg Config) (live, deadRenderer map[string]bool, ok bool) {
 	if cfg.LocalTmuxOut == nil {
 		return nil, nil, false
 	}
-	out, err := cfg.LocalTmuxOut("list-panes", "-s", "-t", cfg.LocalSess, "-F", mirrorPaneListFormat)
+	out, err := cfg.LocalTmuxOut("list-panes", "-s", "-t", cfg.target(), "-F", mirrorPaneListFormat)
 	if err != nil {
 		return nil, nil, false
 	}

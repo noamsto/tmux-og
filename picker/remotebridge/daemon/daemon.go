@@ -35,7 +35,9 @@ import (
 type Config struct {
 	Ctl            io.ReadWriteCloser         // one already-opened tmux -C control-mode stream (stdin+stdout duplex); superseded by Dial
 	SockPath       string                     // unix socket renderers dial
-	LocalSess      string                     // "<host>-<sess>"
+	LocalSess      string                     // "<host>-<sess>"; placed: the host session's name
+	Placed         bool                       // --into: windows live in a shared host session this daemon never kills
+	LocalTarget    string                     // -t for the host session: "" in dedicated mode (LocalSess), "$N" placed; see target
 	RemoteHost     string                     // ssh host being mirrored (picker's Host column)
 	RemoteSession  string                     // remote session name (may contain spaces)
 	RemoteWindow   string                     // initially-selected remote window INDEX (not a mirror filter)
@@ -133,6 +135,24 @@ type Config struct {
 	// activity mark survive re-opens. nil (tests that call runMirror directly)
 	// turns ownership off.
 	own *sizeOwner
+	// placeholder is the window a placed startup claims for its first remote
+	// window instead of the session's first window, which is the user's. Only
+	// a rebuild leaves one; empty creates every window.
+	placeholder string
+	// opts routes the per-mirror option writes (@bridge_state, @bridge_usage,
+	// @bridge_session_path): session-scoped in a dedicated session, on every
+	// own window in a placed one. Set by runMirror; nil (a bare test Config)
+	// keeps the session write.
+	opts *mirrorOpts
+}
+
+// target is the -t target for every local tmux command that names the host
+// session: the placed "$N" id when set, else the session name.
+func (c Config) target() string {
+	if c.LocalTarget != "" {
+		return c.LocalTarget
+	}
+	return c.LocalSess
 }
 
 // defaultIdentityTimeout bounds the identity read that leads every re-attach.
@@ -255,11 +275,20 @@ func (c Config) reflow() {
 // creation would silently start addressing its neighbour (#411). Appending at
 // {end} rather than at an index of our own choosing is what leaves the
 // re-indexing to tmux, so a mirror never grows the gaps a local session can't.
+//
+// The window identity is stamped in the same invocation, aimed at {end} — the
+// window -a just appended. One command list runs to its end before the
+// server's next redraw, so no client ever sees the window unmarked; stdout is
+// still just the new-window's id (measured).
 func createMirrorWindow(cfg Config) (string, error) {
-	out, err := cfg.LocalTmuxOut("new-window", "-d", "-P", "-F", "#{window_id}",
-		"-a", "-t", cfg.LocalSess+":{end}")
+	end := cfg.target() + ":{end}"
+	args := []string{"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", end}
+	for _, o := range mirrorIdentity(cfg) {
+		args = append(args, ";", "set-option", "-w", "-t", end, o[0], o[1])
+	}
+	out, err := cfg.LocalTmuxOut(args...)
 	if err != nil {
-		return "", fmt.Errorf("daemon: new-window in %s: %w", cfg.LocalSess, err)
+		return "", fmt.Errorf("daemon: new-window in %s: %w", cfg.target(), err)
 	}
 	return parseWindowID(out)
 }
@@ -268,7 +297,7 @@ func createMirrorWindow(cfg Config) (string, error) {
 // session with, which the first remote window reuses rather than adding a
 // second one beside it.
 func firstMirrorWindow(cfg Config) (string, error) {
-	out, err := cfg.LocalTmuxOut("list-windows", "-t", cfg.LocalSess, "-F", "#{window_id}")
+	out, err := cfg.LocalTmuxOut("list-windows", "-t", cfg.target(), "-F", "#{window_id}")
 	if err != nil {
 		return "", fmt.Errorf("daemon: list-windows %s: %w", cfg.LocalSess, err)
 	}
@@ -307,12 +336,20 @@ func parseWindowID(s string) (string, error) {
 // closes, taking the window and, for a single-pane mirror, the whole mirror
 // session with it (#547). A dead pane instead of a lost session is the
 // difference; healDeadRenderers repairs it from there.
+//
+// The identity goes on before @bridge_win, so no gate fires on a window with
+// no socket of its own. createMirrorWindow already stamped it; a claimed
+// placeholder (the launcher's window, a placed rebuild's) was not made there.
 func stampMirrorWindow(cfg Config, localWin, remoteName string) {
+	for _, o := range mirrorIdentity(cfg) {
+		_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, o[0], o[1])
+	}
 	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "@bridge_win", "1")
 	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "pane-base-index", "0")
 	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "automatic-rename", "off")
 	_ = cfg.LocalTmux("set-option", "-w", "-t", localWin, "remain-on-exit", "on")
 	applyMirrorName(cfg, localWin, remoteName)
+	cfg.opts.applyTo(cfg, localWin)
 }
 
 // applyMirrorName writes the remote window's name to both places a mirror
@@ -478,7 +515,7 @@ func localActiveWindow(cfg Config) string {
 	if cfg.LocalSess == "" {
 		return ""
 	}
-	out, err := cfg.LocalTmuxOut("display-message", "-p", "-t", cfg.LocalSess, "#{window_id}")
+	out, err := cfg.LocalTmuxOut("display-message", "-p", "-t", cfg.target(), "#{window_id}")
 	if err != nil {
 		return ""
 	}
@@ -534,6 +571,10 @@ func registerResizeNudge(cfg Config, nudgePath string) {
 	if cfg.LocalSess == "" {
 		return
 	}
+	if cfg.Placed {
+		_ = cfg.LocalTmux("set-option", "-t", cfg.target(), bridgeNudgeOption, nudgePath)
+		return
+	}
 	for _, event := range legacyResizeHooks {
 		_ = cfg.LocalTmux("set-hook", "-u", "-t", cfg.LocalSess, event)
 	}
@@ -544,6 +585,10 @@ func registerResizeNudge(cfg Config, nudgePath string) {
 // the paths where teardown's own kill-session is not what removes it.
 func unregisterResizeNudge(cfg Config) {
 	if cfg.LocalSess == "" {
+		return
+	}
+	if cfg.Placed {
+		unregisterPlacedNudge(cfg)
 		return
 	}
 	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, bridgeNudgeOption)
@@ -876,9 +921,14 @@ var errWindowGone = errors.New("window is gone")
 // and the rest are still mirrored (#837). Its placeholder, if it held one, is
 // kept for the next window rather than killed, since it may be the session's
 // last window.
+//
+// A placed host session's first window is the user's, never a placeholder:
+// only the one a rebuild carried over (cfg.placeholder) is claimed, and with
+// none every remote window gets a window of its own.
 func mirrorStartupWindows(cfg Config, remoteWins []remoteWindow, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, reg *registry, cv *converger, rt roundTrip) (placeholder string, err error) {
-	placeholder, err = firstMirrorWindow(cfg)
-	if err != nil {
+	if cfg.Placed {
+		placeholder = cfg.placeholder
+	} else if placeholder, err = firstMirrorWindow(cfg); err != nil {
 		return "", err
 	}
 	// Only captions up to the window that claims the placeholder are seen: its
@@ -931,6 +981,7 @@ func dropUnclaimedPlaceholder(cfg Config, reg *registry, placeholder string) {
 // runMirror is one mirror's lifetime, from the first dial to teardown; Run
 // calls it again when a reattach ends on a different tmux server.
 func runMirror(cfg Config) error {
+	cfg.opts = newMirrorOpts()
 	router := NewRouter()
 	// Declared here rather than beside the registry below: the client-size send
 	// that follows the first dial is the converger's first user.
@@ -1059,7 +1110,7 @@ func runMirror(cfg Config) error {
 	// the reads above must not receive this mirror's session path. The bare name
 	// is safe only because the check just proved it still stands.
 	if sessionPath != "" {
-		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_session_path", sessionPath)
+		cfg.opts.set(cfg, "@bridge_session_path", sessionPath)
 	}
 
 	// Published here for the first attach; repair() (below) re-sends the same
@@ -1096,7 +1147,7 @@ func runMirror(cfg Config) error {
 	// handler's raise below, watchLocalClient's re-resolve (R10) and the
 	// startup seed in cmd/daemon/main.go, rather than building the
 	// list-clients argv once per reader.
-	resolveView := func() (ViewIdentity, bool) { return ResolveLocalViewIdentity(cfg.LocalTmuxOut, cfg.LocalSess) }
+	resolveView := func() (ViewIdentity, bool) { return ResolveLocalViewIdentity(cfg.LocalTmuxOut, cfg.target()) }
 	// Session-lifetime, like loopTick below and for the same reason: runConn
 	// selects on its channel, so a seam built per attach would leak one
 	// channel per reconnect and the loop could only watch the handle it can
@@ -1141,7 +1192,9 @@ func runMirror(cfg Config) error {
 	// on the session before any mirror window exists, so no gate can fire against
 	// a bridge window whose session has no socket yet — and stamped by the daemon
 	// rather than the launcher so the offline --test-local harness gets it too.
-	if cfg.LocalSess != "" {
+	// A placed host session gets none: it is the user's, and a session-level
+	// reader would take it for a mirror session. Its windows carry their own.
+	if cfg.LocalSess != "" && !cfg.Placed {
 		_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_sock", cfg.SockPath)
 		// @bridge_host is what the session picker's Host column reads; the local
 		// session name can't be split back into host+session (either may hold a "-").
@@ -1183,8 +1236,10 @@ func runMirror(cfg Config) error {
 	// config's hooks; removed here so a stale touch from a prior daemon on this
 	// same socket path can't be mistaken for a resize before the option is ever
 	// published again.
-	nudgePath := cfg.SockPath + resizeNudgeSuffix
-	_ = os.Remove(nudgePath)
+	nudgePath := nudgePathFor(cfg)
+	if !cfg.Placed {
+		_ = os.Remove(nudgePath)
+	}
 	// stopWatch stops the resize watcher (started just before the main loop).
 	// Declared here so teardown can close it; teardown runs exactly once per
 	// Run return path, so a plain close is safe.
@@ -1215,11 +1270,15 @@ func runMirror(cfg Config) error {
 		opener   *urlOpener
 		loopTick *time.Ticker
 	)
+	// rebuilt is the placeholder a placed teardown left for the next run.
+	var rebuilt string
 	teardown := func() {
 		close(stopWatch)
 		clearPhase(cfg)
 		unregisterResizeNudge(cfg)
-		_ = os.Remove(nudgePath)
+		if !cfg.Placed {
+			_ = os.Remove(nudgePath)
+		}
 		if agents != nil {
 			agents.clear()
 		}
@@ -1277,6 +1336,19 @@ func runMirror(cfg Config) error {
 		if cfg.LocalSess == "" || localSessionVanished {
 			return
 		}
+		// The host session is the user's: a placed mirror only ever removes
+		// its own windows from it, and a rebuild carries its placeholder on.
+		if cfg.Placed {
+			switch ending {
+			case endReplaced:
+				rebuilt, _ = rebuildPlaceholder(cfg)
+			case endGone:
+				closeOwnWindows(cfg, tombstoneText(cfg.RemoteHost, cfg.RemoteSession))
+			default:
+				killOwnWindows(cfg)
+			}
+			return
+		}
 		switch ending {
 		case endReplaced:
 			resetMirrorSession(cfg, "sleep", "2147483647")
@@ -1305,8 +1377,9 @@ func runMirror(cfg Config) error {
 
 	// Select the initially-requested window. RemoteWindow is a window INDEX
 	// (not an id), so resolve index -> id -> local window via the enumerated
-	// list; never treat it as id "@<idx>".
-	if initWin, ok := localWinForRemoteIndex(remoteWins, reg, cfg.RemoteWindow); ok {
+	// list; never treat it as id "@<idx>". A placed mirror selects nothing:
+	// the host session's current window is the user's, not the remote's.
+	if initWin, ok := localWinForRemoteIndex(remoteWins, reg, cfg.RemoteWindow); ok && !cfg.Placed {
 		_ = cfg.LocalTmux("select-window", "-t", initWin)
 	}
 
@@ -1361,7 +1434,7 @@ func runMirror(cfg Config) error {
 		revealTicker := time.NewTicker(resizePollInterval)
 		go func() {
 			defer revealTicker.Stop()
-			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.LocalSess)...) }, isMirror, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, activity, stopWatch, revealTicker.C)
+			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.target())...) }, isMirror, cfg.Placed, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, activity, stopWatch, revealTicker.C)
 		}()
 	}
 
@@ -1419,7 +1492,7 @@ func runMirror(cfg Config) error {
 		case controlmode.SessionChanged:
 			return pin.apply(l, reg, router, rt)
 		case controlmode.SessionWindowChanged:
-			if argv, ok := translateWindowNotification(l, reg); ok {
+			if argv, ok := translateWindowNotification(l, reg); ok && hostCurrentIsOwn(cfg) {
 				_ = cfg.LocalTmux(argv...)
 			}
 		case controlmode.WindowAdd:
@@ -1897,6 +1970,9 @@ attach:
 	}
 	teardown()
 	if ending == endReplaced {
+		if cfg.Placed {
+			return serverReplaced{placeholder: rebuilt}
+		}
 		return errServerReplaced
 	}
 	return nil

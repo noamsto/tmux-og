@@ -532,7 +532,7 @@ func bridgeProc(cfg Config, remotePane string) (string, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		out, err := cfg.LocalTmuxOut("list-panes", "-s", "-t", cfg.LocalSess, "-F", "#{@bridge_pane}|#{@bridge_proc}")
+		out, err := cfg.LocalTmuxOut("list-panes", "-s", "-t", cfg.target(), "-F", "#{@bridge_pane}|#{@bridge_proc}|#{@bridge_sock}")
 		ch <- result{out, err}
 	}()
 	select {
@@ -541,10 +541,14 @@ func bridgeProc(cfg Config, remotePane string) (string, error) {
 			return "", fmt.Errorf("mirror pane lookup failed: %w", r.err)
 		}
 		for line := range strings.SplitSeq(strings.TrimSpace(r.out), "\n") {
-			pane, proc, found := strings.Cut(line, "|")
-			if !found || pane != remotePane {
+			// Remote pane ids collide across daemons sharing a host session,
+			// so only this daemon's windows answer. The sock goes last: a
+			// socket path may hold '|'.
+			f := strings.SplitN(line, "|", 3)
+			if len(f) != 3 || f[0] != remotePane || f[2] != cfg.SockPath {
 				continue
 			}
+			proc := f[1]
 			if proc == "" {
 				return "", fmt.Errorf("mirror pane %s has no @bridge_proc yet", remotePane)
 			}
@@ -567,7 +571,7 @@ func notifyLocal(cfg Config, msg string) bool {
 	if cfg.LocalTmuxOut == nil || cfg.LocalTmux == nil {
 		return false
 	}
-	out, err := cfg.LocalTmuxOut("list-clients", "-t", cfg.LocalSess, "-F", "#{client_name}")
+	out, err := cfg.LocalTmuxOut("list-clients", "-t", cfg.target(), "-F", "#{client_name}")
 	if err != nil {
 		return false
 	}

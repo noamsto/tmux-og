@@ -170,6 +170,20 @@ printf "%s" "$f"`
 // excludes it, so shipping one would plant a path nothing reads.
 var pasteExtRe = regexp.MustCompile(`^(png|jpe?g|gif|webp)$`)
 
+var (
+	intoRe       = regexp.MustCompile(`^\$[0-9]+$`)
+	placedHostRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
+)
+
+// validInto accepts only a session id: --into reaches every -t target as is,
+// and a name there would resolve by prefix.
+func validInto(s string) bool { return intoRe.MatchString(s) }
+
+// validPlacedHost gates --host under --into: a placed window's host is drawn
+// on its tab and read from '|'-split rows, so it may hold no format or
+// delimiter bytes and cannot lead with '-'.
+func validPlacedHost(s string) bool { return placedHostRe.MatchString(s) }
+
 // pasteUploadArgs builds the ssh argv for one image upload, riding the
 // control connection's ControlMaster exactly like the graphics fetcher: no
 // second handshake, and image bytes never share the control stream with live
@@ -203,6 +217,7 @@ func main() {
 	gfxRelayMaxBytes := flag.Int64("gfx-relay-max-bytes", graphics.DefaultRasterHold, "byte budget for holding a partial sixel meant for relay; bigger holds are dropped")
 	localTmux := flag.String("local-tmux", envDefault("OG_DAEMON_LOCAL_TMUX", "tmux"), "local tmux binary (may carry args, e.g. \"tmux -L sock\")")
 	localSess := flag.String("local-sess", os.Getenv("OG_DAEMON_LOCAL_SESS"), `local session name (default "<host>-<session>", both halves mirrorname.Part-sanitized)`)
+	into := flag.String("into", os.Getenv("OG_DAEMON_INTO"), `place the mirror windows in this existing local session, by its "$N" id (--local-sess is then its name); empty = a dedicated mirror session`)
 	sock := flag.String("sock", os.Getenv("OG_DAEMON_SOCK"), "unix socket path for renderers")
 	rendererBin := flag.String("renderer", os.Getenv("OG_DAEMON_RENDERER"), "absolute path to the renderer binary")
 	reflowBin := flag.String("reflow", os.Getenv("OG_DAEMON_REFLOW"), "absolute path to tmux-reflow-windows (empty = never force a reflow)")
@@ -225,6 +240,14 @@ func main() {
 	testOutage := flag.String("test-outage-file", os.Getenv("OG_DAEMON_TEST_OUTAGE_FILE"), "test-local: while this file exists, a dial yields no control output (an unreachable remote)")
 	flag.Parse()
 
+	if *into != "" {
+		if !validInto(*into) {
+			fatal(fmt.Errorf("--into %q is not a session id ($N)", *into))
+		}
+		if !validPlacedHost(*host) {
+			fatal(fmt.Errorf("--host %q is not a valid host for --into", *host))
+		}
+	}
 	if *localSess == "" {
 		*localSess = mirrorname.Local(*host, *session)
 	}
@@ -348,16 +371,25 @@ func main() {
 		out, err := cmd.Output()
 		return string(out), err
 	}
-	area := func() (int, int) { return localArea(localTmuxArgv, *localSess) }
+	// Every local -t naming the host session: its name for a dedicated mirror,
+	// its "$N" id with --into. A placed size read also filters on this
+	// daemon's socket, since the session holds other windows too.
+	target, sizeSock := *localSess, ""
+	if *into != "" {
+		target, sizeSock = *into, *sock
+	}
+	area := func() (int, int) { return localArea(localTmuxArgv, target, sizeSock) }
 	// -b so the reflow's own tmux round-trips stay off the command queue the
 	// daemon is about to use again.
 	reflow := func() {
 		if *reflowBin == "" {
 			return
 		}
-		_ = runLocalTmux(reflowRunShellArgs(*reflowBin, *localSess)...)
+		if name, ok := reflowSession(runLocalTmuxOut, target, *into != ""); ok {
+			_ = runLocalTmux(reflowRunShellArgs(*reflowBin, name)...)
+		}
 	}
-	panes := func() map[string]string { return localPaneMap(localTmuxArgv, *localSess) }
+	panes := func() map[string]string { return localPaneMap(localTmuxArgv, target, *sock) }
 	// A remote switch-client that moved this client is pinned back; handOff then
 	// opens the session it named as a mirror of its own, so `sesh connect` from a
 	// bridged shell lands somewhere instead of no-opping. The launcher switches
@@ -405,7 +437,7 @@ func main() {
 	// instant before the launcher has switched a client onto the mirror
 	// session yet.
 	view = seedView(func() (daemon.ViewIdentity, bool) {
-		return daemon.ResolveLocalViewIdentity(runLocalTmuxOut, *localSess)
+		return daemon.ResolveLocalViewIdentity(runLocalTmuxOut, target)
 	}, *term, *termfeatures, *sixelFlag)
 
 	cfg := daemon.Config{
@@ -413,6 +445,8 @@ func main() {
 		Shutdown:       stop,
 		SockPath:       *sock,
 		LocalSess:      *localSess,
+		Placed:         *into != "",
+		LocalTarget:    *into,
 		RemoteHost:     *host,
 		RemoteSession:  *session,
 		RemoteWindow:   strconv.Itoa(*window),
@@ -507,10 +541,12 @@ func newGraphics(ctlSock string, ctlSockFn func() string, host, cacheDir string,
 }
 
 // localArea reports the content area the local mirror session can display,
-// used as the cap asserted on every mirrored remote window.
+// used as the cap asserted on every mirrored remote window. target is the
+// host session; ownSock is "" for a dedicated one and this daemon's socket
+// for a placed one (see sessionWinSize).
 // Defaults to 80x24 if neither query yields a size.
-func localArea(localTmuxArgv []string, localSess string) (int, int) {
-	if w, h := clientArea(localTmuxArgv, localSess); w > 0 && h > 0 {
+func localArea(localTmuxArgv []string, target, ownSock string) (int, int) {
+	if w, h := clientArea(localTmuxArgv, target); w > 0 && h > 0 {
 		return w, h
 	}
 	// No client on THIS session, which is the ordinary state of every mirror the
@@ -537,7 +573,7 @@ func localArea(localTmuxArgv []string, localSess string) (int, int) {
 	// Nothing attached anywhere. The pin is now the best answer available, and
 	// asserting it is a no-op — which is the point: 80x24 below would actively
 	// shrink a remote nobody is watching.
-	if w, h := sessionWinSize(localTmuxArgv, localSess); w > 0 && h > 0 {
+	if w, h := sessionWinSize(localTmuxArgv, target, ownSock); w > 0 && h > 0 {
 		return w, h
 	}
 	return 80, 24
@@ -547,19 +583,26 @@ func localArea(localTmuxArgv []string, localSess string) (int, int) {
 // pane id. The daemon stamps @bridge_pane when it spawns each renderer, so tmux
 // itself holds the mapping the agent-status shipper needs to re-key the remote's
 // state onto local pane ids.
-func localPaneMap(localTmuxArgv []string, localSess string) map[string]string {
+func localPaneMap(localTmuxArgv []string, target, ownSock string) map[string]string {
 	out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
-		"list-panes", "-s", "-t", localSess, "-F", "#{@bridge_pane} #{pane_id}")...).Output()
+		"list-panes", "-s", "-t", target, "-F", "#{@bridge_pane}|#{pane_id}|#{@bridge_sock}")...).Output()
 	if err != nil {
 		return nil
 	}
+	return ownPaneMap(string(out), ownSock)
+}
+
+// ownPaneMap keeps the localPaneMap rows stamped with ownSock: remote pane ids
+// collide across daemons sharing a host session. The sock goes last because a
+// socket path may hold '|'.
+func ownPaneMap(out, ownSock string) map[string]string {
 	m := map[string]string{}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
+	for line := range strings.SplitSeq(out, "\n") {
+		f := strings.SplitN(line, "|", 3)
+		if len(f) != 3 || f[0] == "" || f[1] == "" || f[2] != ownSock {
 			continue
 		}
-		m[fields[0]] = fields[1]
+		m[f[0]] = f[1]
 	}
 	return m
 }
@@ -647,15 +690,42 @@ func readClients(localTmuxArgv []string, localSess string) []clientDims {
 }
 
 // sessionWinSize is the detached fallback: the local session's active-window
-// content dims. Returns 0,0 if the session doesn't exist yet or the query
-// fails.
-func sessionWinSize(localTmuxArgv []string, localSess string) (int, int) {
+// content dims. A placed host session's current window may be a local one or
+// another daemon's mirror, so a non-empty ownSock reads the first window
+// stamped with it instead. Returns 0,0 if the session doesn't exist yet or the
+// query fails.
+func sessionWinSize(localTmuxArgv []string, target, ownSock string) (int, int) {
+	if ownSock != "" {
+		out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
+			"list-windows", "-t", target, "-F", "#{window_width} #{window_height}|#{@bridge_sock}")...).Output()
+		if err != nil {
+			return 0, 0
+		}
+		return ownWinSize(string(out), ownSock)
+	}
 	out, err := exec.Command(localTmuxArgv[0], append(append([]string{}, localTmuxArgv[1:]...), //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
-		"display-message", "-p", "-t", localSess, "-F", "#{window_width} #{window_height}")...).Output()
+		"display-message", "-p", "-t", target, "-F", "#{window_width} #{window_height}")...).Output()
 	if err != nil {
 		return 0, 0
 	}
-	fields := strings.Fields(string(out))
+	return parseWinSize(string(out))
+}
+
+// ownWinSize is the dims of the first sessionWinSize row stamped with ownSock.
+// Split on the first '|' only: the sock goes last and may hold '|'.
+func ownWinSize(out, ownSock string) (int, int) {
+	for line := range strings.SplitSeq(out, "\n") {
+		dims, sock, ok := strings.Cut(line, "|")
+		if ok && sock == ownSock {
+			return parseWinSize(dims)
+		}
+	}
+	return 0, 0
+}
+
+// parseWinSize reads a "<width> <height>" reply; anything else is 0,0.
+func parseWinSize(out string) (int, int) {
+	fields := strings.Fields(out)
 	if len(fields) != 2 {
 		return 0, 0
 	}
@@ -954,4 +1024,20 @@ func shellQuote(s string) string {
 // hole, it does not exempt the value from needing to be a single shell token.
 func reflowRunShellArgs(reflowBin, localSess string) []string {
 	return []string{"run-shell", "-b", "#{1} --force #{2}", shellQuote(reflowBin), shellQuote(localSess)}
+}
+
+// reflowSession is the session name tmux-reflow-windows is forced on. Its
+// lock and debounce files are keyed by that name, and the hook-driven reflows
+// pass it, so a placed host session — the user's to rename — is resolved from
+// its "$N" target per call. A failed read skips the reflow.
+func reflowSession(out func(args ...string) (string, error), target string, placed bool) (string, bool) {
+	if !placed {
+		return target, true
+	}
+	name, err := out("display-message", "-p", "-t", target, "#{session_name}")
+	name = strings.TrimSuffix(name, "\n")
+	if err != nil || name == "" {
+		return "", false
+	}
+	return name, true
 }

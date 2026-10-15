@@ -683,6 +683,91 @@ func TestEndReopenKeepsAnotherDaemonsPidFile(t *testing.T) {
 	}
 }
 
+// placedRunLoopConfig is runLoopConfig for a placed mirror: its host session
+// holds a local window and our own @2, and a client is on it.
+func placedRunLoopConfig(t *testing.T, log *callLog, shutdown chan struct{}) (Config, string) {
+	t.Helper()
+	cfg, pidFile := runLoopConfig(t, log, shutdown)
+	cfg.Placed, cfg.LocalTarget = true, "$1"
+	cfg.LocalTmuxOut = func(args ...string) (string, error) {
+		log.add(args)
+		switch args[0] {
+		case "display-message":
+			return ownedAnswer, nil
+		case "list-windows":
+			return "@1||\n@2|1|" + cfg.SockPath + "\n", nil
+		case "list-clients":
+			return "c1\n", nil
+		}
+		return "", nil
+	}
+	return cfg, pidFile
+}
+
+// TestRunLoopCarriesAPlacedRebuildsPlaceholder checks the placeholder a placed
+// rebuild left in the host session reaches the next run, which claims it.
+func TestRunLoopCarriesAPlacedRebuildsPlaceholder(t *testing.T) {
+	var log callLog
+	cfg, _ := placedRunLoopConfig(t, &log, make(chan struct{}))
+	var placeholders []string
+	run := func(cfg Config) error {
+		placeholders = append(placeholders, cfg.placeholder)
+		if len(placeholders) == 1 {
+			return serverReplaced{placeholder: "@9"}
+		}
+		return nil
+	}
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil", err)
+	}
+	if want := []string{"", "@9"}; !slices.Equal(placeholders, want) {
+		t.Errorf("placeholder per run = %q, want %q", placeholders, want)
+	}
+}
+
+// TestPlacedEndReopenKillsOnlyOwnWindows checks a placed rebuild that will not
+// stand never kills or tombstones the host session — it is the user's — and
+// removes only our own windows, telling a client why first, while one is
+// still there to see it.
+func TestPlacedEndReopenKillsOnlyOwnWindows(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+	}{
+		{"stop", ""},
+		{"tombstone", reopenFailedText("host", "sess")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var log callLog
+			cfg, pidFile := placedRunLoopConfig(t, &log, make(chan struct{}))
+
+			endReopen(cfg, tc.text)
+
+			calls := log.snapshot()
+			for _, verb := range []string{"kill-session", "new-window"} {
+				if c := findCall(calls, verb); c != nil {
+					t.Errorf("placed endReopen ran %v", c)
+				}
+			}
+			kill := slices.IndexFunc(calls, func(c []string) bool { return c[0] == "kill-window" })
+			if kill < 0 || argvKey(calls[kill]) != argvKey([]string{"kill-window", "-t", "@2"}) || len(killedWindows(calls)) != 1 {
+				t.Fatalf("kill-window calls = %v, want only kill-window -t @2", killedWindows(calls))
+			}
+			shown := slices.IndexFunc(calls, func(c []string) bool { return c[0] == "display-message" && c[1] == "-c" })
+			if tc.text == "" {
+				if shown >= 0 {
+					t.Errorf("a stop showed %v", calls[shown])
+				}
+			} else if shown < 0 || shown > kill || calls[shown][len(calls[shown])-1] != tc.text {
+				t.Errorf("calls = %v, want %q shown before the kill-window", calls, tc.text)
+			}
+			if pidFileExists(t, pidFile) {
+				t.Error("pidfile still present after endReopen")
+			}
+		})
+	}
+}
+
 // fakeServer is a local tmux that resolves targets the way tmux does, down to
 // the traps the pin exists for: a bare name falls back to a unique prefix once
 // the exact session is gone, and display-message on a missing $N exits 0 with

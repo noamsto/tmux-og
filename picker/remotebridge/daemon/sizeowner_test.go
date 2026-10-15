@@ -201,37 +201,37 @@ func TestActivityMark(t *testing.T) {
 		steps []step
 	}{
 		{"first call only seeds", []step{
-			{[]activityRow{{true, now}}, now, false},
+			{[]activityRow{{true, now, ""}}, now, false},
 		}},
 		{"focused fresh stamp advances", []step{
-			{[]activityRow{{true, now - 50}}, now - 1, false},
-			{[]activityRow{{true, now}}, now, true},
+			{[]activityRow{{true, now - 50, ""}}, now - 1, false},
+			{[]activityRow{{true, now, ""}}, now, true},
 		}},
 		{"same stamp twice counts once", []step{
 			{nil, now - 1, false},
-			{[]activityRow{{true, now}}, now, true},
-			{[]activityRow{{true, now}}, now + 1, false},
+			{[]activityRow{{true, now, ""}}, now, true},
+			{[]activityRow{{true, now, ""}}, now + 1, false},
 		}},
 		{"equal to high does not advance", []step{
-			{[]activityRow{{true, now - 1}}, now - 1, false},
-			{[]activityRow{{true, now - 1}}, now, false},
+			{[]activityRow{{true, now - 1, ""}}, now - 1, false},
+			{[]activityRow{{true, now - 1, ""}}, now, false},
 		}},
 		{"focus-out stamp is raised but not counted", []step{
-			{[]activityRow{{true, now - 50}}, now - 1, false},
-			{[]activityRow{{false, now}}, now, false},
-			{[]activityRow{{true, now}}, now + 1, false},
+			{[]activityRow{{true, now - 50, ""}}, now - 1, false},
+			{[]activityRow{{false, now, ""}}, now, false},
+			{[]activityRow{{true, now, ""}}, now + 1, false},
 		}},
 		{"stale stamp on a moved-in client", []step{
 			{nil, now - 1, false},
-			{[]activityRow{{true, now - 10}}, now, false},
+			{[]activityRow{{true, now - 10, ""}}, now, false},
 		}},
 		{"recency edge", []step{
 			{nil, now - 1, false},
-			{[]activityRow{{true, now - 3}}, now, true},
+			{[]activityRow{{true, now - 3, ""}}, now, true},
 		}},
 		{"any counted row wins", []step{
 			{nil, now - 1, false},
-			{[]activityRow{{false, now}, {true, now - 30}, {true, now}}, now, true},
+			{[]activityRow{{false, now, ""}, {true, now - 30, ""}, {true, now, ""}}, now, true},
 		}},
 		{"no rows", []step{
 			{nil, now, false},
@@ -293,7 +293,7 @@ func TestSizeOwnerOwnership(t *testing.T) {
 
 func TestSizeOwnerNoteActivity(t *testing.T) {
 	const now = 1000
-	fresh := []activityRow{{true, now}}
+	fresh := []activityRow{{true, now, ""}}
 	cases := []struct {
 		name      string
 		owner     bool
@@ -334,8 +334,8 @@ func TestSizeOwnerNoteActivity(t *testing.T) {
 func TestSizeOwnerWakeDoesNotBlock(t *testing.T) {
 	o := newSizeOwner(tokA)
 	o.noteActivity(nil, 99)
-	o.noteActivity([]activityRow{{true, 100}}, 100)
-	o.noteActivity([]activityRow{{true, 101}}, 101)
+	o.noteActivity([]activityRow{{true, 100, ""}}, 100)
+	o.noteActivity([]activityRow{{true, 101, ""}}, 101)
 	if cap(o.wake) != 1 || len(o.wake) != 1 {
 		t.Errorf("wake len/cap = %d/%d, want 1/1", len(o.wake), cap(o.wake))
 	}

@@ -17,8 +17,10 @@ type localPin struct{ serverPID, id string }
 
 var sessionIDPattern = regexp.MustCompile(`^\$[0-9]+$`)
 
-// pinLocalSession resolves cfg.LocalSess by exact name to its pin. Only the
-// first two `|` split a row: the name is last and may itself hold one.
+// pinLocalSession resolves cfg.LocalSess by exact name to its pin; a placed
+// daemon matches its --into id instead, since the user may rename the host
+// session. Only the first two `|` split a row: the name is last and may itself
+// hold one.
 func pinLocalSession(cfg Config) (localPin, bool) {
 	if cfg.LocalSess == "" || cfg.LocalTmuxOut == nil {
 		return localPin{}, false
@@ -29,7 +31,14 @@ func pinLocalSession(cfg Config) (localPin, bool) {
 	}
 	for line := range strings.SplitSeq(out, "\n") {
 		f := strings.SplitN(line, "|", 3)
-		if len(f) == 3 && f[2] == cfg.LocalSess && f[0] != "" && sessionIDPattern.MatchString(f[1]) {
+		if len(f) != 3 {
+			continue
+		}
+		match := f[2] == cfg.LocalSess
+		if cfg.Placed {
+			match = f[1] == cfg.LocalTarget
+		}
+		if match && f[0] != "" && sessionIDPattern.MatchString(f[1]) {
 			return localPin{serverPID: f[0], id: f[1]}, true
 		}
 	}

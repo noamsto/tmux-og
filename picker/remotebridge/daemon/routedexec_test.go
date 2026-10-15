@@ -388,7 +388,7 @@ func TestPasterUsesPlainHooks(t *testing.T) {
 		LocalSess: "host-sess",
 		LocalTmuxOut: func(args ...string) (string, error) {
 			plainCalls++
-			return "%1|claude\n", nil
+			return "%1|claude|\n", nil
 		},
 		PasteUpload: func(ctx context.Context, ext string, data []byte) (string, error) {
 			return "", nil

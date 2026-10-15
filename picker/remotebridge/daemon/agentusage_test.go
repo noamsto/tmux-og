@@ -323,6 +323,41 @@ func TestUsageShipperFlush(t *testing.T) {
 	}
 }
 
+// A placed daemon shares its host session with local windows, so the usage
+// figure goes on its own windows only — and its unset takes the same route.
+func TestUsageShipperFlushPlacedIsWindowScoped(t *testing.T) {
+	const skew = 100
+	row := `claude |{"claude":{"windows":[{"label":"5h","pct":7,"reset_at":1000}]}}`
+	var calls [][]string
+	cfg := Config{
+		SockPath:    "/s/mine.sock",
+		LocalSess:   "host-sess",
+		Placed:      true,
+		LocalTarget: "$4",
+		opts:        newMirrorOpts(),
+		LocalTmux: func(args ...string) error {
+			calls = append(calls, append([]string(nil), args...))
+			return nil
+		},
+		LocalTmuxOut: func(...string) (string, error) { return "@2||/s/mine.sock\n@3||\n", nil },
+	}
+	u := newUsageShipper(skew)
+	u.queue(row)
+	u.flush(cfg)
+	want := [][]string{{"set-option", "-w", "-t", "@2", "@bridge_usage", sanitizeUsage(row, skew)}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("stamp = %v, want %v", calls, want)
+	}
+
+	calls = nil
+	u.queue("claude |")
+	u.flush(cfg)
+	want = [][]string{{"set-option", "-w", "-u", "-t", "@2", "@bridge_usage"}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("unset = %v, want %v", calls, want)
+	}
+}
+
 // TestAgentUsageSubscriptionReportsOpenAgents is the live half of the
 // sanitizer's contract: a spec tmux cannot parse is dropped silently, and this
 // shipper has no poll backstop, so only a real server can say the format's

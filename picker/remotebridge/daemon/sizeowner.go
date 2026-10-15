@@ -170,10 +170,12 @@ func foreignOwner(ownerToken, myToken string) bool {
 	return ownerToken != "" && ownerToken != myToken
 }
 
-// activityRow is one local client attached to the mirror session.
+// activityRow is one local client attached to the mirror session, and the
+// local window it is showing.
 type activityRow struct {
 	focused bool
 	stamp   int64
+	window  string
 }
 
 // activityMark detects the user acting on this controller from #{client_activity}

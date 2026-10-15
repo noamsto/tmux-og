@@ -821,18 +821,20 @@ func setBridgeState(cfg Config, v string) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_state", v)
+	cfg.opts.set(cfg, "@bridge_state", v)
 }
 
 func clearBridgeState(cfg Config) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_state")
+	cfg.opts.unset(cfg, "@bridge_state")
 }
 
+// clearBridgeRes is a no-op placed: a shared session has no per-mirror figure
+// to show, so the daemon never wrote one.
 func clearBridgeRes(cfg Config) {
-	if cfg.LocalSess == "" {
+	if cfg.LocalSess == "" || cfg.Placed {
 		return
 	}
 	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_res")
@@ -842,7 +844,7 @@ func clearBridgeUsage(cfg Config) {
 	if cfg.LocalSess == "" {
 		return
 	}
-	_ = cfg.LocalTmux("set-option", "-u", "-t", cfg.LocalSess, "@bridge_usage")
+	cfg.opts.unset(cfg, "@bridge_usage")
 }
 
 // stopped reports whether the user has asked the daemon to shut down. A nil

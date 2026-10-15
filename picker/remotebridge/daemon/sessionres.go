@@ -107,7 +107,9 @@ func (r *resShipper) flush(cfg Config) {
 	}
 	v := r.pending
 	r.pending, r.havePending = "", false
-	if cfg.LocalSess == "" {
+	if cfg.LocalSess == "" || cfg.Placed {
+		// Placed: the host session is shared with local windows, so there is no
+		// per-mirror figure to show and no @bridge_res to write.
 		return
 	}
 	if v == "" {

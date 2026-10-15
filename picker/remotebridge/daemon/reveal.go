@@ -103,6 +103,7 @@ func activityRows(out string) []activityRow {
 		rows = append(rows, activityRow{
 			focused: slices.Contains(strings.Split(fields[4], ","), "focused"),
 			stamp:   stamp,
+			window:  fields[3],
 		})
 	}
 	return rows
@@ -155,7 +156,11 @@ func wakeCmd(remoteSession string) string {
 // not own. Every window isMirror accepts is queued, then wake is called once
 // per tick that queued at least one, so the main loop's next pass picks the
 // batch up together rather than being woken once per window.
-func watchReveal(query func() (string, error), isMirror func(localWin string) bool,
+//
+// placed narrows activity to rows showing a window isMirror accepts: a placed
+// host session also holds local windows and other daemons' mirrors, and input
+// there is not input on this controller.
+func watchReveal(query func() (string, error), isMirror func(localWin string) bool, placed bool,
 	q *revealQueue, wake func() bool, activity func(rows []activityRow, now int64),
 	stop <-chan struct{}, tick <-chan time.Time,
 ) {
@@ -186,7 +191,11 @@ func watchReveal(query func() (string, error), isMirror func(localWin string) bo
 			}
 			prev = cur
 			if activity != nil {
-				activity(activityRows(out), now)
+				rows := activityRows(out)
+				if placed {
+					rows = slices.DeleteFunc(rows, func(r activityRow) bool { return !isMirror(r.window) })
+				}
+				activity(rows, now)
 			}
 		}
 	}
