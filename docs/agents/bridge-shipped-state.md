@@ -80,6 +80,9 @@ the ssh `ps` leg survives only as the version-skew fallback
   disconnected`, and `repair` resets the shipper so the re-subscription's
   re-report re-stamps — that is how the freshness rule below gets its "the
   bridge is up" condition without the picker reading a second option.
+  A placed mirror (`--into`, #985) never writes it: the host session is a local
+  one shared with other windows, and the picker's session row skips placed
+  windows when it reads a host, so a shared session carries no mirror CPU/Mem.
 - **Precedence is per session, not per host.** The picker reads `@bridge_res`
   out of the `list-panes -a` snapshot it already takes and treats it as fresh
   when it parses and its epoch is no more than 90s old (three of the daemon's
@@ -242,11 +245,20 @@ The remote publishes its own caches and the daemon ships them across (#743).
   start or `reset()` always applies, replacing whatever a previous daemon on
   this session left.
 - **Stored per mirror session, not per host, and for the same reason
-  `@bridge_res` is**: each daemon owns exactly one mirror session, so a
+  `@bridge_res` is**: each dedicated daemon owns exactly one mirror session, so a
   session option needs no cross-daemon refcounting — two mirrors of the same
   host each carry the same host-wide value independently, and one daemon's
   teardown cannot delete what another still serves the way a host-keyed file
-  would need guarding against. It also dies with the session.
+  would need guarding against. It also dies with the session. **Placed
+  (`--into`, #985) the session is shared**, so the same no-refcounting property
+  is kept at window scope instead: `@bridge_usage` is written to each of the
+  daemon's own windows (`mirrorOpts`, own = window-scoped `@bridge_sock` is ours),
+  re-applied to a window created later, and unset from those windows only. The
+  statusline reads it beside `@bridge_host` (`usageFor`), so a placed window
+  shows its remote's usage while a local window of the same session shows local
+  usage. `@bridge_state` and `@bridge_session_path` follow the same window-scoped
+  rule; `@bridge_res` is **not stamped** placed (a per-session CPU/Mem figure
+  has no meaning on a session that is local; accepted limit).
 - **Lifecycle mirrors `@bridge_res`'s, plus one extra startup case.**
   `reattach` clears `@bridge_usage` in the same breath it clears `@bridge_res`,
   right after it stamps `@bridge_state disconnected` — figures over a dead
@@ -767,6 +779,17 @@ ships the remote window's own label state across instead.
   still-valid-looking URL that passes the regex. Every consumer renders absent
   correctly, so absent beats plausibly-wrong. The drop set is therefore wider
   than "over cap": markup, control bytes and a leading `-` all drop too.
+- **Crew branch and id cross as `@bridge_crew_branch`/`@bridge_crew_id`** (#985).
+  The format gains the remote's `@crew_branch` and `@crew_id` (stamped by the
+  dispatcher; tmux-og stamps neither, and an older dispatcher's mirror carries
+  neither), each `#{s/[|]/ /:…}`-wrapped, **before** the label pair so
+  `@window_label_rest_long` stays last (row positions 20 and 21 of 24). They are
+  identity fields, so they **drop whole** via `cleanLabelValueExact` and then a
+  regex: branch cap 255, `^[A-Za-z0-9][A-Za-z0-9._/+-]*$`; id cap 64,
+  `^[A-Za-z0-9._-]+$`. Neither admits `#`, `|`, whitespace or a leading `-`,
+  since a consumer passes them on as git/CLI arguments. They ride
+  `bridgeLabelOptions`, so diff, stamp, clear and park/reseed behave like every
+  other carried label field. The daemon still never writes the real `@crew_*`.
 - **Free-form fields lose their pipes on the REMOTE**, wrapped
   `#{s/[|]/ /:@opt}` in the read format. The bracket expression is load-bearing
   — a bare `s/|/ /` is an ERE empty alternation — and it is what allows more

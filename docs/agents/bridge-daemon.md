@@ -52,9 +52,90 @@ completes, so the mirror reads as *frozen* rather than dead (#396).
   `%window-close` → `closeWindow`, and a remote with `detach-on-destroy on` sends
   `%exit`; the #934 bats cases pin all three.
 
-Not done: rebuilding the mirror windows for the new session in place. That would
-break the one-local-session ↔ one-remote-session invariant `@bridge_host`,
-`@bridge_win` and `og-remote-detach` all assume.
+Not done: rebuilding the mirror windows for the new session in place. A daemon
+mirrors exactly one remote session (see the invariant below); the excursion is
+pinned back and reseeded, never followed.
+
+### Placed mirrors (`--into`, #985)
+
+The invariant is **one daemon ↔ one remote session ↔ one host session**. The host
+session is *dedicated* (`og-remote-open <host> <sess>`: the launcher creates
+`<host>-<sess>`, the daemon owns it, teardown kills it) or *placed*
+(`og-remote-open <host> <sess> --into <local-session>`; daemon `--into '$N'`,
+env `OG_DAEMON_INTO`): the windows join an existing session beside local
+windows and other daemons' mirrors, which the daemon never creates, kills or
+switches a client into. Several placed daemons share one host session. Spec:
+`docs/superpowers/specs/2026-10-15-bridge-into-session-design.md`.
+
+- **Every mirror window carries its identity window-scoped**: `@bridge_sock`,
+  `@bridge_host`, `@bridge_session` and, placed only, `@bridge_placed` `1`.
+  `createMirrorWindow` stamps them in the same tmux command list as its
+  `new-window -a -t <host>:{end}` (`;`-joined `set-option -w -t …:{end}`), so no
+  redraw sees the window unmarked; `stampMirrorWindow` re-stamps them before
+  `@bridge_win` (idempotent) because a claimed placeholder (the dedicated
+  launcher window, a placed rebuild's) was not made there. Dedicated mode keeps
+  its session-scoped copies as well, holding the same values; a placed host
+  session gets none.
+- **Programmatic test: a window is a bridge mirror iff its window-scoped
+  `@bridge_host` is non-empty** (`show-options -wqv -t @N @bridge_host`;
+  `@bridge_placed` then says which mode). `#{@bridge_host}` in `list-windows -F`
+  falls back to a session copy, so it is equivalent only where none exists
+  (always true placed). `@bridge_win` is not the test: it is set last, once the
+  renderer is up, and the rebuild placeholder lacks it.
+- **Session-level readers must ignore placed windows.** Measured (pinned tmux):
+  `format_find` resolves server, pane→window→global-window, session; and
+  `list-sessions -F` / `display-message -t <sess>` evaluate in the session's
+  **current window**, so a window-scoped `@bridge_host` is read as the session's
+  whenever that window is current (it flipped with `select-window`). A shared
+  session would then pass for a mirror, and the launcher's pair lookup would
+  `kill-session` the user's session. So a session-level reader guards with
+  `#{?#{@bridge_placed},,#{@bridge_X}}` or uses a session-scoped `show-options`
+  (no `-w`: never sees a window option, measured empty). Keybinds and the
+  statusline are exempt on purpose: pane-context `#{@bridge_sock}` resolves the
+  window first, and the statusline shows the current window's host. Guarded
+  readers: `og-remote-open`'s pair lookup (verified by session-scoped
+  `show-options`, as is `retire_mirror`), the picker's session snapshot,
+  `collectBridgeSessions`/`collectBridgeMirrors`/`bridgeSessionNames`.
+- **Own windows** are the windows of `$N` whose window-scoped `@bridge_sock`
+  equals this daemon's: the registry, the rebuild placeholder and a half-built
+  window. Every placed write or kill goes through that marker, because remote
+  `%N` ids collide across daemons (`localPaneMap` and `bridgeProc` filter by it
+  too) and the session holds windows that are not ours.
+- **Targeting.** Every local `-t` naming the host session is `Config.target()`
+  (`LocalTarget`, the `$N` the daemon is pinned to); `LocalSess` stays the name,
+  for status-file attribution and logs. `pinLocalSession` matches the `--into`
+  id, and a placed `Run` with no pin returns before it dials, since every kill
+  is pin-gated. The daemon rejects an `--into` that is not `^\$[0-9]+$` and, with
+  `--into`, a `--host` outside `^[A-Za-z0-9][A-Za-z0-9._@-]*$` (the value reaches
+  a tab and `|`-split rows). `tmux-reflow-windows --force` is passed the host
+  session's *current name*, resolved per call (reflow's lock and debounce files
+  are keyed by it).
+- **The user's view is never moved.** Startup selects nothing; the remote-add
+  `select-window`, `%session-window-changed` and the follow are gated on
+  `hostCurrentIsOwn` (the host session's current window carries our
+  `@bridge_sock`). `HandOff` is off (the launcher sets no
+  `OG_DAEMON_REMOTE_OPEN`): an excursion is pinned back and reseeded but opens
+  nothing and switches no client. Startup creates a window per remote window
+  and never reuses the session's first one; only a rebuild leaves a
+  `cfg.placeholder` to claim.
+- **Per-mirror values are window-scoped** through `mirrorOpts` (set on `Config`
+  by `runMirror`): `@bridge_state`, `@bridge_usage` and `@bridge_session_path` go
+  on every own window in one local call, are remembered, and
+  `stampMirrorWindow` applies them to a window created later. `@bridge_res` is
+  not written placed (accepted limit: it is a per-session figure and the session
+  is local).
+- **Placed teardown kills only own windows, gated on the pin** (a restarted local
+  server reuses window ids, so an unguarded `kill-window @5` could hit a stranger),
+  one `kill-window` per window. It never runs `kill-session`,
+  `resetMirrorSession` or `tombstoneMirror`. A `host` session left holding only
+  our windows ends with the last kill: accepted. The rebuild path
+  (`errServerReplaced`, `rebuildPlaceholder`) first adds one `sleep 2147483647`
+  window carrying our identity (no `@bridge_win`), then kills the other own
+  windows, so the session never empties mid-rebuild; its id travels to the next
+  run in `serverReplaced` → `cfg.placeholder`, claimed like the launcher's window.
+  There is no tombstone window: the refused-attach ending (`endGone`, and
+  `endReopen`'s `reopenFailedText`) sends one `notifyLocal` message to a client
+  of `$N`, then kills the own windows. `localSessionVanished` skips every kill.
 
 ## Bridge Reconnect
 
@@ -122,12 +203,19 @@ path, which every caller already handles.
   clamp; on this path it also skips its own `kill-session`, since the name no
   longer belongs to this daemon. Renaming the mirror session counts as gone.
   `og-remote-open` already reaps a same-sock daemon whose session is gone when
-  the host is reopened, so no launcher change accompanies this.
+  the host is reopened, so no launcher change accompanies this. Placed, the
+  probe is `has-session -t $N` by id, so renaming the host session does not end
+  the mirror; a live id exits 0 and a killed or never-existing one exits 1
+  (measured next-3.9), unlike `display-message -t $N`, which exits 0 with empty
+  output. The same two strikes apply, and `localSessionVanished` skips every
+  placed kill, since the windows went with the session.
 - **SIGTERM must be told apart from a link failure**, since it works by dropping
   the transport. `cmd/daemon/main.go` raises `Shutdown` *before* it touches the
   transport, and `reattach` consults it before scheduling any retry.
-  `og-remote-detach` waits 2s before falling back to `kill-session` itself,
-  so a reconnecting bridge that ignored this would be stranded.
+  `og-remote-detach` waits 2s before falling back to `kill-session` itself
+  (placed: `kill-window` on each window still carrying the daemon's
+  `@bridge_sock`, never `kill-session`), so a reconnecting bridge that ignored
+  this would be stranded.
 - **Server identity is the correctness cliff.** Every attach reads
   `#{pid}|#{start_time}|#{session_id}` in one round-trip (folded into
   `newSessionPin`, so there is one authority for "which session are we on").
@@ -177,9 +265,12 @@ path, which every caller already handles.
   new server's output never reaches the old panes, registry or renderers. The
   second dial is deliberate: reusing the connection that answered the
   mismatch would hand a verified-foreign stream to a half-built mirror.
+  Placed, the "reset" is `rebuildPlaceholder` (see "Placed mirrors"): the host
+  session is not ours to reset, so only our own windows are replaced.
   **The local mirror session is pinned once, at startup**, as (local server
   `#{pid}`, `$id`) rather than by name (`pinLocalSession`/`localPin`,
-  `ownership.go`) — a bare name is not an identity: tmux prefix-resolves a
+  `ownership.go`; a placed daemon matches its `--into` id, since the user may
+  rename the host session) — a bare name is not an identity: tmux prefix-resolves a
   gone name onto a sibling, a recreated namesake gets a new `$id`, and a
   restarted server reuses `$0`, hence the pid beside it. Every destructive
   step this reconnect path takes — the placeholder reset above, the
@@ -214,7 +305,10 @@ path, which every caller already handles.
   daemon exits. Both the placeholder and the tombstone window carry no
   `@bridge_win`, so local scripts treat them as ordinary windows, and a
   tmux-remux save can resurrect a tombstone after a local restart —
-  `og-remote-open` already discards that as a ghost on the next open.
+  `og-remote-open` already discards that as a ghost on the next open. A placed
+  mirror leaves **no tombstone window**: a host session holds the user's own
+  windows, so the ending is a `notifyLocal` message to a client of `$N`
+  (`tombstoneText`/`reopenFailedText`) followed by killing the own windows.
 - **Repair order is load-bearing and every error in it is silent**: reset the
   converger wholesale (it caches what *this* client told the remote, and
   `watchResize` records before it sends, so a resize during the outage left it
@@ -253,7 +347,7 @@ path, which every caller already handles.
   loop: a ticker built per attach would leak one per reconnect, and teardown can
   only stop the handle it can see. The shippers' own rows survive a reattach
   untouched; what does not is the subscription, which is why repair re-sends it.
-- **`@bridge_state`** is a session option the daemon alone writes:
+- **`@bridge_state`** is a session option (placed: window-scoped on every own window, through `mirrorOpts`) the daemon alone writes:
   `disconnected` while a retry cycle is running — the initial drop, a wake, or
   the restore window a refusal opens (#817) — `parked` once that cycle's
   schedule is exhausted and the daemon is waiting on the user instead of
@@ -354,7 +448,7 @@ path, which every caller already handles.
 - **Reconcile is level-triggered on the `og_self` subscription** (`#{client_name}|#{client_flags}|#{@og_bridge_owner}`; it re-reports when any field moves, including another client setting this client's own `ignore-size`). `reconcileCmd` compares observed flag with observed owner: ours and flagged → unflag; foreign and unflagged → flag; unset and flagged → unflag (the release). A wrong flag from a lost race heals at the next report. Only the **newest** queued report is reconciled per main-loop pass: a daemon waking from suspend replays one report per change it slept through, and a stale "owner unset" would unflag it with nobody at the keyboard.
 - **Enforce (owner only):** `list-clients -t $N` (with the record, in one batch; a read naming another token sends nothing, since the cached `isOwner` that gated the call can lag a foreign claim by a subscription tick) then `ignore-size` on every **control-mode** client that is not ours and not already flagged (`enforceTargets`); a human tty client is never flagged, so the #201 clamp is unchanged. The same reply seeds the owner's membership set. **Claim** = write the record, unflag self, enforce — unilateral, because the previous owner may be asleep with its ssh not yet timed out.
 - **Release is survivor-driven** (`ownerReleaseCmd`): on `%client-detached <name>` naming the recorded owner's client, each survivor holds a release for `ownerReleaseGrace` (30s, longer than a warm reattach; one slot on `sizeOwner`, dropped when a newer report or read shows a different record) and stays flagged meanwhile — releasing at once made every network blip on the active controller unflag the idle survivors and resize every remote window to their size and back. The main loop sends it when due (`releaseDue`, top of each `runConn` pass; the 5s `loopTick` bounds the lateness): a fresh read (a failed read, or a failed send after a matching one, re-holds the release for `ownerReleaseRetry` (5s) unless a newer release took the slot, so a hiccup at the due moment does not strand the owner's size; a read showing a different record still drops it), then one `if-shell -F -t $N` whose branch, only while the option still reads `<token>|<name>`, unsets it. It clears only the record: fixed survivors unflag themselves via reconcile. It deliberately does not unflag other clients, because tmux cannot tell an asleep fixed daemon's client (a suspended laptop whose ssh is still attached; it must stay flagged until it wakes and reconciles, or the windows drop to its size, the #979 failure) from a pre-fix daemon's or `-CC` client's. Concurrent survivors are harmless, a newer claim (the owner back under a new client name) survives; the explicit `-t` matters because `if-shell` expands against the issuing client's current session, which for a moved-in stray is not the pinned one. The branch's extra reply blocks are absorbed by the per-command `og-fanout` barrier. The departing owner cannot do it: its usual exit is SIGTERM, whose handler kills the transport before teardown runs, and a crash or ssh timeout runs nothing. Without the release the session freezes at the owner's size whenever any other unflagged client exists on the server.
-- **Activity is the local `#{client_activity}`, read from the reveal poll** (no extra fork; `watchReveal`'s `list-clients` row gained `client_flags` and `client_activity`). `activityMark.advance` counts a row only if **focused** (the key callback stamps `activity_time` before branching on the key, so a focus-out or screen lock advances it too), **above the high-water mark** of earlier polls, and **within 3s** of the poll's clock (stamps print truncated to the second; a client moved in with nobody at it by `detach-on-destroy off` gets `CLIENT_FOCUSED` from `server_client_set_session` but keeps its old stamp). The first poll only seeds the mark; the mark is per process, so a reconnect is not activity. `MSG_RESIZE` does not touch `client_activity`, so a resize alone never claims. Renderer input is **not** the signal: it also carries the local tmux's automatic answers to remote terminal queries (DA, DSR), which flow with an idle controller. Counted activity always wakes the main loop, which re-reads the record (`claimIfStale`) and claims unless this daemon already owns with its client unflagged: the believed owner lags another daemon's claim by up to one subscription tick, so trusting it loses the keystroke. A timing window instead would let a controller steal ownership back after a fast machine switch.
+- **Activity is the local `#{client_activity}`, read from the reveal poll** (no extra fork; `watchReveal`'s `list-clients` row gained `client_flags` and `client_activity`). `activityMark.advance` counts a row only if **focused** (the key callback stamps `activity_time` before branching on the key, so a focus-out or screen lock advances it too), **above the high-water mark** of earlier polls, and **within 3s** of the poll's clock (stamps print truncated to the second; a client moved in with nobody at it by `detach-on-destroy off` gets `CLIENT_FOCUSED` from `server_client_set_session` but keeps its old stamp). The first poll only seeds the mark; the mark is per process, so a reconnect is not activity. `MSG_RESIZE` does not touch `client_activity`, so a resize alone never claims. Renderer input is **not** the signal: it also carries the local tmux's automatic answers to remote terminal queries (DA, DSR), which flow with an idle controller. Counted activity always wakes the main loop, which re-reads the record (`claimIfStale`) and claims unless this daemon already owns with its client unflagged: the believed owner lags another daemon's claim by up to one subscription tick, so trusting it loses the keystroke. A timing window instead would let a controller steal ownership back after a fast machine switch. **Placed, only rows showing an own window count** (`watchReveal` drops the rest before `noteActivity`): the host session also holds local windows and other daemons' mirrors, and typing there would otherwise claim remote size ownership for every daemon in it. The same own-window test defines `localViewing` for the park focus edge and the reopen notice (some client's current window carries our `@bridge_sock`); a session-level test would read a user on a local window as viewing, and the false-to-true edge would never fire.
 - **The unconditional attach-time claim (`owner.claim()`) runs only on the first `runMirror` of the process** (`og-remote-open` is always a user action). A `cfg.reopened` re-open after `errServerReplaced` has nobody at the keyboard and runs `owner.reopened()` instead, not the reconnect rows: our token → claim; foreign → self-flag; unset → claim only when no other control-mode client is on the session. Activity claims (`claimIfStale`) and the reconnect claims below are separate and stay.
 - **`replaceConn`'s `primeClient`** reads `ownerReadCmd` before its size asserts: our token → rewrite the record to the **new** client name only (the old client closes before `repair`, and survivors would otherwise see the recorded owner detach); foreign → self-flag `ignore-size` first, so a woken laptop does not snap the windows back.
 - **`repair`** (the only step on a plain reattach) runs `reconnected()` **before `cv.reset()`** and its size asserts: our token, or unset and this daemon owned before the drop → full claim; foreign → self-flag. Before the reset, because reattach publishes the connection first: after `cv.reset()` every `cv.need` is true, and a `watchLocalClient` tick during the read's round-trip would assert sizes on the still-unflagged new client. `og_self` is re-subscribed last.
@@ -448,9 +542,20 @@ is the one requirement that reports itself: the asking side prints
   hooks for the other two — so the touch rides every event that can move the
   local area while the daemon still pays one stat a tick, not a fork.
   Registration also clears the four pre-#820 session hooks a reused session
-  may still carry; teardown only unsets the option.
-- **`@bridge_host`** — session-scoped ssh host the mirror session's windows really live on, stamped by `og-remote-open`. `tmux-statusline` renders it after the session pill on `@bridge_win` windows, so a mirror is never read as local.
-- **`@bridge_session_path`** — session-scoped remote `#{session_path}`, stamped once per bridge by the daemon. The mirror session's own `session_path` is the launcher's cwd (`og-remote-open` passes no `-c`), so the session picker's Path column reads this instead on a `@bridge_host` row, and renders nothing when it is unset.
+  may still carry; teardown only unsets the option. **Placed, it stays a session
+  option** on the host session, not window-scoped: `tmux-reflow-windows` reads it
+  through `display-message -t "$SESSION"` and the gated `client-detached` hook
+  through the client session's current window, so a window-scoped nudge would
+  reach only the daemon whose window is current. All placed daemons in one host
+  session therefore share one file, `og-nudge-<server pid>-<N>.resize` beside the
+  socket, write the same option value (idempotent), stat it with their own mtime
+  baselines, and leave it in place at startup and teardown. No legacy hook is
+  unset (those would be the user's own session hooks). Teardown unsets the option
+  only when no other daemon's placed window remains in `$N`; a race between two
+  exiting daemons leaves either the option set (one cheap `touch` per hook) or a
+  survivor on its 30s `resizeFallbackInterval`, both benign.
+- **`@bridge_host`** — the ssh host the mirror's windows really live on. Dedicated: session-scoped, stamped by `og-remote-open`, with a window-scoped copy on each window; placed: window-scoped only (stamped by the daemon with `@bridge_sock`/`@bridge_session`, `@bridge_placed` marking the mode), and the programmatic "is this window a mirror" test (see "Placed mirrors"). `tmux-statusline` renders it after the session pill on `@bridge_win` windows, so a mirror is never read as local; a placed window's tab also shows it (`status-bar.md`).
+- **`@bridge_session_path`** — remote `#{session_path}`, stamped once per bridge by the daemon (session-scoped; placed: window-scoped on each own window). The mirror session's own `session_path` is the launcher's cwd (`og-remote-open` passes no `-c`), so the session picker's Path column reads this instead on a `@bridge_host` row, and renders nothing when it is unset.
 - **`get-clipboard request`** (`set -s`, next to `set-clipboard on`, #694): tmux answers an app's OSC 52 *read* per `get-clipboard`, not `set-clipboard`. The default `buffer` replies synchronously from the server's own newest paste buffer, so on a mirrored host the query never crosses the bridge and the remote app pastes stale remote content. With `request`, a server whose only clients are control-mode stays silent, the query propagates through the bridge, and the local tmux asks the local terminal. Tradeoff: on a terminal with no OSC 52 read support an app's read now returns nothing instead of tmux's newest buffer — tmux has no fallback. Asserted in `float-conf-assertions`.
 
 ## Menus in a mirror window (#769)
