@@ -945,3 +945,61 @@ func TestNoDestructiveCallReachesAPrefixSibling(t *testing.T) {
 		})
 	}
 }
+
+// A window id names a window of one server, so an id selector does not re-open
+// on a replaced one: it ends with the re-open-failed text and kills only its own
+// windows. An option selector re-evaluates against the new server.
+func TestRunLoopReplacedServerBySelector(t *testing.T) {
+	for _, tc := range []struct {
+		sel       string
+		wantRuns  []bool
+		wantEnded bool
+	}{
+		{"@3", []bool{false}, true},
+		{"@crew=x", []bool{false, true}, false},
+	} {
+		t.Run(tc.sel, func(t *testing.T) {
+			var log callLog
+			cfg, pidFile := placedRunLoopConfig(t, &log, make(chan struct{}))
+			cfg = selectorCfg(t, cfg, tc.sel)
+			run, seen := scriptedRun(errServerReplaced, nil)
+
+			if err := runLoop(cfg, run); err != nil {
+				t.Fatalf("runLoop(...) = %v, want nil", err)
+			}
+			if !slices.Equal(*seen, tc.wantRuns) {
+				t.Errorf("reopened per run = %v, want %v", *seen, tc.wantRuns)
+			}
+			calls := log.snapshot()
+			shown := slices.IndexFunc(calls, func(c []string) bool {
+				return c[0] == "display-message" && c[1] == "-c" && c[len(c)-1] == reopenFailedText("host", "sess")
+			})
+			if ended := shown >= 0 && slices.Equal(killedWindows(calls), []string{"@2"}); ended != tc.wantEnded {
+				t.Errorf("ended with the re-open-failed text and own windows killed = %v, want %v; calls %v", ended, tc.wantEnded, calls)
+			}
+			if got := pidFileExists(t, pidFile); got == tc.wantEnded {
+				t.Errorf("pidfile present = %v, want %v", got, !tc.wantEnded)
+			}
+		})
+	}
+}
+
+// A stop racing the replacement stays a silent stop for an id selector too.
+func TestRunLoopIDSelectorStopIsSilent(t *testing.T) {
+	var log callLog
+	shutdown := make(chan struct{})
+	cfg, _ := placedRunLoopConfig(t, &log, shutdown)
+	cfg = selectorCfg(t, cfg, "@3")
+	close(shutdown)
+	run, seen := scriptedRun(errServerReplaced)
+
+	if err := runLoop(cfg, run); err != nil {
+		t.Fatalf("runLoop(...) = %v, want nil", err)
+	}
+	if len(*seen) != 1 {
+		t.Errorf("run called %d times, want 1", len(*seen))
+	}
+	if c := slices.IndexFunc(log.snapshot(), func(c []string) bool { return c[0] == "display-message" && c[1] == "-c" }); c >= 0 {
+		t.Errorf("a stop showed %v", log.snapshot()[c])
+	}
+}

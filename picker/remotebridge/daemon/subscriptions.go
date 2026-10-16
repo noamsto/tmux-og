@@ -30,11 +30,12 @@ import (
 // and pane formats begin with their object's id, which is why nothing here
 // parses the ids out of the notification.
 const (
-	labelSubName = "og_labels"
-	agentSubName = "og_agents"
-	resSubName   = "og_res"
-	usageSubName = "og_usage"
-	openSubName  = "og_open"
+	labelSubName  = "og_labels"
+	agentSubName  = "og_agents"
+	resSubName    = "og_res"
+	usageSubName  = "og_usage"
+	openSubName   = "og_open"
+	selectSubName = "og_select"
 )
 
 // subscribeCmd builds the subscribe command for one format. Quoted as a single
