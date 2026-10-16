@@ -7088,7 +7088,7 @@ local_win_intact() {
 	local_win_intact
 }
 
-# --into --select (#989): a filtered daemon mirrors only the remote windows its
+# --into --select: a filtered daemon mirrors only the remote windows its
 # selector names. The remote windows are stamped @crew_branch the way crew
 # does it, with a window option set after the window exists.
 
