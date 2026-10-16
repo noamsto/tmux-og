@@ -444,6 +444,14 @@ if [[ -n $placed ]]; then
 	sock_key="$(printf '%s\0%s\0%s\0%s' "$host" "$sess" "$server_pid" "$into_id" | cksum)"
 	sock="${TMUX_TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}/og-into-${sock_key%% *}.sock"
 	lock="${sock}.lock"
+	# Test-only knobs, like OG_LOCK_STALE_SECONDS; the defaults are production.
+	# into_probe_timeout bounds the ssh probe below (placed only); the waiter's
+	# cap must outlast the holder's worst case: probe_daemon (≤2s, bounded by
+	# ctl), that probe, and the listen wait, plus scheduling slack.
+	into_probe_timeout="${OG_INTO_PROBE_TIMEOUT:-15}"
+	into_listen_timeout="${OG_INTO_LISTEN_TIMEOUT:-60}"
+	into_listen_ticks=$((into_listen_timeout * 10))
+	into_lock_ticks=$(((into_probe_timeout + into_listen_timeout + 15) * 10))
 	ctl="@bridge_ctl@"
 	[[ $ctl == @* ]] && ctl="$(command -v og-remote-bridge-ctl)"
 
@@ -466,7 +474,11 @@ if [[ -n $placed ]]; then
 			printf '%s\n' "$$" >"${lock}/owner"
 			break
 		fi
-		if ((tick >= 600)); then
+		if ((tick >= into_lock_ticks)); then
+			# The holder may have listened and be a hair from its EXIT trap's
+			# release; a live daemon means the wait is over either way.
+			probe_daemon "$sock"
+			[[ $REPLY == live ]] && exit 0
 			echo "og-remote-open: timed out waiting for another --into of $host:$sess into '$into_name'" >&2
 			exit 1
 		fi
@@ -514,7 +526,21 @@ fi
 # stdin instead, the same way og-remote-picker already does. A fish login
 # greeting can still land on stdout, which the key=value parse below ignores.
 phase connect
-probe_out="$(ssh -T "$host" bash -s <<<"$probe_script")"
+if [[ -n $placed ]]; then
+	# Bound the probe so the lock's holder cannot hold it past a waiter's
+	# budget. The ssh options always: portable, and `Host *` zeroes
+	# ServerAliveInterval, so a half-dead link would otherwise hang. Only
+	# timeout(1) (coreutils, on the wrapper's PATH and in bats) bounds the
+	# whole remote command, which a live-but-hung one needs.
+	ssh_probe=(ssh -T -o ConnectTimeout="$into_probe_timeout" -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+	if command -v timeout >/dev/null 2>&1; then
+		probe_out="$(timeout "$into_probe_timeout" "${ssh_probe[@]}" "$host" bash -s <<<"$probe_script")"
+	else
+		probe_out="$("${ssh_probe[@]}" "$host" bash -s <<<"$probe_script")"
+	fi
+else
+	probe_out="$(ssh -T "$host" bash -s <<<"$probe_script")"
+fi
 
 remote_os="" remote_uid="" remote_tmux="" remote_tmpdir="" probe_sess="" probe_win="" probe_want=""
 while IFS= read -r probe_line; do
@@ -770,7 +796,7 @@ if [[ -n $placed ]]; then
 	# Synchronous, unlike dedicated mode: there is no loading pane to watch, so
 	# the caller gets a real exit code instead of a daemon that died unseen, and
 	# a retry can never race a daemon that is not listening yet.
-	for ((tick = 0; tick < 600; tick++)); do
+	for ((tick = 0; tick < into_listen_ticks; tick++)); do
 		probe_daemon "$sock"
 		if [[ $REPLY == live ]]; then
 			attached=1
@@ -783,7 +809,7 @@ if [[ -n $placed ]]; then
 		fi
 		sleep 0.1
 	done
-	echo "og-remote-open: the bridge daemon for $host:$sess was not listening after 60s" >&2
+	echo "og-remote-open: the bridge daemon for $host:$sess was not listening after ${into_listen_timeout}s" >&2
 	reap_daemon "$daemon_pid"
 	rm -f "$sock" "${sock}.pid" "${sock}.phase"
 	exit 1
