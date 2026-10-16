@@ -50,6 +50,7 @@ setup() {
 		# *_lit literals).
 		case "$cmd" in
 		*": og-probe;"*)
+			[ -n "${FAKE_PROBE_DELAY:-}" ] && sleep "$FAKE_PROBE_DELAY"
 			if [ -n "${FAKE_SSH_TERM:-}" ]; then
 				kill -TERM "$(cat "$LAUNCHER_PID_FILE")" 2>/dev/null || true
 				exit 0
@@ -254,11 +255,12 @@ setup() {
 	chmod +x "$FAKEBIN"/*
 	export PATH="$FAKEBIN:$PATH"
 
-	# Same @lib_remote@ substitution Nix does at build time.
+	# Same @lib_remote@ substitution Nix does at build time. LAUNCHER_SRC lets a
+	# case point the launcher at another revision (e.g. origin/main) for a red run.
 	LAUNCHER="$BATS_TEST_TMPDIR/og-remote-open"
 	# Both placeholders sit on one line (`[[ -f … ]] && source …`), so /g matters.
 	sed "s|@lib_remote@|$PWD/scripts/lib-remote.sh|g" \
-		scripts/og-remote-open.sh >"$LAUNCHER"
+		"${LAUNCHER_SRC:-scripts/og-remote-open.sh}" >"$LAUNCHER"
 	export LAUNCHER
 }
 
@@ -1899,4 +1901,61 @@ $4|a|b'
 	run bash "$LAUNCHER" tp-g6 w10 --into dispatch
 	[ "$status" -eq 0 ]
 	grep -qE '^pid=[0-9]+ into=\$3 ' "$LAUNCH_LOG"
+}
+
+@test "into: two concurrent calls with a slow probe both become no-ops" {
+	install_into_fakes
+	# The placed probe runs under the lock, so the holder can hold it for the
+	# probe's whole duration. A waiter's budget must cover that; origin/main's
+	# 60s (actually ~70s of `sleep 0.1` plus per-tick forks) cap does not, and
+	# the second call exits 1 instead of no-op'ing. 85s clears the old cap on
+	# both Linux and macOS CI; the knobs are overridable to run this fast.
+	export OG_INTO_PROBE_TIMEOUT="${OG_INTO_PROBE_TIMEOUT:-120}"
+	export FAKE_PROBE_DELAY="${FAKE_PROBE_DELAY:-85}"
+
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/a.out" 2>&1 &
+	local p1=$!
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/b.out" 2>&1 &
+	local p2=$!
+	local s1=0 s2=0
+	wait "$p1" || s1=$?
+	wait "$p2" || s2=$?
+
+	[ "$s1" -eq 0 ]
+	[ "$s2" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+}
+
+@test "into: a failing probe fails both the holder and the waiter, bounded" {
+	install_into_fakes
+	export OG_INTO_PROBE_TIMEOUT=3 OG_INTO_LISTEN_TIMEOUT=2
+	cat >"$FAKEBIN/ssh" <<-'SHIM'
+		#!/bin/sh
+		printf '===SSH-CALL===\n%s\n' "$*" >>"$SSH_LOG"
+		exit 255
+	SHIM
+
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/a.out" 2>&1 &
+	local p1=$!
+	bash "$LAUNCHER" tp-g6 workstation --into dispatch >"$BATS_TEST_TMPDIR/b.out" 2>&1 &
+	local p2=$!
+	local s1=0 s2=0
+	wait "$p1" || s1=$?
+	wait "$p2" || s2=$?
+
+	# Neither call hangs, and no daemon was launched.
+	[ "$s1" -ne 0 ]
+	[ "$s2" -ne 0 ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: a probe that outlasts the bound fails the placed open, never launching" {
+	install_into_fakes
+	# The placed probe is wall-clock-bounded; origin/main has no bound and would
+	# launch a daemon after the slow probe answered.
+	export OG_INTO_PROBE_TIMEOUT=1 OG_INTO_LISTEN_TIMEOUT=2 FAKE_PROBE_DELAY=3
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -ne 0 ]
+	[ ! -s "$LAUNCH_LOG" ]
 }
