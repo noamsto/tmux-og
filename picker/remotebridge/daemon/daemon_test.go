@@ -1174,3 +1174,28 @@ func TestMarkRendererPaneStampsBridgePaneAndPassthrough(t *testing.T) {
 		t.Fatalf("markRendererPane calls =\n%q\nwant\n%q", calls, want)
 	}
 }
+
+// A placed daemon whose host session cannot be pinned must not start: with no
+// pin, every own-window kill is refused, so a mirror that ran would leave its
+// windows in the user's session on every exit. The error comes before any dial.
+func TestRunPlacedWithoutAPinFailsBeforeDialling(t *testing.T) {
+	dialled := false
+	cfg := Config{
+		LocalSess:    "work",
+		LocalTarget:  "$4",
+		Placed:       true,
+		View:         &Viewing{},
+		LocalTmuxOut: func(...string) (string, error) { return "123|$3|work\n", nil },
+		Dial: func() (io.ReadWriteCloser, error) {
+			dialled = true
+			return nil, fmt.Errorf("dial refused")
+		},
+	}
+	err := Run(cfg)
+	if err == nil || !strings.Contains(err.Error(), "host session $4 not found") {
+		t.Errorf("Run = %v, want the host-session-not-found error", err)
+	}
+	if dialled {
+		t.Error("Run dialled the remote with no host-session pin")
+	}
+}

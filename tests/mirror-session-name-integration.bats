@@ -158,6 +158,14 @@ teardown() {
 	inner kill-server 2>/dev/null || true
 	outer kill-server 2>/dev/null || true
 	[[ -n ${SLEEP_PID:-} ]] && kill "$SLEEP_PID" 2>/dev/null
+	if [[ -f ${LAUNCH_LOG:-} ]]; then
+		local line pid
+		while IFS= read -r line; do
+			pid="${line#pid=}"
+			pid="${pid%% *}"
+			[[ $pid =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null
+		done <"$LAUNCH_LOG"
+	fi
 	rm -rf "${OG_TMUX_DIR:-}" 2>/dev/null || true
 	return 0
 }
@@ -280,6 +288,12 @@ open_remote() { # remote-sess-name [no_switch]
 	# shellcheck disable=SC2034 # NO_SWITCH is read by $FAKEBIN/tmux, not this shell
 	REMOTE_SESSION="$1" NO_SWITCH="${2:-}" OG_REMOTE_TMPDIR=/run/user/1000 \
 		bash "$LAUNCHER" h
+}
+
+# The real launcher's placed open of REMOTE_SESSION into a local session.
+open_into() { # remote-sess-name local-sess-name
+	REMOTE_SESSION="$1" OG_REMOTE_TMPDIR=/run/user/1000 \
+		bash "$LAUNCHER" h "$1" --into "$2"
 }
 
 # --- harness: proves the injection fires at all, before the fix is trusted ---
@@ -481,4 +495,55 @@ open_remote() { # remote-sess-name [no_switch]
 	[ "$status" -eq 0 ]
 	[ "$(inner show-options -t "$newsess" -qv @bridge_session)" = 'x##(y)' ]
 	kill -0 "$SLEEP_PID"
+}
+
+# --- a session shared with placed (--into) mirror windows -------------------
+
+@test "identity: a shared session whose current window is placed is never adopted" {
+	inner new-session -d -s work
+	local before
+	before="$(inner list-windows -t work: -F '#{window_id}')"
+	# A placed window's copies: a session-level read of @bridge_host there
+	# falls back to the current window's.
+	inner set-option -w -t work: @bridge_host h
+	inner set-option -w -t work: @bridge_session s
+	inner set-option -w -t work: @bridge_placed 1
+
+	run open_remote s 1
+	[ "$status" -eq 0 ]
+
+	run inner has-session -t '=work'
+	[ "$status" -eq 0 ]
+	[ "$(inner list-windows -t work: -F '#{window_id}')" = "$before" ]
+	run inner has-session -t '=h-s'
+	[ "$status" -eq 0 ]
+	[ "$(inner show-options -t h-s -qv @bridge_session)" = s ]
+}
+
+@test "into: a second identical open leaves the host session as it was" {
+	export LAUNCH_LOG="$BATS_TEST_TMPDIR/launch.log"
+	: >"$LAUNCH_LOG"
+	# Listens at once: the ctl stub answers every ping, so the launcher's
+	# probe reads it live exactly while its pidfile pid is alive.
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		printf 'pid=%s into=%s\n' "$$" "${OG_DAEMON_INTO-}" >>"$LAUNCH_LOG"
+		printf '%s\n' "$$" >"${OG_DAEMON_SOCK}.pid"
+		exec sleep 600
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
+
+	local did before
+	did="$(inner new-session -d -P -F '#{session_id}' -s dispatch)"
+	before="$(inner list-windows -t "$did" -F '#{window_id}')"
+
+	run open_into s dispatch
+	[ "$status" -eq 0 ]
+	run open_into s dispatch
+	[ "$status" -eq 0 ]
+
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	grep -qE "^pid=[0-9]+ into=\\$did\$" "$LAUNCH_LOG"
+	[ "$(inner list-windows -t "$did" -F '#{window_id}')" = "$before" ]
+	[ "$(inner list-sessions -F '#{session_name}' | sort | tr '\n' ' ')" = 'dispatch s ' ]
 }

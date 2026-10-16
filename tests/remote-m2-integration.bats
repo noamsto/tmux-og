@@ -1231,6 +1231,84 @@ bridge_up_failed() {
 	tail -40 "$BATS_TEST_TMPDIR/$1.log" >&3 2>/dev/null || true
 }
 
+# into_host_up creates the DST session `host` a placed mirror lands in, holding
+# one local window that must outlive every mirror. Sets local_win (its id),
+# local_pid (its pane's process) and host_id (the session's "$N", what --into
+# takes).
+into_host_up() {
+	$DST new-session -d -s host -x 100 -y 30 'sleep 600'
+	local_win="$($DST display-message -p -t host: '#{window_id}')"
+	local_pid="$($DST display-message -p -t host: '#{pane_pid}')"
+	$DST set-option -w -t "$local_win" @marker keep
+	host_id="$($DST display-message -p -t host: '#{session_id}')"
+}
+
+# placed_wins <sock> prints the ids of the windows in `host` whose
+# window-scoped @bridge_sock is <sock>: one daemon's placed windows.
+placed_wins() {
+	$DST list-windows -t host -F '#{window_id}|#{@bridge_sock}' 2>/dev/null | awk -F'|' -v s="$1" '$2 == s { print $1 }'
+}
+
+# placed_panes <sock> prints that daemon's stamped mirror panes in `host`.
+placed_panes() {
+	$DST list-panes -s -t host -F '#{pane_id}|#{@bridge_sock}|#{@bridge_pane}' 2>/dev/null |
+		awk -F'|' -v s="$1" '$2 == s && $3 ~ /^%/ { print $1 }'
+}
+
+# wait_placed_count <sock> <n> polls until that daemon has <n> placed windows.
+wait_placed_count() {
+	local n=0
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		n="$(placed_wins "$1" | wc -l | tr -d ' ')"
+		[ "$n" -eq "$2" ] && return 0
+		sleep 0.1
+	done
+	printf 'wait_placed_count(%s): %s placed windows, wanted %s\n' "$1" "$n" "$2" >&3
+	return 1
+}
+
+# bridge_up_into <tag> <src-sess> [daemon args...] is bridge_up for a placed
+# mirror: --into the pre-created `host` (into_host_up), --host lab unless the
+# args override it. It waits until every pane of <src-sess> has a stamped
+# placed mirror pane and a remote printf paints into one of them. Sets
+# daemon_pid and sock, and records the pid for teardown's size_daemons_stop.
+bridge_up_into() {
+	local tag="$1" src_sess="$2"
+	shift 2
+	local marker="INTOUP_${tag}_$$" want stamped=0 deadline pane
+	sock="$BATS_TEST_TMPDIR/$tag.sock"
+	want="$($SRC list-panes -s -t "$src_sess" -F '#{pane_id}' | wc -l | tr -d ' ')"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS + want * BRIDGE_UP_PER_PANE_SECS))
+	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+		--session "$src_sess" --window 1 --local-sess host --into "$host_id" --host lab \
+		--renderer "$RENDERER" --sock "$sock" "$@" \
+		>"$BATS_TEST_TMPDIR/$tag.log" 2>&1 &
+	daemon_pid=$!
+	echo "$daemon_pid" >>"$BATS_TEST_TMPDIR/size-daemons.pids"
+
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		stamped="$(placed_panes "$sock" | wc -l | tr -d ' ')"
+		[ "$stamped" -eq "$want" ] && break
+		sleep 0.1
+	done
+	if [ "$stamped" -ne "$want" ]; then
+		bridge_up_failed "$tag" "only $stamped/$want placed mirror panes carry @bridge_pane"
+		return 1
+	fi
+
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		$SRC send-keys -t "$src_sess" "printf '$marker\\n'" Enter
+		for _ in $(seq 1 10); do
+			for pane in $(placed_panes "$sock"); do
+				$DST capture-pane -p -t "$pane" 2>/dev/null | grep -q "$marker" && return 0
+			done
+			sleep 0.1
+		done
+	done
+	bridge_up_failed "$tag" "placed mirror never painted the startup marker"
+	return 1
+}
+
 # @bridge_state=disconnected is stamped at reattach entry, but a warm
 # --test-local reconnect can clear it within a few ms. Poll tightly so darwin
 # CI catches the transient stamp (100ms sleeps miss it reliably).
@@ -3438,7 +3516,7 @@ $pane 1" ]; then
 	[[ $body != *"bg="* ]]
 }
 
-# run_detach runs og-remote-detach against $1 under a `tmux` that is pinned
+# run_detach runs og-remote-detach with its args under a `tmux` that is pinned
 # to the DST server: the script calls a bare `tmux` (correct in production), and
 # the absolute path inside the stub keeps it from re-entering itself. DETACH is
 # the store path of the script; only tests/ exists in the check sandbox.
@@ -3450,7 +3528,7 @@ run_detach() {
 	printf '#!/bin/sh\nexec %s -L m2dst "$@"\n' "$real_tmux" >"$stub/tmux"
 	chmod +x "$stub/tmux"
 	detach="${DETACH:-$BATS_TEST_DIRNAME/../scripts/og-remote-detach.sh}"
-	run env PATH="$stub:$PATH" bash "$detach" "$1"
+	run env PATH="$stub:$PATH" bash "$detach" "$@"
 }
 
 @test "detach drops the mirror and leaves the REMOTE session running" {
@@ -6664,4 +6742,329 @@ m2_panes_match() {
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
+}
+
+# --into: a placed mirror lives as windows inside an existing local session
+# (`host`, into_host_up) next to the user's own window, local_win. Every case
+# below starts its daemon through bridge_up_into, so teardown reaps it even when
+# an assertion fails first.
+
+# into_statusline renders `host`'s statusline against DST, with the agent-usage
+# case's env and args, and prints its output.
+into_statusline() {
+	local cache="$BATS_TEST_TMPDIR/statusline-cache" usage="$BATS_TEST_TMPDIR/local-usage"
+	[ -d "$cache" ] || mkdir -m 700 "$cache" "$usage"
+	rm -f "$cache/host"
+	TMUX="$TMUX_TMPDIR/tmux-$(id -u)/m2dst,0,0" OG_AGENT_USAGE_DIR="$usage" \
+	CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status" OG_STATUSLINE_CACHE_DIR="$cache" \
+		"$STATUSLINE" --session host \
+		--agent-usage-monthly-threshold 50 \
+		--icon-usage-claude C --icon-usage-codex X --icon-usage-cursor U --icon-usage-pi P \
+		--thm-bg '#1e1e2e' --thm-red '#f38ba8' --thm-mauve '#cba6f7' --thm-blue '#89b4fa' \
+		--thm-text '#cdd6f4' --thm-subtext0 '#a6adc8' --thm-overlay1 '#7f849c' \
+		--thm-peach '#fab387' --thm-green '#a6e3a1' --flavor mocha
+}
+
+# local_win_intact asserts the user's window kept its id, its live command and
+# its option. pane_current_command is no use here: a multicall coreutils
+# reports `sleep` as "coreutils".
+local_win_intact() {
+	[ "$($DST display-message -p -t "$local_win" '#{window_id}')" = "$local_win" ]
+	[ "$($DST display-message -p -t "$local_win" '#{session_name}')" = host ]
+	[ "$($DST display-message -p -t "$local_win" '#{pane_pid}|#{pane_dead}')" = "$local_pid|0" ]
+	kill -0 "$local_pid"
+	[ "$($DST show-options -wqv -t "$local_win" @marker)" = keep ]
+}
+
+@test "into: remote windows land in the host session beside an untouched local window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	$SRC select-window -t rem:1
+	into_host_up
+	bridge_up_into in1 rem
+
+	wins="$(placed_wins "$sock")"
+	[ "$(wc -l <<<"$wins" | tr -d ' ')" -eq 2 ]
+	[ "$($DST list-windows -t host -F '#{window_id}' | wc -l | tr -d ' ')" -eq 3 ]
+	local_win_intact
+
+	for w in $wins; do
+		[ "$($DST show-options -wqv -t "$w" @bridge_win)" = 1 ]
+		[ "$($DST show-options -wqv -t "$w" @bridge_host)" = lab ]
+		[ "$($DST show-options -wqv -t "$w" @bridge_session)" = rem ]
+		[ "$($DST show-options -wqv -t "$w" @bridge_sock)" = "$sock" ]
+		[ "$($DST show-options -wqv -t "$w" @bridge_placed)" = 1 ]
+	done
+	for opt in @bridge_win @bridge_host @bridge_session @bridge_sock @bridge_placed; do
+		[ -z "$($DST show-options -wqv -t "$local_win" "$opt")" ]
+	done
+	# Placed mode writes no session-scoped identity: the session is the user's.
+	[ -z "$($DST show-options -qv -t "$host_id" @bridge_host)" ]
+	[ -z "$($DST show-options -qv -t "$host_id" @bridge_sock)" ]
+}
+
+@test "into: a remote new-window adds a placed mirror window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	into_host_up
+	bridge_up_into in2 rem
+	before="$(placed_wins "$sock")"
+
+	$SRC new-window -t rem
+	wait_placed_count "$sock" 2
+
+	new="$(placed_wins "$sock" | grep -vxF "$before")"
+	[ "$($DST display-message -p -t "$new" '#{session_name}')" = host ]
+	[ "$($DST show-options -wqv -t "$new" @bridge_placed)" = 1 ]
+	local_win_intact
+}
+
+@test "into: a remote kill-window removes only its mirror window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	# Kill a non-current remote window: see the dedicated kill-window case.
+	$SRC select-window -t rem:1
+	into_host_up
+	bridge_up_into in3 rem
+	[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq 2 ]
+
+	$SRC kill-window -t rem:2
+	wait_placed_count "$sock" 1
+	[ "$($DST list-windows -t host -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+	local_win_intact
+}
+
+@test "into: a gated key on a placed window drives the remote through its own socket" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	into_host_up
+	# The production bridgeGate/bridgeCtl shape, bound in the root table.
+	cat >"$BATS_TEST_TMPDIR/f12.conf" <<-EOF
+		bind-key -n F12 if -F '#{&&:#{@bridge_win},#{@bridge_pane}}' { run-shell "$CTL --sock=#{q:@bridge_sock} new-window #{q:@bridge_pane}" }
+	EOF
+	$DST source-file "$BATS_TEST_TMPDIR/f12.conf"
+	bridge_up_into in4 rem
+
+	placed="$(placed_wins "$sock")"
+	$DST select-window -t "$placed"
+	obs_attach obs-k 120 40 "$DST" host
+	[ "$($DST display-message -p -t host: '#{window_id}')" = "$placed" ]
+
+	$OBS send-keys -t obs-k F12
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		[ "$($SRC list-windows -t rem -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ] && break
+		sleep 0.1
+	done
+	[ "$($SRC list-windows -t rem -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+	wait_placed_count "$sock" 2
+	local_win_intact
+}
+
+@test "into: the statusline names the remote host on a placed window only" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	into_host_up
+	bridge_up_into in5 rem --host lab
+
+	placed="$(placed_wins "$sock")"
+	$DST select-window -t "$placed"
+	on_placed="$(into_statusline)"
+	$DST select-window -t "$local_win"
+	on_local="$(into_statusline)"
+
+	# The peach host segment (an empty --icon-remote, then the host), not a bare
+	# "lab" a branch or path could also hold.
+	[[ $on_placed == *'#[fg=#fab387] lab '* ]]
+	[[ $on_local != *'#[fg=#fab387] lab '* ]]
+}
+
+@test "into: a placed mirror resizes to the host session's client" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	into_host_up
+	# An sz- tag, so wait_src_all's size_failed prints this daemon's log.
+	bridge_up_into sz-in6 rem
+
+	placed="$(placed_wins "$sock")"
+	$DST select-window -t "$placed"
+	obs_attach obs-r 120 40 "$DST" host
+	# The content area: the client minus DST_CONF's single status row.
+	client="$($DST list-clients -t host -F '#{client_width}x#{client_height}' | head -1)"
+	want="${client%x*}x$((${client#*x} - 1))"
+	[ "$want" != 100x30 ] # a real resize, not the size the mirror started at
+
+	wait_src_all "$want" rem
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		mirror="$($DST display-message -p -t "$placed" '#{window_width}x#{window_height}')"
+		src_dims="$(sorted_dims "$SRC" rem:1)"
+		dst_dims="$(sorted_dims "$DST" "$placed")"
+		[ "$mirror" = "$want" ] && [ "$src_dims" = "$dst_dims" ] && break
+		sleep 0.1
+	done
+	[ "$mirror" = "$want" ]
+	[ "$src_dims" = "$dst_dims" ]
+}
+
+@test "into: remote window changes never pull the host session off a local window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	into_host_up
+	bridge_up_into in7 rem
+	obs_attach obs-y 120 40 "$DST" host
+	# Startup selects nothing either.
+	[ "$($DST display-message -p -t host: '#{window_id}')" = "$local_win" ]
+
+	$SRC new-window -t rem # selects the new remote window
+	wait_placed_count "$sock" 2
+	$SRC select-window -t rem:1
+	# A later add is the barrier: the daemon handles the remote's notifications
+	# in order, so once its mirror lands the select above has been handled too.
+	$SRC new-window -d -t rem
+	wait_placed_count "$sock" 3
+
+	for _ in $(seq 1 10); do
+		[ "$($DST display-message -p -t host: '#{window_id}')" = "$local_win" ]
+		sleep 0.1
+	done
+}
+
+@test "into: SIGTERM removes only the daemon's own windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	into_host_up
+	bridge_up_into in8 rem
+	[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq 2 ]
+
+	kill -TERM "$daemon_pid"
+	wait_daemon_exit in8 "$BATS_TEST_TMPDIR/in8.log"
+
+	[ -z "$(placed_wins "$sock")" ]
+	[ "$($DST list-windows -t host -F '#{window_id}')" = "$local_win" ]
+	local_win_intact
+}
+
+@test "into: two placed daemons share the host session, each driving its own remote" {
+	$SRC new-session -d -s ra -x 100 -y 30
+	$SRC new-session -d -s rb -x 100 -y 30
+	into_host_up
+	bridge_up_into in9a ra
+	a_pid=$daemon_pid a_sock=$sock
+	bridge_up_into in9b rb
+	b_pid=$daemon_pid b_sock=$sock
+	[ "$a_sock" != "$b_sock" ]
+	[ "$(placed_wins "$a_sock" | wc -l | tr -d ' ')" -eq 1 ]
+	[ "$(placed_wins "$b_sock" | wc -l | tr -d ' ')" -eq 1 ]
+	# Every placed window belongs to exactly one of the two.
+	[ "$($DST list-windows -t host -F '#{@bridge_sock}' | grep -c . | tr -d ' ')" -eq 2 ]
+
+	# Each window's own @bridge_pane, sent through its own window's @bridge_sock.
+	a_win="$(placed_wins "$a_sock")"
+	b_win="$(placed_wins "$b_sock")"
+	a_pane="$($DST display-message -p -t "$a_win" '#{@bridge_pane}')"
+	b_pane="$($DST display-message -p -t "$b_win" '#{@bridge_pane}')"
+	[ "$($DST show-options -wqv -t "$a_win" @bridge_sock)" = "$a_sock" ]
+	[ "$($DST show-options -wqv -t "$b_win" @bridge_sock)" = "$b_sock" ]
+
+	run "$CTL" --sock="$a_sock" new-window "$a_pane"
+	[ "$status" -eq 0 ]
+	wait_placed_count "$a_sock" 2
+	[ "$($SRC list-windows -t ra -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+	[ "$($SRC list-windows -t rb -F '#{window_id}' | wc -l | tr -d ' ')" -eq 1 ]
+	[ "$(placed_wins "$b_sock" | wc -l | tr -d ' ')" -eq 1 ]
+
+	run "$CTL" --sock="$b_sock" new-window "$b_pane"
+	[ "$status" -eq 0 ]
+	wait_placed_count "$b_sock" 2
+	[ "$($SRC list-windows -t rb -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+	[ "$($SRC list-windows -t ra -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+
+	daemon_pid=$a_pid
+	kill -TERM "$a_pid"
+	wait_daemon_exit in9a "$BATS_TEST_TMPDIR/in9a.log"
+	[ -z "$(placed_wins "$a_sock")" ]
+	[ "$(placed_wins "$b_sock" | wc -l | tr -d ' ')" -eq 2 ]
+	kill -0 "$b_pid"
+	local_win_intact
+}
+
+@test "into: a host session left with only placed windows ends with the daemon" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	into_host_up
+	bridge_up_into in10 rem
+	$DST new-session -d -s other -x 100 -y 30
+	$DST kill-window -t "$local_win"
+	[ "$($DST list-windows -t host -F '#{@bridge_placed}' | sort -u)" = 1 ]
+
+	kill -TERM "$daemon_pid"
+	wait_daemon_exit in10 "$BATS_TEST_TMPDIR/in10.log"
+
+	run $DST has-session -t "$host_id"
+	[ "$status" -ne 0 ]
+	run $DST has-session -t =other
+	[ "$status" -eq 0 ]
+}
+
+@test "into: detaching a placed window drops only that daemon's windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	into_host_up
+	bridge_up_into in11 rem
+	placed="$(placed_wins "$sock" | head -1)"
+
+	run_detach host "$placed"
+	[ "$status" -eq 0 ]
+	wait_daemon_exit in11 "$BATS_TEST_TMPDIR/in11.log"
+
+	[ -z "$(placed_wins "$sock")" ]
+	[ "$($DST list-windows -t host -F '#{window_id}')" = "$local_win" ]
+	local_win_intact
+}
+
+@test "into: a relaunch after a SIGKILLed daemon sweeps its dead windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	into_host_up
+	bridge_up_into in12 rem
+	old="$(placed_wins "$sock")"
+	[ "$(wc -l <<<"$old" | tr -d ' ')" -eq 2 ]
+
+	# No teardown runs: remain-on-exit keeps each window, its renderer dead,
+	# stamped with the socket path the relaunch below reuses.
+	kill -KILL "$daemon_pid"
+	wait "$daemon_pid" 2>/dev/null || true
+	dead=0
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		dead="$($DST list-panes -s -t host -F '#{pane_dead}' | grep -c '^1$' || true)"
+		[ "$dead" -eq 2 ] && break
+		sleep 0.1
+	done
+	[ "$dead" -eq 2 ]
+	[ "$(placed_wins "$sock")" = "$old" ]
+
+	bridge_up_into in12 rem
+	# Painted output only proves the new windows are wired; the sweep follows
+	# the startup reconcile, so wait for the corpses to go.
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		placed_wins "$sock" | grep -qxF "$old" || break
+		sleep 0.1
+	done
+	[ -z "$(placed_wins "$sock" | grep -xF "$old" || true)" ]
+	[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq "$($SRC list-windows -t rem -F '#{window_id}' | wc -l | tr -d ' ')" ]
+	[ "$($DST list-panes -s -t host -F '#{pane_dead}' | grep -c '^1$' || true)" -eq 0 ]
+	local_win_intact
+}
+
+@test "into: detaching a placed window whose daemon is gone kills its windows" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-window -t 'rem:{end}' -a
+	into_host_up
+	bridge_up_into in13 rem
+	placed="$(placed_wins "$sock" | head -1)"
+
+	# SIGKILL leaves the pidfile naming a dead pid and the windows behind: the
+	# detach has no teardown to wait for and must kill them itself.
+	kill -KILL "$daemon_pid"
+	wait "$daemon_pid" 2>/dev/null || true
+
+	run_detach host "$placed"
+	[ "$status" -eq 0 ]
+
+	[ -z "$(placed_wins "$sock")" ]
+	local_win_intact
 }

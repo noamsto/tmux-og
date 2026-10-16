@@ -175,7 +175,7 @@ const notModalFilter = "#{!:#{pane_modal_flag}}"
 // so picker/main_test.go can assert notModalFilter is on it.
 func panesSnapshotArgv() []string {
 	return []string{"list-panes", "-a", "-f", notModalFilter, "-F",
-		"#{pane_id}|#{session_name}|#{window_index}|#{session_path}|#{session_last_attached}|#{@bridge_host}|#{pane_current_command}|#{pane_pid}|#{@bridge_proc}|#{@bridge_session_path}|#{@bridge_res}"}
+		"#{pane_id}|#{session_name}|#{window_index}|#{session_path}|#{session_last_attached}|#{@bridge_host}|#{pane_current_command}|#{pane_pid}|#{@bridge_proc}|#{@bridge_session_path}|#{@bridge_res}|#{@bridge_placed}"}
 }
 
 // collectPanesSnapshot fetches the union of the fields sessions() and paneMap()
@@ -185,8 +185,10 @@ func panesSnapshotArgv() []string {
 // appended last: a mirror pane's own pane_current_command is the bridge
 // renderer, not the remote's real command (#513). @bridge_session_path follows
 // it for the same reason: a mirror's own session_path is the launcher's cwd.
-// @bridge_res is appended after both, and every later field must go after it
-// too: each one is positional, so a mid-format insert shifts all the rest.
+// @bridge_res is appended after both, and @bridge_placed after that: a placed
+// mirror window lives in the user's own session, so its row must not label the
+// session. Every later field must go after it too: each one is positional, so a
+// mid-format insert shifts all the rest.
 func collectPanesSnapshot() panesSnapshot {
 	out, err := exec.Command("tmux", panesSnapshotArgv()...).Output() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	if err != nil {
@@ -219,9 +221,10 @@ func (snap panesSnapshot) sessions() []sessionData {
 
 	for _, line := range snap {
 		parts := strings.Split(line, "|")
-		if len(parts) != 11 {
+		if len(parts) != 12 {
 			continue
 		}
+		placed := parts[11] != ""
 		name, path, actStr, proc := parts[1], parts[3], parts[4], parts[6]
 		// A mirror pane runs the bridge renderer; @bridge_proc carries what the
 		// remote pane is really running.
@@ -230,7 +233,7 @@ func (snap panesSnapshot) sessions() []sessionData {
 		}
 		// A mirror's session_path names a local directory unrelated to the
 		// remote session, so an absent stamp renders no path rather than that one.
-		if parts[5] != "" {
+		if parts[5] != "" && !placed {
 			path = parts[9]
 		}
 		// Expand %h (tmux may store literal %h for home dir)
@@ -243,8 +246,13 @@ func (snap panesSnapshot) sessions() []sessionData {
 		if !ok {
 			// @bridge_res is session-scoped, so the first pane's copy is the
 			// session's, not an approximation of it.
-			si = &sessInfo{path: path, activity: act, seen: make(map[string]bool), bridgeHost: parts[5], bridgeRes: parts[10]}
+			si = &sessInfo{path: path, activity: act, seen: make(map[string]bool)}
 			m[name] = si
+		}
+		// A later unflagged row still sets them: a dedicated session never
+		// carries the flag, and a shared one has no session-level host.
+		if !placed && si.bridgeHost == "" && parts[5] != "" {
+			si.bridgeHost, si.bridgeRes, si.path = parts[5], parts[10], path
 		}
 		if act > si.activity {
 			si.activity = act
@@ -1049,7 +1057,7 @@ func (snap panesSnapshot) paneMap() map[string]paneMapping {
 		// sessions(): a stale count here drops every pane from the map rather
 		// than spoiling one column, and the agent state silently empties
 		// across the whole picker.
-		if len(parts) != 11 {
+		if len(parts) != 12 {
 			continue
 		}
 		paneID := strings.TrimPrefix(parts[0], "%")

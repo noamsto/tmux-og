@@ -1261,3 +1261,56 @@ func TestRemoteHeaderCarriesTheRemoteGlyph(t *testing.T) {
 		t.Errorf("headerIcon = %q, want the @icon_remote default %q", it.headerIcon, iconRemote)
 	}
 }
+
+func TestBridgeSessionFormatGuardsSessionReaders(t *testing.T) {
+	const want = "#{session_name}|#{?#{@bridge_placed},,#{@bridge_host}}|#{?#{@bridge_placed},,#{@bridge_session}}"
+	if bridgeSessionFormat != want {
+		t.Fatalf("bridgeSessionFormat = %q, want %q", bridgeSessionFormat, want)
+	}
+}
+
+// A shared session whose current window is a placed mirror is never a mirror
+// target, while a dedicated mirror beside it still is. Real tmux: the guard
+// is a format conditional, so only the server can say what it yields.
+func TestBridgeCollectorsSkipPlacedSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not available")
+	}
+	dir, err := os.MkdirTemp("/tmp", "og-placed-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", "")
+	tm := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, test-controlled argv
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+	}
+	tm("-f", "/dev/null", "new-session", "-d", "-s", "dedicated")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	tm("set-option", "-t", "dedicated", "@bridge_host", "lab")
+	tm("set-option", "-t", "dedicated", "@bridge_session", "work")
+	tm("new-session", "-d", "-s", "shared")
+	tm("set-option", "-w", "-t", "shared:", "@bridge_placed", "1")
+	tm("set-option", "-w", "-t", "shared:", "@bridge_host", "lab")
+	tm("set-option", "-w", "-t", "shared:", "@bridge_session", "other")
+
+	mirrors := collectBridgeMirrors()
+	if len(mirrors) != 1 || mirrors[0] != (bridgeMirror{host: "lab", sess: "work", target: "dedicated"}) {
+		t.Errorf("collectBridgeMirrors() = %+v, want only the dedicated mirror", mirrors)
+	}
+	bridges := collectBridgeSessions()
+	if len(bridges) != 1 || !bridges[bridgeSessionKey("lab", "work")] {
+		t.Errorf("collectBridgeSessions() = %+v, want only lab/work", bridges)
+	}
+	bridgeNameCache.Lock()
+	bridgeNameCache.names = nil
+	bridgeNameCache.Unlock()
+	names := bridgeSessionNames()
+	if len(names) != 1 || names["dedicated"] != "work" {
+		t.Errorf("bridgeSessionNames() = %+v, want only dedicated -> work", names)
+	}
+}

@@ -250,7 +250,7 @@ func (u *usageShipper) flush(cfg Config) {
 		clearBridgeUsage(cfg)
 		return
 	}
-	_ = cfg.LocalTmux("set-option", "-t", cfg.LocalSess, "@bridge_usage", out)
+	cfg.opts.set(cfg, "@bridge_usage", out)
 }
 
 // reset forgets what was written, so the re-report after repair's re-subscribe

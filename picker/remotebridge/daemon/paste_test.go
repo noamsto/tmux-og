@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -704,17 +705,28 @@ func TestBridgeProc(t *testing.T) {
 		wantErr  string
 	}{
 		{name: "lookup error", outErr: errors.New("no server"), pane: "%1", wantErr: "lookup failed"},
-		{name: "found", out: "%1|claude\n%2|fish\n", pane: "%2", wantProc: "fish"},
-		{name: "pane missing", out: "%1|claude\n", pane: "%9", wantErr: "not found"},
-		{name: "empty proc", out: "%1|\n", pane: "%1", wantErr: "no @bridge_proc yet"},
+		{name: "found", out: "%1|claude|/s|1\n%2|fish|/s|1\n", pane: "%2", wantProc: "fish"},
+		{name: "pane missing", out: "%1|claude|/s|1\n", pane: "%9", wantErr: "not found"},
+		{name: "empty proc", out: "%1||/s|1\n", pane: "%1", wantErr: "no @bridge_proc yet"},
+		// Remote pane ids collide across daemons sharing a host session.
+		{name: "another daemon's colliding pane is ignored", out: "%3|claude|/other\n%3|fish|/s|1\n", pane: "%3", wantProc: "fish"},
+		{name: "only another daemon's pane", out: "%3|claude|/other\n", pane: "%3", wantErr: "not found"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			var argv []string
 			cfg := Config{
-				LocalSess:    "m",
-				LocalTmuxOut: func(...string) (string, error) { return c.out, c.outErr },
+				LocalSess: "m",
+				SockPath:  "/s|1",
+				LocalTmuxOut: func(args ...string) (string, error) {
+					argv = args
+					return c.out, c.outErr
+				},
 			}
 			got, err := bridgeProc(cfg, c.pane)
+			if want := []string{"list-panes", "-s", "-t", "m", "-F", "#{@bridge_pane}|#{@bridge_proc}|#{@bridge_sock}"}; !reflect.DeepEqual(argv, want) {
+				t.Errorf("asked %q, want %q", argv, want)
+			}
 			if got != c.wantProc {
 				t.Errorf("proc = %q, want %q", got, c.wantProc)
 			}
@@ -746,7 +758,7 @@ func TestWrapperAgentPasteEndToEnd(t *testing.T) {
 			}
 			return nil
 		},
-		LocalTmuxOut: func(...string) (string, error) { return "%1|" + stamped + "\n", nil },
+		LocalTmuxOut: func(...string) (string, error) { return "%1|" + stamped + "|\n", nil },
 	}
 	a.apply(cfg, []paneStatus{{pane: "%1", proc: "bash", treeAgent: "claude"}})
 	if stamped != "claude" {

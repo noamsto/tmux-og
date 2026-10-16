@@ -325,8 +325,7 @@ func bridgeSessionNames() map[string]string {
 	if bridgeNameCache.names != nil && time.Since(bridgeNameCache.ts) < remoteResourceTTL {
 		return bridgeNameCache.names
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F",
-		"#{session_name}|#{@bridge_host}|#{@bridge_session}").Output()
+	out, err := exec.Command("tmux", "list-sessions", "-F", bridgeSessionFormat).Output()
 	if err != nil {
 		return bridgeNameCache.names
 	}

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"cmp"
 	_ "embed"
 	"strings"
 
@@ -137,17 +138,17 @@ func mirrorEmptyMenu(p *paths.Paths) string {
 // commands fails that menu rather than the config load.
 func menuBinds(p *paths.Paths) string {
 	paneM := mirrorPaneMenu(p, "-t = -x M -y M")
-	mirrors := map[string]struct{ note, mirror string }{
-		"prefix <":                    {"Display window menu", mirrorWindowMenu(p, "-x W -y W")},
-		"prefix >":                    {"Display pane menu", mirrorPaneMenu(p, "-x P -y P")},
-		"root MouseDown3Pane":         {"Display pane menu", `if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { ` + paneM + ` }`},
-		"root M-MouseDown3Pane":       {"Display pane menu", paneM},
-		"root MouseDown3Status":       {"Display window menu", mirrorWindowMenu(p, "-t = -x W -y W")},
-		"root M-MouseDown3Status":     {"Display window menu", mirrorWindowMenu(p, "-t = -x W -y W")},
-		"root MouseDown3StatusLeft":   {"Display session menu", mirrorSessionMenu(p)},
-		"root M-MouseDown3StatusLeft": {"Display session menu", mirrorSessionMenu(p)},
-		"root MouseDown3Empty":        {"Display new pane/window menu", mirrorEmptyMenu(p)},
-		"root M-MouseDown3Empty":      {"Display new pane/window menu", mirrorEmptyMenu(p)},
+	mirrors := map[string]struct{ note, mirror, gate string }{
+		"prefix <":                    {note: "Display window menu", mirror: mirrorWindowMenu(p, "-x W -y W")},
+		"prefix >":                    {note: "Display pane menu", mirror: mirrorPaneMenu(p, "-x P -y P")},
+		"root MouseDown3Pane":         {note: "Display pane menu", mirror: `if-shell -F -t = "#{||:#{mouse_any_flag},#{&&:#{pane_in_mode},#{?#{m/r:(copy|view)-mode,#{pane_mode}},0,1}}}" { select-pane -t = ; send-keys -M } { ` + paneM + ` }`},
+		"root M-MouseDown3Pane":       {note: "Display pane menu", mirror: paneM},
+		"root MouseDown3Status":       {note: "Display window menu", mirror: mirrorWindowMenu(p, "-t = -x W -y W")},
+		"root M-MouseDown3Status":     {note: "Display window menu", mirror: mirrorWindowMenu(p, "-t = -x W -y W")},
+		"root MouseDown3StatusLeft":   {note: "Display session menu", mirror: mirrorSessionMenu(p), gate: bridgeGateNotPlaced},
+		"root M-MouseDown3StatusLeft": {note: "Display session menu", mirror: mirrorSessionMenu(p), gate: bridgeGateNotPlaced},
+		"root MouseDown3Empty":        {note: "Display new pane/window menu", mirror: mirrorEmptyMenu(p)},
+		"root M-MouseDown3Empty":      {note: "Display new pane/window menu", mirror: mirrorEmptyMenu(p)},
 	}
 	lines := []string{`%if "#{==:#{version},` + stockMenuVersion + `}"`}
 	for _, s := range stockMenus {
@@ -165,7 +166,8 @@ func menuBinds(p *paths.Paths) string {
 		if s.table == "root" {
 			b.WriteString("-t = ")
 		}
-		b.WriteString("'" + bridgeGate + "' { " + m.mirror + " } " + tmuxDoubleQuote(s.cmd))
+		gate := cmp.Or(m.gate, bridgeGate)
+		b.WriteString("'" + gate + "' { " + m.mirror + " } " + tmuxDoubleQuote(s.cmd))
 		lines = append(lines, b.String())
 	}
 	return strings.Join(append(lines, "%endif"), "\n")

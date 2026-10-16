@@ -20,11 +20,11 @@ func TestParseWindowLabels(t *testing.T) {
 	full := "@1|nova|#89b4fa|123|open|success|mergeable| PR #123|" +
 		"github|460|https://github.com/o/r/issues/460|https://github.com/o/r/pull/123|1|" +
 		"feat/460-card|/home/noams/wt/card|Card reads bridge state|Ship the card|" +
-		"approved|1|3/8|GH #460| ship it"
+		"approved|1|3/8|feat/985-x|1791968080-89470|GH #460| ship it"
 	// The remote's #{s/[|]/ /:…} has already run over positions 8-16, so a title
 	// that held a '|' arrives carrying a space and shifts nothing. Only the
 	// trailing @window_label_rest_long is unwrapped, where a '|' lands in itself.
-	piped := "@2|orbit|#[fg=red]|none|OPEN|success|unknown|||||||||a  piped title|||||| a #[fg=red]title | with a pipe"
+	piped := "@2|orbit|#[fg=red]|none|OPEN|success|unknown|||||||||a  piped title|||||||| a #[fg=red]title | with a pipe"
 	if n := strings.Count(full, "|") + 1; n != windowLabelFields {
 		t.Fatalf("full fixture has %d fields, want %d", n, windowLabelFields)
 	}
@@ -59,6 +59,7 @@ func TestParseWindowLabels(t *testing.T) {
 		prDraft:  "1", branch: "feat/460-card", dir: "/home/noams/wt/card",
 		issueTitle: "Card reads bridge state", prTitle: "Ship the card",
 		prReview: "approved", prAutoMerge: "1", prProgress: "3/8",
+		crewBranch: "feat/985-x", crewID: "1791968080-89470",
 		labelID: "GH #460", labelRest: " ship it",
 	}
 	if got[0] != want0 {
@@ -173,6 +174,21 @@ func TestWindowLabelValidation(t *testing.T) {
 			{strings.Repeat("a", branchMaxRunes), strings.Repeat("a", branchMaxRunes)},
 			{strings.Repeat("a", branchMaxRunes+1), ""},
 		}},
+		{"crewBranch", 20, []struct{ in, want string }{
+			{"feat/985-x", "feat/985-x"}, {"main", "main"}, {"a.b_c/d+e-f", "a.b_c/d+e-f"},
+			{"a#b", ""}, {"x y", ""}, {"-x", ""}, {"", ""},
+			{"feat#[x]/985-x", ""}, // strips to a valid "feat/985-x"
+			{strings.Repeat("a", crewBranchMaxRunes), strings.Repeat("a", crewBranchMaxRunes)},
+			{strings.Repeat("a", crewBranchMaxRunes+1), ""},
+		}},
+		{"crewID", 21, []struct{ in, want string }{
+			{"1791968080-89470", "1791968080-89470"}, {"a.b_c-d", "a.b_c-d"},
+			{"x y", ""}, {"a/b", ""}, {"a#b", ""}, {"", ""},
+			{".", ""}, {"..", ""}, {"-x", ""},
+			{"12#[x]34", ""}, // strips to a valid "1234"
+			{strings.Repeat("1", crewIDMaxRunes), strings.Repeat("1", crewIDMaxRunes)},
+			{strings.Repeat("1", crewIDMaxRunes+1), ""},
+		}},
 		{"dir", 14, []struct{ in, want string }{
 			{"/home/noams/wt/card", "/home/noams/wt/card"}, {"/", "/"},
 			{"relative/path", ""}, {"~/wt", ""},
@@ -199,12 +215,12 @@ func TestWindowLabelValidation(t *testing.T) {
 	// The titles and the label segments are display text, so they strip markup
 	// and truncate where the identity fields above drop whole. Dropping a title
 	// for holding markup would regress what already ships.
-	for _, f := range []int{15, 16, 20, 21} {
+	for _, f := range []int{15, 16, 22, 23} {
 		if got := rowField(t, oneRow(t, f, "a #[fg=red]title"), f); got != "a title" {
 			t.Errorf("field %d: markup value = %q, want it stripped and kept", f, got)
 		}
 	}
-	for f, limit := range map[int]int{15: labelTitleMaxRunes, 16: labelTitleMaxRunes, 20: labelTextMaxRunes, 21: labelTitleMaxRunes} {
+	for f, limit := range map[int]int{15: labelTitleMaxRunes, 16: labelTitleMaxRunes, 22: labelTextMaxRunes, 23: labelTitleMaxRunes} {
 		got := []rune(rowField(t, oneRow(t, f, strings.Repeat("x", 300)), f))
 		if len(got) != limit {
 			t.Errorf("field %d capped to %d runes, want %d", f, len(got), limit)
@@ -214,7 +230,7 @@ func TestWindowLabelValidation(t *testing.T) {
 	// LocalTmux execs without a shell, so tmux's own args_parse would read this
 	// as a flag. The titles have no validator to fall back on, so this drop and
 	// the ';' one below are their only guard.
-	for _, f := range []int{15, 16, 20, 21} {
+	for _, f := range []int{15, 16, 22, 23} {
 		if got := rowField(t, oneRow(t, f, "-n oops"), f); got != "" {
 			t.Errorf("field %d: flag-shaped value = %q, want it dropped", f, got)
 		}
@@ -223,12 +239,12 @@ func TestWindowLabelValidation(t *testing.T) {
 	// A lone ';' is the separator apply joins its per-window sequence with:
 	// tmux fails the whole batch on it and drops every later option in the
 	// sequence. One *inside* a value is not a separator and is kept.
-	for _, f := range []int{1, 7, 15, 16, 20, 21} {
+	for _, f := range []int{1, 7, 15, 16, 22, 23} {
 		if got := rowField(t, oneRow(t, f, ";"), f); got != "" {
 			t.Errorf("field %d: lone ';' = %q, want it dropped", f, got)
 		}
 	}
-	if got := oneRow(t, 21, " a;b").labelRest; got != " a;b" {
+	if got := oneRow(t, 23, " a;b").labelRest; got != " a;b" {
 		t.Errorf("labelRest(%q) = %q, want it kept", " a;b", got)
 	}
 }
@@ -278,12 +294,30 @@ func rowField(t *testing.T, r labelRow, i int) string {
 	case 19:
 		return r.prProgress
 	case 20:
-		return r.labelID
+		return r.crewBranch
 	case 21:
+		return r.crewID
+	case 22:
+		return r.labelID
+	case 23:
 		return r.labelRest
 	}
 	t.Fatalf("rowField: index %d is not mapped to a labelRow field", i)
 	return ""
+}
+
+func TestBridgeLabelOptionsCarryCrewStamps(t *testing.T) {
+	row := labelRow{crewBranch: "feat/985-x", crewID: "1791968080-89470"}
+	got := map[string]string{}
+	for _, o := range bridgeLabelOptions {
+		got[o.opt] = o.get(row)
+	}
+	if got["@bridge_crew_branch"] != "feat/985-x" {
+		t.Errorf("@bridge_crew_branch = %q, want it carried", got["@bridge_crew_branch"])
+	}
+	if got["@bridge_crew_id"] != "1791968080-89470" {
+		t.Errorf("@bridge_crew_id = %q, want it carried", got["@bridge_crew_id"])
+	}
 }
 
 func TestLabelShipperApply(t *testing.T) {

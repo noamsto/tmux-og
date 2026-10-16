@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"net"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -72,6 +74,74 @@ func TestReconcileWindowsReflowsOnEarlyReturn(t *testing.T) {
 			}
 			if _, ok := reg.byRemoteID("@1"); !ok {
 				t.Fatal("early return must leave the mirror registry alone")
+			}
+		})
+	}
+}
+
+// A remote add follows the remote's active window locally. In a placed host
+// session that select-window happens only while the host's current window is
+// one of ours: the user on a local window, or on another daemon's mirror,
+// stays where they are.
+func TestReconcileAddFollowsOnlyFromAnOwnWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		placed     bool
+		currentWin string
+		wantSelect bool
+	}{
+		{"dedicated follows", false, "", true},
+		{"placed on an own window follows", true, "/s|1", true},
+		{"placed on another daemon's mirror stays", true, "/other", false},
+		{"placed on a local window stays", true, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var selects [][]string
+			cfg := Config{
+				RemoteSession: "rem",
+				LocalSess:     "work",
+				SockPath:      "/s|1",
+				LocalArea:     func() (int, int) { return 0, 0 }, // cv.need false: no ConvergeCmd round-trip
+				LocalTmux: func(args ...string) error {
+					if args[0] == "select-window" {
+						selects = append(selects, args)
+					}
+					return nil
+				},
+				LocalTmuxOut: func(args ...string) (string, error) {
+					switch args[0] {
+					case "new-window":
+						return "@200\n", nil
+					case "list-panes":
+						return "%l0 0\n", nil
+					case "display-message":
+						return tc.currentWin + "\n", nil
+					}
+					return "", nil
+				},
+			}
+			if tc.placed {
+				cfg.Placed, cfg.LocalTarget = true, "$4"
+			}
+			rt, _ := scriptedRT(strings.Join([]string{
+				"%begin 1 1 1", "1 @5 1 five", "%end 1 1 1", // list-windows: @5 is new and active
+				"%begin 1 2 1", "@5 bd67,190x45,0,0,0 %0 0", "%end 1 2 1", // readLayout
+				"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1", // PaneSeed(%0): cursor
+				"%begin 1 4 1", "SEED", "%end 1 4 1", // PaneSeed(%0): capture
+			}, "\n") + "\n")
+			reg := newRegistry()
+
+			reconcileWindows(cfg, func(string) {}, NewRouter(), hellos(map[string]net.Conn{"%0": drainedPipe(t)}), newCtlState(), reg, newConverger(), rt)
+
+			if _, ok := reg.byRemoteID("@5"); !ok {
+				t.Fatal("@5 was not mirrored: the add this test gates never happened")
+			}
+			var want [][]string
+			if tc.wantSelect {
+				want = [][]string{{"select-window", "-t", "@200"}}
+			}
+			if !reflect.DeepEqual(selects, want) {
+				t.Errorf("select-window calls = %q, want %q", selects, want)
 			}
 		})
 	}

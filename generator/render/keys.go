@@ -14,6 +14,10 @@ import (
 // both means a pane the daemon does not own falls through to the local action.
 const bridgeGate = "#{&&:#{@bridge_win},#{@bridge_pane}}"
 
+// bridgeGateNotPlaced is bridgeGate minus a placed mirror (--into): the pill
+// of a shared session is the user's own session, so its menu stays stock.
+const bridgeGateNotPlaced = "#{&&:" + bridgeGate + ",#{!:#{@bridge_placed}}}"
+
 // bridgeCtl is the ctl invocation every gated bind's remote branch runs.
 // @bridge_sock is always in --sock= form, never word-initial.
 func bridgeCtl(p *paths.Paths) string {

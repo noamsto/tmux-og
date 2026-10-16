@@ -40,6 +40,34 @@ func TestPinLocalSession(t *testing.T) {
 	}
 }
 
+// A placed daemon pins its host session by the --into id: the user may have
+// renamed it since the launcher resolved it, and a session now holding the
+// launch-time name is not the one the windows were placed in.
+func TestPinLocalSessionPlacedMatchesTheID(t *testing.T) {
+	for _, tc := range []struct {
+		name, listing string
+		want          localPin
+		ok            bool
+	}{
+		{"the id under a new name", "123|$3|work\n123|$4|renamed\n", localPin{"123", "$4"}, true},
+		{"the launch-time name on another id", "123|$3|work\n", localPin{}, false},
+		{"no sessions", "", localPin{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				LocalSess:    "work",
+				LocalTarget:  "$4",
+				Placed:       true,
+				LocalTmuxOut: func(...string) (string, error) { return tc.listing, nil },
+			}
+			got, ok := pinLocalSession(cfg)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("pinLocalSession(over %q) = (%+v, %v), want (%+v, %v)", tc.listing, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
 // Only an exact pid|id echo is ownership. display-message on a missing $N
 // exits 0 with an empty id — the trap that makes "exit 0" alone worthless —
 // and a server that restarted may have reused $N for someone else.

@@ -105,3 +105,11 @@ func TestEnrichCardBindUsesRawIcons(t *testing.T) {
 		t.Fatalf("card must carry the raw dialect: %q", got)
 	}
 }
+
+// config/tmux.conf.reference.nix spells out the same gate by hand.
+func TestBridgeGateNotPlacedValue(t *testing.T) {
+	const want = "#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{!:#{@bridge_placed}}}"
+	if bridgeGateNotPlaced != want {
+		t.Fatalf("bridgeGateNotPlaced = %q, want %q", bridgeGateNotPlaced, want)
+	}
+}

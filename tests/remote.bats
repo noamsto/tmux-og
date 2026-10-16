@@ -89,6 +89,19 @@ check_mirror_name_vectors() {
 	[ "$status" -ne 0 ]
 }
 
+# A display-message read of @bridge_* falls back to the current window's copy,
+# so a session holding a placed (--into) window would read as that mirror and
+# be adopted or killed.
+@test "the launcher reads @bridge_* options session-scoped, never via display-message" {
+	run grep -nE 'display-message.*@bridge_' "${BATS_TEST_DIRNAME}/../scripts/og-remote-open.sh"
+	[ "$status" -ne 0 ]
+}
+
+@test "the mirror pair lookup skips a session whose current window is placed" {
+	grep -qF "list-sessions -F '#{session_id}|#{?#{@bridge_placed},,#{@bridge_host}}|#{?#{@bridge_placed},,#{@bridge_session}}'" \
+		"${BATS_TEST_DIRNAME}/../scripts/og-remote-open.sh"
+}
+
 # read_session_env (#543): a fake `tmux show-environment` driven by
 # $FAKE_ENV_OUT/$FAKE_ENV_STATUS, matching splash.bats' stub-on-PATH pattern —
 # the three outcomes tmux itself produces (value set, removed marker "-NAME",

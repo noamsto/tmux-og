@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"reflect"
 	"strconv"
 	"testing"
 )
@@ -90,5 +91,31 @@ func TestSessionGoneTracker(t *testing.T) {
 	}
 	if !tr.observe(true) {
 		t.Error("two consecutive definite negatives did not end the mirror")
+	}
+}
+
+// A placed host session is probed by id, with no "=": "=" is an exact-NAME
+// match and would never find "$4". Renaming the host session must not end
+// the mirror.
+func TestLocalSessionGoneProbesThePlacedHostByID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want []string
+	}{
+		{"dedicated keeps the exact name", Config{LocalSess: "h-s"}, []string{"has-session", "-t", "=h-s"}},
+		{"placed asks for the id", Config{LocalSess: "work", LocalTarget: "$4", Placed: true}, []string{"has-session", "-t", "$4"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var argv []string
+			tc.cfg.LocalTmuxOut = func(args ...string) (string, error) {
+				argv = args
+				return "", nil
+			}
+			localSessionGone(tc.cfg)
+			if !reflect.DeepEqual(argv, tc.want) {
+				t.Errorf("localSessionGone asked %q, want %q", argv, tc.want)
+			}
+		})
 	}
 }

@@ -42,7 +42,7 @@ func TestActivityRows(t *testing.T) {
 	}, "\n") + "\n"
 
 	got := activityRows(out)
-	want := []activityRow{{true, 100}, {true, 101}, {false, 102}, {false, 103}}
+	want := []activityRow{{true, 100, "@7"}, {true, 101, "@7"}, {false, 102, "@7"}, {false, 103, "@7"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("activityRows = %v, want %v", got, want)
 	}
@@ -93,7 +93,7 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchReveal(query, isMirror, q, wake, nil, stop, tick)
+		watchReveal(query, isMirror, false, q, wake, nil, stop, tick)
 		close(done)
 	}()
 	step := func(out string) {
@@ -161,14 +161,14 @@ func TestWatchRevealReportsActivity(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchReveal(query, func(string) bool { return false }, &revealQueue{}, func() bool { return true }, activity, stop, tick)
+		watchReveal(query, func(string) bool { return false }, false, &revealQueue{}, func() bool { return true }, activity, stop, tick)
 		close(done)
 	}()
 
 	before := time.Now().Unix()
 	tick <- time.Now()
 	got := <-calls
-	if want := []activityRow{{true, 42}}; !reflect.DeepEqual(got.rows, want) {
+	if want := []activityRow{{true, 42, "@7"}}; !reflect.DeepEqual(got.rows, want) {
 		t.Fatalf("rows = %v, want %v", got.rows, want)
 	}
 	if got.now < before || got.now > queryAt {
@@ -180,6 +180,48 @@ func TestWatchRevealReportsActivity(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watchReveal did not return after stop was closed")
+	}
+}
+
+// A placed host session holds local windows and other daemons' mirrors too.
+// Typing in one of those must not reach size ownership, or every daemon in the
+// session would claim the remote's size on any keystroke there (#979). A
+// dedicated session's clients all show this daemon's mirrors, so it keeps
+// every row.
+func TestWatchRevealPlacedActivityOnlyFromMirrors(t *testing.T) {
+	out := "0|tty0|1|@3|focused|40\n0|tty1|2|@7|focused|41\n0|tty2|3|@9|focused|42\n"
+	isMirror := func(win string) bool { return win == "@7" }
+	for _, tc := range []struct {
+		name   string
+		placed bool
+		want   []activityRow
+	}{
+		{"placed keeps only own mirror rows", true, []activityRow{{true, 41, "@7"}}},
+		{"dedicated keeps every row", false, []activityRow{{true, 40, "@3"}, {true, 41, "@7"}, {true, 42, "@9"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tick := make(chan time.Time)
+			stop := make(chan struct{})
+			calls := make(chan []activityRow)
+			activity := func(rows []activityRow, _ int64) { calls <- rows }
+			done := make(chan struct{})
+			go func() {
+				watchReveal(func() (string, error) { return out, nil }, isMirror, tc.placed, &revealQueue{}, func() bool { return true }, activity, stop, tick)
+				close(done)
+			}()
+
+			tick <- time.Now()
+			if got := <-calls; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("rows = %v, want %v", got, tc.want)
+			}
+
+			close(stop)
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("watchReveal did not return after stop was closed")
+			}
+		})
 	}
 }
 

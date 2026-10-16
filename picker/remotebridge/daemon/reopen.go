@@ -46,10 +46,16 @@ func (e tornDown) Unwrap() error { return e.error }
 //
 // The local session is pinned first, before anything can rename or recreate
 // it: the launcher has just created that exact name and spawned this daemon,
-// so the name is the hand-off, and from here on only the pin is trusted.
+// so the name is the hand-off, and from here on only the pin is trusted. A
+// placed daemon with no pin is refused before it dials: every kill of its own
+// windows is pin-gated, so it could never clean up the user's session.
 func Run(cfg Config) error {
-	if p, ok := pinLocalSession(cfg); ok {
+	p, ok := pinLocalSession(cfg)
+	if ok {
 		cfg.local = p
+	}
+	if cfg.Placed && !ok {
+		return fmt.Errorf("daemon: host session %s not found", cfg.LocalTarget)
 	}
 	cfg.own = newSizeOwner(newOwnerToken())
 	return runLoop(cfg, runMirror)
@@ -72,6 +78,9 @@ func runLoop(cfg Config, run func(Config) error) error {
 				return nil
 			}
 			fmt.Fprintf(os.Stderr, "daemon: %s: re-opening %s on the new tmux server\n", cfg.RemoteHost, cfg.RemoteSession)
+			if sr, ok := errors.AsType[serverReplaced](err); ok {
+				cfg.placeholder = sr.placeholder
+			}
 			cfg.reopened = true
 			continue
 		}
@@ -106,15 +115,21 @@ func ownsLocalSession(cfg Config) bool {
 
 // endReopen ends a rebuild that will not stand: with no tombstone text it is a
 // stop and kills the session, which is what og-remote-detach expects;
-// otherwise the session is tombstoned with that text. The pidfile goes either
-// way, since the replaced run's teardown kept it for the rebuild — unless it
-// no longer names this process, i.e. a new daemon has taken the pair over.
+// otherwise the session is tombstoned with that text. A placed mirror instead
+// kills only its own windows from the host session, telling a client the text
+// first. The pidfile goes either way, since the replaced run's teardown kept
+// it for the rebuild — unless it no longer names this process, i.e. a new
+// daemon has taken the pair over.
 func endReopen(cfg Config, tombstone string) {
 	pidFile := cfg.SockPath + ".pid"
 	if b, err := os.ReadFile(pidFile); err == nil && strings.TrimSpace(string(b)) == strconv.Itoa(os.Getpid()) { //nolint:gosec // pidFile derives from the daemon's own SockPath, not user input
 		_ = os.Remove(pidFile)
 	}
 	if cfg.LocalSess == "" {
+		return
+	}
+	if cfg.Placed {
+		closeOwnWindows(cfg, tombstone)
 		return
 	}
 	if tombstone != "" {

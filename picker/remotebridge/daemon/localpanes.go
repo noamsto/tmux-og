@@ -83,7 +83,7 @@ func localWindowSet(cfg Config) (map[string]bool, bool) {
 	if cfg.LocalTmuxOut == nil {
 		return nil, false
 	}
-	out, err := cfg.LocalTmuxOut("list-windows", "-t", cfg.LocalSess, "-F", "#{window_id}")
+	out, err := cfg.LocalTmuxOut("list-windows", "-t", cfg.target(), "-F", "#{window_id}")
 	if err != nil {
 		return nil, false
 	}
@@ -113,12 +113,18 @@ func localWindowSet(cfg Config) (map[string]bool, bool) {
 //
 // -t "=<name>" is the exact match og-remote-open.sh's own liveness check uses,
 // so a sibling session whose name has ours as a prefix cannot read here as
-// alive.
+// alive. A placed host session is asked by its "$N" id instead, so renaming
+// it does not end the mirror; a killed or never-existing id exits 1 the same
+// way.
 func localSessionGone(cfg Config) bool {
 	if cfg.LocalTmuxOut == nil || cfg.LocalSess == "" {
 		return false
 	}
-	_, err := cfg.LocalTmuxOut("has-session", "-t", "="+cfg.LocalSess)
+	target := "=" + cfg.LocalSess
+	if cfg.Placed {
+		target = cfg.LocalTarget
+	}
+	_, err := cfg.LocalTmuxOut("has-session", "-t", target)
 	if err == nil {
 		return false
 	}

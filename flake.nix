@@ -786,6 +786,20 @@
               touch $out
             '';
 
+          # status-format[1]'s peach host badge is gated on @bridge_placed, so
+          # no other window, dedicated mirrors included, shows it.
+          host-badge-conf-assertions =
+            pkgs.runCommand "host-badge-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              if ! grep -qF '#{?#{@bridge_placed},#[fg=#{@thm_peach}' "$CONF"; then
+                echo "status-format[1] has no @bridge_placed-gated peach host badge — see docs/agents/status-bar.md" >&2
+                exit 1
+              fi
+              touch $out
+            '';
+
           # "Every bind has a description" (#629's which-key popup reads -N to
           # build its rows): fails on any bind/bind-key line with no -N flag.
           # Same joined-lines technique as float-conf-assertions above, since a

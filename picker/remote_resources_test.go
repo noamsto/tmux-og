@@ -480,7 +480,7 @@ func TestMergeRemoteResourcesStampCarriesTreeAgents(t *testing.T) {
 // through sessions().
 func TestSnapshotParsersTrackTheFieldCount(t *testing.T) {
 	now := strconv.FormatInt(time.Now().Unix(), 10)
-	row := "%7|tp-g6-work|2|/p|1900000300|tp-g6|renderer|42|claude|/srv/r|12.5 340 32 " + now + " claude"
+	row := "%7|tp-g6-work|2|/p|1900000300|tp-g6|renderer|42|claude|/srv/r|12.5 340 32 " + now + " claude|"
 	snap := panesSnapshot{row}
 
 	pm := snap.paneMap()

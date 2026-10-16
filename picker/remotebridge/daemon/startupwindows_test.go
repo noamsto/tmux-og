@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -347,4 +348,177 @@ func TestStartupDropsUnclaimedPlaceholder(t *testing.T) {
 			t.Errorf("kill-window calls = %v, want none", kills)
 		}
 	})
+}
+
+// identityIndex is the position of the first `set-option -w -t <win> <opt> …`
+// call in calls, or -1.
+func identityIndex(calls [][]string, win, opt string) int {
+	for i, c := range calls {
+		if len(c) >= 5 && c[0] == "set-option" && c[1] == "-w" && c[2] == "-t" && c[3] == win && c[4] == opt {
+			return i
+		}
+	}
+	return -1
+}
+
+// A placed mirror window carries its daemon's identity before @bridge_win, the
+// gate half a keybind fires on: a window that is a mirror but has no window
+// socket yet would hand the gate the session's, which in a shared host session
+// is nobody's. A dedicated window carries none: the session-scoped copies are
+// the mirror's.
+func TestStampMirrorWindowStampsIdentityBeforeBridgeWin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		placed bool
+		opts   [][2]string
+	}{
+		{"dedicated", false, nil},
+		{"placed", true, [][2]string{{"@bridge_sock", "/s|1.sock"}, {"@bridge_host", "lab"}, {"@bridge_session", "rem sess"}, {"@bridge_placed", "1"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, cfg := newStartupFake()
+			cfg.SockPath, cfg.RemoteHost, cfg.RemoteSession = "/s|1.sock", "lab", "rem sess"
+			cfg.LocalSess, cfg.Placed = "work", tc.placed
+			if tc.placed {
+				cfg.LocalTarget = "$4"
+			}
+
+			stampMirrorWindow(cfg, "@7", "editor")
+
+			calls := f.log.snapshot()
+			prev := -1
+			for _, o := range tc.opts {
+				i := identityIndex(calls, "@7", o[0])
+				if i < 0 {
+					t.Fatalf("no %s stamp on @7 among %q", o[0], calls)
+				}
+				if want := []string{"set-option", "-w", "-t", "@7", o[0], o[1]}; !reflect.DeepEqual(calls[i], want) {
+					t.Errorf("%s stamp = %q, want %q", o[0], calls[i], want)
+				}
+				if i <= prev {
+					t.Errorf("%s stamped at call %d, want after call %d", o[0], i, prev)
+				}
+				prev = i
+			}
+			for _, opt := range []string{"@bridge_sock", "@bridge_host", "@bridge_session", placedOption} {
+				if !tc.placed && identityIndex(calls, "@7", opt) >= 0 {
+					t.Errorf("a dedicated mirror window was stamped %s: %q", opt, calls)
+				}
+			}
+			if win := identityIndex(calls, "@7", "@bridge_win"); win <= prev {
+				t.Errorf("@bridge_win stamped at call %d, want after the identity (call %d)", win, prev)
+			}
+		})
+	}
+}
+
+// A placed window's identity rides the new-window's own invocation, `;` as its
+// own argv element; a dedicated window's argv is the bare new-window.
+func TestCreateMirrorWindowStampsIdentityInTheSameCall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want []string
+	}{
+		{
+			"dedicated",
+			Config{LocalSess: "h-s", SockPath: "/s.sock", RemoteHost: "h", RemoteSession: "r s"},
+			[]string{"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", "h-s:{end}"},
+		},
+		{
+			"placed",
+			Config{LocalSess: "work", LocalTarget: "$4", Placed: true, SockPath: "/s.sock", RemoteHost: "h", RemoteSession: "r s"},
+			[]string{
+				"new-window", "-d", "-P", "-F", "#{window_id}", "-a", "-t", "$4:{end}", ";",
+				"set-option", "-w", "-t", "$4:{end}", "@bridge_sock", "/s.sock", ";",
+				"set-option", "-w", "-t", "$4:{end}", "@bridge_host", "h", ";",
+				"set-option", "-w", "-t", "$4:{end}", "@bridge_session", "r s", ";",
+				"set-option", "-w", "-t", "$4:{end}", "@bridge_placed", "1",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var outCalls [][]string
+			cfg := tc.cfg
+			cfg.LocalTmux = func(args ...string) error {
+				t.Errorf("createMirrorWindow ran a separate LocalTmux %q", args)
+				return nil
+			}
+			cfg.LocalTmuxOut = func(args ...string) (string, error) {
+				outCalls = append(outCalls, args)
+				return "@42\n", nil
+			}
+			got, err := createMirrorWindow(cfg)
+			if err != nil || got != "@42" {
+				t.Fatalf("createMirrorWindow = %q, %v; want @42", got, err)
+			}
+			if len(outCalls) != 1 {
+				t.Fatalf("LocalTmuxOut calls = %q, want exactly one", outCalls)
+			}
+			if !reflect.DeepEqual(outCalls[0], tc.want) {
+				t.Errorf("LocalTmuxOut argv =\n%q\nwant\n%q", outCalls[0], tc.want)
+			}
+		})
+	}
+}
+
+// A placed startup takes no placeholder from the host session — its first
+// window is the user's — so with none carried over every remote window gets a
+// window of its own in $N.
+func TestPlacedStartupCreatesEveryWindow(t *testing.T) {
+	f, cfg := newStartupFake()
+	cfg.LocalSess, cfg.LocalTarget, cfg.Placed = "work", "$4", true
+	reg := newRegistry()
+	remoteWins := []remoteWindow{{id: "@1"}, {id: "@2"}}
+
+	placeholder, err := mirrorStartupWindows(cfg, remoteWins, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), setupWindowRT(startupScript("@1", "@2")))
+	if err != nil {
+		t.Fatalf("mirrorStartupWindows: %v", err)
+	}
+	if placeholder != "" {
+		t.Errorf("placeholder = %q, want \"\"", placeholder)
+	}
+	for _, c := range f.log.snapshot() {
+		if c[0] == "list-windows" {
+			t.Errorf("placed startup read the host session's windows for a placeholder: %q", c)
+		}
+		if c[0] == "new-window" && c[7] != "$4:{end}" {
+			t.Errorf("new-window target = %q, want $4:{end}", c[7])
+		}
+	}
+	if n := f.newWindowCount(); n != 2 {
+		t.Errorf("new-window calls = %d, want 2", n)
+	}
+	if mw, ok := reg.byRemoteID("@1"); !ok || mw.localWin != "@101" {
+		t.Errorf("reg @1 = %+v, ok=%v, want localWin @101 (a created window, not the user's @100)", mw, ok)
+	}
+	if kills := f.killWindows(); len(kills) != 0 {
+		t.Errorf("kill-window calls = %v, want none", kills)
+	}
+}
+
+// A placeholder a rebuild left in the host session is claimed by the first
+// remote window, exactly as a dedicated startup claims the launcher's window.
+func TestPlacedStartupClaimsTheCarriedPlaceholder(t *testing.T) {
+	f, cfg := newStartupFake()
+	cfg.LocalSess, cfg.LocalTarget, cfg.Placed, cfg.placeholder = "work", "$4", true, "@9"
+	reg := newRegistry()
+	remoteWins := []remoteWindow{{id: "@1"}, {id: "@2"}}
+
+	placeholder, err := mirrorStartupWindows(cfg, remoteWins, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), setupWindowRT(startupScript("@1", "@2")))
+	if err != nil {
+		t.Fatalf("mirrorStartupWindows: %v", err)
+	}
+	if placeholder != "" {
+		t.Errorf("placeholder = %q, want \"\": @1 claimed it", placeholder)
+	}
+	if mw, ok := reg.byRemoteID("@1"); !ok || mw.localWin != "@9" {
+		t.Errorf("reg @1 = %+v, ok=%v, want localWin @9 (the carried placeholder)", mw, ok)
+	}
+	if mw, ok := reg.byRemoteID("@2"); !ok || mw.localWin != "@101" {
+		t.Errorf("reg @2 = %+v, ok=%v, want localWin @101", mw, ok)
+	}
+	if n := f.newWindowCount(); n != 1 {
+		t.Errorf("new-window calls = %d, want 1", n)
+	}
 }

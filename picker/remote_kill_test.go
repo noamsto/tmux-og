@@ -494,3 +494,51 @@ func TestSSHKillRemoteSessionCtxCancelReapsProcessGroup(t *testing.T) {
 		t.Errorf("orphaned process survived cancel: %s", out)
 	}
 }
+
+// A shared session can carry several placed daemons, one @bridge_sock each.
+// Killing it must stop every distinct one, once.
+func TestStopBridgeDaemonSignalsEveryDistinctSocket(t *testing.T) {
+	dir := t.TempDir()
+	sockA, sockB := filepath.Join(dir, "a.sock"), filepath.Join(dir, "b.sock")
+
+	start := func(sock string) *exec.Cmd {
+		t.Helper()
+		c := exec.Command("sleep", "60")
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Process.Kill(); _ = c.Wait() })
+		if err := os.WriteFile(sock+".pid", fmt.Appendf(nil, "%d\n", c.Process.Pid), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	a, b := start(sockA), start(sockB)
+
+	bin := t.TempDir()
+	log := filepath.Join(bin, "argv")
+	fake := "#!/bin/sh\necho \"$*\" >" + log + "\nprintf '%s\\n' '" + sockA + "' '' '" + sockB + "' '" + sockA + "'\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(fake), 0o700); err != nil { //nolint:gosec // G306: test stub must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stopBridgeDaemon("shared")
+
+	got, _ := os.ReadFile(log)
+	if want := "list-panes -s -t shared -F #{@bridge_sock}\n"; string(got) != want {
+		t.Errorf("tmux argv = %q, want %q", got, want)
+	}
+	for name, c := range map[string]*exec.Cmd{"a": a, "b": b} {
+		done := make(chan error, 1)
+		go func() { done <- c.Wait() }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Errorf("daemon %s exited cleanly, want SIGTERM", name)
+			}
+		case <-time.After(5 * time.Second):
+			t.Errorf("daemon %s was not signalled", name)
+		}
+	}
+}
