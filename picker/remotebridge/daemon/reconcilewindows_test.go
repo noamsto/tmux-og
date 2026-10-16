@@ -3,6 +3,8 @@ package daemon
 import (
 	"net"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -171,5 +173,157 @@ func TestReadLayoutCarriesTheZoomFlag(t *testing.T) {
 		if zoomed != tc.want {
 			t.Errorf("readLayout(%q) zoomed = %v, want %v", tc.reply, zoomed, tc.want)
 		}
+	}
+}
+
+// selectorCfg is cfg narrowed to sel, as runMirror builds it.
+func selectorCfg(t *testing.T, cfg Config, sel string) Config {
+	t.Helper()
+	s, err := ParseWindowSelector(sel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Select, cfg.filter = s, newWindowFilter(s)
+	return cfg
+}
+
+// selectedListScript is a filtered list-windows reply followed by the
+// ConvergeCmd and readLayout blocks setupWindow reads for each window in mirrored.
+func selectedListScript(rows []string, mirrored ...string) string {
+	lines := append([]string{"%begin 1 1 1"}, rows...)
+	lines = append(lines, "%end 1 1 1")
+	seq := 2
+	for _, id := range mirrored {
+		n := strconv.Itoa(seq)
+		lines = append(lines, "%begin 1 "+n+" 1", "%end 1 "+n+" 1")
+		n = strconv.Itoa(seq + 1)
+		lines = append(lines, "%begin 1 "+n+" 1", id+" b25d,80x24,0,0,0 %0 0", "%end 1 "+n+" 1")
+		seq += 2
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// filteredReconcile runs one filtered reconcileWindows over an empty registry
+// against a reply holding a selected @1, an unselected @2 and a malformed @3,
+// returning what it sent fire-and-forget and through the round-trip.
+func filteredReconcile(t *testing.T) (f *startupFake, reg *registry, cv *converger, sent, issued []string) {
+	t.Helper()
+	f, cfg := newStartupFake()
+	cfg = selectorCfg(t, cfg, "@crew=x")
+	cfg.RemoteSession = "rem"
+	reg, cv = newRegistry(), newConverger()
+	rt := recordingRT(selectedListScript([]string{"1 @1 1 1 one", "2 @2 0 0 two", "3 @3 0 x three"}, "@1"), &issued)
+
+	reconcileWindows(cfg, func(s string) { sent = append(sent, s) }, NewRouter(), noHellos, newCtlState(), reg, cv, rt)
+	return f, reg, cv, sent, issued
+}
+
+// A filtered reconcile mirrors only a row showing 1, and neither the
+// aggressive-resize opt-out nor a cap names a window the selector did not pick.
+func TestFilteredReconcileMirrorsOnlySelectedWindows(t *testing.T) {
+	f, reg, _, sent, issued := filteredReconcile(t)
+
+	if ids := reg.remoteIDs(); !reflect.DeepEqual(ids, []string{"@1"}) {
+		t.Fatalf("registry = %v, want [@1]", ids)
+	}
+	if n := f.newWindowCount(); n != 1 {
+		t.Errorf("new-window calls = %d, want 1", n)
+	}
+	if !slices.Contains(sent, AggressiveResizeOffCmd("@1")) {
+		t.Errorf("sent %q, want %q", sent, AggressiveResizeOffCmd("@1"))
+	}
+	if !slices.Contains(issued, ConvergeCmd("@1", 80, 24)) {
+		t.Errorf("issued %q, want %q", issued, ConvergeCmd("@1", 80, 24))
+	}
+	for _, cmd := range slices.Concat(sent, issued) {
+		if strings.Contains(cmd, "@2") || strings.Contains(cmd, "@3") {
+			t.Errorf("command %q names an unselected window", cmd)
+		}
+	}
+}
+
+// A registered window closes only on a row positively showing 0 or on missing
+// from a non-empty reply; a malformed row, an error or an empty reply leaves
+// every mirror standing. Only a read that was acted on counts as reconciled.
+func TestFilteredReconcileClosesOnPositiveEvidenceOnly(t *testing.T) {
+	scripted := func(rows ...string) roundTrip { return setupWindowRT(selectedListScript(rows)) }
+	fixed := func(l controlmode.Line, ok bool) roundTrip {
+		return func(...string) replies { return func() (controlmode.Line, bool) { return l, ok } }
+	}
+	for _, tc := range []struct {
+		name       string
+		registered []string
+		rt         roundTrip
+		wantKept   []string
+		wantKilled []string
+		read       bool
+	}{
+		{"0 closes, malformed stays", []string{"@1", "@2", "@3"},
+			scripted("1 @1 1 1 one", "2 @2 0 0 two", "3 @3 0 x three"), []string{"@1", "@3"}, []string{"@102"}, true},
+		{"missing from a non-empty reply closes", []string{"@1", "@4"},
+			scripted("1 @1 1 1 one"), []string{"@1"}, []string{"@104"}, true},
+		{"errored reply", []string{"@1", "@2"},
+			fixed(controlmode.Line{Kind: controlmode.Error}, true), []string{"@1", "@2"}, nil, false},
+		{"lost round-trip", []string{"@1", "@2"},
+			fixed(controlmode.Line{}, false), []string{"@1", "@2"}, nil, false},
+		{"empty reply", []string{"@1", "@2"},
+			scripted(), []string{"@1", "@2"}, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, cfg := newStartupFake()
+			cfg = selectorCfg(t, cfg, "@crew=x")
+			cfg.RemoteSession = "rem"
+			cfg.filter.note()
+			reg := newRegistry()
+			for _, id := range tc.registered {
+				reg.add(id, "@10"+strings.TrimPrefix(id, "@"))
+			}
+
+			reconcileWindows(cfg, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), tc.rt)
+
+			kept := reg.remoteIDs()
+			slices.Sort(kept)
+			if !slices.Equal(kept, tc.wantKept) {
+				t.Errorf("registry = %v, want %v", kept, tc.wantKept)
+			}
+			if kills := f.killWindows(); !slices.Equal(kills, tc.wantKilled) {
+				t.Errorf("kill-window calls = %v, want %v", kills, tc.wantKilled)
+			}
+			if n := f.newWindowCount(); n != 0 {
+				t.Errorf("new-window calls = %d, want 0", n)
+			}
+			if cfg.filter.dirty == tc.read {
+				t.Errorf("filter dirty = %v after the reconcile, want %v", cfg.filter.dirty, !tc.read)
+			}
+		})
+	}
+}
+
+// A %window-add is mirrored only when its row in the filtered re-read shows 1.
+func TestFilteredAddWindowMirrorsOnlyASelectedWindow(t *testing.T) {
+	for _, tc := range []struct {
+		flag    string
+		want    bool
+		wantNew int
+	}{
+		{"0", false, 0},
+		{"1", true, 1},
+	} {
+		t.Run("flag "+tc.flag, func(t *testing.T) {
+			f, cfg := newStartupFake()
+			cfg = selectorCfg(t, cfg, "@crew=x")
+			cfg.RemoteSession = "rem"
+			reg := newRegistry()
+			rt := setupWindowRT(selectedListScript([]string{"1 @5 1 " + tc.flag + " five"}, "@5"))
+
+			addWindow(cfg, func(string) {}, NewRouter(), noHellos, newCtlState(), reg, newConverger(), rt, "@5")
+
+			if _, ok := reg.byRemoteID("@5"); ok != tc.want {
+				t.Errorf("@5 mirrored = %v, want %v", ok, tc.want)
+			}
+			if n := f.newWindowCount(); n != tc.wantNew {
+				t.Errorf("new-window calls = %d, want %d", n, tc.wantNew)
+			}
+		})
 	}
 }

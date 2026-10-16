@@ -218,6 +218,7 @@ func main() {
 	localTmux := flag.String("local-tmux", envDefault("OG_DAEMON_LOCAL_TMUX", "tmux"), "local tmux binary (may carry args, e.g. \"tmux -L sock\")")
 	localSess := flag.String("local-sess", os.Getenv("OG_DAEMON_LOCAL_SESS"), `local session name (default "<host>-<session>", both halves mirrorname.Part-sanitized)`)
 	into := flag.String("into", os.Getenv("OG_DAEMON_INTO"), `place the mirror windows in this existing local session, by its "$N" id (--local-sess is then its name); empty = a dedicated mirror session`)
+	sel := flag.String("select", os.Getenv("OG_DAEMON_SELECT"), `only with --into: mirror just the remote windows this selector names — "@N" (a window id) or "@option=value"; empty = every window`)
 	sock := flag.String("sock", os.Getenv("OG_DAEMON_SOCK"), "unix socket path for renderers")
 	rendererBin := flag.String("renderer", os.Getenv("OG_DAEMON_RENDERER"), "absolute path to the renderer binary")
 	reflowBin := flag.String("reflow", os.Getenv("OG_DAEMON_REFLOW"), "absolute path to tmux-reflow-windows (empty = never force a reflow)")
@@ -247,6 +248,17 @@ func main() {
 		if !validPlacedHost(*host) {
 			fatal(fmt.Errorf("--host %q is not a valid host for --into", *host))
 		}
+	}
+	if *sel != "" && *into == "" {
+		fatal(fmt.Errorf("--select needs --into"))
+	}
+	var selector daemon.WindowSelector
+	if *sel != "" {
+		s, err := daemon.ParseWindowSelector(*sel)
+		if err != nil {
+			fatal(err)
+		}
+		selector = s
 	}
 	if *localSess == "" {
 		*localSess = mirrorname.Local(*host, *session)
@@ -447,6 +459,7 @@ func main() {
 		LocalSess:      *localSess,
 		Placed:         *into != "",
 		LocalTarget:    *into,
+		Select:         selector,
 		RemoteHost:     *host,
 		RemoteSession:  *session,
 		RemoteWindow:   strconv.Itoa(*window),

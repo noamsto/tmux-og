@@ -1267,17 +1267,17 @@ wait_placed_count() {
 	return 1
 }
 
-# bridge_up_into <tag> <src-sess> [daemon args...] is bridge_up for a placed
-# mirror: --into the pre-created `host` (into_host_up), --host lab unless the
-# args override it. It waits until every pane of <src-sess> has a stamped
-# placed mirror pane and a remote printf paints into one of them. Sets
-# daemon_pid and sock, and records the pid for teardown's size_daemons_stop.
-bridge_up_into() {
-	local tag="$1" src_sess="$2"
-	shift 2
-	local marker="INTOUP_${tag}_$$" want stamped=0 deadline pane
+# bridge_up_placed <tag> <src-sess> <want-panes> <paint-target> [daemon args...]
+# starts a placed daemon --into the pre-created `host` (into_host_up), --host
+# lab unless the args override it, and waits until <want-panes> of its mirror
+# panes carry @bridge_pane and a remote printf sent to <paint-target> paints
+# into one of them. Sets daemon_pid and sock, and records the pid for
+# teardown's size_daemons_stop.
+bridge_up_placed() {
+	local tag="$1" src_sess="$2" want="$3" paint_target="$4"
+	shift 4
+	local marker="INTOUP_${tag}_$$" stamped=0 deadline pane
 	sock="$BATS_TEST_TMPDIR/$tag.sock"
-	want="$($SRC list-panes -s -t "$src_sess" -F '#{pane_id}' | wc -l | tr -d ' ')"
 	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS + want * BRIDGE_UP_PER_PANE_SECS))
 	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
 		--session "$src_sess" --window 1 --local-sess host --into "$host_id" --host lab \
@@ -1297,7 +1297,7 @@ bridge_up_into() {
 	fi
 
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		$SRC send-keys -t "$src_sess" "printf '$marker\\n'" Enter
+		$SRC send-keys -t "$paint_target" "printf '$marker\\n'" Enter
 		for _ in $(seq 1 10); do
 			for pane in $(placed_panes "$sock"); do
 				$DST capture-pane -p -t "$pane" 2>/dev/null | grep -q "$marker" && return 0
@@ -1307,6 +1307,25 @@ bridge_up_into() {
 	done
 	bridge_up_failed "$tag" "placed mirror never painted the startup marker"
 	return 1
+}
+
+# bridge_up_into <tag> <src-sess> [daemon args...] is bridge_up for a placed
+# mirror of the whole of <src-sess>: it waits until every pane of the session
+# has a stamped placed mirror pane.
+bridge_up_into() {
+	local tag="$1" src_sess="$2"
+	shift 2
+	bridge_up_placed "$tag" "$src_sess" "$($SRC list-panes -s -t "$src_sess" -F '#{pane_id}' | wc -l | tr -d ' ')" "$src_sess" "$@"
+}
+
+# bridge_up_select <tag> <src-sess> <selector> <want-panes> <paint-target>
+# [daemon args...] is bridge_up_into for a filtered mirror (--select): the pane
+# count is that of the selected windows, and <paint-target> is a remote window
+# or pane the selector matches.
+bridge_up_select() {
+	local tag="$1" src_sess="$2" selector="$3" want="$4" paint_target="$5"
+	shift 5
+	bridge_up_placed "$tag" "$src_sess" "$want" "$paint_target" --select "$selector" "$@"
 }
 
 # @bridge_state=disconnected is stamped at reattach entry, but a warm
@@ -7067,4 +7086,235 @@ local_win_intact() {
 
 	[ -z "$(placed_wins "$sock")" ]
 	local_win_intact
+}
+
+# --into --select: a filtered daemon mirrors only the remote windows its
+# selector names. The remote windows are stamped @crew_branch the way crew
+# does it, with a window option set after the window exists.
+
+# src_new_window <opt-value> prints the id of a new detached remote window in
+# `rem`, stamped @crew_branch=<opt-value> when one is given.
+src_new_window() {
+	local id
+	id="$($SRC new-window -d -P -F '#{window_id}' -t rem)"
+	[ -z "$1" ] || $SRC set-option -w -t "$id" @crew_branch "$1"
+	printf '%s\n' "$id"
+}
+
+# select_pair_up starts two filtered daemons on `rem`, one per remote window:
+# wa (stamped A) and wb (stamped B). Sets a_pid/a_sock and b_pid/b_sock.
+select_pair_up() {
+	$SRC new-session -d -s rem -x 100 -y 30
+	wa="$($SRC display-message -p -t rem: '#{window_id}')"
+	$SRC set-option -w -t "$wa" @crew_branch A
+	wb="$(src_new_window B)"
+	into_host_up
+	bridge_up_select sz-sa rem @crew_branch=A 1 "$wa"
+	a_pid=$daemon_pid a_sock=$sock
+	bridge_up_select sz-sb rem @crew_branch=B 1 "$wb"
+	b_pid=$daemon_pid b_sock=$sock
+	[ "$a_sock" != "$b_sock" ]
+	[ "$(placed_wins "$a_sock" | wc -l | tr -d ' ')" -eq 1 ]
+	[ "$(placed_wins "$b_sock" | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+# run_daemon_to_exit <tag> [daemon args...] runs a daemon that must refuse or
+# fail at startup and sets daemon_rc to its exit status. Its output is in
+# <tag>.log.
+run_daemon_to_exit() {
+	local tag="$1" i
+	shift
+	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/$tag.sock" "$@" \
+		>"$BATS_TEST_TMPDIR/$tag.log" 2>&1 &
+	daemon_pid=$!
+	echo "$daemon_pid" >>"$BATS_TEST_TMPDIR/size-daemons.pids"
+	for ((i = 0; i < BRIDGE_UP_BUDGET_SECS * 10; i++)); do
+		if ! kill -0 "$daemon_pid" 2>/dev/null; then
+			daemon_rc=0
+			wait "$daemon_pid" 2>/dev/null || daemon_rc=$?
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'run_daemon_to_exit(%s): daemon still alive after %ss\n--- daemon log ---\n' "$tag" "$BRIDGE_UP_BUDGET_SECS" >&3
+	tail -40 "$BATS_TEST_TMPDIR/$tag.log" >&3 2>/dev/null || true
+	return 1
+}
+
+@test "into-select: an option selector mirrors only the matching window" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	src_new_window Y >/dev/null
+	wx="$(src_new_window X)"
+	src_new_window "" >/dev/null
+	into_host_up
+	bridge_up_select sel1 rem @crew_branch=X 1 "$wx"
+
+	wins="$(placed_wins "$sock")"
+	[ "$(wc -l <<<"$wins" | tr -d ' ')" -eq 1 ]
+	[ "$($DST list-windows -t host -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+	[ "$($DST show-options -wqv -t "$wins" @bridge_session)" = rem ]
+
+	# Resize converges asynchronously; the unselected windows have no mirror
+	# to compare against, and none may appear.
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		src_dims="$(sorted_dims "$SRC" "$wx")"
+		dst_dims="$(sorted_dims "$DST" "$wins")"
+		[ "$src_dims" = "$dst_dims" ] && break
+		sleep 0.1
+	done
+	[ "$src_dims" = "$dst_dims" ]
+	[ "$(placed_panes "$sock" | wc -l | tr -d ' ')" -eq 1 ]
+	local_win_intact
+}
+
+@test "into-select: a window stamped after new-window is mirrored once it matches" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	wx="$(src_new_window X)"
+	into_host_up
+	bridge_up_select sel2 rem @crew_branch=X 1 "$wx"
+
+	# Created unstamped, stamped a beat later: the mirror must follow the stamp.
+	wlate="$(src_new_window "")"
+	sleep 1
+	$SRC set-option -w -t "$wlate" @crew_branch X
+	wait_placed_count "$sock" 2
+
+	wy="$(src_new_window "")"
+	sleep 1
+	$SRC set-option -w -t "$wy" @crew_branch Y
+	for _ in $(seq 1 20); do
+		[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq 2 ]
+		sleep 0.1
+	done
+	# A later matching window is the barrier: the daemon handles the remote's
+	# notifications in order, so once its mirror lands the Y stamp was seen.
+	src_new_window X >/dev/null
+	wait_placed_count "$sock" 3
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		[ "$(placed_panes "$sock" | wc -l | tr -d ' ')" -eq 3 ] && break
+		sleep 0.1
+	done
+	[ "$(placed_panes "$sock" | wc -l | tr -d ' ')" -eq 3 ]
+	[ "$($DST list-windows -t host -F '#{window_id}' | wc -l | tr -d ' ')" -eq 4 ]
+	local_win_intact
+}
+
+@test "into-select: two selectors share the host session and both converge to its client" {
+	select_pair_up
+	placed="$(placed_wins "$a_sock")"
+	$DST select-window -t "$placed"
+	obs_attach obs-s 120 40 "$DST" host
+	# The content area: the client minus DST_CONF's single status row.
+	client="$($DST list-clients -t host -F '#{client_width}x#{client_height}' | head -1)"
+	want="${client%x*}x$((${client#*x} - 1))"
+	[ "$want" != 100x30 ] # a real resize, not the size the mirrors started at
+
+	wait_src_all "$want" rem
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		ok=yes
+		for pair in "$a_sock $wa" "$b_sock $wb"; do
+			mirror="$($DST display-message -p -t "$(placed_wins "${pair% *}")" '#{window_width}x#{window_height}')"
+			[ "$mirror" = "$($SRC display-message -p -t "${pair#* }" '#{window_width}x#{window_height}')" ] || ok=no
+			[ "$mirror" = "$want" ] || ok=no
+		done
+		[ "$ok" = yes ] && break
+		sleep 0.1
+	done
+	[ "$ok" = yes ]
+
+	# Two controllers sizing one remote session must not fight over it.
+	for _ in $(seq 1 20); do
+		[ "$($SRC display-message -p -t "$wa" '#{window_width}x#{window_height}')" = "$want" ]
+		[ "$($SRC display-message -p -t "$wb" '#{window_width}x#{window_height}')" = "$want" ]
+		sleep 0.1
+	done
+	kill -0 "$a_pid"
+	kill -0 "$b_pid"
+	local_win_intact
+}
+
+@test "into-select: a killed or unstamped selected window takes only its mirror, the last one ends the daemon" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	w1="$($SRC display-message -p -t rem: '#{window_id}')"
+	$SRC set-option -w -t "$w1" @crew_branch X
+	w2="$(src_new_window X)"
+	# Kill a non-current remote window: see the dedicated kill-window case.
+	$SRC select-window -t "$w1"
+	into_host_up
+	bridge_up_select sel4 rem @crew_branch=X 2 "$w1"
+	[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq 2 ]
+
+	$SRC kill-window -t "$w2"
+	wait_placed_count "$sock" 1
+	kill -0 "$daemon_pid"
+
+	$SRC set-option -w -u -t "$w1" @crew_branch
+	wait_placed_count "$sock" 0
+	wait_daemon_exit sel4 "$BATS_TEST_TMPDIR/sel4.log"
+	[ "$($DST list-windows -t host -F '#{window_id}')" = "$local_win" ]
+	# The remote window itself is untouched: only the mirror went.
+	[ "$($SRC display-message -p -t "$w1" '#{window_id}')" = "$w1" ]
+	local_win_intact
+}
+
+@test "into-select: SIGTERM on a filtered daemon removes only its own windows" {
+	select_pair_up
+
+	daemon_pid=$a_pid
+	kill -TERM "$a_pid"
+	wait_daemon_exit sz-sa "$BATS_TEST_TMPDIR/sz-sa.log"
+
+	[ -z "$(placed_wins "$a_sock")" ]
+	[ "$(placed_wins "$b_sock" | wc -l | tr -d ' ')" -eq 1 ]
+	kill -0 "$b_pid"
+	local_win_intact
+}
+
+@test "into-select: an id selector mirrors exactly that window and survives a rename" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	w2="$(src_new_window "")"
+	src_new_window "" >/dev/null
+	into_host_up
+	bridge_up_select sel6 rem "$w2" 1 "$w2"
+	[ "$(placed_wins "$sock" | wc -l | tr -d ' ')" -eq 1 ]
+	[ "$($DST list-windows -t host -F '#{window_id}' | wc -l | tr -d ' ')" -eq 2 ]
+
+	$SRC rename-window -t "$w2" renamed-by-remote
+	placed="$(placed_wins "$sock")"
+	name=""
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		name="$($DST display-message -p -t "$placed" '#{window_name}')"
+		[[ $name == *renamed-by-remote* ]] && break
+		sleep 0.1
+	done
+	[[ $name == *renamed-by-remote* ]]
+	[ "$(placed_wins "$sock")" = "$placed" ]
+	kill -0 "$daemon_pid"
+	local_win_intact
+}
+
+@test "into-select: a selector matching nothing exits non-zero and leaves the host alone" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	src_new_window X >/dev/null
+	into_host_up
+
+	run_daemon_to_exit sel7 --session rem --window 1 --local-sess host --into "$host_id" --host lab \
+		--select '@crew_branch=nope'
+	[ "$daemon_rc" -ne 0 ]
+	grep -qF 'no window of rem matches @crew_branch=nope' "$BATS_TEST_TMPDIR/sel7.log"
+	[ "$($DST list-windows -t host -F '#{window_id}')" = "$local_win" ]
+	local_win_intact
+}
+
+@test "into-select: --select without --into is refused at startup" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	run_daemon_to_exit sel8 --session rem --window 1 --local-sess host-sess \
+		--select '@crew_branch=X'
+	[ "$daemon_rc" -ne 0 ]
+	grep -qF -- '--select needs --into' "$BATS_TEST_TMPDIR/sel8.log"
 }

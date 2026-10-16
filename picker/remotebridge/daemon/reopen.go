@@ -77,6 +77,13 @@ func runLoop(cfg Config, run func(Config) error) error {
 				endReopen(cfg, "")
 				return nil
 			}
+			// A window id names a window of one server; on the new one it would
+			// select an unrelated window.
+			if !cfg.Select.IsZero() && !cfg.Select.subscribes() {
+				fmt.Fprintf(os.Stderr, "daemon: %s: %s names a window of the replaced server; not re-opening\n", cfg.RemoteHost, cfg.Select)
+				endReopen(cfg, reopenFailedText(cfg.RemoteHost, cfg.RemoteSession))
+				return nil
+			}
 			fmt.Fprintf(os.Stderr, "daemon: %s: re-opening %s on the new tmux server\n", cfg.RemoteHost, cfg.RemoteSession)
 			if sr, ok := errors.AsType[serverReplaced](err); ok {
 				cfg.placeholder = sr.placeholder

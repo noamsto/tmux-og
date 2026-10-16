@@ -24,18 +24,19 @@ func reconcileWindows(cfg Config, send func(string), router *Router, waitHellos 
 	// windows on the label the after-new-window hook raced in (#196).
 	defer cfg.reflow()
 
-	lw, ok := one(rt, fmt.Sprintf("list-windows -t %s -F %s", tmuxQuote(cfg.RemoteSession), windowListFormat))
+	lw, ok := one(rt, cfg.filter.listCmd(cfg.RemoteSession))
 	if !ok || lw.Kind == controlmode.Error {
 		fmt.Fprintf(os.Stderr, "daemon: reconcile-windows: list-windows failed\n")
 		return
 	}
-	remoteWins := parseWindowList(string(lw.Data))
+	remoteWins := cfg.filter.parse(string(lw.Data))
 	if len(remoteWins) == 0 {
 		// An empty reply is more likely a lost round-trip than a session with no
 		// windows (the remote emits %exit for that), and acting on it would kill
 		// every mirror window. Leave the mirror alone.
 		return
 	}
+	cfg.filter.reconciled(time.Now())
 
 	live := make(map[string]bool, len(remoteWins))
 	added := false
@@ -47,14 +48,22 @@ func reconcileWindows(cfg Config, send func(string), router *Router, waitHellos 
 		}
 		mw, known := reg.byRemoteID(rw.id)
 		if !known {
-			if mirrorNewWindow(cfg, send, router, waitHellos, cst, reg, cv, rt, rw) {
+			if rw.sel == selYes && mirrorNewWindow(cfg, send, router, waitHellos, cst, reg, cv, rt, rw) {
 				added = true
 			}
 			continue
 		}
-		// Cheap and idempotent: re-assert the name rather than tracking whether it
-		// changed, since this is also the rename path.
-		applyMirrorName(cfg, mw.localWin, rw.name)
+		switch rw.sel {
+		case selNo:
+			fmt.Fprintf(os.Stderr, "daemon: %s stopped matching %s\n", rw.id, cfg.Select)
+			closeWindow(cfg, router, cst, reg, cv, rw.id)
+		case selYes:
+			// Cheap and idempotent: re-assert the name rather than tracking whether
+			// it changed, since this is also the rename path.
+			applyMirrorName(cfg, mw.localWin, rw.name)
+		case selUnknown:
+			// A malformed flag is no evidence either way: leave the window be.
+		}
 	}
 
 	for _, remoteID := range reg.remoteIDs() {

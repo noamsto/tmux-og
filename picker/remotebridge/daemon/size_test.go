@@ -1,8 +1,12 @@
 package daemon
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
 )
 
 func TestConvergeCmd(t *testing.T) {
@@ -116,5 +120,32 @@ func TestConvergerUnrecordKeepsASizeAssertedInBetween(t *testing.T) {
 	cv.unrecord("@1", 100, 30)
 	if cv.need("@1", 120, 40) {
 		t.Error("undoing the stale 100x30 write cleared the newer 120x40 record")
+	}
+}
+
+// A filtered daemon caps only the windows its selector picked, and still sends
+// the whole-client size: without it, a control client that set only caps is
+// never ignored and contributes 80x0 to every other window.
+func TestFilteredSizePassCapsOnlySelectedWindows(t *testing.T) {
+	_, reg, cv, _, _ := filteredReconcile(t)
+	tick := make(chan time.Time)
+	stop := make(chan struct{})
+	nudged := func() (time.Time, bool) { return time.Now(), true }
+	area := func() (int, int) { return 120, 40 }
+	view := &Viewing{Relay: graphics.NewRelaySource(graphics.Relay{})}
+	var sent []string
+	send := func(s ...string) bool { sent = append(sent, s...); return true }
+
+	done := make(chan struct{})
+	go func() {
+		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, "rem", reg, cv, send, stop, tick)
+		close(done)
+	}()
+	tick <- time.Now()
+	close(stop)
+	<-done
+
+	if want := []string{ClientSizeCmd(120, 40), ConvergeCmd("@1", 120, 40)}; !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent = %q, want %q", sent, want)
 	}
 }

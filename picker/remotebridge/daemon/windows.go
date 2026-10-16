@@ -193,6 +193,7 @@ type remoteWindow struct {
 	id     string
 	active bool
 	name   string
+	sel    selState // match against Config.Select; selYes on every unfiltered row
 }
 
 // windowListFormat is the one format every list-windows in the daemon uses.
@@ -219,7 +220,7 @@ func parseWindowList(body string) []remoteWindow {
 		}
 		// name is optional; "" when absent
 		active, name, _ := strings.Cut(rest, " ")
-		wins = append(wins, remoteWindow{index: idx, id: id, active: active == "1", name: name})
+		wins = append(wins, remoteWindow{index: idx, id: id, active: active == "1", name: name, sel: selYes})
 	}
 	return wins
 }

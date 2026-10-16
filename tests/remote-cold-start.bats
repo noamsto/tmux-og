@@ -1553,10 +1553,13 @@ $0|tp-g6|main' FAKE_PAIR_NAME='my.proj' FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
 # the pidfile's pid is alive.
 install_into_fakes() {
 	export LAUNCH_LOG="$BATS_TEST_TMPDIR/launch.log"
+	export SELECT_LOG="$BATS_TEST_TMPDIR/select.log"
 	: >"$LAUNCH_LOG"
+	: >"$SELECT_LOG"
 	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
 		#!/bin/sh
 		printf 'pid=%s into=%s remote_open=%s local=%s\n' "$$" "${OG_DAEMON_INTO-}" "${OG_DAEMON_REMOTE_OPEN-<unset>}" "${OG_DAEMON_LOCAL_SESS-}" >>"$LAUNCH_LOG"
+		printf 'select=%s\n' "${OG_DAEMON_SELECT-<unset>}" >>"$SELECT_LOG"
 		if [ -n "${FAKE_DAEMON_DIES:-}" ]; then
 			echo "fake daemon: dial failed" >&2
 			exit 1
@@ -1599,6 +1602,13 @@ reap_into_daemons() {
 into_sock() { # host sess server_pid session_id
 	local k
 	k="$(printf '%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" | cksum)"
+	printf '%s/og-into-%s.sock\n' "$TMUX_TMPDIR" "${k%% *}"
+}
+
+# The same key with the selector as its fifth field.
+into_sock_sel() { # host sess server_pid session_id selector
+	local k
+	k="$(printf '%s\0%s\0%s\0%s\0%s' "$1" "$2" "$3" "$4" "$5" | cksum)"
 	printf '%s/og-into-%s.sock\n' "$TMUX_TMPDIR" "${k%% *}"
 }
 
@@ -1955,4 +1965,164 @@ $4|a|b'
 	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
 	[ "$status" -ne 0 ]
 	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: --window launches one daemon with the selector, on the five-field socket" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@crew_branch=feat/x'
+	[ "$status" -eq 0 ]
+
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	grep -qxF 'select=@crew_branch=feat/x' "$SELECT_LOG"
+	local sock
+	sock="$(into_sock_sel tp-g6 workstation 4242 '$3' '@crew_branch=feat/x')"
+	grep -qxF -- "--sock $sock ping _" "$CTL_LOG"
+	[ "$sock" != "$(into_sock tp-g6 workstation 4242 '$3')" ]
+}
+
+@test "into: a plain --into launches its daemon with no selector, on the four-field socket" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+
+	grep -qxF 'select=' "$SELECT_LOG"
+	grep -qxF -- "--sock $(into_sock tp-g6 workstation 4242 '$3') ping _" "$CTL_LOG"
+}
+
+@test "into: a repeat --window call with the same selector launches nothing" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@crew_branch=feat/x'
+	[ "$status" -eq 0 ]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@crew_branch=feat/x'
+	[ "$status" -eq 0 ]
+
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	[ "$(wc -l <"$SELECT_LOG")" -eq 1 ]
+}
+
+@test "into: two selectors into one local session launch two daemons on two sockets" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@crew_branch=A'
+	[ "$status" -eq 0 ]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@crew_branch=B'
+	[ "$status" -eq 0 ]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -eq 0 ]
+
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 3 ]
+	grep -qxF 'select=@crew_branch=A' "$SELECT_LOG"
+	grep -qxF 'select=@crew_branch=B' "$SELECT_LOG"
+	grep -qxF 'select=' "$SELECT_LOG"
+
+	local a b plain
+	a="$(into_sock_sel tp-g6 workstation 4242 '$3' '@crew_branch=A')"
+	b="$(into_sock_sel tp-g6 workstation 4242 '$3' '@crew_branch=B')"
+	plain="$(into_sock tp-g6 workstation 4242 '$3')"
+	[ "$a" != "$b" ]
+	[ "$a" != "$plain" ]
+	[ "$b" != "$plain" ]
+	grep -qxF -- "--sock $a ping _" "$CTL_LOG"
+	grep -qxF -- "--sock $b ping _" "$CTL_LOG"
+	grep -qxF -- "--sock $plain ping _" "$CTL_LOG"
+}
+
+@test "into: a selector holding a shell or format metacharacter is refused before any ssh" {
+	install_into_fakes
+	cd "$BATS_TEST_TMPDIR"
+
+	local bad
+	for bad in '@a=$(touch x)' '@a=#{pid}' '@a=b c' '@a=b;c' "@a=b'c" '@01' '@=x' '@a=' 'x=y'; do
+		run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window "$bad"
+		[ "$status" -eq 1 ]
+		[[ $output == *"--window must be @<id> or @<option>=<value>, got: $(printf '%q' "$bad")"* ]]
+	done
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+	[ ! -e "$BATS_TEST_TMPDIR/x" ]
+}
+
+@test "into: an empty selector is refused before any ssh" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window ''
+	[ "$status" -eq 1 ]
+	[[ $output == *"--window must be @<id> or @<option>=<value>, got: ''"* ]]
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: an @id selector is accepted" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@12'
+	[ "$status" -eq 0 ]
+	grep -qxF 'select=@12' "$SELECT_LOG"
+}
+
+@test "into: --window without --into is refused as such, not as a bad window index" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --window '@1'
+	[ "$status" -eq 1 ]
+	[[ $output == *"og-remote-open: --window needs --into"* ]]
+	run bash "$LAUNCHER" tp-g6 workstation 2 --window '@1'
+	[ "$status" -eq 1 ]
+	[[ $output == *"og-remote-open: --window needs --into"* ]]
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: --window before --into, a seventh argument and a repeated --window print the usage line" {
+	install_into_fakes
+
+	local usage='og-remote-open: usage: og-remote-open <host> <sess> --into <local-session> [--window <selector>]'
+	run bash "$LAUNCHER" tp-g6 workstation --window '@1' --into dispatch
+	[ "$status" -eq 1 ]
+	[[ $output == *"$usage"* ]]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@1' extra
+	[ "$status" -eq 1 ]
+	[[ $output == *"$usage"* ]]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@1' --window '@2'
+	[ "$status" -eq 1 ]
+	[[ $output == *"$usage"* ]]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window
+	[ "$status" -eq 1 ]
+	[[ $output == *"$usage"* ]]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch extra
+	[ "$status" -eq 1 ]
+	[[ $output == *"$usage"* ]]
+	# A window argument ahead of --into keeps its own message.
+	run bash "$LAUNCHER" tp-g6 workstation 2 --into dispatch --window '@1'
+	[ "$status" -eq 1 ]
+	[[ $output == *"--into takes no window argument"* ]]
+
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
+}
+
+@test "into: a dedicated open launches its daemon with an inherited OG_DAEMON_SELECT unset" {
+	export SELECT_LOG="$BATS_TEST_TMPDIR/select.log"
+	: >"$SELECT_LOG"
+	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
+		#!/bin/sh
+		printf 'select=%s\n' "${OG_DAEMON_SELECT-<unset>}" >>"$SELECT_LOG"
+	EOF
+	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
+	export OG_DAEMON_SELECT='@crew_branch=feat/x'
+
+	run bash "$LAUNCHER" tp-g6 workstation
+	[ "$status" -eq 0 ]
+
+	local waited=0
+	while [[ ! -s $SELECT_LOG && $waited -lt 50 ]]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	[ "$(cat "$SELECT_LOG")" = 'select=<unset>' ]
 }

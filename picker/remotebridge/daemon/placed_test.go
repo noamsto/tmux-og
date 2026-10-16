@@ -207,3 +207,52 @@ func TestHostCurrentIsOwn(t *testing.T) {
 		})
 	}
 }
+
+// A selector matching no window of the remote session fails startup before the
+// listener exists, so the launcher's listen wait reports it, and nothing is
+// mirrored into the host session.
+func TestRunMirrorFailsWhenNoWindowMatches(t *testing.T) {
+	// t.TempDir is too long a path for a unix socket on macOS.
+	dir, err := os.MkdirTemp("", "ogp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	var calls callLog
+	cfg := selectorCfg(t, Config{
+		LocalSess:     "work",
+		RemoteHost:    "h",
+		RemoteSession: "api",
+		SockPath:      filepath.Join(dir, "sock"),
+		Placed:        true,
+		LocalTarget:   "$1",
+		local:         testPin,
+		View:          &Viewing{},
+		LocalArea:     func() (int, int) { return 0, 0 },
+		LocalTmuxOut: func(args ...string) (string, error) {
+			calls.add(args)
+			return ownedAnswer, nil
+		},
+		LocalTmux: func(args ...string) error {
+			calls.add(args)
+			return nil
+		},
+	}, "@crew=x")
+	script := identityMatch + "%begin 1 2 1\n1 @1 1 0 main\n2 @2 0 x other\n%end 1 2 1\n"
+	conn := newEOFScriptConn(withBarriers(script))
+	cfg.Dial = func() (io.ReadWriteCloser, error) { return conn, nil }
+
+	err = runMirror(cfg)
+	if want := "daemon: no window of api matches @crew=x"; err == nil || err.Error() != want {
+		t.Fatalf("runMirror(...) = %v, want %q", err, want)
+	}
+	if _, err := os.Stat(cfg.SockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("sock stat = %v, want no listener", err)
+	}
+	if nw := findCall(calls.snapshot(), "new-window"); nw != nil {
+		t.Errorf("a window was created: %v", nw)
+	}
+	if !conn.isClosed() {
+		t.Error("the connection was left open")
+	}
+}

@@ -142,6 +142,11 @@ type Config struct {
 	// opts is set by runMirror; nil (a bare test Config) keeps the session
 	// write.
 	opts *mirrorOpts
+	// Select narrows an --into daemon to the remote windows it names; the zero
+	// value mirrors every window.
+	Select WindowSelector
+	// filter is built from Select by runMirror; nil mirrors every window.
+	filter *windowFilter
 }
 
 // target is the -t target for every local tmux command that names the host
@@ -979,6 +984,7 @@ func dropUnclaimedPlaceholder(cfg Config, reg *registry, placeholder string) {
 // calls it again when a reattach ends on a different tmux server.
 func runMirror(cfg Config) error {
 	cfg.opts = newMirrorOpts()
+	cfg.filter = newWindowFilter(cfg.Select)
 	router := NewRouter()
 	// Declared here rather than beside the registry below: the client-size send
 	// that follows the first dial is the converger's first user.
@@ -1071,15 +1077,23 @@ func runMirror(cfg Config) error {
 	// These returns, and the identity timeout above, are the only ones that
 	// precede teardown: nothing has been built yet to tear down, but Run dialled
 	// this connection itself and so owes it a close.
-	lw, ok := one(rt, fmt.Sprintf("list-windows -t %s -F %s", tmuxQuote(cfg.RemoteSession), windowListFormat))
+	lw, ok := one(rt, cfg.filter.listCmd(cfg.RemoteSession))
 	if !ok || lw.Kind == controlmode.Error {
 		hold.close()
 		return fmt.Errorf("daemon: list-windows for %s failed", cfg.RemoteSession)
 	}
-	remoteWins := parseWindowList(string(lw.Data))
+	remoteWins := cfg.filter.parse(string(lw.Data))
 	if len(remoteWins) == 0 {
 		hold.close()
 		return fmt.Errorf("daemon: remote session %s has no windows", cfg.RemoteSession)
+	}
+	startupWins := remoteWins
+	if cfg.filter != nil {
+		startupWins = selectedWindows(remoteWins)
+		if len(startupWins) == 0 {
+			hold.close()
+			return fmt.Errorf("daemon: no window of %s matches %s", cfg.RemoteSession, cfg.Select)
+		}
 	}
 
 	// One-shot, here rather than in repair: Run() runs exactly once per bridge,
@@ -1366,7 +1380,7 @@ func runMirror(cfg Config) error {
 
 	// Mirror each remote window into its own local window. The first reuses the
 	// launcher's initial window; the rest are appended.
-	placeholder, err := mirrorStartupWindows(cfg, remoteWins, send, router, waitHellosFn, cst, reg, cv, rt)
+	placeholder, err := mirrorStartupWindows(cfg, startupWins, send, router, waitHellosFn, cst, reg, cv, rt)
 	if err != nil {
 		teardown()
 		return tornDown{err}
@@ -1458,6 +1472,9 @@ func runMirror(cfg Config) error {
 		if ownerOn {
 			sendSubscription(rt, ownerSubName, "", ownerSelfFormat)
 		}
+		if cfg.filter != nil && cfg.filter.sel.subscribes() {
+			cfg.filter.subscribed = sendSubscription(rt, selectSubName, "@*", "#{window_id}|"+cfg.filter.sel.flag())
+		}
 	}
 	subscribe()
 	// Session-lifetime like the tick: a sweeper built per attach would restart
@@ -1537,6 +1554,9 @@ func runMirror(cfg Config) error {
 			if v, ok := subscriptionValue(l, ownerSubName); ok && ownerOn {
 				cfg.own.queueReport(v)
 			}
+			// Only marks a reconcile due: the main loop's list-windows snapshot
+			// decides what is added or closed.
+			cfg.filter.observe(l)
 		case controlmode.Pause:
 			if len(l.Args) > 0 {
 				handlePause(router, rt, l.Args[0])
@@ -1647,6 +1667,15 @@ func runMirror(cfg Config) error {
 			drained := len(c.pump.lines) == 0
 			agents.flush(cfg, rt, gen, drained)
 			labels.flush(cfg, reg, rt, gen, drained)
+			// Marked before the read, so a failed or empty one waits a floor
+			// rather than re-reading on every pass.
+			if now := time.Now(); cfg.filter.due(now, drained) {
+				cfg.filter.reconciled(now)
+				reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
+				if reg.empty() {
+					return connEnd
+				}
+			}
 			res.flush(cfg)
 			usage.flush(cfg)
 			sweeper.sweep(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
@@ -2110,30 +2139,30 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 }
 
 // addWindow B2-confirms a %window-add notification with a list-windows re-read.
-// If remoteID is now in the bridged session and not already mirrored, it runs
-// the same plan/spawn/hello/seed pipeline as startup. Otherwise (the window
-// belongs elsewhere, or a duplicate notification for an already-registered
-// window) it's a no-op.
+// If remoteID is now in the bridged session, selected and not already mirrored,
+// it runs the same plan/spawn/hello/seed pipeline as startup. Otherwise (the
+// window belongs elsewhere, the selector does not match it, or a duplicate
+// notification for an already-registered window) it's a no-op.
 func addWindow(cfg Config, send func(string), router *Router, waitHellos helloWaiter, cst *ctlState, reg *registry, cv *converger, rt roundTrip, remoteID string) {
 	if _, already := reg.byRemoteID(remoteID); already {
 		return
 	}
 
-	lw, ok := one(rt, fmt.Sprintf("list-windows -t %s -F %s", tmuxQuote(cfg.RemoteSession), windowListFormat))
+	lw, ok := one(rt, cfg.filter.listCmd(cfg.RemoteSession))
 	if !ok || lw.Kind == controlmode.Error {
 		fmt.Fprintf(os.Stderr, "daemon: window-add %s: list-windows failed\n", remoteID)
 		return
 	}
-	inSession := false
+	selected := false
 	var addedName string
-	for _, rw := range parseWindowList(string(lw.Data)) {
+	for _, rw := range cfg.filter.parse(string(lw.Data)) {
 		if rw.id == remoteID {
-			inSession = true
+			selected = rw.sel == selYes
 			addedName = rw.name
 			break
 		}
 	}
-	if !inSession {
+	if !selected {
 		return
 	}
 
@@ -2369,9 +2398,14 @@ func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *
 // where the reader leaves it as body, so the reseed follows the reply and not
 // the notification. Any reply Kind (End or Error) reseeds and resumes; only a
 // lost reply leaves the sink paused.
+//
+// A pane with no sink (an unselected pane of a filtered daemon) is still
+// continued, with no reseed: tmux keeps it paused for this client otherwise,
+// and a window selected later would be seeded once and never stream.
 func handlePause(router *Router, rt roundTrip, paneID string) {
 	s := router.sink(paneID)
 	if s == nil {
+		one(rt, fmt.Sprintf("refresh-client -A '%s:continue'", paneID))
 		return
 	}
 	s.pause()

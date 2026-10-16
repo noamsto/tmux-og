@@ -186,16 +186,37 @@ sess="${2:-}"
 win="${3:-}"
 
 # --into <local-session>: everything that can refuse a placed open runs here,
-# before any ssh. A placed mirror takes every remote window, so it names none,
-# and it never pre-creates the remote session the way a restore/new-dir does.
-into_name="" into_id=""
+# before any ssh. A placed mirror takes every remote window, or the ones
+# `--window <selector>` matches, never the positional [win] focus argument, and
+# it never pre-creates the remote session the way a restore/new-dir does.
+into_name="" into_id="" selector=""
+into_usage="og-remote-open: usage: og-remote-open <host> <sess> --into <local-session> [--window <selector>]"
 if [[ $sess == --into ]]; then
 	echo "og-remote-open: --into needs both a remote session and a local session name" >&2
 	exit 1
 fi
+# Ahead of the dedicated window regex below, which would report a stray
+# --window as a bad window index.
+has_window="" has_into=""
+for ((i = 3; i <= $#; i++)); do
+	[[ ${!i} == --window ]] && has_window=1
+	[[ ${!i} == --into ]] && has_into=1
+done
+if [[ -n $has_window && -z $has_into ]]; then
+	echo "og-remote-open: --window needs --into" >&2
+	exit 1
+fi
+if [[ -n $has_window && $win != --into && ${4:-} != --into ]]; then
+	echo "$into_usage" >&2
+	exit 1
+fi
 if [[ $win == --into || ${4:-} == --into ]]; then
-	if [[ $win != --into || $# -gt 4 ]]; then
+	if [[ $win != --into ]]; then
 		echo "og-remote-open: --into takes no window argument" >&2
+		exit 1
+	fi
+	if (($# > 4)) && [[ $# -ne 6 || $5 != --window ]]; then
+		echo "$into_usage" >&2
 		exit 1
 	fi
 	placed=1
@@ -213,6 +234,15 @@ if [[ $win == --into || ${4:-} == --into ]]; then
 	if [[ ! $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]]; then
 		echo "og-remote-open: --into needs a host matching [A-Za-z0-9][A-Za-z0-9._@-]*, got: $host" >&2
 		exit 1
+	fi
+	if (($# == 6)); then
+		selector="$6"
+		select_id_re='^@(0|[1-9][0-9]*)$'
+		select_opt_re='^@[A-Za-z_][A-Za-z0-9_-]{0,63}=[A-Za-z0-9._/@+:-]{1,255}$'
+		if [[ ! $selector =~ $select_id_re && ! $selector =~ $select_opt_re ]]; then
+			printf 'og-remote-open: --window must be @<id> or @<option>=<value>, got: %q\n' "$selector" >&2
+			exit 1
+		fi
 	fi
 	# Exact name, split on the first `|` so a name holding one stays whole.
 	local_rows="$(tmux list-sessions -F '#{session_id}|#{session_name}' 2>/dev/null || true)"
@@ -441,7 +471,11 @@ if [[ -n $placed ]]; then
 	# keeps the key, a recreated namesake gets a new one. The short fixed
 	# prefix keeps the path under AF_UNIX's 104 bytes.
 	server_pid="$(tmux display-message -p -t "$into_id" '#{pid}')"
-	sock_key="$(printf '%s\0%s\0%s\0%s' "$host" "$sess" "$server_pid" "$into_id" | cksum)"
+	if [[ -n $selector ]]; then
+		sock_key="$(printf '%s\0%s\0%s\0%s\0%s' "$host" "$sess" "$server_pid" "$into_id" "$selector" | cksum)"
+	else
+		sock_key="$(printf '%s\0%s\0%s\0%s' "$host" "$sess" "$server_pid" "$into_id" | cksum)"
+	fi
 	sock="${TMUX_TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}/og-into-${sock_key%% *}.sock"
 	lock="${sock}.lock"
 	# Test-only knobs, like OG_LOCK_STALE_SECONDS; the defaults are production.
@@ -479,7 +513,7 @@ if [[ -n $placed ]]; then
 			# release; a live daemon means the wait is over either way.
 			probe_daemon "$sock"
 			[[ $REPLY == live ]] && exit 0
-			echo "og-remote-open: timed out waiting for another --into of $host:$sess into '$into_name'" >&2
+			echo "og-remote-open: timed out waiting for another --into of $host:$sess into '$into_name'${selector:+ for --window $selector}" >&2
 			exit 1
 		fi
 		lock_ident
@@ -763,6 +797,7 @@ if [[ -n $placed ]]; then
 	export OG_DAEMON_SOCK="$sock"
 	export OG_DAEMON_RENDERER="$renderer"
 	export OG_DAEMON_REFLOW="$reflow"
+	export OG_DAEMON_SELECT="$selector"
 	unset OG_DAEMON_REMOTE_OPEN
 	client_target=()
 	[[ -n ${TMUX_PANE:-} ]] && client_target=(-t "$TMUX_PANE")
@@ -957,6 +992,7 @@ export OG_DAEMON_LOCAL_SESS="$local_sess"
 export OG_DAEMON_SOCK="$sock"
 export OG_DAEMON_RENDERER="$renderer"
 export OG_DAEMON_REFLOW="$reflow"
+unset OG_DAEMON_SELECT
 # This very script, so a hand-off (a remote switch-client the daemon pinned back)
 # re-enters the launcher at the revision the daemon itself came from, never
 # whatever a later home-manager switch left on PATH (#336).
