@@ -395,8 +395,10 @@ Placed flow, in order:
    takes a per-key lock, `mkdir "${sock}.lock"`, and holds it through steps
    5-8. `flock` is absent on macOS; `mkdir` is atomic on every platform. The
    lock directory holds the holder's pid in `owner`. A waiter polls every 0.1s
-   for at most 60s, which is above the daemon's 30s identity deadline plus its
-   startup reads. A lock is stale when its `owner` pid is dead, or when
+   for a budget covering the holder's worst case: the bounded placed probe
+   (step 6) plus the daemon-listen wait (step 8) plus slack
+   (`OG_INTO_PROBE_TIMEOUT`/`OG_INTO_LISTEN_TIMEOUT`/15s, 15/60/15s by
+   default; #990). A lock is stale when its `owner` pid is dead, or when
    `owner` stays empty for 5s on the same directory (the window between
    `mkdir` and the `owner` write).
    - A rename alone does not make takeover safe. Waiter B judges the lock
@@ -426,8 +428,10 @@ Placed flow, in order:
    window means the remote has no session by that exact name: exit 1
    (`og-remote-open: no session named exactly '<sess>' on <host>`), with no
    daemon launched. The probe's echoed session name never replaces the
-   caller's. The cold-start, restore and new-dir branches are not reachable
-   (rejected above).
+   caller's. The probe is wall-clock-bounded (`timeout(1)` where present, else
+   `ConnectTimeout` + `ServerAliveInterval`/`ServerAliveCountMax`), so it
+   cannot hold the lock past a waiter's budget (#990). The cold-start, restore
+   and new-dir branches are not reachable (rejected above).
 7. **Launch** the daemon detached, exactly as today, with:
    - `OG_DAEMON_LOCAL_SESS=<name>`;
    - `OG_DAEMON_INTO=$N`;
@@ -436,8 +440,8 @@ Placed flow, in order:
      selection;
    - no `OG_DAEMON_REMOTE_OPEN`.
 8. **Wait for the daemon** (still under the lock): poll every 0.1s, for at
-   most the same 60s, until `probe_daemon "$sock"` answers `live` or the
-   daemon pid is gone.
+   most `OG_INTO_LISTEN_TIMEOUT` (60s by default), until `probe_daemon "$sock"`
+   answers `live` or the daemon pid is gone.
    - live → release, exit 0;
    - the daemon exited → release, print the last lines of `${sock}.log`,
      exit 1;
