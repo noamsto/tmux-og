@@ -297,6 +297,10 @@ only that daemon; daemon exit removes only its windows.
   mirror, and if it was the last one the daemon exits (point 2).
 - Overlapping selectors, or a plain `--into` beside a filtered one, mirror a
   window more than once (point 4).
+- A selector that matches nothing still runs the attach-time ownership claim
+  (it precedes the startup window read) before the daemon exits; other
+  controllers stay flagged until a survivor's release, as after any daemon
+  that exits at startup.
 
 ## Out of scope
 
