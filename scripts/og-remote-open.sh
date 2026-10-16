@@ -186,8 +186,9 @@ sess="${2:-}"
 win="${3:-}"
 
 # --into <local-session>: everything that can refuse a placed open runs here,
-# before any ssh. A placed mirror takes every remote window, so it names none,
-# and it never pre-creates the remote session the way a restore/new-dir does.
+# before any ssh. A placed mirror takes every remote window, or the ones
+# `--window <selector>` matches, never the positional [win] focus argument, and
+# it never pre-creates the remote session the way a restore/new-dir does.
 into_name="" into_id="" selector=""
 into_usage="og-remote-open: usage: og-remote-open <host> <sess> --into <local-session> [--window <selector>]"
 if [[ $sess == --into ]]; then

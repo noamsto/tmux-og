@@ -571,6 +571,18 @@ func TestPauseStaysPausedWhenStreamEndsBeforeRefreshReply(t *testing.T) {
 	}
 }
 
+// TestPauseWithoutSinkStillContinues: a filtered daemon registers no sink for
+// an unselected pane, but tmux pauses it for this client all the same; it must
+// be continued (with no reseed) so a window selected later streams.
+func TestPauseWithoutSinkStillContinues(t *testing.T) {
+	var issued []string
+	handlePause(NewRouter(), replyRT(&issued, body("")), "%7")
+	want := []string{"refresh-client -A '%7:continue'"}
+	if !reflect.DeepEqual(issued, want) {
+		t.Errorf("issued %q, want %q", issued, want)
+	}
+}
+
 // TestPauseErrorReplyStillReseedsAndResumes: handlePause ignores the reply's
 // Kind, so an %error to the refresh-client still repaints and resumes.
 func TestPauseErrorReplyStillReseedsAndResumes(t *testing.T) {

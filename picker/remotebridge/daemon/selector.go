@@ -112,8 +112,9 @@ func parseSelectedWindowList(body string) []remoteWindow {
 // every method is a no-op for it.
 type windowFilter struct {
 	sel        WindowSelector
-	dirty      bool // an og_select notification arrived since the last reconcile
-	subscribed bool // the remote accepted the og_select subscription
+	dirty      bool      // an og_select notification arrived since the last reconcile
+	dirtyAt    time.Time // when dirty last went true
+	subscribed bool      // the remote accepted the og_select subscription
 	last       time.Time
 }
 
@@ -149,19 +150,26 @@ func (f *windowFilter) observe(l controlmode.Line) {
 }
 
 func (f *windowFilter) note() {
-	if f != nil {
-		f.dirty = true
+	if f == nil || f.dirty {
+		return
 	}
+	f.dirty = true
+	f.dirtyAt = time.Now()
 }
 
-// due reports whether the selected set should be re-read: at once after a
-// notification, else at the poll floor. An id selector never is, since only a
-// close changes it.
-func (f *windowFilter) due(now time.Time) bool {
+// due reports whether the selected set should be re-read: after a notification
+// once the pump is drained (or queuedApplyMaxHold after the first one), else at
+// the poll floor. A subscription reports every window on subscribe, one line per
+// loop pass, so reading at once would reconcile per row. An id selector never is,
+// since only a close changes it.
+func (f *windowFilter) due(now time.Time, drained bool) bool {
 	if f == nil || !f.sel.subscribes() {
 		return false
 	}
-	return f.dirty || now.Sub(f.last) >= pollFloor(f.subscribed, mainLoopTickInterval, windowLabelBackstopInterval)
+	if f.dirty && (drained || now.Sub(f.dirtyAt) >= queuedApplyMaxHold) {
+		return true
+	}
+	return now.Sub(f.last) >= pollFloor(f.subscribed, mainLoopTickInterval, windowLabelBackstopInterval)
 }
 
 func (f *windowFilter) reconciled(now time.Time) {

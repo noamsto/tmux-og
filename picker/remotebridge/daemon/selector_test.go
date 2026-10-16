@@ -173,20 +173,47 @@ func TestWindowFilterDue(t *testing.T) {
 		{"unsubscribed at tick", at(newWindowFilter(opt), false), base.Add(mainLoopTickInterval), true},
 		{"subscribed before backstop", at(newWindowFilter(opt), true), base.Add(windowLabelBackstopInterval - time.Nanosecond), false},
 		{"subscribed at backstop", at(newWindowFilter(opt), true), base.Add(windowLabelBackstopInterval), true},
-		{"dirty", func() *windowFilter { f := at(newWindowFilter(opt), true); f.note(); return f }(), base, true},
 	}
 	for _, tt := range tests {
-		if got := tt.f.due(tt.now); got != tt.want {
+		if got := tt.f.due(tt.now, false); got != tt.want {
 			t.Errorf("%s: due = %v, want %v", tt.name, got, tt.want)
 		}
+	}
+
+	dirty := func() *windowFilter {
+		f := at(newWindowFilter(opt), true)
+		f.note()
+		f.dirtyAt = base
+		return f
+	}
+	d := dirty()
+	if d.due(base, false) {
+		t.Error("dirty but not drained was due at once")
+	}
+	if d.due(base.Add(queuedApplyMaxHold-time.Nanosecond), false) {
+		t.Error("dirty but not drained was due before the max hold")
+	}
+	if !d.due(base.Add(queuedApplyMaxHold), false) {
+		t.Error("dirty but not drained was not due at the max hold")
+	}
+	if !dirty().due(base, true) {
+		t.Error("dirty and drained was not due")
+	}
+	if at(newWindowFilter(opt), true).due(base, true) {
+		t.Error("clean and drained was due before the backstop")
+	}
+	d = dirty()
+	d.note()
+	if !d.dirtyAt.Equal(base) {
+		t.Errorf("a second note moved dirtyAt to %v", d.dirtyAt)
 	}
 
 	f := at(newWindowFilter(opt), true)
 	f.note()
 	now := base.Add(time.Second)
 	f.reconciled(now)
-	if f.dirty || !f.last.Equal(now) || f.due(now) {
-		t.Errorf("reconciled left dirty=%v last=%v due=%v", f.dirty, f.last, f.due(now))
+	if f.dirty || !f.last.Equal(now) || f.due(now, true) {
+		t.Errorf("reconciled left dirty=%v last=%v due=%v", f.dirty, f.last, f.due(now, true))
 	}
 	var none *windowFilter
 	none.reconciled(now)

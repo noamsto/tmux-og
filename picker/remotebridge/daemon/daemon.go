@@ -1669,7 +1669,7 @@ func runMirror(cfg Config) error {
 			labels.flush(cfg, reg, rt, gen, drained)
 			// Marked before the read, so a failed or empty one waits a floor
 			// rather than re-reading on every pass.
-			if now := time.Now(); cfg.filter.due(now) {
+			if now := time.Now(); cfg.filter.due(now, drained) {
 				cfg.filter.reconciled(now)
 				reconcileWindows(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt)
 				if reg.empty() {
@@ -2398,9 +2398,14 @@ func readReplyRouting(reader lineReader, router *Router, async *asyncQueue, st *
 // where the reader leaves it as body, so the reseed follows the reply and not
 // the notification. Any reply Kind (End or Error) reseeds and resumes; only a
 // lost reply leaves the sink paused.
+//
+// A pane with no sink (an unselected pane of a filtered daemon) is still
+// continued, with no reseed: tmux keeps it paused for this client otherwise,
+// and a window selected later would be seeded once and never stream.
 func handlePause(router *Router, rt roundTrip, paneID string) {
 	s := router.sink(paneID)
 	if s == nil {
+		one(rt, fmt.Sprintf("refresh-client -A '%s:continue'", paneID))
 		return
 	}
 	s.pause()

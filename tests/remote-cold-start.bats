@@ -2032,6 +2032,7 @@ $4|a|b'
 
 @test "into: a selector holding a shell or format metacharacter is refused before any ssh" {
 	install_into_fakes
+	cd "$BATS_TEST_TMPDIR"
 
 	local bad
 	for bad in '@a=$(touch x)' '@a=#{pid}' '@a=b c' '@a=b;c' "@a=b'c" '@01' '@=x' '@a=' 'x=y'; do
