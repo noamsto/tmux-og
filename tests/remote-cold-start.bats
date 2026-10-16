@@ -1905,11 +1905,10 @@ $4|a|b'
 
 @test "into: two concurrent calls with a slow probe both become no-ops" {
 	install_into_fakes
-	# The placed probe runs under the lock, so the holder can hold it for the
-	# probe's whole duration. A waiter's budget must cover that; origin/main's
-	# 60s (actually ~70s of `sleep 0.1` plus per-tick forks) cap does not, and
-	# the second call exits 1 instead of no-op'ing. 85s clears the old cap on
-	# both Linux and macOS CI; the knobs are overridable to run this fast.
+	# The placed probe runs under the lock, so the holder holds it for the whole
+	# probe. The delay must clear origin/main's real waiter cap — 600 ticks of
+	# `sleep 0.1` plus per-tick forks (~70s, not the 60s it reads as) — hence 85s.
+	# Both knobs shrink the case for a fast run.
 	export OG_INTO_PROBE_TIMEOUT="${OG_INTO_PROBE_TIMEOUT:-120}"
 	export FAKE_PROBE_DELAY="${FAKE_PROBE_DELAY:-85}"
 
@@ -1943,7 +1942,6 @@ $4|a|b'
 	wait "$p1" || s1=$?
 	wait "$p2" || s2=$?
 
-	# Neither call hangs, and no daemon was launched.
 	[ "$s1" -ne 0 ]
 	[ "$s2" -ne 0 ]
 	[ ! -s "$LAUNCH_LOG" ]
@@ -1951,8 +1949,7 @@ $4|a|b'
 
 @test "into: a probe that outlasts the bound fails the placed open, never launching" {
 	install_into_fakes
-	# The placed probe is wall-clock-bounded; origin/main has no bound and would
-	# launch a daemon after the slow probe answered.
+	# A probe past the wall-clock bound must not reach the launch step.
 	export OG_INTO_PROBE_TIMEOUT=1 OG_INTO_LISTEN_TIMEOUT=2 FAKE_PROBE_DELAY=3
 
 	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
