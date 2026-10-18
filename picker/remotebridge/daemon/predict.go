@@ -20,6 +20,17 @@ const (
 	// prompt) timed against unrelated later output.
 	predictSampleMax    = time.Second
 	predictSampleWindow = 8
+	// predictIdle drops a pane's model when no key has been typed for this long.
+	predictIdle = 30 * time.Second
+	// predictOutputBudget drops the model once this much output has been fed
+	// since the last key: vt is too slow to run on bulk output.
+	predictOutputBudget = 64 << 10
+	// predictModelRetry rate-limits model seed requests per pane.
+	predictModelRetry = 2 * time.Second
+	// A prediction unresolved after clamp(4 x estimate) is dropped.
+	predictExpiryMin  = 500 * time.Millisecond
+	predictExpiryMax  = 3 * time.Second
+	predictMaxPending = 128
 )
 
 // PredictMode selects when mirror panes echo typed keys locally ahead of the
