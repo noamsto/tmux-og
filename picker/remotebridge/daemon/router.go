@@ -34,6 +34,8 @@ type Router struct {
 	pendingBytes         int
 	pendingMaxTotalBytes int
 	gone                 map[string]*gonePane
+	excluded             map[string]struct{}
+	excludeOnUnregister  map[string]struct{}
 	routeDropLogged      map[string]struct{}
 	dropped              int
 	pendingLifetime      time.Duration
@@ -46,6 +48,8 @@ func NewRouter() *Router {
 		pending:              map[string]*pendingOutput{},
 		pendingMaxTotalBytes: routerPendingMaxTotalBytes,
 		gone:                 map[string]*gonePane{},
+		excluded:             map[string]struct{}{},
+		excludeOnUnregister:  map[string]struct{}{},
 		routeDropLogged:      map[string]struct{}{},
 		pendingLifetime:      routerPendingLifetime,
 		goneLifetime:         routerGoneLifetime,
@@ -59,6 +63,8 @@ func (r *Router) Register(paneID string, sink io.Writer) {
 		delete(r.gone, paneID)
 	}
 	r.sinks[paneID] = sink
+	delete(r.excluded, paneID)
+	delete(r.excludeOnUnregister, paneID)
 	p := r.pending[paneID]
 	delete(r.pending, paneID)
 	dropped := 0
@@ -80,10 +86,49 @@ func (r *Router) Register(paneID string, sink io.Writer) {
 	}
 }
 
+// SetExcluded replaces the set of panes whose output Route discards silently:
+// a filtered daemon's panes outside the selection, which will never get a sink.
+// Output they already buffered is discarded with no drop line. Register lifts a
+// pane's exclusion.
+func (r *Router) SetExcluded(paneIDs map[string]struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.excluded = make(map[string]struct{}, len(paneIDs))
+	clear(r.excludeOnUnregister)
+	r.excludeLocked(paneIDs)
+}
+
+// Exclude adds to the excluded set (see SetExcluded). A registered pane is
+// excluded once it unregisters: a pane moved out of a selected window is still
+// registered when the unselected window's layout change names it.
+func (r *Router) Exclude(paneIDs map[string]struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.excludeLocked(paneIDs)
+}
+
+func (r *Router) excludeLocked(paneIDs map[string]struct{}) {
+	for id := range paneIDs {
+		if _, registered := r.sinks[id]; registered {
+			r.excludeOnUnregister[id] = struct{}{}
+			continue
+		}
+		r.excluded[id] = struct{}{}
+		if p := r.pending[id]; p != nil {
+			delete(r.pending, id)
+			r.clearPendingLocked(p)
+		}
+	}
+}
+
 func (r *Router) Unregister(paneID string) {
 	r.mu.Lock()
 	sink := r.sinks[paneID]
 	delete(r.sinks, paneID)
+	if _, out := r.excludeOnUnregister[paneID]; out {
+		delete(r.excludeOnUnregister, paneID)
+		r.excluded[paneID] = struct{}{}
+	}
 	dropped := 0
 	if p := r.pending[paneID]; p != nil {
 		delete(r.pending, paneID)
@@ -125,6 +170,8 @@ func (r *Router) Route(paneID string, data []byte) {
 		} else {
 			r.writeLocked(sink, data)
 		}
+	} else if _, out := r.excluded[paneID]; out {
+		// Not a drop: the daemon will never display this pane.
 	} else if _, gone := r.gone[paneID]; gone {
 		reason = r.routeDropLocked("pane is gone")
 	} else if len(data) > routerPendingMaxBytes {

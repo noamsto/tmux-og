@@ -116,6 +116,7 @@ type windowFilter struct {
 	dirtyAt    time.Time // when dirty last went true
 	subscribed bool      // the remote accepted the og_select subscription
 	last       time.Time
+	unselected map[string]struct{} // window ids the last read showed as not matching
 }
 
 // newWindowFilter returns nil for a zero selector. last is seeded so the first
@@ -189,4 +190,78 @@ func selectedWindows(wins []remoteWindow) []remoteWindow {
 		}
 	}
 	return sel
+}
+
+// noteListed records which of wins a read showed as not matching. A row with a
+// malformed flag is no evidence either way and changes nothing; a window absent
+// from the read has left the session.
+func (f *windowFilter) noteListed(wins []remoteWindow) {
+	if f == nil {
+		return
+	}
+	next := make(map[string]struct{}, len(f.unselected))
+	for _, rw := range wins {
+		switch rw.sel {
+		case selNo:
+			next[rw.id] = struct{}{}
+		case selUnknown:
+			if _, was := f.unselected[rw.id]; was {
+				next[rw.id] = struct{}{}
+			}
+		case selYes:
+		}
+	}
+	f.unselected = next
+}
+
+// excludeUnselected points the router at the panes of unselected windows, which
+// have no sink and never will, so their output is discarded rather than buffered
+// until it expires. Positive evidence only: a failed read leaves the set as is.
+func (f *windowFilter) excludeUnselected(cfg Config, router *Router, rt roundTrip) {
+	if f == nil {
+		return
+	}
+	if len(f.unselected) == 0 {
+		router.SetExcluded(nil)
+		return
+	}
+	l, ok := one(rt, fmt.Sprintf("list-panes -s -t %s -F %s", tmuxQuote(cfg.RemoteSession), tmuxQuote(ctlSafe("#{window_id}|#{pane_id}"))))
+	if !ok || l.Kind == controlmode.Error {
+		return
+	}
+	panes := map[string]struct{}{}
+	for row := range strings.SplitSeq(string(l.Data), "\n") {
+		win, pane, ok := strings.Cut(strings.TrimSpace(row), "|")
+		if _, out := f.unselected[win]; ok && out {
+			panes[pane] = struct{}{}
+		}
+	}
+	router.SetExcluded(panes)
+}
+
+// excludeLayoutPanes excludes the panes a %layout-change names for an
+// unselected window, so a split there is discarded without a round-trip.
+func (f *windowFilter) excludeLayoutPanes(router *Router, l controlmode.Line) {
+	if f == nil || len(l.Args) == 0 {
+		return
+	}
+	if _, out := f.unselected[l.Args[0]]; !out {
+		return
+	}
+	n, ok := parseLayoutNotice(l)
+	if !ok {
+		return
+	}
+	L, err := controlmode.ParseLayout(n.layout)
+	if err != nil {
+		return
+	}
+	panes := map[string]struct{}{}
+	for _, c := range L.Panes {
+		panes[c.ID] = struct{}{}
+	}
+	for _, c := range L.Floats {
+		panes[c.ID] = struct{}{}
+	}
+	router.Exclude(panes)
 }

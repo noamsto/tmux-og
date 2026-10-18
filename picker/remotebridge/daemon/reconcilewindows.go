@@ -37,6 +37,7 @@ func reconcileWindows(cfg Config, send func(string), router *Router, waitHellos 
 		return
 	}
 	cfg.filter.reconciled(time.Now())
+	cfg.filter.noteListed(remoteWins)
 
 	live := make(map[string]bool, len(remoteWins))
 	added := false
@@ -71,6 +72,7 @@ func reconcileWindows(cfg Config, send func(string), router *Router, waitHellos 
 			closeWindow(cfg, router, cst, reg, cv, remoteID)
 		}
 	}
+	cfg.filter.excludeUnselected(cfg, router, rt)
 
 	// Follow the remote's selection only when a window appeared. A local
 	// `prefix c` makes the new remote window active, and without this the human
