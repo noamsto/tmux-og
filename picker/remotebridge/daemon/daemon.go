@@ -2829,12 +2829,16 @@ type sinkFrame struct {
 	modes *predictModes
 }
 
-// framePredictKeys and framePredictSeed are daemon-internal: they never reach
-// the wire, and the pump consumes them. A key frame shares the channel with
-// output so a key is ordered before its own echo.
+// framePredictKeys, framePredictSeed, frameHold and frameRelease are
+// daemon-internal: they never reach the wire, and the pump consumes them. A key
+// frame shares the channel with output so a key is ordered before its own echo;
+// a hold or release shares it so the pump alone knows what reached the renderer
+// in what order.
 const (
 	framePredictKeys wire.FrameType = 0xf0
 	framePredictSeed wire.FrameType = 0xf1
+	frameHold        wire.FrameType = 0xf2
+	frameRelease     wire.FrameType = 0xf3
 )
 
 // outputSink serializes all daemon->renderer frames for one pane through a
@@ -2941,6 +2945,10 @@ func (s *outputSink) start(conn net.Conn) {
 		// entirely (see the FrameOutput guard below), which is correct: a seed
 		// is capture-pane's rendered cells, never a query.
 		kn := keyneg.NewFilter()
+		// held is true from a frameHold until a seed or frameRelease ends it.
+		// Pump-owned: only the pump knows what reached the renderer in what
+		// order.
+		held := false
 		var pending *sinkFrame
 		for {
 			var f sinkFrame
@@ -2992,6 +3000,40 @@ func (s *outputSink) start(conn net.Conn) {
 			case framePredictSeed:
 				s.pred.onModelSeed(f.payload, *f.modes)
 				continue
+			case frameHold:
+				if s.pred != nil {
+					if writeOutputIfAny(conn, s.pred.onHold()) != nil {
+						return
+					}
+					s.pred.observe(f.payload)
+				}
+				if err := wire.WriteStream(conn, wire.FrameOutput, f.payload); err != nil {
+					return
+				}
+				held = true
+				continue
+			case frameRelease:
+				if !held {
+					continue
+				}
+				held = false
+				const leaveAlt = "\x1b[?1049l"
+				var out []byte
+				if s.pred != nil {
+					out = s.pred.reset()
+					s.pred.observe([]byte(leaveAlt))
+				}
+				out = append(out, leaveAlt...)
+				if err := wire.WriteStream(conn, wire.FrameOutput, out); err != nil {
+					return
+				}
+				// Output may have landed on the held screen and is lost with it,
+				// and ?1049l restores the hold-time cursor and pen, so only a
+				// reseed from the remote is safe.
+				s.mu.Lock()
+				s.dropped++
+				s.mu.Unlock()
+				continue
 			case wire.FrameOutput:
 				// drainOutput can append more queued FrameOutput frames'
 				// raw payload onto buf, and any of those can carry a
@@ -3013,6 +3055,8 @@ func (s *outputSink) start(conn net.Conn) {
 					f.payload = s.pred.onOutput(f.payload)
 				}
 			case wire.FrameSeed:
+				// The seed leads with ?1049l, which ends a hold.
+				held = false
 				if s.pred != nil && writeOutputIfAny(conn, s.pred.onSeed(f.payload)) != nil {
 					return
 				}
@@ -3095,6 +3139,46 @@ func (s *outputSink) keys(p []byte) {
 	case s.ch <- sinkFrame{typ: framePredictKeys, payload: append([]byte(nil), p...)}:
 	default:
 		s.keysLost.Store(true)
+	}
+}
+
+// hold queues the bytes that switch the local pane to the alternate screen
+// holding a copy of its rows. A full channel loses nothing from the remote
+// stream, so it never touches dropped; the caller just reshapes without a hold.
+func (s *outputSink) hold(payload []byte) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.paused {
+		return false
+	}
+	select {
+	case s.ch <- sinkFrame{typ: frameHold, payload: append([]byte(nil), payload...)}:
+		return true
+	default:
+		return false
+	}
+}
+
+// release ends a hold the reseed did not: the pump drops it when a seed already
+// released, else leaves the alternate screen and marks the sink for a reseed. A
+// full channel counts as dropped, since the reseed that follows writes a seed,
+// which releases.
+func (s *outputSink) release() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- sinkFrame{typ: frameRelease}:
+	default:
+		s.dropped++
 	}
 }
 

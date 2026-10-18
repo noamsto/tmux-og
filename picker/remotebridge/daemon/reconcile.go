@@ -144,6 +144,15 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 		}
 	}
 
+	// Released on every exit, refused reshape and failed seed included. For a
+	// sink a seed already released, the pump drops it.
+	var held []*outputSink
+	defer func() {
+		for _, s := range held {
+			s.release()
+		}
+	}()
+
 	// Only a rebuild inside this call may raise it, so a value left over from an
 	// earlier call must not read as floats this one owes a re-add.
 	w.floatsDropped = false
@@ -154,6 +163,12 @@ passes:
 		newRemote := RemotePaneOrder(L)
 		ops := planPaneOps(remote, newRemote)
 		structural := len(ops.Remove) > 0 || len(ops.Append) > 0 || len(ops.Swaps) > 0
+
+		// Ahead of the pass's first local reshape: tmux reflows a main-screen
+		// pane the instant the reshape below lands, from a local grid and
+		// history the remote never had, and leaves the result up until the
+		// reseed. On the alternate screen it does not reflow at all.
+		held = append(held, holdReshaped(cfg, w, L, remote, newRemote, structural, zoomed, remoteActive, router)...)
 
 		switch {
 		case ops.Reset:

@@ -43,6 +43,9 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	// during a gap must not survive the reseed. ?1049l restores the saved main
 	// screen, so both clears run before the repaint below.
 	b.WriteString("\x1b[?1049l")
+	// ?1049l restores the pen saved at ?1049h (a reshape hold, or an earlier
+	// alt-screen seed), and the 2J below erases with that pen, so reset it again.
+	b.WriteString("\x1b[m")
 	if altScreen {
 		b.WriteString("\x1b[?1049h")
 	}

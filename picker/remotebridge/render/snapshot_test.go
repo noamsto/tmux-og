@@ -34,7 +34,7 @@ func TestSeedPlainNoAlt(t *testing.T) {
 // stuck in a mode the remote already left (#803).
 func TestSeedClearsAltScreenAndCursorKeys(t *testing.T) {
 	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil))
-	if !strings.Contains(out, "\x1b[?1049l") {
+	if !strings.Contains(out, "\x1b[?1049l\x1b[m") {
 		t.Errorf("seed must clear the alt screen: %q", out)
 	}
 	if !strings.Contains(out, "\x1b[?1l") {
@@ -117,7 +117,7 @@ func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
 	}
-	for _, clear := range []string{"\x1b[?1049l", "\x1b[?1l"} {
+	for _, clear := range []string{"\x1b[?1049l\x1b[m", "\x1b[?1l"} {
 		at := strings.Index(out, clear)
 		if at < 0 {
 			t.Errorf("seed missing clear %s: %q", clear, out)
@@ -127,7 +127,7 @@ func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
 			t.Errorf("clear %s must precede the repaint: %q", clear, out)
 		}
 	}
-	if strings.Index(out, "\x1b[?1049l") > strings.Index(out, "\x1b[?1049h") {
+	if strings.Index(out, "\x1b[?1049l\x1b[m") > strings.Index(out, "\x1b[?1049h") {
 		t.Errorf("alt-screen clear must precede the set: %q", out)
 	}
 	if strings.Index(out, "\x1b[?1l") > strings.Index(out, "\x1b[?1h") {
@@ -140,6 +140,21 @@ func TestSeedResetsAttrsBeforeErase(t *testing.T) {
 		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil))
 		if !strings.HasPrefix(out, "\x1b[m") {
 			t.Errorf("alt=%v: erase must follow an SGR reset, or it fills with the live stream's background: %q", alt, out)
+		}
+	}
+}
+
+// TestSeedResetsAttrsAfterAltScreenRestore: ?1049l restores the pen saved at
+// ?1049h, so the erase after it needs its own SGR reset, in both alt cases.
+func TestSeedResetsAttrsAfterAltScreenRestore(t *testing.T) {
+	for _, alt := range []bool{false, true} {
+		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil))
+		_, after, found := strings.Cut(out, "\x1b[?1049l")
+		if !found {
+			t.Fatalf("alt=%v: seed has no alt-screen clear: %q", alt, out)
+		}
+		if !strings.HasPrefix(after, "\x1b[m") {
+			t.Errorf("alt=%v: bytes after ?1049l must reset attrs before the erase: %q", alt, out)
 		}
 	}
 }

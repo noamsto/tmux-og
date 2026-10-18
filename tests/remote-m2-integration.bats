@@ -1544,6 +1544,120 @@ EOF
 	[ "$survivor_hit" -eq 0 ]
 }
 
+# Closing a remote pane makes the daemon kill the local pane, which widens the
+# survivor's LOCAL grid; local tmux reflows it, joining wrapped lines and
+# sliding the visible window into local history that holds content the remote
+# never had (the banner below, old seed copies). The survivor may show its
+# pre-close screen or its settled reseed, never a frame of rows from neither.
+@test "a remote pane close never shows the survivor a frame outside its pre-close and settled screens (#1002)" {
+	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	real="$(command -v tmux)"
+	# The stall widens the ~20 ms local window between the daemon's local
+	# kill-pane and its reseed so the oracle is deterministic, as the #808 case
+	# does.
+	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
+#!/bin/sh
+has_dst=0
+has_sl=0
+for arg in "\$@"; do
+	[ "\$arg" = m2dst ] && has_dst=1
+	[ "\$arg" = select-layout ] && has_sl=1
+done
+if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_sl" -eq 1 ]; then
+	sleep 1.5
+fi
+exec "$real" "\$@"
+EOF
+	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+
+	fifo="$BATS_TEST_TMPDIR/feed"
+	mkfifo "$fifo"
+	$SRC new-session -d -s rem -x 120 -y 30 "exec 3<>'$fifo'; cat <&3"
+	$SRC split-window -h -t rem 'sleep 600'
+	# A banner the remote never had: it lands in the local pane's history.
+	# shellcheck disable=SC2016 # the loop runs in the pane's shell
+	$DST new-session -d -s host-sess -x 120 -y 30 'i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo LOCALJUNK$i; done; sleep 600'
+	sleep 0.3
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 2 hold
+
+	survivor_r="$($SRC list-panes -t rem -F '#{pane_id}' | sed -n 1p)"
+	other_r="$($SRC list-panes -t rem -F '#{pane_id}' | sed -n 2p)"
+	survivor_l="$($DST list-panes -t host-sess:1 -F '#{pane_id} #{@bridge_pane}' | awk -v r="$survivor_r" '$2 == r {print $1}')"
+	[ -n "$survivor_l" ]
+
+	exec 4>"$fifo"
+	for i in $(seq 1 12); do printf 'wrap%02d-%080d\r\n' "$i" 0; done >&4
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	until $DST capture-pane -p -t "$survivor_l" | grep -q wrap12; do
+		[ "$SECONDS" -lt "$deadline" ] || {
+			exec 4>&-
+			return 1
+		}
+		sleep 0.1
+	done
+	sleep 0.3
+	$DST capture-pane -p -t "$survivor_l" | sed 's/ *$//' >"$BATS_TEST_TMPDIR/pre"
+
+	touch "$BATS_TEST_TMPDIR/slow.on"
+	(
+		for n in $(seq 1 60); do
+			if [ -e "$BATS_TEST_TMPDIR/slow.on" ]; then phase=stall; else phase=post; fi
+			{
+				$DST display-message -p -t "$survivor_l" '#{pane_width}'
+				$DST capture-pane -p -t "$survivor_l" | sed 's/ *$//'
+			} >"$BATS_TEST_TMPDIR/$phase-$n"
+			sleep 0.05
+		done
+	) 3>&- &
+	sampler_pid=$!
+	sleep 0.15
+	$SRC kill-pane -t "$other_r"
+	wait "$sampler_pid"
+	rm -f "$BATS_TEST_TMPDIR/slow.on"
+
+	deadline=$((SECONDS + 3 + BRIDGE_UP_BUDGET_SECS))
+	prev=""
+	settled=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		if [ "$($DST display-message -p -t "$survivor_l" '#{pane_width}')" = 120 ]; then
+			settled="$($DST capture-pane -p -t "$survivor_l" | sed 's/ *$//')"
+			[ "$settled" = "$prev" ] && break
+			prev="$settled"
+		fi
+		sleep 0.3
+	done
+	exec 4>&-
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+	[ "$settled" = "$prev" ]
+	[ -n "$settled" ]
+
+	{
+		grep . "$BATS_TEST_TMPDIR/pre" || true
+		printf '%s\n' "$settled" | grep . || true
+	} | LC_ALL=C sort -u >"$BATS_TEST_TMPDIR/allowed"
+
+	# The oracle must have seen the window it guards: a sample taken after the
+	# local kill-pane widened the survivor, before the stalled select-layout
+	# returned.
+	widened=0
+	for f in "$BATS_TEST_TMPDIR"/stall-*; do
+		[ -e "$f" ] || continue
+		[ "$(head -n1 "$f")" = 120 ] && widened=$((widened + 1))
+	done
+	[ "$widened" -ge 1 ]
+
+	for f in "$BATS_TEST_TMPDIR"/stall-* "$BATS_TEST_TMPDIR"/post-*; do
+		[ -e "$f" ] || continue
+		foreign="$(tail -n +2 "$f" | grep . | LC_ALL=C sort -u | LC_ALL=C comm -23 - "$BATS_TEST_TMPDIR/allowed" || true)"
+		if [ -n "$foreign" ]; then
+			printf 'sample %s (width %s) shows rows in neither screen:\n%s\n' "$(basename "$f")" "$(head -n1 "$f")" "$foreign" >&3
+			return 1
+		fi
+	done
+}
+
 # A remote swap-pane permutes the pane set without changing its membership —
 # neither a tail-append nor a tail-removal, so the old reconcile skipped it and
 # each pane kept painting at its old cell. Asserts IDENTITY (which local pane

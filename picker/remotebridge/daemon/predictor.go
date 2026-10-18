@@ -460,6 +460,17 @@ func (p *predictor) onResize(w, h int) []byte {
 	return out
 }
 
+// onHold unpaints and drops the model: a hold switches screens, so painted
+// predictions are unpainted first and the model, which tracked the main
+// screen, is dropped; the next key re-requests one.
+func (p *predictor) onHold() []byte {
+	out := p.reset()
+	if p.model != nil {
+		p.dropModel()
+	}
+	return out
+}
+
 // onModelSeed builds the model from a seed that was never written to the
 // renderer.
 func (p *predictor) onModelSeed(seed []byte, m predictModes) {
