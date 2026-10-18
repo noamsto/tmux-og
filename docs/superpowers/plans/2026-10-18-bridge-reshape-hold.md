@@ -1,5 +1,7 @@
 # Plan: hold a mirror pane on the alternate screen across a local reshape (#1002)
 
+> Superseded for the hold design by `2026-10-19-bridge-reshape-hold-parked-cursor.md`.
+
 Spec: `docs/superpowers/specs/2026-10-18-bridge-reshape-hold-design.md`.
 Code lives in `picker/remotebridge/` unless a path says otherwise.
 Go gate per step: `cd picker && go test -race ./remotebridge/...` and `golangci-lint run ./remotebridge/...`.

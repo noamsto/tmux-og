@@ -1,5 +1,7 @@
 # Bridge: hold a mirror pane on the alternate screen across a local reshape (#1002)
 
+> Revised by `2026-10-19-bridge-reshape-hold-parked-cursor-design.md` (parked-cursor hold). The mechanism and evidence below stand; the hold, release and gating rules there replace the ones here.
+
 ## Problem
 
 A split pane closes inside a mirror window. The neighbour that takes over the
