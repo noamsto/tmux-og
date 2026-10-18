@@ -207,6 +207,8 @@ func main() {
 	term := flag.String("term", os.Getenv("OG_BRIDGE_TERM"), "termname to advertise to the remote (steers the remote viewer's graphics backend)")
 	termfeatures := flag.String("termfeatures", os.Getenv("OG_BRIDGE_TERMFEATURES"), "raw #{client_termfeatures} of the client that will paint (diagnostic only; see -sixel)")
 	sixelFlag := flag.String("sixel", os.Getenv("OG_BRIDGE_SIXEL"), "tmux's own #{I/f:sixel} verdict for the launching client (gates the initial sixel-relay seed)")
+	cellW := flag.String("cell-w", os.Getenv("OG_BRIDGE_CELL_W"), "#{client_cell_width} of the launching client (seeds AEYE_CELL_PX until a client is resolved)")
+	cellH := flag.String("cell-h", os.Getenv("OG_BRIDGE_CELL_H"), "#{client_cell_height} of the launching client (seeds AEYE_CELL_PX until a client is resolved)")
 	// A genuinely empty value must stay empty (and be omitted by
 	// sshControlArgs' if-non-empty guard) rather than default to "truecolor",
 	// since that would be indistinguishable from a real client that has none.
@@ -455,7 +457,7 @@ func main() {
 	// session yet.
 	view = seedView(func() (daemon.ViewIdentity, bool) {
 		return daemon.ResolveLocalViewIdentity(runLocalTmuxOut, target)
-	}, *term, *termfeatures, *sixelFlag)
+	}, *term, *termfeatures, *sixelFlag, daemon.CellPx(*cellW, *cellH))
 
 	cfg := daemon.Config{
 		Dial:           dial,
@@ -511,7 +513,8 @@ func main() {
 // seedView builds Config.View: the pair every dial and the raise guard will
 // share (see Viewing). resolve is tried first — the mirror
 // session's own resolved clients, when one is attached yet (R1) — and the
-// -term/-termfeatures/-sixel flags stand only when resolve reports nothing
+// -term/-termfeatures/-sixel flags and cell (the launching client's
+// daemon.CellPx, "" when unknown) stand only when resolve reports nothing
 // (R3), which is the startup instant before the launcher has switched a
 // client onto the mirror session. sixel is the launching client's own
 // tmux-interrogated #{I/f:sixel} verdict (R6) — termfeatures is carried only
@@ -519,14 +522,15 @@ func main() {
 // Advertised seed to the SAME value either way: the very first dial this
 // process makes really will carry it, so there is no prior client for the two
 // to disagree about (Viewing.Seed's contract).
-func seedView(resolve func() (daemon.ViewIdentity, bool), term, termfeatures, sixel string) *daemon.Viewing {
+func seedView(resolve func() (daemon.ViewIdentity, bool), term, termfeatures, sixel, cell string) *daemon.Viewing {
 	view := &daemon.Viewing{Relay: graphics.NewRelaySource(graphics.NewRelayFromClient(sixel == "1", termfeatures))}
-	seedTerm := term
+	seedTerm, seedCell := term, cell
 	if id, ok := resolve(); ok {
 		view.Relay.Store(id.Relay)
-		seedTerm = id.Term
+		seedTerm, seedCell = id.Term, id.Cell
 	}
 	view.Seed(seedTerm)
+	view.SetCell(seedCell)
 	return view
 }
 

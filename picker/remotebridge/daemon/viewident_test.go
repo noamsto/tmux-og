@@ -30,14 +30,14 @@ func TestResolveViewIdentity(t *testing.T) {
 		},
 		{
 			name:     "one kitty client",
-			lines:    []string{"0|xterm-kitty|sixel|1"},
+			lines:    []string{"0|xterm-kitty|sixel|1|0|0"},
 			wantOK:   true,
 			wantTerm: "xterm-kitty",
 			wantSix:  true,
 		},
 		{
 			name:     "one foot client",
-			lines:    []string{"0|foot||0"},
+			lines:    []string{"0|foot||0|0|0"},
 			wantOK:   true,
 			wantTerm: "foot",
 			wantSix:  false,
@@ -45,8 +45,8 @@ func TestResolveViewIdentity(t *testing.T) {
 		{
 			name: "mixed kitty and foot",
 			lines: []string{
-				"0|xterm-kitty||0", // kitty-capable, no sixel
-				"0|foot|sixel|1",   // not kitty-capable, sixel
+				"0|xterm-kitty||0|0|0", // kitty-capable, no sixel
+				"0|foot|sixel|1|0|0",   // not kitty-capable, sixel
 			},
 			wantOK:   true,
 			wantTerm: "foot", // the non-kitty-capable witness
@@ -55,8 +55,8 @@ func TestResolveViewIdentity(t *testing.T) {
 		{
 			name: "two kitty clients, different termnames",
 			lines: []string{
-				"0|xterm-kitty|sixel|1",
-				"0|xterm-ghostty|sixel|1",
+				"0|xterm-kitty|sixel|1|0|0",
+				"0|xterm-ghostty|sixel|1|0|0",
 			},
 			wantOK:   true,
 			wantTerm: "xterm-ghostty", // lexicographically smaller of the two
@@ -64,14 +64,14 @@ func TestResolveViewIdentity(t *testing.T) {
 		},
 		{
 			name:   "control-mode client alone",
-			lines:  []string{"1|xterm-kitty||"},
+			lines:  []string{"1|xterm-kitty|||0|0"},
 			wantOK: false,
 		},
 		{
 			name: "control client mixed with a real one",
 			lines: []string{
-				"1|xterm-kitty||",
-				"0|foot|sixel|1",
+				"1|xterm-kitty|||0|0",
+				"0|foot|sixel|1|0|0",
 			},
 			wantOK:   true,
 			wantTerm: "foot",
@@ -80,10 +80,11 @@ func TestResolveViewIdentity(t *testing.T) {
 		{
 			name: "malformed and short lines skipped",
 			lines: []string{
-				"0|xterm-kitty",         // short: 2 fields
-				"garbage",               // short: 1 field
-				"0|foot|sixel|1|extra",  // too many fields
-				"0|xterm-kitty|sixel|1", // the one valid row
+				"0|xterm-kitty",             // short: 2 fields
+				"0|xterm-kitty|sixel|1",     // pre-cell 4-field row
+				"garbage",                   // short: 1 field
+				"0|foot|sixel|1|extra",      // too many fields
+				"0|xterm-kitty|sixel|1|0|0", // the one valid row
 			},
 			wantOK:   true,
 			wantTerm: "xterm-kitty",
@@ -112,16 +113,54 @@ func TestResolveViewIdentity(t *testing.T) {
 
 // TestResolveViewIdentityDeterministic asserts the result is a pure function
 // of the client SET, not of list-clients' reporting order (R2).
+func TestResolveViewIdentityCell(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"one client", []string{"0|xterm-kitty|sixel|1|15|28"}, "15x28"},
+		{"two agreeing clients", []string{"0|xterm-kitty|sixel|1|15|28", "0|foot||0|15|28"}, "15x28"},
+		{"two disagreeing clients", []string{"0|xterm-kitty|sixel|1|15|28", "0|foot||0|16|32"}, ""},
+		{"one valid and one empty", []string{"0|xterm-kitty|sixel|1|15|28", "0|foot||0||"}, ""},
+		{"control client sizes ignored", []string{"1|xterm-kitty|||99|99", "0|foot||0|15|28"}, "15x28"},
+		{"empty report", []string{"0|foot||0||"}, ""},
+		{"zero report", []string{"0|foot||0|0|0"}, ""},
+		{"oversize report", []string{"0|foot||0|513|28"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := resolveViewIdentity(tt.lines)
+			if !ok {
+				t.Fatal("want a resolved identity")
+			}
+			if got.Cell != tt.want {
+				t.Errorf("Cell = %q, want %q", got.Cell, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveViewIdentityCellOrderIndependent(t *testing.T) {
+	a := "0|xterm-kitty|sixel|1|15|28"
+	b := "0|foot||0|16|32"
+	got1, _ := resolveViewIdentity([]string{a, b})
+	got2, _ := resolveViewIdentity([]string{b, a})
+	if got1.Cell != got2.Cell {
+		t.Fatalf("Cell is order-dependent: %q vs %q", got1.Cell, got2.Cell)
+	}
+}
+
 func TestResolveViewIdentityDeterministic(t *testing.T) {
 	forward := []string{
-		"0|xterm-kitty|sixel|1",
-		"0|xterm-ghostty|sixel|1",
-		"0|foot||0",
+		"0|xterm-kitty|sixel|1|0|0",
+		"0|xterm-ghostty|sixel|1|0|0",
+		"0|foot||0|0|0",
 	}
 	reversed := []string{
-		"0|foot||0",
-		"0|xterm-ghostty|sixel|1",
-		"0|xterm-kitty|sixel|1",
+		"0|foot||0|0|0",
+		"0|xterm-ghostty|sixel|1|0|0",
+		"0|xterm-kitty|sixel|1|0|0",
 	}
 
 	got1, ok1 := resolveViewIdentity(forward)
@@ -147,13 +186,16 @@ func TestViewClientFormatDelimiter(t *testing.T) {
 	}
 
 	// A row tmux would actually emit for this format.
-	row := "0|xterm-kitty|bpaste,focus,sixel,title|1"
+	row := "0|xterm-kitty|bpaste,focus,sixel,title|1|15|28"
 	fields := strings.Split(row, "|")
-	if len(fields) != 4 {
-		t.Fatalf("got %d fields parsing %q, want 4 — the '|' delimiter did not survive", len(fields), row)
+	if len(fields) != 6 {
+		t.Fatalf("got %d fields parsing %q, want 6 — the '|' delimiter did not survive", len(fields), row)
 	}
-	if fields[0] != "0" || fields[1] != "xterm-kitty" || fields[2] != "bpaste,focus,sixel,title" || fields[3] != "1" {
-		t.Fatalf("fields = %#v, want [0 xterm-kitty bpaste,focus,sixel,title 1]", fields)
+	if fields[0] != "0" || fields[1] != "xterm-kitty" || fields[2] != "bpaste,focus,sixel,title" || fields[3] != "1" || fields[4] != "15" || fields[5] != "28" {
+		t.Fatalf("fields = %#v, want [0 xterm-kitty bpaste,focus,sixel,title 1 15 28]", fields)
+	}
+	if got := strings.Count(viewClientFormat, "|") + 1; got != 6 {
+		t.Fatalf("viewClientFormat has %d fields, want 6: %q", got, viewClientFormat)
 	}
 }
 
@@ -184,6 +226,24 @@ func TestViewingTermCellsRoundTripAndIndependent(t *testing.T) {
 	}
 }
 
+func TestViewingCellRoundTrip(t *testing.T) {
+	v := &Viewing{}
+	if got := v.Cell(); got != "" {
+		t.Fatalf("zero-value Cell() = %q, want empty", got)
+	}
+	v.SetCell("15x28")
+	if got := v.Cell(); got != "15x28" {
+		t.Fatalf("Cell() = %q, want 15x28", got)
+	}
+	if v.Desired() != "" || v.Advertised() != "" {
+		t.Fatal("SetCell moved a term cell")
+	}
+	v.SetCell("")
+	if got := v.Cell(); got != "" {
+		t.Fatalf("Cell() after clearing = %q, want empty", got)
+	}
+}
+
 func TestViewingRelayIsThePointerNotACopy(t *testing.T) {
 	src := graphics.NewRelaySource(graphics.NewRelayFromClient(true, "sixel"))
 	v := &Viewing{Relay: src}
@@ -208,9 +268,11 @@ func TestViewingConcurrentAccess(t *testing.T) {
 			}
 			v.SetDesired(term)
 			v.setAdvertised(term)
+			v.SetCell(term)
 			v.Relay.Store(graphics.NewRelayFromClient(true, "sixel"))
 			_ = v.Desired()
 			_ = v.Advertised()
+			_ = v.Cell()
 			_ = v.Relay.Load()
 		}(i)
 	}
@@ -236,7 +298,7 @@ func TestResolveLocalViewIdentity(t *testing.T) {
 	})
 
 	t.Run("empty session is unresolved", func(t *testing.T) {
-		out := func(args ...string) (string, error) { return "0|xterm-kitty|sixel|1\n", nil }
+		out := func(args ...string) (string, error) { return "0|xterm-kitty|sixel|1|0|0\n", nil }
 		if _, ok := ResolveLocalViewIdentity(out, ""); ok {
 			t.Fatal("an empty session must resolve to false")
 		}
@@ -260,14 +322,14 @@ func TestResolveLocalViewIdentity(t *testing.T) {
 		var gotArgs []string
 		out := func(args ...string) (string, error) {
 			gotArgs = args
-			return "0|xterm-kitty|bpaste,sixel|1\n", nil
+			return "0|xterm-kitty|bpaste,sixel|1|15|28\n", nil
 		}
 		id, ok := ResolveLocalViewIdentity(out, "host-sess")
 		if !ok {
 			t.Fatal("want a resolved identity")
 		}
-		if id.Term != "xterm-kitty" || !id.Relay.Sixel() {
-			t.Fatalf("id = %+v, want term xterm-kitty with sixel capability", id)
+		if id.Term != "xterm-kitty" || !id.Relay.Sixel() || id.Cell != "15x28" {
+			t.Fatalf("id = %+v, want term xterm-kitty with sixel capability and cell 15x28", id)
 		}
 		want := []string{"list-clients", "-t", "host-sess", "-F", viewClientFormat}
 		if !reflect.DeepEqual(gotArgs, want) {

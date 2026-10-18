@@ -1907,6 +1907,101 @@ relay_env() {
 	[ "$new_transport" = "$old_transport" ]
 }
 
+# cell_env echoes the remote session's copy of AEYE_CELL_PX: "AEYE_CELL_PX=WxH"
+# while set, nothing once unset.
+cell_env() {
+	$SRC show-environment -t rem AEYE_CELL_PX 2>/dev/null || true
+}
+
+# wait_cell_env polls until cell_env reads $1.
+wait_cell_env() {
+	local got=""
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		got="$(cell_env)"
+		[ "$got" = "$1" ] && return 0
+		sleep 0.1
+	done
+	echo "AEYE_CELL_PX: got '$got', want '$1'" >&3
+	return 1
+}
+
+# wait_cell_unset polls until the variable is gone from the session env.
+wait_cell_unset() {
+	local got=""
+	for _ in $(seq 1 "$((BRIDGE_UP_BUDGET_SECS * 10))"); do
+		got="$(cell_env)"
+		[ -z "$got" ] && return 0
+		sleep 0.1
+	done
+	echo "AEYE_CELL_PX: got '$got', want unset" >&3
+	return 1
+}
+
+# pane_cell_px echoes the AEYE_CELL_PX a pane split into the remote session now
+# sees: panes inherit the session env at creation, which is how aeye in a
+# bridged pane gets it.
+pane_cell_px() {
+	local f="$BATS_TEST_TMPDIR/pane-cellpx.$1"
+	$SRC split-window -d -t rem "sh -c 'echo \$AEYE_CELL_PX > $f'"
+	for _ in $(seq 1 40); do
+		[ -s "$f" ] && break
+		sleep 0.1
+	done
+	[ -s "$f" ]
+	cat "$f"
+}
+
+# The shipped path: the launcher passes no cell size in this seam, so the value
+# can only come from the client attached to the mirror session, as measured by
+# the local tmux. The expected value is read from that client, not hard-coded.
+@test "AEYE_CELL_PX follows the cell size of the client attached to the mirror session" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 cellpx
+	echo "$daemon_pid" >>"$BATS_TEST_TMPDIR/size-daemons.pids"
+
+	$OBS kill-server 2>/dev/null || true
+	$OBS new-session -d -s obsC -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host-sess"
+	want=""
+	for _ in $(seq 1 40); do
+		want="$($DST list-clients -t host-sess -F '#{client_cell_width}x#{client_cell_height}' 2>/dev/null | head -n 1)"
+		[[ $want =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]] && break
+		sleep 0.1
+	done
+	[[ $want =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]
+
+	wait_cell_env "AEYE_CELL_PX=$want"
+	[ "$(pane_cell_px attached)" = "$want" ]
+}
+
+# This harness's launcher flags are the only source before a client is
+# attached, so they stand in for a real terminal's measured size.
+@test "AEYE_CELL_PX is seeded from --cell-w/--cell-h" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	bridge_up 1 cellseed --cell-w 15 --cell-h 28
+	echo "$daemon_pid" >>"$BATS_TEST_TMPDIR/size-daemons.pids"
+
+	wait_cell_env "AEYE_CELL_PX=15x28"
+	[ "$(pane_cell_px seed)" = "15x28" ]
+}
+
+# An unknown size publishes nothing, and clears what an earlier bridge left:
+# the pre-seeded stale value is what gives the unset teeth.
+@test "AEYE_CELL_PX is unset for a zero cell size, clearing a stale value" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$SRC set-environment -t rem AEYE_CELL_PX 9x9
+
+	bridge_up 1 cellzero --cell-w 0 --cell-h 0
+	echo "$daemon_pid" >>"$BATS_TEST_TMPDIR/size-daemons.pids"
+
+	wait_cell_unset
+	[ -z "$(pane_cell_px zero)" ]
+}
+
 # Every wait in these mouse cases polls against BRIDGE_UP_BUDGET_SECS as a stall
 # detector: each observable is one seed, reseed or rebuild (healDeadRenderers
 # sweeps once a second), the same order of work bridge_up's budget was sized for.

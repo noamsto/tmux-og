@@ -150,6 +150,21 @@ option.
   SIGTERM, where the transport is already gone and the unset does not land —
   a stale value is then corrected only by the next bridge's unconditional
   write, and a direct attach to that remote session in the gap can read it.
+- **The local cell size is published beside it as `AEYE_CELL_PX=<w>x<h>`**
+  (`CellEnvVar`; cross-repo contract with aeye's `cellsize.go`, which cuts
+  carousel crops to the preview box's shape). A control-mode client has no
+  pixel size, so the remote tmux answers CSI 16 t with a default and only the
+  bridge knows the real one. The value is the mirror session's non-control
+  clients' `#{client_cell_width}x#{client_cell_height}`, and **every such
+  client must agree** (same rule as the sixel AND): a disagreement, or any
+  client reporting empty, zero, non-canonical or >512, leaves it **unset**,
+  never a guess. Same publish sites as `OG_RELAY_GRAPHICS` (startup, `repair()`,
+  `watchLocalClient` on change; teardown unsets), via `CellEnvSyncCmd`, so an
+  unknown size also clears a value an earlier bridge left. Until a client is
+  attached the launcher's `--cell-w`/`--cell-h` (`OG_BRIDGE_CELL_W/H`, read from
+  the launching client) seed it. The carousel launch needs no change: `ctl.go`
+  runs it through the remote `run-shell`, which inherits the session
+  environment.
 - **OSC 1337's inline-image verb (`\x1b]1337;File=`) is recognised and
   dropped, whole or partial — never relayed.** Structurally impossible: tmux
   has no inline-image handling, so the only route out is a passthrough, and

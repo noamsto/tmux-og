@@ -872,7 +872,14 @@ func TestWatchLocalClientDoesNotRecordAWriteThatDidNotHappen(t *testing.T) {
 // watcher can produce a send: area returns 0,0 (the client-size gate is
 // `w > 0 && h > 0`) and reg is empty (no per-window ConvergeCmd). Returns the
 // commands sent and the view cell the watcher wrote into.
-func runWatchLocalClientView(t *testing.T, seedRelay graphics.Relay, seedTerm string, id ViewIdentity, ok bool) ([]string, *Viewing) {
+func runWatchLocalClientView(t *testing.T, seedRelay graphics.Relay, seedTerm, seedCell string, id ViewIdentity, ok bool) ([]string, *Viewing) {
+	t.Helper()
+	return runWatchLocalClientViewSend(t, seedRelay, seedTerm, seedCell, id, ok, true)
+}
+
+// runWatchLocalClientViewSend is runWatchLocalClientView with the sender's
+// success under the test's control; sent records the attempts either way.
+func runWatchLocalClientViewSend(t *testing.T, seedRelay graphics.Relay, seedTerm, seedCell string, id ViewIdentity, ok, sendOK bool) ([]string, *Viewing) {
 	t.Helper()
 	tick := make(chan time.Time)
 	stop := make(chan struct{})
@@ -885,9 +892,10 @@ func runWatchLocalClientView(t *testing.T, seedRelay graphics.Relay, seedTerm st
 	cv := newConverger()
 	view := &Viewing{Relay: graphics.NewRelaySource(seedRelay)}
 	view.SetDesired(seedTerm)
+	view.SetCell(seedCell)
 
 	var sent []string
-	send := func(s ...string) bool { sent = append(sent, s...); return true }
+	send := func(s ...string) bool { sent = append(sent, s...); return sendOK }
 
 	done := make(chan struct{})
 	go func() {
@@ -911,7 +919,7 @@ func runWatchLocalClientView(t *testing.T, seedRelay graphics.Relay, seedTerm st
 // capability differs from what is currently stored publishes exactly one
 // RelayEnvCmd carrying the new value, and the new capability is stored.
 func TestWatchLocalClientPublishesOnCapabilityChange(t *testing.T) {
-	sent, view := runWatchLocalClientView(t, graphics.Relay{}, "foot",
+	sent, view := runWatchLocalClientView(t, graphics.Relay{}, "foot", "",
 		ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true)
 
 	want := []string{RelayEnvCmd("sess", "sixel")}
@@ -926,7 +934,7 @@ func TestWatchLocalClientPublishesOnCapabilityChange(t *testing.T) {
 // TestWatchLocalClientSkipsUnchangedCapability: the same capability resolving
 // again must not re-publish (R5 fires on a CHANGE, not on every tick).
 func TestWatchLocalClientSkipsUnchangedCapability(t *testing.T) {
-	sent, _ := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty",
+	sent, _ := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty", "",
 		ViewIdentity{Term: "xterm-kitty", Relay: graphics.NewRelayFromClient(true, "sixel")}, true)
 
 	if len(sent) != 0 {
@@ -938,7 +946,7 @@ func TestWatchLocalClientSkipsUnchangedCapability(t *testing.T) {
 // reads it fresh, so asserting it is free) but nothing is published from this
 // path — RelayEnvCmd carries only the capability, never the termname.
 func TestWatchLocalClientTermOnlyChangeSendsNothing(t *testing.T) {
-	sent, view := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty",
+	sent, view := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty", "",
 		ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true)
 
 	if len(sent) != 0 {
@@ -955,7 +963,7 @@ func TestWatchLocalClientTermOnlyChangeSendsNothing(t *testing.T) {
 // every client-session-changed/client-detached tick, so a mirror nobody is
 // looking at must not be degraded by it.
 func TestWatchLocalClientEmptyResolutionPreservesState(t *testing.T) {
-	sent, view := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty",
+	sent, view := runWatchLocalClientView(t, graphics.NewRelayFromClient(true, "sixel"), "xterm-kitty", "",
 		ViewIdentity{}, false)
 
 	if len(sent) != 0 {
@@ -966,6 +974,74 @@ func TestWatchLocalClientEmptyResolutionPreservesState(t *testing.T) {
 	}
 	if !view.Relay.Load().Sixel() {
 		t.Error("the previously stored capability must survive an empty resolution")
+	}
+}
+
+// TestWatchLocalClientPublishesOnCellChange: a resolved cell size that differs
+// from the stored one publishes exactly one CellEnvCmd and is stored, with no
+// RelayEnvCmd since the capability is unchanged.
+func TestWatchLocalClientPublishesOnCellChange(t *testing.T) {
+	sent, view := runWatchLocalClientView(t, graphics.Relay{}, "foot", "",
+		ViewIdentity{Term: "foot", Cell: "15x28"}, true)
+
+	want := []string{CellEnvSyncCmd("sess", "15x28")}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent = %v, want %v", sent, want)
+	}
+	if got := view.Cell(); got != "15x28" {
+		t.Errorf("Cell() = %q, want 15x28", got)
+	}
+}
+
+func TestWatchLocalClientSkipsUnchangedCell(t *testing.T) {
+	sent, _ := runWatchLocalClientView(t, graphics.Relay{}, "foot", "15x28",
+		ViewIdentity{Term: "foot", Cell: "15x28"}, true)
+
+	if len(sent) != 0 {
+		t.Fatalf("sent = %v, want none — the cell did not change", sent)
+	}
+}
+
+// TestWatchLocalClientUnsetsWhenCellBecomesUnknown: a resolved client set
+// that no longer yields a valid size removes the variable rather than leaving
+// the old size standing.
+func TestWatchLocalClientUnsetsWhenCellBecomesUnknown(t *testing.T) {
+	sent, view := runWatchLocalClientView(t, graphics.Relay{}, "foot", "15x28",
+		ViewIdentity{Term: "foot", Cell: ""}, true)
+
+	want := []string{CellEnvUnsetCmd("sess")}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent = %v, want %v", sent, want)
+	}
+	if got := view.Cell(); got != "" {
+		t.Errorf("Cell() = %q, want empty", got)
+	}
+}
+
+func TestWatchLocalClientEmptyResolutionKeepsCell(t *testing.T) {
+	sent, view := runWatchLocalClientView(t, graphics.Relay{}, "foot", "15x28", ViewIdentity{}, false)
+
+	if len(sent) != 0 {
+		t.Fatalf("sent = %v, want none", sent)
+	}
+	if got := view.Cell(); got != "15x28" {
+		t.Errorf("Cell() = %q, want unchanged 15x28", got)
+	}
+}
+
+// TestWatchLocalClientFailedCellSendRestoresPrevious: a publish that never
+// reached the remote must not be recorded, or the next resolve would read as
+// already-published and never retry.
+func TestWatchLocalClientFailedCellSendRestoresPrevious(t *testing.T) {
+	sent, view := runWatchLocalClientViewSend(t, graphics.Relay{}, "foot", "9x9",
+		ViewIdentity{Term: "foot", Cell: "15x28"}, true, false)
+
+	want := []string{CellEnvSyncCmd("sess", "15x28")}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent = %v, want %v", sent, want)
+	}
+	if got := view.Cell(); got != "9x9" {
+		t.Errorf("Cell() = %q, want the previous 9x9 restored", got)
 	}
 }
 

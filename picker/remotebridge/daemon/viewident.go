@@ -9,24 +9,27 @@ import (
 
 // viewClientFormat lists the mirror session's own clients for
 // resolveViewIdentity (R1/R2): one row per attached client, in
-// #{client_control_mode}|#{client_termname}|#{client_termfeatures}|#{I/f:sixel}
+// #{client_control_mode}|#{client_termname}|#{client_termfeatures}|#{I/f:sixel}|#{client_cell_width}|#{client_cell_height}
 // order — the control flag leads, matching scripts/tmux-default-size.sh's own
 // #{client_control_mode}|... convention, so the "skip this row" test reads
 // the same way in both places. The trailing #{I/f:sixel} is tmux's own
 // per-client capability interrogation (R6) — client_termfeatures is still
 // carried alongside it only for the raw diagnostic; the kitty-prefix check
-// reads client_termname alone.
+// reads client_termname alone. The trailing cell width/height feed CellPx.
 // '|'-delimited per R12/CLAUDE.md: a tab or newline collapses the row to one
-// field for any client without a UTF-8 locale, and none of these four fields
+// field for any client without a UTF-8 locale, and none of these six fields
 // is free-form enough to carry one anyway.
-const viewClientFormat = "#{client_control_mode}|#{client_termname}|#{client_termfeatures}|#{I/f:sixel}"
+const viewClientFormat = "#{client_control_mode}|#{client_termname}|#{client_termfeatures}|#{I/f:sixel}|#{client_cell_width}|#{client_cell_height}"
 
 // ViewIdentity is what resolveViewIdentity resolves the mirror's attached
-// clients down to: the termname a control client should advertise, and the
-// graphics capability every one of those clients can actually paint (R1).
+// clients down to: the termname a control client should advertise, the
+// graphics capability every one of those clients can actually paint (R1), and
+// the cell size they all report. Cell is "" unless every non-control client
+// reports the same valid size (see CellPx).
 type ViewIdentity struct {
 	Term  string
 	Relay graphics.Relay
+	Cell  string
 }
 
 // resolveViewIdentity implements R1/R2 over a viewClientFormat listing. It is
@@ -43,13 +46,14 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 		feats string
 		kitty bool
 		sixel bool
+		cell  string
 	}
 
 	var clients []client
 	for _, line := range lines {
 		line = strings.TrimRight(line, "\r")
 		fields := strings.Split(line, "|")
-		if len(fields) != 4 {
+		if len(fields) != 6 {
 			continue // malformed/short row; one bad line must not fail the whole resolve
 		}
 		control, term, feats, sixelFlag := fields[0], fields[1], fields[2], fields[3]
@@ -65,6 +69,7 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 			feats: feats,
 			kitty: strings.HasPrefix(term, "xterm-kitty") || strings.HasPrefix(term, "xterm-ghostty"),
 			sixel: sixelFlag == "1",
+			cell:  CellPx(fields[4], fields[5]),
 		})
 	}
 	if len(clients) == 0 {
@@ -115,7 +120,18 @@ func resolveViewIdentity(lines []string) (ViewIdentity, bool) {
 		}
 	}
 
-	return ViewIdentity{Term: term, Relay: graphics.NewRelayFromClient(sixelAll, feats)}, true
+	// A published size must be true of every attached client: any
+	// disagreement or invalid report leaves it unknown rather than picking
+	// one, independent of list-clients' order.
+	cell := clients[0].cell
+	for _, c := range clients[1:] {
+		if c.cell != cell {
+			cell = ""
+			break
+		}
+	}
+
+	return ViewIdentity{Term: term, Relay: graphics.NewRelayFromClient(sixelAll, feats), Cell: cell}, true
 }
 
 // ResolveLocalViewIdentity runs viewClientFormat's list-clients query against
@@ -151,15 +167,18 @@ func ResolveLocalViewIdentity(out func(args ...string) (string, error), session 
 //     snapshot of Desired taken before the dial — never a fresh resolve at
 //     publish time, which would widen the window a viewer switch can land in
 //     from one gesture to the whole dial-plus-identity-read span.
+//   - Cell is the local terminal's cell size as published to the remote
+//     session (CellEnvVar), "" when unknown.
 //   - Relay is the pointer to graphics.RelaySource, the single capability
 //     cell — never a copy, so the drop policy and the published value are
 //     literally one value rather than two that could drift.
 //
-// The two term cells are independent atomics: writing one must never move
-// the other, and nothing in this daemon reads or writes them together.
+// The term cells and Cell are independent atomics: writing one must never
+// move another, and nothing in this daemon reads or writes them together.
 type Viewing struct {
 	desired    atomic.Pointer[string]
 	advertised atomic.Pointer[string]
+	cell       atomic.Pointer[string]
 	Relay      *graphics.RelaySource
 }
 
@@ -168,6 +187,9 @@ func (v *Viewing) SetDesired(term string) { storeTermCell(&v.desired, term) }
 
 func (v *Viewing) Advertised() string        { return loadTermCell(&v.advertised) }
 func (v *Viewing) setAdvertised(term string) { storeTermCell(&v.advertised, term) }
+
+func (v *Viewing) Cell() string        { return loadTermCell(&v.cell) }
+func (v *Viewing) SetCell(cell string) { storeTermCell(&v.cell, cell) }
 
 // Seed sets Desired AND Advertised to term. The one place outside a publish
 // site allowed to write Advertised, and only because it exists for startup:
