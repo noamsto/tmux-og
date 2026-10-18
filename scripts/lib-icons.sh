@@ -76,7 +76,7 @@ build_proc_icons() {
 		# pane_current_command reports on macOS); map it back for the lookup.
 		[[ $proc == .*-wrapped ]] && proc="${proc#.}" && proc="${proc%-wrapped}"
 		local icon="${ICON_MAP[$proc]:-$FALLBACK_ICON}"
-		[[ -z $icon || -n ${written[$icon]} ]] && continue
+		[[ -z $icon || -n ${written[$icon]:-} ]] && continue
 		written[$icon]=1
 		REPLY+="$icon "
 		_icon_cell_width "$icon"
