@@ -316,7 +316,7 @@ func TestPredictModelREPMatchesTmux(t *testing.T) {
 	}
 }
 
-// Step 3 refuses to predict onto any cell whose Width is not 1.
+// onKeys refuses to predict onto any cell whose Width is not 1.
 func TestPredictModelWideCellRepresentation(t *testing.T) {
 	pm := newTestModel(t, 20, 2, "漢a", plainModes(2))
 

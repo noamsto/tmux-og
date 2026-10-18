@@ -116,7 +116,7 @@ func primeAC1(t *testing.T, s *outputSink, peer net.Conn, local, ref interface{ 
 	writeEmu(t, local, readOutput(t, peer))
 }
 
-// TestPredictSinkPaintsThroughPump is AC1 through the real pump: the second
+// TestPredictSinkPaintsThroughPump: through the real pump, the second
 // key of a run is painted dimmed before its echo, and the echo leaves the
 // local pane equal to the remote's.
 func TestPredictSinkPaintsThroughPump(t *testing.T) {
@@ -161,10 +161,10 @@ func TestPredictSinkModelSeedWritesNothing(t *testing.T) {
 	}
 }
 
-// TestPredictSinkOutputAfterCaptureReachesModel pins the spec's ordering: the
-// model seed is enqueued as soon as its capture reply is parsed, so %output
-// routed before the next pane's replies is fed to the model. Enqueued after
-// the loop, the model would miss "ab" and paint d at column 3.
+// TestPredictSinkOutputAfterCaptureReachesModel: the model seed is enqueued
+// as soon as its capture reply is parsed, so %output routed before the next
+// pane's replies is fed to the model. Enqueued after the loop, the model
+// would miss "ab" and paint d at column 3.
 func TestPredictSinkOutputAfterCaptureReachesModel(t *testing.T) {
 	sa, peerA := newPipeSink(t)
 	sb, peerB := newPipeSink(t)

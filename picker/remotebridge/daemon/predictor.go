@@ -258,9 +258,6 @@ keys:
 	}
 	out := append(p.unpaint(), p.paint()...)
 	p.arm()
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 

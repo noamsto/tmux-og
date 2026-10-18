@@ -19,8 +19,7 @@ import (
 // model. Reading the modes before the capture is the skew cursorCmd already
 // accepts.
 //
-// Called from the main loop beside reseedReshaped, the only place a
-// round-trip may run.
+// Runs on the main loop, the only place a round-trip may run.
 func seedPredictModels(router *Router, rt roundTrip) {
 	due := router.predictModelPanes()
 	ids := make([]string, 0, len(due))

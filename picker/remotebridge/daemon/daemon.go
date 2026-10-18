@@ -147,7 +147,7 @@ type Config struct {
 	Select WindowSelector
 	// filter is built from Select by runMirror; nil mirrors every window.
 	filter *windowFilter
-	// Predict selects predictive local echo in mirror panes (#972); the zero
+	// Predict selects predictive local echo in mirror panes; the zero
 	// value is PredictAuto, which predicts only while echo latency is high.
 	Predict PredictMode
 }
@@ -2866,7 +2866,7 @@ type outputSink struct {
 	// this sink writes to the renderer, so pumpInput can disambiguate an
 	// ESC[M report the bytes alone cannot (#814).
 	mouse mouseModeTracker
-	// pred draws typed keys ahead of the remote's echo (#972); nil means
+	// pred draws typed keys ahead of the remote's echo; nil means
 	// prediction is off and every pump path is the plain one. Pump-owned.
 	pred *predictor
 	// modelWanted is the predictor asking the main loop for a model seed;
@@ -3072,8 +3072,6 @@ func drainOutput(ch chan sinkFrame, buf []byte) ([]byte, *sinkFrame) {
 	}
 }
 
-// writeOutputIfAny writes the predictor's own bytes as one FrameOutput, and
-// nothing when it has none.
 func writeOutputIfAny(conn net.Conn, p []byte) error {
 	if len(p) == 0 {
 		return nil
@@ -3365,7 +3363,6 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 			if s != nil {
 				m = &s.mouse
 			}
-			// Enqueued before send-keys so the key precedes its echo in the sink channel.
 			s.keys(payload)
 			if isDismissKey(payload, m) {
 				send(deadKeyCmd(remotePane))
