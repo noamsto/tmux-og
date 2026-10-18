@@ -58,12 +58,21 @@ func holdReply(remoteID string, w, h int) string {
 
 // holdReplyDead is holdReply for a pane whose pane_dead is set as given.
 func holdReplyDead(remoteID string, w, h int, dead bool) string {
+	return holdReplyFull(remoteID, w, h, h, dead)
+}
+
+// holdReplyWin is holdReply for a window winH rows tall.
+func holdReplyWin(remoteID string, w, h, winH int) string {
+	return holdReplyFull(remoteID, w, h, winH, false)
+}
+
+func holdReplyFull(remoteID string, w, h, winH int, dead bool) string {
 	d := 0
 	if dead {
 		d = 1
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s|0|1|%d|%d|0|5|%d\n", remoteID, w, h, d)
+	fmt.Fprintf(&b, "%s|0|1|%d|%d|0|5|%d|%d\n", remoteID, w, h, d, winH)
 	for i := range h {
 		fmt.Fprintf(&b, "row%d\n", i)
 	}
@@ -250,63 +259,37 @@ func holdTwoPane(t *testing.T) controlmode.Layout {
 	return L
 }
 
-// TestReconcileHoldZoomedReadsOnlyTheZoomedPane: the hidden pane is not
-// reseeded while zoomed, so it is never held.
-func TestReconcileHoldZoomedReadsOnlyTheZoomedPane(t *testing.T) {
-	sinkA, _ := holdPipe(t)
-	sinkB, _ := holdPipe(t)
-	router := NewRouter()
-	router.Register("%3", sinkA)
-	router.Register("%4", sinkB)
-	L := holdTwoPane(t)
-	w := &mirrorWindow{
-		remoteID: "@1", localWin: "@101",
-		remotePanes: []string{"%3", "%4"}, localPanes: []string{"%l3", "%l4"},
-		layout: L.Raw,
-	}
-
-	log := &holdLocalLog{}
-	cfg := Config{
-		LocalTmuxOut: func(argv ...string) (string, error) {
-			log.add(argv)
-			return "", errors.New("unanswered")
-		},
-	}
-	order := RemotePaneOrder(L)
-	holdReshaped(cfg, w, L, order, order, false, true, "%3", router)
-
-	if len(log.argv) != 1 || log.entries[0] != "read" {
-		t.Fatalf("local calls = %v, want the one hold read", log.entries)
-	}
-	if argv := log.argv[0]; !slices.Contains(argv, "%l3") || slices.Contains(argv, "%l4") {
-		t.Errorf("hold read argv = %v, want %%l3 only", argv)
-	}
-}
-
-// TestReconcileHoldLocallyZoomedHoldsNothing: a window zoomed locally shrinks
-// and regrows its zoomed pane on every reshape, which the main screen's history
-// undoes and the alternate screen cannot, so no pane is read or held.
-func TestReconcileHoldLocallyZoomedHoldsNothing(t *testing.T) {
+// TestReconcileHoldSkipsPassesThatCanShrinkAPane: on the alternate screen a
+// height shrink deletes rows from the top and the regrow adds blanks at the
+// bottom, so a pass that can shrink a held pane must neither read nor hold.
+func TestReconcileHoldSkipsPassesThatCanShrinkAPane(t *testing.T) {
 	L := holdTwoPane(t)
 	order := RemotePaneOrder(L)
 	tests := []struct {
-		name       string
-		remote     []string
-		structural bool
-		layout     string
+		name        string
+		remote      []string
+		localPanes  []string
+		ops         paneOps
+		zoomed      bool
+		appliedZoom bool
+		layout      string
 	}{
-		{"structural kill of the hidden pane", order, true, L.Raw},
-		{"geometry-only pass with a changed layout", order, false, "stale"},
+		{"append splits the last pane", []string{"%3"}, []string{"%l3"}, paneOps{Append: []string{"%4"}}, false, false, L.Raw},
+		{"swap moves a pane through another's cell", []string{"%4", "%3"}, []string{"%l4", "%l3"}, paneOps{Swaps: [][2]int{{0, 1}}}, false, false, L.Raw},
+		{"zoom-on transition", order, []string{"%l3", "%l4"}, paneOps{}, true, false, L.Raw},
+		{"locally zoomed structural kill", order, []string{"%l3", "%l4"}, paneOps{Remove: []int{1}}, true, true, L.Raw},
+		{"locally zoomed geometry-only", order, []string{"%l3", "%l4"}, paneOps{}, true, true, "stale"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			sink, peer := holdPipe(t)
 			router := NewRouter()
 			router.Register("%3", sink)
+			router.Register("%4", sink)
 			w := &mirrorWindow{
 				remoteID: "@1", localWin: "@101",
-				remotePanes: []string{"%3", "%4"}, localPanes: []string{"%l3", "%l4"},
-				layout: tc.layout, appliedZoom: true,
+				remotePanes: tc.remote, localPanes: tc.localPanes,
+				layout: tc.layout, appliedZoom: tc.appliedZoom,
 			}
 			log := &holdLocalLog{}
 			cfg := Config{
@@ -315,7 +298,7 @@ func TestReconcileHoldLocallyZoomedHoldsNothing(t *testing.T) {
 					return holdReply("%3", L.W, L.H), nil
 				},
 			}
-			if held := holdReshaped(cfg, w, L, tc.remote, tc.remote, tc.structural, true, "%3", router); held != nil {
+			if held := holdReshaped(cfg, w, L, tc.remote, order, tc.ops, tc.zoomed, router); held != nil {
 				t.Fatalf("held = %v, want nothing", held)
 			}
 			if got := log.snapshot(); len(got) != 0 {
@@ -324,6 +307,35 @@ func TestReconcileHoldLocallyZoomedHoldsNothing(t *testing.T) {
 			requireSilence(t, peer)
 		})
 	}
+}
+
+// TestReconcileHoldSkipsWhenTheWindowShrinks: a local window taller than the
+// target is shrunk by resize-window before select-layout, so the read happens
+// but nothing is held and the barrier never polls.
+func TestReconcileHoldSkipsWhenTheWindowShrinks(t *testing.T) {
+	sink, peer := holdPipe(t)
+	router := NewRouter()
+	router.Register("%3", sink)
+	w := holdCloseWindow()
+	L, err := controlmode.ParseLayout(holdOnePane)
+	if err != nil {
+		t.Fatalf("parse layout: %v", err)
+	}
+
+	log := &holdLocalLog{}
+	cfg := Config{
+		LocalTmuxOut: func(argv ...string) (string, error) {
+			log.add(argv)
+			return holdReplyWin("%3", 95, 45, L.H+1), nil
+		},
+	}
+	if held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), paneOps{Remove: []int{1}}, false, router); held != nil {
+		t.Fatalf("held = %v, want nothing", held)
+	}
+	if got := log.snapshot(); !slices.Equal(got, []string{"read"}) {
+		t.Errorf("local calls = %v, want the read and no poll", got)
+	}
+	requireSilence(t, peer)
 }
 
 // TestReconcileHoldDeadPaneIsNotHeld: a corpse's renderer never writes the
@@ -345,7 +357,7 @@ func TestReconcileHoldDeadPaneIsNotHeld(t *testing.T) {
 			return holdReplyDead("%3", 95, 45, true), nil
 		},
 	}
-	if held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), true, false, "", router); held != nil {
+	if held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), paneOps{Remove: []int{1}}, false, router); held != nil {
 		t.Fatalf("held = %v, want nothing", held)
 	}
 	if got := log.snapshot(); !slices.Equal(got, []string{"read"}) {
@@ -374,7 +386,7 @@ func TestReconcileHoldGeometryOnlySkipsAnUnchangedPane(t *testing.T) {
 		},
 	}
 	order := RemotePaneOrder(L)
-	if held := holdReshaped(cfg, w, L, order, order, false, false, "", router); held != nil {
+	if held := holdReshaped(cfg, w, L, order, order, paneOps{}, false, router); held != nil {
 		t.Fatalf("held = %v, want nothing", held)
 	}
 	if got := log.snapshot(); !slices.Equal(got, []string{"read"}) {
@@ -402,7 +414,7 @@ func TestReconcileHoldNilLocalTmuxOutHoldsNothing(t *testing.T) {
 			return nil
 		},
 	}
-	if held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), true, false, "%3", router); held != nil {
+	if held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), paneOps{Remove: []int{1}}, false, router); held != nil {
 		t.Fatalf("held = %v, want nothing", held)
 	}
 	if len(calls) != 0 {

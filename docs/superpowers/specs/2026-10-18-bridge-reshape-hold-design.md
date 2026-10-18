@@ -106,9 +106,11 @@ tmux never reflows a pane on the alternate screen
 (`screen_resize(&wp->base, sx, sy, wp->base.saved_grid == NULL)`), and the
 alternate grid has no history (`screen_alternate_on` clears `GRID_HISTORY`).
 A held pane that grows keeps its rows where they were, and the gained area is
-blank. A held pane that shrinks loses rows (`screen_resize_y`), which is why
-a locally zoomed window is never held (see "Not regressed"). The seed already begins with `ESC[?1049l` (`render.Seed`), which
-restores the main screen, then clears and repaints it from the remote capture.
+blank. A held pane that shrinks loses rows (`screen_resize_y` deletes from
+the top when the cursor is low, and a later regrow adds blank rows at the
+bottom), so a hold is only taken on a pass where no held pane's height can
+drop (see "Where"). The seed already begins with `ESC[?1049l` (`render.Seed`),
+which restores the main screen, then clears and repaints it from the remote capture.
 The main screen's history survives the round trip.
 
 Measured on a scratch server, local only. A pane held content with junk in its
@@ -125,20 +127,42 @@ In `reconcileSnapshot`'s pass loop, before the pass's first local reshape:
 `applyPaneOps` (structural) or `applyLayout` (geometry-only). Every
 daemon-driven local reshape of a tiled pane goes through there: remote close,
 split, swap, preset, remote resize, zoom transitions and repair-pass
-reconciles. One choke point covers them all.
+reconciles. One choke point covers them all, and `holdReshaped` decides there
+whether the pass may hold at all.
 
-Which panes are held. A pane is held only when all of these hold:
+**A pass holds only when no held pane's height can drop.** On the main screen a
+shrink pushes rows into history and the regrow restores them exactly. On the
+alternate screen there is no `GRID_HISTORY`, so `screen_resize_y` deletes rows
+from the top when the cursor is low and a regrow adds blank rows at the bottom:
+held content ends up shifted up. `holdReshaped` therefore returns nil (no read,
+no hold: the pre-hold behaviour) for:
+
+- a pass with `ops.Append`: `split-window` shrinks a pane, and the following
+  `select-layout` or swap can regrow it;
+- a pass with `ops.Swaps`: a swap moves a pane through another pane's cell;
+- a zoomed pass (`zoomed`): a zoom-on transition's `select-layout` can shrink
+  the pane before the zoom assert grows it;
+- a locally zoomed window (`w.appliedZoom`): push/pop-zoom and unzoom plus
+  re-zoom shrink and regrow.
+
+It also holds nothing when the read reports the window taller than the target
+(`#{window_height}` above `L.H`), because `FitWindowCmd`'s `resize-window`
+would shrink heights first.
+
+Evidence, scratch tmux next-3.9, 80x45: an unzoomed split of the top of a
+2-pane vertical stack (Append plus a swap). Without a hold the bottom pane
+returns `L01..L22`. With a hold a pane returns `L13...` with a blank last row.
+Assessment probes also showed rotate, preset, a remote resize (shrink-y then
+grow-y) and zoom-on violating with the hold.
+
+Which panes are held. On a pass that may hold, a pane is held only when all of
+these hold:
 
 - It is a tiled pane present before and after the pass (`remote ∩ newRemote`).
 - It has a registered, unpaused sink.
-- It will be reseeded this pass, as the `zoomHides` rule decides. In the
-  zoom-ON transition (remote zoomed, local not yet) only `remoteActive` is
-  held.
-- The window is not locally zoomed (`holdReshaped` returns nil on
-  `w.appliedZoom`). See "Not regressed: Zoom" for why.
-- The pass is structural (`applyPaneOps` will kill, split or swap), or the
-  pane's local dims differ from the target (its `L` cell). A structural pass
-  holds every candidate.
+- The pass reseeds it, and either the pass removes a pane (`force` is
+  `len(ops.Remove) > 0`: a close-only pass holds every candidate) or the
+  pane's local dims differ from the target (its `L` cell).
 - Its local pane reports `alternate_on` 0 and `alternate-screen` on. A pane
   already on the alternate screen never reflows. A pane with the option off
   ignores both `?1049h` and `?1049l` (`screen_write_alternateon`/`off`), so
@@ -147,8 +171,13 @@ Which panes are held. A pane is held only when all of these hold:
   sink channel, so the hold would be queued and the barrier would wait the
   full `holdWait` every pass.
 
-The first four are known without an exec and pick the candidates. The read
-in step 1 supplies the rest.
+The first three are known without an exec and pick the candidates. The read
+in step 1 supplies the rest, and the window-height check.
+
+What still holds: a remote close (kill) in an unzoomed window, which is the
+original #1002 bug, and a geometry-only pass in an unzoomed window that does
+not shrink in height (a remote `resize-pane`, a drag or a preset, where each
+pane is resized once).
 
 Floats are out of scope: the tiled `select-layout` leaves them alone, and they
 reshape only when the remote float changes.
@@ -157,8 +186,8 @@ reshape only when the remote float changes.
 
 1. **Read.** One local exec, batched with `;`. For each candidate local pane
    (found with `localPaneFor`): `display-message -p` of
-   `#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}`
-   (8 fields), then `capture-pane -ep`. The capture is exactly `pane_height`
+   `#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}|#{window_height}`
+   (9 fields), then `capture-pane -ep`. The capture is exactly `pane_height`
    rows, so the reply splits by count. A malformed header, a `@bridge_pane`
    that is not the expected remote id (the positional map is stale) or a
    short capture ends the positional parse: that pane and every later one are
@@ -231,8 +260,15 @@ Residuals, accepted:
   redraw. The rows usually arrive in the same read.
 - Predictions painted at the read are captured into the held copy and shown
   until the seed. Cosmetic.
-- A zoomed window whose width changes still reflows on the main screen, as it
+- A pass that takes no hold (split, swap, zoomed, or a window that shrinks in
+  height) keeps the pre-hold reflow, so junk rows remain possible there. A
+  zoomed window whose width changes still reflows on the main screen, as it
   did before the hold.
+- The general fix is a follow-up, outside this change: park the hold's cursor
+  at row 1 (rows written bottom-up, the barrier checking `cursor_y` 0) so a
+  shrink deletes from the bottom, and have the pump defer a held pane's
+  `%output` until its seed or release. Probes showed it keeps rows in place on
+  all eleven reshape paths, and it would re-enable holds on every pass.
 - Output the remote sends between the hold and its seed lands on the held
   alternate screen. The seed, captured after it in stream order, restores it.
 - A rebuild that fails and re-registers the old conn (`resetWindow`'s
@@ -263,24 +299,28 @@ on a reshape.
 
 ## Not regressed
 
-- **Zoom (#413, #557).** No hold in a locally zoomed window. Every local
-  reshape there shrinks the zoomed pane to its saved cell and regrows it:
-  `kill-pane` runs `window_push_zoom`/`window_pop_zoom` (`server-fn.c`), and
-  `select-layout`/`resize-window` unzoom before the zoom assert re-zooms. On
-  the main screen the shrink pushes rows into history and the regrow pulls
-  them back, so the rows return in place. On the alternate screen there is no
-  `GRID_HISTORY`: `screen_resize_y` deletes rows from the top when the cursor
-  is low and the regrow adds blank rows at the bottom, so held content shifts
-  up until the seed. Measured on scratch tmux next-3.9, 80x45, top pane
-  zoomed, rows `L01`..`L45`, cursor on row 45, hidden pane killed: the main
-  screen keeps `L01 L02 L03` first, a held alternate screen shows `L24 L25
-  L26`. The zoom-ON transition (remote zoomed, local not yet) still holds
-  `remoteActive` only, by the `zoomHides` rule. The `if -F` zoom assert is
-  unchanged.
+- **Zoom (#413, #557).** No hold on a zoomed pass or in a locally zoomed
+  window. Every local reshape there shrinks the zoomed pane to its saved cell
+  and regrows it: `kill-pane` runs `window_push_zoom`/`window_pop_zoom`
+  (`server-fn.c`), and `select-layout`/`resize-window` unzoom before the zoom
+  assert re-zooms. The zoom-on transition's `select-layout` can likewise shrink
+  the pane before the assert grows it. On the main screen the shrink pushes rows
+  into history and the regrow pulls them back, so the rows return in place. On
+  the alternate screen there is no `GRID_HISTORY`: `screen_resize_y` deletes
+  rows from the top when the cursor is low and the regrow adds blank rows at the
+  bottom, so held content shifts up until the seed. Measured on scratch tmux
+  next-3.9, 80x45, top pane zoomed, rows `L01`..`L45`, cursor on row 45, hidden
+  pane killed: the main screen keeps `L01 L02 L03` first, a held alternate
+  screen shows `L24 L25 L26`. The `if -F` zoom assert is unchanged.
+- **Split and swap.** An unzoomed split of the top of a stacked pair shrinks
+  and regrows a pane through `split-window` plus a swap. No hold, so the
+  bottom pane's rows stay in place as on the main screen.
 - **Floats.** Not held and not reshaped by the pass loop.
-- **Layout presets, border drags (#787, #797, #823).** A tiled drag already
-  reshaped the local panes, so their dims equal the target and nothing is
-  held. Presets reconcile like a remote resize.
+- **Layout presets, border drags, rotate (#787, #797, #823).** A tiled drag
+  already reshaped the local panes, so their dims equal the target and nothing
+  is held. A preset or remote resize that resizes each pane once and does not
+  shrink the window holds as a geometry-only pass. A rotate is a swap pass and
+  takes no hold.
 - **Reattach repair.** Runs `reconcileLayout` per survivor and gets the hold
   the same way.
 - **#951 owed reseed** (same-shape early return) does not reshape, so it holds
@@ -304,15 +344,23 @@ on a reshape.
   when the remote closes the hidden pane (#1002)`. The zoomed pane's rows
   stay in their positions across the close (no hold, so the main-screen
   push/pop restores them in place).
+- **Bats, split and swap**: `an unzoomed split of the top of a stacked pair
+  takes no hold and keeps the bottom pane's rows in place (#1002)`. The
+  wrapper stalls after a local `swap-pane`. The oracle samples
+  `#{pane_width} #{window_panes} #{alternate_on}` and compares rows as strings:
+  no sample shows `alternate_on` 1, and the rows stay in place.
 - **Go unit tests.**
   - Hold bytes and the read parse: count split, id mismatch, short reply,
-    `alternate-screen` off, already on the alternate screen, dead pane.
+    `alternate-screen` off, already on the alternate screen, dead pane, the
+    ninth `window_height` field.
   - Pump: a hold is written as output after the predictor drop. A seed clears
     the held state, so a release after it writes nothing. A release with
     nothing written since the hold writes `ESC[?1049l` and raises `dropped`.
     A hold dropped to a full buffer reports false and is not released.
   - `reconcileSnapshot` on a close sends the read and the hold before
     `kill-pane`, and the barrier poll before the reshape. A refused
-    `select-layout` sends a release. A locally zoomed window holds nothing; the
-    zoom-ON transition holds only `remoteActive`. A geometry-only pass skips panes whose dims do not change.
+    `select-layout` sends a release. A locally zoomed window, a zoomed pass, a
+    pass with `ops.Append` or `ops.Swaps`, and a window taller than the target
+    hold nothing and run no read. A geometry-only pass skips panes whose dims
+    do not change.
 - **Existing remote suites pass unchanged (AC3).**

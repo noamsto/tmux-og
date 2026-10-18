@@ -19,8 +19,8 @@ var (
 
 // holdHeaderFormat is the per-pane header preceding each capture in a hold
 // read. Pipe-delimited: tmux rewrites tabs and newlines for a non-UTF-8 client.
-// pane_dead trails so the geometry fields keep their positions.
-const holdHeaderFormat = "#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}"
+// pane_dead and window_height trail so the geometry fields keep their positions.
+const holdHeaderFormat = "#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}|#{window_height}"
 
 // holdReadArgs batches, for every local pane, a header line and the pane's
 // styled visible rows into one tmux invocation, so a reshape pays one fork
@@ -56,6 +56,7 @@ type holdRead struct {
 	holdable bool
 	w, h     int
 	cx, cy   int
+	winH     int
 	rows     []string
 }
 
@@ -72,13 +73,18 @@ func parseHoldRead(out string, locals, remoteIDs []string) []holdRead {
 			break
 		}
 		f := strings.Split(lines[0], "|")
-		if len(f) != 8 || f[0] != remoteIDs[i] {
+		if len(f) != 9 || f[0] != remoteIDs[i] {
 			break
 		}
-		var n [4]int
+		// Fields 3-6 are the pane geometry, field 8 the window height.
+		var n [5]int
 		ok := true
 		for j := range n {
-			v, err := strconv.Atoi(f[3+j])
+			k := 3 + j
+			if j == 4 {
+				k = 8
+			}
+			v, err := strconv.Atoi(f[k])
 			if err != nil || v < 0 {
 				ok = false
 				break
@@ -95,6 +101,7 @@ func parseHoldRead(out string, locals, remoteIDs []string) []holdRead {
 			h:        n[1],
 			cx:       n[2],
 			cy:       n[3],
+			winH:     n[4],
 			rows:     lines[1 : 1+n[1]],
 		})
 		lines = lines[1+n[1]:]
@@ -127,26 +134,31 @@ func holdBytes(rows []string, cx, cy int) []byte {
 // holdReshaped holds every pane this pass is about to reshape and reseed, and
 // returns the sinks it held: each is owed a release once the pass is over.
 //
-// Only a pane present on both sides of the pass is a candidate (a removed pane
-// is not reshaped, an appended one has nothing on screen yet), and when the
-// remote zooms a pane the local window does not yet show zoomed, only that
-// pane, the one pane the pass reseeds. The read rules out the rest: a pane
-// already on the alternate screen never reflows, one with alternate-screen off
-// cannot be held, and a dead pane's renderer will never write the hold.
+// It holds only on passes where no held pane's height can drop. The alternate
+// screen has no history: a height shrink deletes rows from the top when the
+// cursor is low, and a regrow only adds blanks at the bottom, so the content
+// ends up shifted until the seed. On the main screen a shrink pushes rows into
+// history and the regrow pulls them back exactly. So the pass is left alone
+// (no read, no hold) when it appends a pane (split-window shrinks one, and a
+// later swap or select-layout can regrow it), swaps panes (a pane passes
+// through another's cell), is zoomed or applied zoomed (a zoom transition or a
+// reshape under zoom shrinks the zoomed pane to its cell and regrows it), or
+// when the window itself is shorter locally than L.H (resize-window shrinks it
+// before select-layout).
 //
-// force covers the reshapes whose final dims equal the target: every
-// structural op shrinks a pane and regrows it, and the regrow reflows.
+// Only a pane present on both sides of the pass is a candidate: a removed pane
+// is not reshaped, an appended one has nothing on screen yet. The read rules
+// out the rest: a pane already on the alternate screen never reflows, one with
+// alternate-screen off cannot be held, and a dead pane's renderer will never
+// write the hold.
 //
-// A window already zoomed locally is never held: each reshape there shrinks
-// the zoomed pane to its saved cell and regrows it. On the main screen the
-// shrink pushes rows into history and the regrow pulls them back unchanged; the
-// alternate screen has no history, so the shrink drops rows from the top and
-// the regrow adds blanks at the bottom, shifting the content up until the seed.
-func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, structural, zoomed bool, remoteActive string, router *Router) []*outputSink {
-	if cfg.LocalTmuxOut == nil || w.appliedZoom {
+// A close-only structural pass holds every candidate, since its final dims can
+// equal the target while the kill still shrinks and regrows the survivor and the
+// regrow reflows.
+func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, ops paneOps, zoomed bool, router *Router) []*outputSink {
+	if cfg.LocalTmuxOut == nil || len(ops.Append) > 0 || len(ops.Swaps) > 0 || zoomed || w.appliedZoom {
 		return nil
 	}
-	zoomHides := zoomed && indexOf(newRemote, remoteActive) >= 0
 	type target struct {
 		sink *outputSink
 		w, h int
@@ -154,7 +166,7 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 	var ids, locals []string
 	var targets []target
 	for i, id := range newRemote {
-		if indexOf(remote, id) < 0 || (zoomHides && id != remoteActive) {
+		if indexOf(remote, id) < 0 {
 			continue
 		}
 		s := router.sink(id)
@@ -165,13 +177,9 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 		if !ok {
 			continue
 		}
-		tw, th := L.Panes[i].W, L.Panes[i].H
-		if zoomHides {
-			tw, th = L.W, L.H
-		}
 		ids = append(ids, id)
 		locals = append(locals, local)
-		targets = append(targets, target{s, tw, th})
+		targets = append(targets, target{s, L.Panes[i].W, L.Panes[i].H})
 	}
 	if len(locals) == 0 {
 		return nil
@@ -181,10 +189,15 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 		fmt.Fprintf(os.Stderr, "daemon: hold read: %v\n", err)
 		return nil
 	}
-	force := structural
+	reads := parseHoldRead(out, locals, ids)
+	for _, r := range reads {
+		if r.winH > L.H {
+			return nil
+		}
+	}
+	force := len(ops.Remove) > 0
 	var held []*outputSink
 	var heldLocals []string
-	reads := parseHoldRead(out, locals, ids)
 	for i, t := range targets {
 		if i >= len(reads) {
 			break

@@ -238,3 +238,32 @@ Step 6, then Step 7.
 - AC3: Step 7 runs the remote suites through `nix flake check`.
 - AC4: Step 6.
 - AC5: Step 7 locally, CI on the PR.
+
+## Round 3 (dispatcher-approved scope)
+
+Alternate-screen shrinks lose rows (`screen_resize_y` deletes from the top when
+the cursor is low and a regrow adds blank rows at the bottom), so the hold is
+gated to passes where no held pane's height can drop. Spec: "Where".
+
+- `holdReshaped` returns nil (no read, no hold) for a pass with `ops.Append`, a
+  pass with `ops.Swaps`, a zoomed pass (`zoomed`) and a locally zoomed window
+  (`w.appliedZoom`).
+- `holdReadArgs`/`parseHoldRead` gain a ninth header field, `#{window_height}`
+  (after `#{pane_dead}`). The read holds nothing when the window is taller than
+  `L.H`, because `FitWindowCmd`'s `resize-window` would shrink heights first.
+- `force` is `len(ops.Remove) > 0`: a close-only pass holds every candidate.
+  The `zoomHides` candidate rule and the zoomed-geometry-only force term are
+  gone, since zoomed passes never hold.
+- Tests: update the Step 2 and Step 4 Go cases (nine-field parse; no read on
+  Append, Swaps, zoomed, locally zoomed; window taller than target holds
+  nothing; the Zoomed and Zoomed geometry-only cases now assert no hold). New
+  bats case `an unzoomed split of the top of a stacked pair takes no hold and
+  keeps the bottom pane's rows in place (#1002)`: the wrapper stalls after a
+  local `swap-pane`, the oracle samples `#{pane_width} #{window_panes}
+  #{alternate_on}`, no sample shows `alternate_on` 1 and rows stay in place.
+- Docs: `docs/agents/bridge-daemon.md` #1002 bullet carries the gating rule,
+  the nine-field header, the new pin and the residual that non-holding passes
+  keep the pre-hold reflow. The spec is updated to match.
+- Follow-up, not in this PR: park the hold's cursor at row 1 (rows written
+  bottom-up, the barrier checking `cursor_y` 0) and have the pump defer a held
+  pane's `%output` until its seed, which would re-enable holds on every pass.

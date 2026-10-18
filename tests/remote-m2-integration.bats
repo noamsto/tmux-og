@@ -1549,22 +1549,31 @@ EOF
 # local select-layout for 1.5 s and marks the stall with a `stalling` file. The
 # stall widens the ~20 ms local window between the daemon's local kill-pane and
 # its reseed so the oracle is deterministic, as the #808 case does.
+# `hold_slow_tmux swap-pane` stalls the daemon's local swap-pane instead, and
+# only after the real command ran, so samples land after the regrow.
 hold_slow_tmux() {
+	local verb="${1:-select-layout}" after=0
+	[ "$verb" = swap-pane ] && after=1
 	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
 	local real
 	real="$(command -v tmux)"
 	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
 #!/bin/sh
 has_dst=0
-has_sl=0
+has_verb=0
 for arg in "\$@"; do
 	[ "\$arg" = m2dst ] && has_dst=1
-	[ "\$arg" = select-layout ] && has_sl=1
+	[ "\$arg" = $verb ] && has_verb=1
 done
-if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_sl" -eq 1 ]; then
+if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_verb" -eq 1 ]; then
+	if [ $after -eq 1 ]; then
+		"$real" "\$@"
+		rc=\$?
+	fi
 	: >"$BATS_TEST_TMPDIR/stalling"
 	sleep 1.5
 	rm -f "$BATS_TEST_TMPDIR/stalling"
+	[ $after -eq 1 ] && exit "\$rc"
 fi
 exec "$real" "\$@"
 EOF
@@ -1573,7 +1582,8 @@ EOF
 
 # hold_sample_start <local pane> arms the stall and samples that pane's width
 # and rows every 50 ms into stall-<n> (taken while the wrapper's stalling
-# marker existed, before and after the capture) or post-<n>. Sets sampler_pid.
+# marker existed, before and after the capture) or post-<n>. Line 1 of a sample
+# is "<width> <window panes> <alternate_on>". Sets sampler_pid.
 hold_sample_start() {
 	local pane="$1"
 	touch "$BATS_TEST_TMPDIR/slow.on"
@@ -1582,7 +1592,7 @@ hold_sample_start() {
 			phase=post
 			[ -e "$BATS_TEST_TMPDIR/stalling" ] && phase=stall
 			{
-				$DST display-message -p -t "$pane" '#{pane_width}'
+				$DST display-message -p -t "$pane" '#{pane_width} #{window_panes} #{alternate_on}'
 				$DST capture-pane -p -t "$pane" | sed 's/ *$//'
 			} >"$BATS_TEST_TMPDIR/sample.tmp"
 			[ -e "$BATS_TEST_TMPDIR/stalling" ] || phase=post
@@ -1610,19 +1620,22 @@ hold_settle() {
 	printf '%s\n' "$settled" >"$BATS_TEST_TMPDIR/settled"
 }
 
-# hold_oracle checks every sample against the pre-close ($BATS_TEST_TMPDIR/pre)
-# and settled screens by position: each row must be blank or equal the same row
-# of one of them, so content shifted up or down fails even when each row exists
-# in a screen. It first requires a stall-* sample at width 120, proving one
-# landed between the local kill-pane and the stalled select-layout's return.
+# hold_oracle <stall header prefix> checks every sample against the pre-change
+# ($BATS_TEST_TMPDIR/pre) and settled screens by position: each row must be
+# blank or equal the same row of one of them, so content shifted up or down
+# fails even when each row exists in a screen. It first requires a stall-*
+# sample whose header ("<width> <panes> <alternate_on>") starts with the given
+# prefix, proving the state the case needs landed inside the stalled window.
 hold_oracle() {
 	local f widened=0 foreign
 	for f in "$BATS_TEST_TMPDIR"/stall-*; do
 		[ -e "$f" ] || continue
-		[ "$(head -n1 "$f")" = 120 ] && widened=$((widened + 1))
+		case "$(head -n1 "$f")" in
+		"$1"*) widened=$((widened + 1)) ;;
+		esac
 	done
 	[ "$widened" -ge 1 ] || {
-		printf 'no sample landed inside the stalled select-layout window\n' >&3
+		printf 'no stall sample with header "%s*" landed inside the stalled window\n' "$1" >&3
 		return 1
 	}
 
@@ -1636,12 +1649,12 @@ hold_oracle() {
 			FNR == 1 { next }
 			{
 				i = FNR - 1
-				if ($0 == "" || $0 == p[i] || $0 == s[i]) next
+				if ($0 == "" || ($0 "") == (p[i] "") || ($0 "") == (s[i] "")) next
 				printf "row %d: [%s] (pre [%s], settled [%s])\n", i, $0, p[i], s[i]
 				if (++n >= 5) exit
 			}' "$f")"
 		if [ -n "$foreign" ]; then
-			printf 'sample %s (width %s) has rows matching neither screen at that position:\n%s\n' "$(basename "$f")" "$(head -n1 "$f")" "$foreign" >&3
+			printf 'sample %s (header %s) has rows matching neither screen at that position:\n%s\n' "$(basename "$f")" "$(head -n1 "$f")" "$foreign" >&3
 			return 1
 		fi
 	done
@@ -1693,7 +1706,7 @@ hold_oracle() {
 	wait "$daemon_pid" 2>/dev/null || true
 	[ "$settle_rc" -eq 0 ]
 
-	hold_oracle
+	hold_oracle "120 1 "
 }
 
 # Zoomed, the survivor is the whole window and the hidden pane's close changes
@@ -1741,7 +1754,77 @@ hold_oracle() {
 	wait "$daemon_pid" 2>/dev/null || true
 	[ "$settle_rc" -eq 0 ]
 
-	hold_oracle
+	hold_oracle "120 1 "
+}
+
+# Splitting the top pane of a stacked pair makes applyPaneOps split the LAST
+# local pane (the bottom pane B shrinks), select-layout put B in the new pane's
+# smaller cell, and swap-pane move B back to its own cell. On the main screen
+# B's rows come back exactly; a hold on the alternate screen would bring them
+# back shifted, so the daemon must take no hold on this pass. The wrapper stalls
+# after the swap-pane so samples land after B's regrow and before the reseed.
+@test "an unzoomed split of the top of a stacked pair takes no hold and keeps the bottom pane's rows in place (#1002)" {
+	hold_slow_tmux swap-pane
+
+	fifo="$BATS_TEST_TMPDIR/feed"
+	mkfifo "$fifo"
+	$SRC new-session -d -s rem -x 120 -y 45 'sleep 600'
+	top_r="$($SRC display-message -p -t rem '#{pane_id}')"
+	$SRC split-window -v -t "$top_r" "exec 3<>'$fifo'; cat <&3"
+	$DST new-session -d -s host-sess -x 120 -y 45 'sleep 600'
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 2 splitswap
+
+	survivor_r="$($SRC list-panes -t rem -F '#{pane_id}' | sed -n 2p)"
+	survivor_l="$($DST list-panes -t host-sess:1 -F '#{pane_id} #{@bridge_pane}' | awk -v r="$survivor_r" '$2 == r {print $1}')"
+	[ -n "$survivor_l" ]
+
+	# Fill B's screen with CUP-positioned rows and leave the cursor on its last row.
+	h="$($SRC display-message -p -t "$survivor_r" '#{pane_height}')"
+	{
+		printf '\033[H\033[2J'
+		for i in $(seq 1 "$h"); do printf '\033[%d;1Hbrow%02d' "$i" "$i"; done
+		printf '\033[%d;4H' "$h"
+	} >"$fifo"
+	last_row="$(printf 'brow%02d' "$h")"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	until $DST capture-pane -p -t "$survivor_l" | grep -q "$last_row"; do
+		[ "$SECONDS" -lt "$deadline" ] || return 1
+		sleep 0.1
+	done
+	hold_settle "$survivor_l"
+	cp "$BATS_TEST_TMPDIR/settled" "$BATS_TEST_TMPDIR/pre"
+
+	hold_sample_start "$survivor_l"
+	sleep 0.15
+	$SRC split-window -v -t "$top_r" 'sleep 600'
+	wait "$sampler_pid"
+	rm -f "$BATS_TEST_TMPDIR/slow.on"
+
+	settle_rc=0
+	hold_settle "$survivor_l" || settle_rc=$?
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+	[ "$settle_rc" -eq 0 ]
+
+	# The split divides the top pane, so B keeps its height on the remote.
+	[ "$($SRC display-message -p -t "$survivor_r" '#{pane_height}')" -eq "$h" ]
+
+	held="$(awk 'FNR == 1 && $3 == 1 {n = split(FILENAME, a, "/"); printf "%s ", a[n]}' "$BATS_TEST_TMPDIR"/stall-* "$BATS_TEST_TMPDIR"/post-* 2>/dev/null)"
+	if [ -n "$held" ]; then
+		printf 'a hold was taken (alternate_on 1) in samples: %s\n' "$held" >&3
+		return 1
+	fi
+	# B's shrunk cell before the swap legitimately shows fewer rows; only frames
+	# from the first stall on (after the regrow) are held to the oracle.
+	first_stall=999
+	for f in "$BATS_TEST_TMPDIR"/stall-*; do
+		[ -e "$f" ] && [ "${f##*-}" -lt "$first_stall" ] && first_stall="${f##*-}"
+	done
+	for f in "$BATS_TEST_TMPDIR"/post-*; do
+		[ "${f##*-}" -lt "$first_stall" ] && rm -f "$f"
+	done
+	hold_oracle "120 3 0"
 }
 
 # A remote swap-pane permutes the pane set without changing its membership —

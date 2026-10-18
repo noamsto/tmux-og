@@ -167,8 +167,9 @@ passes:
 		// Ahead of the pass's first local reshape: tmux reflows a main-screen
 		// pane the instant the reshape below lands, from a local grid and
 		// history the remote never had, and leaves the result up until the
-		// reseed. On the alternate screen it does not reflow at all.
-		held = append(held, holdReshaped(cfg, w, L, remote, newRemote, structural, zoomed, remoteActive, router)...)
+		// reseed. On the alternate screen it does not reflow at all. Passes that
+		// can shrink a held pane are skipped inside.
+		held = append(held, holdReshaped(cfg, w, L, remote, newRemote, ops, zoomed, router)...)
 
 		switch {
 		case ops.Reset:
