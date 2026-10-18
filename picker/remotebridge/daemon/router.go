@@ -40,6 +40,9 @@ type Router struct {
 	dropped              int
 	pendingLifetime      time.Duration
 	goneLifetime         time.Duration
+	// predict is the latency estimate every predicting sink shares, set once
+	// by runMirror before any sink exists; nil (NewRouter's) builds plain sinks.
+	predict *predictShared
 }
 
 func NewRouter() *Router {
@@ -315,6 +318,25 @@ func (r *Router) reshapedPanes() []string {
 			continue
 		}
 		if s.takeReshaped() {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// predictModelPanes returns, sorted, the panes whose predictor asked for a
+// model seed and whose sink has drained; see takeModelWanted.
+func (r *Router) predictModelPanes() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []string
+	for id, w := range r.sinks {
+		s, ok := w.(*outputSink)
+		if !ok {
+			continue
+		}
+		if s.takeModelWanted() {
 			ids = append(ids, id)
 		}
 	}

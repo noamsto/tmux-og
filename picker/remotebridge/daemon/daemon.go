@@ -147,6 +147,9 @@ type Config struct {
 	Select WindowSelector
 	// filter is built from Select by runMirror; nil mirrors every window.
 	filter *windowFilter
+	// Predict selects predictive local echo in mirror panes (#972); the zero
+	// value is PredictAuto, which predicts only while echo latency is high.
+	Predict PredictMode
 }
 
 // target is the -t target for every local tmux command that names the host
@@ -986,6 +989,7 @@ func runMirror(cfg Config) error {
 	cfg.opts = newMirrorOpts()
 	cfg.filter = newWindowFilter(cfg.Select)
 	router := NewRouter()
+	router.predict = newPredictShared(cfg.Predict)
 	// Declared here rather than beside the registry below: the client-size send
 	// that follows the first dial is the converger's first user.
 	cv := newConverger()
@@ -1685,6 +1689,7 @@ func runMirror(cfg Config) error {
 			sweeper.sweep(cfg, send, router, waitHellosFn, cst, reg, cv, rt)
 			reseedDropped(router, rt)
 			reseedReshaped(router, rt)
+			seedPredictModels(router, rt)
 			reseedRevealed(reg, router, rt, reveals)
 			// Enable pause-after only now that every window is set up. Setup does
 			// drain the stream (its round-trips route, and so does the hello wait),
@@ -2800,7 +2805,7 @@ func seedRenderer(rt roundTrip, router *Router, conn net.Conn, remotePane string
 // seed-before-output guarantee binds a seed and the output of the same pane, it
 // does not require a seed to exist. The pane starts blank rather than stale.
 func wireRenderer(router *Router, conn net.Conn, remotePane string, seed []byte, err error, dims controlmode.PaneCell, gfx *graphics.Proxy) bool {
-	sink := newOutputSink(conn, gfx)
+	sink := newPredictingSink(conn, gfx, router.predict)
 	router.Register(remotePane, sink)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: seed %s: %v (wired unseeded; trailing reseed will repair)\n", remotePane, err)
@@ -2820,7 +2825,17 @@ func wireRenderer(router *Router, conn net.Conn, remotePane string, seed []byte,
 type sinkFrame struct {
 	typ     wire.FrameType
 	payload []byte
+	// modes rides only on a framePredictSeed.
+	modes *predictModes
 }
+
+// framePredictKeys and framePredictSeed are daemon-internal: they never reach
+// the wire, and the pump consumes them. A key frame shares the channel with
+// output so a key is ordered before its own echo.
+const (
+	framePredictKeys wire.FrameType = 0xf0
+	framePredictSeed wire.FrameType = 0xf1
+)
 
 // outputSink serializes all daemon->renderer frames for one pane through a
 // single pump goroutine so a slow reader can't block Router.Route (which runs
@@ -2851,6 +2866,15 @@ type outputSink struct {
 	// this sink writes to the renderer, so pumpInput can disambiguate an
 	// ESC[M report the bytes alone cannot (#814).
 	mouse mouseModeTracker
+	// pred draws typed keys ahead of the remote's echo (#972); nil means
+	// prediction is off and every pump path is the plain one. Pump-owned.
+	pred *predictor
+	// modelWanted is the predictor asking the main loop for a model seed;
+	// see takeModelWanted.
+	modelWanted atomic.Bool
+	// keysLost records a key frame dropped to a full buffer; the predictor
+	// resets at its next key. It never counts toward dropped.
+	keysLost atomic.Bool
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2862,7 +2886,20 @@ type outputSink struct {
 // newOutputSink constructs the sink and starts its pump immediately; see
 // start's doc for what the pump does and why it's a separate method.
 func newOutputSink(conn net.Conn, gfx *graphics.Proxy) *outputSink {
+	return newPredictingSink(conn, gfx, nil)
+}
+
+// newPredictingSink is newOutputSink with a predictor fed by shared; a nil
+// shared (prediction off) builds the plain sink. The predictor's paused probe
+// takes s.mu from the pump, which never holds it, so it cannot deadlock.
+func newPredictingSink(conn net.Conn, gfx *graphics.Proxy, shared *predictShared) *outputSink {
 	s := &outputSink{ch: make(chan sinkFrame, outputSinkBuf), gfx: gfx}
+	if shared != nil {
+		s.pred = newPredictor(shared,
+			func() { s.modelWanted.Store(true) },
+			s.isPaused,
+			func() bool { return s.keysLost.Swap(false) })
+	}
 	s.start(conn)
 	return s
 }
@@ -2906,29 +2943,54 @@ func (s *outputSink) start(conn net.Conn) {
 			if pending != nil {
 				f, pending = *pending, nil
 			} else {
-				v, ok := <-s.ch
-				if !ok {
-					// The pane is gone: flush whatever the proxies were
-					// still holding (a partial sequence cut mid-stream)
-					// rather than silently dropping it. kn only ever holds
-					// the newest unprocessed tail, so its leftover is
-					// chronologically after anything gfx is already
-					// holding — route it through gfx.Filter first, same as
-					// the steady-state order, so the tail comes out in the
-					// original byte order.
-					tail := kn.Flush()
-					if gfx != nil {
-						tail = append(gfx.Filter(tail), gfx.Close()...)
+				select {
+				case v, ok := <-s.ch:
+					if !ok {
+						// The pane is gone: flush whatever the proxies were
+						// still holding (a partial sequence cut mid-stream)
+						// rather than silently dropping it. kn only ever holds
+						// the newest unprocessed tail, so its leftover is
+						// chronologically after anything gfx is already
+						// holding — route it through gfx.Filter first, same as
+						// the steady-state order, so the tail comes out in the
+						// original byte order.
+						tail := kn.Flush()
+						if gfx != nil {
+							tail = append(gfx.Filter(tail), gfx.Close()...)
+						}
+						if len(tail) > 0 {
+							s.mouse.Feed(tail)
+						}
+						// The unpaint precedes the tail: the paint sits after
+						// the last byte written, the tail was never written.
+						// shutdown also closes the model, whose drain
+						// goroutine and emulator would otherwise leak.
+						if s.pred != nil {
+							tail = append(s.pred.shutdown(), tail...)
+						}
+						if len(tail) > 0 {
+							_ = wire.WriteStream(conn, wire.FrameOutput, tail)
+						}
+						return
 					}
-					if len(tail) > 0 {
-						s.mouse.Feed(tail)
-						_ = wire.WriteStream(conn, wire.FrameOutput, tail)
+					f = v
+				case <-s.pred.timerC():
+					if writeOutputIfAny(conn, s.pred.onExpire()) != nil {
+						return
 					}
+					continue
+				}
+			}
+			switch f.typ {
+			case framePredictKeys:
+				if writeOutputIfAny(conn, s.pred.onKeys(f.payload)) != nil {
 					return
 				}
-				f = v
-			}
-			if f.typ == wire.FrameOutput {
+				continue
+			case framePredictSeed:
+				s.pred.onModelSeed(f.payload, *f.modes)
+				continue
+			case wire.FrameOutput:
 				// drainOutput can append more queued FrameOutput frames'
 				// raw payload onto buf, and any of those can carry a
 				// negotiation sequence too, so kn.Feed runs on the fully
@@ -2944,16 +3006,36 @@ func (s *outputSink) start(conn net.Conn) {
 				if len(f.payload) == 0 {
 					continue
 				}
-			}
-			if f.typ == wire.FrameSeed && gfx != nil {
-				if replay := gfx.Replay(); len(replay) > 0 {
-					if err := wire.WriteStream(conn, wire.FrameOutput, replay); err != nil {
+				s.mouse.Feed(f.payload)
+				if s.pred != nil {
+					f.payload = s.pred.onOutput(f.payload)
+				}
+			case wire.FrameSeed:
+				if s.pred != nil && writeOutputIfAny(conn, s.pred.onSeed(f.payload)) != nil {
+					return
+				}
+				if gfx != nil {
+					if replay := gfx.Replay(); len(replay) > 0 {
+						if s.pred != nil {
+							s.pred.observe(replay)
+						}
+						if err := wire.WriteStream(conn, wire.FrameOutput, replay); err != nil {
+							return
+						}
+					}
+				}
+				if s.pred != nil {
+					s.pred.observe(f.payload)
+				}
+				s.mouse.Feed(f.payload)
+			case wire.FrameResize:
+				if s.pred != nil {
+					if w, h, err := wire.DecodeResize(f.payload); err == nil && writeOutputIfAny(conn, s.pred.onResize(w, h)) != nil {
 						return
 					}
 				}
-			}
-			if f.typ == wire.FrameOutput || f.typ == wire.FrameSeed {
-				s.mouse.Feed(f.payload)
+			default:
+				// No other frame type is queued on a sink.
 			}
 			write := wire.WriteFrame
 			if f.typ == wire.FrameOutput || f.typ == wire.FrameSeed {
@@ -2986,6 +3068,69 @@ func drainOutput(ch chan sinkFrame, buf []byte) ([]byte, *sinkFrame) {
 			return buf, nil
 		}
 	}
+}
+
+// writeOutputIfAny writes the predictor's own bytes as one FrameOutput, and
+// nothing when it has none.
+func writeOutputIfAny(conn net.Conn, p []byte) error {
+	if len(p) == 0 {
+		return nil
+	}
+	return wire.WriteStream(conn, wire.FrameOutput, p)
+}
+
+// keys hands a chunk of typed bytes to the predictor through the pump. Its own
+// non-blocking send: a full buffer only sets keysLost, never dropped, since a
+// lost key costs the predictor a reset and not the pane a re-seed.
+func (s *outputSink) keys(p []byte) {
+	if s == nil || s.pred == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- sinkFrame{typ: framePredictKeys, payload: append([]byte(nil), p...)}:
+	default:
+		s.keysLost.Store(true)
+	}
+}
+
+// predictSeed hands the predictor a model seed, which the pump never writes to
+// the renderer. A full buffer drops it silently: a later key asks again.
+func (s *outputSink) predictSeed(seed []byte, m predictModes) {
+	if s == nil || s.pred == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- sinkFrame{typ: framePredictSeed, payload: seed, modes: &m}:
+	default:
+	}
+}
+
+// takeModelWanted reports whether the predictor asked for a model seed and
+// spends the request. The gates are takeDirty's, for takeDirty's reasons, and
+// like takeReshaped they leave the request standing for a later pass.
+func (s *outputSink) takeModelWanted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.paused || len(s.ch) > 0 {
+		return false
+	}
+	return s.modelWanted.CompareAndSwap(true, false)
+}
+
+func (s *outputSink) isPaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paused
 }
 
 // writeOwned enqueues p as a FrameOutput without copying. Callers must

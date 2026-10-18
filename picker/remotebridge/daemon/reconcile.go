@@ -751,7 +751,7 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 			w.conns[remoteID] = oldConn
 			// Output while unrouted is lost; the pane stays live but drifts
 			// until the next successful reset/reseed repairs the screen.
-			router.Register(remoteID, newOutputSink(oldConn, cfg.graphicsFor(remoteID)))
+			router.Register(remoteID, newPredictingSink(oldConn, cfg.graphicsFor(remoteID), router.predict))
 		}
 	}
 	return err
