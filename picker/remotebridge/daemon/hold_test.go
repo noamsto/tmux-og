@@ -39,7 +39,7 @@ func TestParseHoldRead(t *testing.T) {
 	}{
 		{
 			name: "two panes with blank rows",
-			out:  "%1|0|1|4|2|1|0\nab\n\n%2|0|1|3|3|2|1\nx\n\nz\n",
+			out:  "%1|0|1|4|2|1|0|0\nab\n\n%2|0|1|3|3|2|1|0\nx\n\nz\n",
 			want: []holdRead{
 				{local: "%10", holdable: true, w: 4, h: 2, cx: 1, cy: 0, rows: []string{"ab", ""}},
 				{local: "%11", holdable: true, w: 3, h: 3, cx: 2, cy: 1, rows: []string{"x", "", "z"}},
@@ -47,7 +47,7 @@ func TestParseHoldRead(t *testing.T) {
 		},
 		{
 			name: "trailing blank row survives the trailing newline",
-			out:  "%1|0|1|4|2|0|0\nab\n\n%2|0|1|3|1|0|0\n\n",
+			out:  "%1|0|1|4|2|0|0|0\nab\n\n%2|0|1|3|1|0|0|0\n\n",
 			want: []holdRead{
 				{local: "%10", holdable: true, w: 4, h: 2, rows: []string{"ab", ""}},
 				{local: "%11", holdable: true, w: 3, h: 1, rows: []string{""}},
@@ -55,47 +55,54 @@ func TestParseHoldRead(t *testing.T) {
 		},
 		{
 			name: "no trailing newline",
-			out:  "%1|0|1|4|1|0|0\nab",
+			out:  "%1|0|1|4|1|0|0|0\nab",
 			want: []holdRead{
 				{local: "%10", holdable: true, w: 4, h: 1, rows: []string{"ab"}},
 			},
 		},
 		{
 			name: "id mismatch on the second pane keeps the first",
-			out:  "%1|0|1|4|1|0|0\nab\n%9|0|1|3|1|0|0\nx\n",
+			out:  "%1|0|1|4|1|0|0|0\nab\n%9|0|1|3|1|0|0|0\nx\n",
 			want: []holdRead{
 				{local: "%10", holdable: true, w: 4, h: 1, rows: []string{"ab"}},
 			},
 		},
 		{
 			name: "short capture keeps only complete panes",
-			out:  "%1|0|1|4|1|0|0\nab\n%2|0|1|3|3|0|0\nx\ny\n",
+			out:  "%1|0|1|4|1|0|0|0\nab\n%2|0|1|3|3|0|0|0\nx\ny\n",
 			want: []holdRead{
 				{local: "%10", holdable: true, w: 4, h: 1, rows: []string{"ab"}},
 			},
 		},
 		{
-			name: "six-field header stops",
-			out:  "%1|0|1|4|1|0\nab\n",
+			name: "seven-field header stops",
+			out:  "%1|0|1|4|1|0|0\nab\n",
 		},
 		{
 			name: "non-numeric geometry stops",
-			out:  "%1|0|1|four|1|0|0\nab\n",
+			out:  "%1|0|1|four|1|0|0|0\nab\n",
 		},
 		{
 			name: "negative geometry stops",
-			out:  "%1|0|1|4|1|-1|0\nab\n",
+			out:  "%1|0|1|4|1|-1|0|0\nab\n",
 		},
 		{
 			name: "already on the alternate screen is not holdable",
-			out:  "%1|1|1|4|1|0|0\nab\n",
+			out:  "%1|1|1|4|1|0|0|0\nab\n",
+			want: []holdRead{
+				{local: "%10", w: 4, h: 1, rows: []string{"ab"}},
+			},
+		},
+		{
+			name: "dead pane is not holdable",
+			out:  "%1|0|1|4|1|0|0|1\nab\n",
 			want: []holdRead{
 				{local: "%10", w: 4, h: 1, rows: []string{"ab"}},
 			},
 		},
 		{
 			name: "alternate-screen option off is not holdable",
-			out:  "%1|0|0|4|1|0|0\nab\n",
+			out:  "%1|0|0|4|1|0|0|0\nab\n",
 			want: []holdRead{
 				{local: "%10", w: 4, h: 1, rows: []string{"ab"}},
 			},

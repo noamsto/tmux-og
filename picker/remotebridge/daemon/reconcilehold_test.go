@@ -50,11 +50,20 @@ func (l *holdLocalLog) snapshot() []string {
 	return append([]string(nil), l.entries...)
 }
 
-// holdReply is a hold read's answer for one main-screen pane, alternate-screen
-// on, with exactly h rows after its header.
+// holdReply is a hold read's answer for one live main-screen pane,
+// alternate-screen on, with exactly h rows after its header.
 func holdReply(remoteID string, w, h int) string {
+	return holdReplyDead(remoteID, w, h, false)
+}
+
+// holdReplyDead is holdReply for a pane whose pane_dead is set as given.
+func holdReplyDead(remoteID string, w, h int, dead bool) string {
+	d := 0
+	if dead {
+		d = 1
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s|0|1|%d|%d|0|5\n", remoteID, w, h)
+	fmt.Fprintf(&b, "%s|0|1|%d|%d|0|5|%d\n", remoteID, w, h, d)
 	for i := range h {
 		fmt.Fprintf(&b, "row%d\n", i)
 	}
@@ -274,41 +283,75 @@ func TestReconcileHoldZoomedReadsOnlyTheZoomedPane(t *testing.T) {
 	}
 }
 
-// TestReconcileHoldZoomedGeometryOnlyHoldsAtTargetDims: a zoomed pane already at
-// the root's dims is still shrunk and regrown by the select-layout and re-zoom
-// a changed layout costs, so it is held.
-func TestReconcileHoldZoomedGeometryOnlyHoldsAtTargetDims(t *testing.T) {
+// TestReconcileHoldLocallyZoomedHoldsNothing: a window zoomed locally shrinks
+// and regrows its zoomed pane on every reshape, which the main screen's history
+// undoes and the alternate screen cannot, so no pane is read or held.
+func TestReconcileHoldLocallyZoomedHoldsNothing(t *testing.T) {
+	L := holdTwoPane(t)
+	order := RemotePaneOrder(L)
+	tests := []struct {
+		name       string
+		remote     []string
+		structural bool
+		layout     string
+	}{
+		{"structural kill of the hidden pane", order, true, L.Raw},
+		{"geometry-only pass with a changed layout", order, false, "stale"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sink, peer := holdPipe(t)
+			router := NewRouter()
+			router.Register("%3", sink)
+			w := &mirrorWindow{
+				remoteID: "@1", localWin: "@101",
+				remotePanes: []string{"%3", "%4"}, localPanes: []string{"%l3", "%l4"},
+				layout: tc.layout, appliedZoom: true,
+			}
+			log := &holdLocalLog{}
+			cfg := Config{
+				LocalTmuxOut: func(argv ...string) (string, error) {
+					log.add(argv)
+					return holdReply("%3", L.W, L.H), nil
+				},
+			}
+			if held := holdReshaped(cfg, w, L, tc.remote, tc.remote, tc.structural, true, "%3", router); held != nil {
+				t.Fatalf("held = %v, want nothing", held)
+			}
+			if got := log.snapshot(); len(got) != 0 {
+				t.Errorf("local calls = %v, want none", got)
+			}
+			requireSilence(t, peer)
+		})
+	}
+}
+
+// TestReconcileHoldDeadPaneIsNotHeld: a corpse's renderer never writes the
+// hold, so holding it would only burn the barrier's full wait.
+func TestReconcileHoldDeadPaneIsNotHeld(t *testing.T) {
 	sink, peer := holdPipe(t)
 	router := NewRouter()
 	router.Register("%3", sink)
-	L := holdTwoPane(t)
-	w := &mirrorWindow{
-		remoteID: "@1", localWin: "@101",
-		remotePanes: []string{"%3", "%4"}, localPanes: []string{"%l3", "%l4"},
+	w := holdCloseWindow()
+	L, err := controlmode.ParseLayout(holdOnePane)
+	if err != nil {
+		t.Fatalf("parse layout: %v", err)
 	}
 
 	log := &holdLocalLog{}
 	cfg := Config{
 		LocalTmuxOut: func(argv ...string) (string, error) {
-			if log.add(argv) == "poll" {
-				return "1\n", nil
-			}
-			return holdReply("%3", L.W, L.H), nil
+			log.add(argv)
+			return holdReplyDead("%3", 95, 45, true), nil
 		},
 	}
-	order := RemotePaneOrder(L)
-	held := holdReshaped(cfg, w, L, order, order, false, true, "%3", router)
-
-	if len(held) != 1 || held[0] != sink {
-		t.Fatalf("held = %v, want the zoomed pane's sink", held)
+	if held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), true, false, "", router); held != nil {
+		t.Fatalf("held = %v, want nothing", held)
 	}
-	if got := log.snapshot(); !slices.Equal(got, []string{"read", "poll"}) {
-		t.Errorf("local calls = %v, want [read poll]", got)
+	if got := log.snapshot(); !slices.Equal(got, []string{"read"}) {
+		t.Errorf("local calls = %v, want the read and no poll", got)
 	}
-	f := readHoldFrame(t, peer)
-	if f.Type != wire.FrameOutput || !strings.HasPrefix(string(f.Payload), holdEnterAlt) {
-		t.Fatalf("frame = %v %q, want the hold output", f.Type, f.Payload)
-	}
+	requireSilence(t, peer)
 }
 
 // TestReconcileHoldGeometryOnlySkipsAnUnchangedPane: a geometry-only pass that

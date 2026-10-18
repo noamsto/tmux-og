@@ -1544,17 +1544,15 @@ EOF
 	[ "$survivor_hit" -eq 0 ]
 }
 
-# Closing a remote pane makes the daemon kill the local pane, which widens the
-# survivor's LOCAL grid; local tmux reflows it, joining wrapped lines and
-# sliding the visible window into local history that holds content the remote
-# never had (the banner below, old seed copies). The survivor may show its
-# pre-close screen or its settled reseed, never a frame of rows from neither.
-@test "a remote pane close never shows the survivor a frame outside its pre-close and settled screens (#1002)" {
+# The #1002 cases share one rig. hold_slow_tmux installs a tmux wrapper on
+# $BATS_TEST_TMPDIR/slowbin that, while slow.on exists, stalls the daemon's
+# local select-layout for 1.5 s and marks the stall with a `stalling` file. The
+# stall widens the ~20 ms local window between the daemon's local kill-pane and
+# its reseed so the oracle is deterministic, as the #808 case does.
+hold_slow_tmux() {
 	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	local real
 	real="$(command -v tmux)"
-	# The stall widens the ~20 ms local window between the daemon's local
-	# kill-pane and its reseed so the oracle is deterministic, as the #808 case
-	# does.
 	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
 #!/bin/sh
 has_dst=0
@@ -1564,11 +1562,98 @@ for arg in "\$@"; do
 	[ "\$arg" = select-layout ] && has_sl=1
 done
 if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_sl" -eq 1 ]; then
+	: >"$BATS_TEST_TMPDIR/stalling"
 	sleep 1.5
+	rm -f "$BATS_TEST_TMPDIR/stalling"
 fi
 exec "$real" "\$@"
 EOF
 	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+}
+
+# hold_sample_start <local pane> arms the stall and samples that pane's width
+# and rows every 50 ms into stall-<n> (taken while the wrapper's stalling
+# marker existed, before and after the capture) or post-<n>. Sets sampler_pid.
+hold_sample_start() {
+	local pane="$1"
+	touch "$BATS_TEST_TMPDIR/slow.on"
+	(
+		for n in $(seq 1 60); do
+			phase=post
+			[ -e "$BATS_TEST_TMPDIR/stalling" ] && phase=stall
+			{
+				$DST display-message -p -t "$pane" '#{pane_width}'
+				$DST capture-pane -p -t "$pane" | sed 's/ *$//'
+			} >"$BATS_TEST_TMPDIR/sample.tmp"
+			[ -e "$BATS_TEST_TMPDIR/stalling" ] || phase=post
+			mv "$BATS_TEST_TMPDIR/sample.tmp" "$BATS_TEST_TMPDIR/$phase-$n"
+			sleep 0.05
+		done
+	) 3>&- &
+	sampler_pid=$!
+}
+
+# hold_settle <local pane> waits until the pane is 120 wide and two captures
+# 0.3 s apart agree. Sets settled and writes it to $BATS_TEST_TMPDIR/settled.
+hold_settle() {
+	local deadline=$((SECONDS + 3 + BRIDGE_UP_BUDGET_SECS)) prev=""
+	settled=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		if [ "$($DST display-message -p -t "$1" '#{pane_width}')" = 120 ]; then
+			settled="$($DST capture-pane -p -t "$1" | sed 's/ *$//')"
+			[ -n "$settled" ] && [ "$settled" = "$prev" ] && break
+			prev="$settled"
+		fi
+		sleep 0.3
+	done
+	[ -n "$settled" ] && [ "$settled" = "$prev" ] || return 1
+	printf '%s\n' "$settled" >"$BATS_TEST_TMPDIR/settled"
+}
+
+# hold_oracle checks every sample against the pre-close ($BATS_TEST_TMPDIR/pre)
+# and settled screens by position: each row must be blank or equal the same row
+# of one of them, so content shifted up or down fails even when each row exists
+# in a screen. It first requires a stall-* sample at width 120, proving one
+# landed between the local kill-pane and the stalled select-layout's return.
+hold_oracle() {
+	local f widened=0 foreign
+	for f in "$BATS_TEST_TMPDIR"/stall-*; do
+		[ -e "$f" ] || continue
+		[ "$(head -n1 "$f")" = 120 ] && widened=$((widened + 1))
+	done
+	[ "$widened" -ge 1 ] || {
+		printf 'no sample landed inside the stalled select-layout window\n' >&3
+		return 1
+	}
+
+	for f in "$BATS_TEST_TMPDIR"/stall-* "$BATS_TEST_TMPDIR"/post-*; do
+		[ -e "$f" ] || continue
+		foreign="$(LC_ALL=C awk -v pre="$BATS_TEST_TMPDIR/pre" -v settled="$BATS_TEST_TMPDIR/settled" '
+			BEGIN {
+				while ((getline l < pre) > 0) p[++np] = l
+				while ((getline l < settled) > 0) s[++ns] = l
+			}
+			FNR == 1 { next }
+			{
+				i = FNR - 1
+				if ($0 == "" || $0 == p[i] || $0 == s[i]) next
+				printf "row %d: [%s] (pre [%s], settled [%s])\n", i, $0, p[i], s[i]
+				if (++n >= 5) exit
+			}' "$f")"
+		if [ -n "$foreign" ]; then
+			printf 'sample %s (width %s) has rows matching neither screen at that position:\n%s\n' "$(basename "$f")" "$(head -n1 "$f")" "$foreign" >&3
+			return 1
+		fi
+	done
+}
+
+# Closing a remote pane makes the daemon kill the local pane, which widens the
+# survivor's LOCAL grid; local tmux reflows it, joining wrapped lines and
+# sliding the visible window into local history that holds content the remote
+# never had (the banner below, old seed copies). The survivor may show its
+# pre-close screen or its settled reseed, never a frame of rows from neither.
+@test "a remote pane close never shows the survivor a frame outside its pre-close and settled screens (#1002)" {
+	hold_slow_tmux
 
 	fifo="$BATS_TEST_TMPDIR/feed"
 	mkfifo "$fifo"
@@ -1586,76 +1671,77 @@ EOF
 	survivor_l="$($DST list-panes -t host-sess:1 -F '#{pane_id} #{@bridge_pane}' | awk -v r="$survivor_r" '$2 == r {print $1}')"
 	[ -n "$survivor_l" ]
 
-	exec 4>"$fifo"
-	for i in $(seq 1 12); do printf 'wrap%02d-%080d\r\n' "$i" 0; done >&4
+	# The pane holds the FIFO read-write, so this writer neither blocks nor EOFs it.
+	for i in $(seq 1 12); do printf 'wrap%02d-%080d\r\n' "$i" 0; done >"$fifo"
 	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
 	until $DST capture-pane -p -t "$survivor_l" | grep -q wrap12; do
-		[ "$SECONDS" -lt "$deadline" ] || {
-			exec 4>&-
-			return 1
-		}
+		[ "$SECONDS" -lt "$deadline" ] || return 1
 		sleep 0.1
 	done
 	sleep 0.3
 	$DST capture-pane -p -t "$survivor_l" | sed 's/ *$//' >"$BATS_TEST_TMPDIR/pre"
 
-	touch "$BATS_TEST_TMPDIR/slow.on"
-	(
-		for n in $(seq 1 60); do
-			if [ -e "$BATS_TEST_TMPDIR/slow.on" ]; then phase=stall; else phase=post; fi
-			{
-				$DST display-message -p -t "$survivor_l" '#{pane_width}'
-				$DST capture-pane -p -t "$survivor_l" | sed 's/ *$//'
-			} >"$BATS_TEST_TMPDIR/$phase-$n"
-			sleep 0.05
-		done
-	) 3>&- &
-	sampler_pid=$!
+	hold_sample_start "$survivor_l"
 	sleep 0.15
 	$SRC kill-pane -t "$other_r"
 	wait "$sampler_pid"
 	rm -f "$BATS_TEST_TMPDIR/slow.on"
 
-	deadline=$((SECONDS + 3 + BRIDGE_UP_BUDGET_SECS))
-	prev=""
-	settled=""
-	while [ "$SECONDS" -lt "$deadline" ]; do
-		if [ "$($DST display-message -p -t "$survivor_l" '#{pane_width}')" = 120 ]; then
-			settled="$($DST capture-pane -p -t "$survivor_l" | sed 's/ *$//')"
-			[ "$settled" = "$prev" ] && break
-			prev="$settled"
-		fi
-		sleep 0.3
-	done
-	exec 4>&-
+	settle_rc=0
+	hold_settle "$survivor_l" || settle_rc=$?
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
-	[ "$settled" = "$prev" ]
-	[ -n "$settled" ]
+	[ "$settle_rc" -eq 0 ]
 
-	{
-		grep . "$BATS_TEST_TMPDIR/pre" || true
-		printf '%s\n' "$settled" | grep . || true
-	} | LC_ALL=C sort -u >"$BATS_TEST_TMPDIR/allowed"
+	hold_oracle
+}
 
-	# The oracle must have seen the window it guards: a sample taken after the
-	# local kill-pane widened the survivor, before the stalled select-layout
-	# returned.
-	widened=0
-	for f in "$BATS_TEST_TMPDIR"/stall-*; do
-		[ -e "$f" ] || continue
-		[ "$(head -n1 "$f")" = 120 ] && widened=$((widened + 1))
+# Zoomed, the survivor is the whole window and the hidden pane's close changes
+# nothing it shows, so its rows must stay where they are: the daemon's hold
+# must not shift a zoomed pane's screen while the local layout settles.
+@test "a zoomed mirror keeps the zoomed pane's rows in place when the remote closes the hidden pane (#1002)" {
+	hold_slow_tmux
+
+	fifo="$BATS_TEST_TMPDIR/feed"
+	mkfifo "$fifo"
+	$SRC new-session -d -s rem -x 120 -y 30 "exec 3<>'$fifo'; cat <&3"
+	$SRC split-window -v -t rem 'sleep 600'
+	$DST new-session -d -s host-sess -x 120 -y 30 'sleep 600'
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 2 zhold
+
+	survivor_r="$($SRC list-panes -t rem -F '#{pane_id}' | sed -n 1p)"
+	hidden_r="$($SRC list-panes -t rem -F '#{pane_id}' | sed -n 2p)"
+	survivor_l="$($DST list-panes -t host-sess:1 -F '#{pane_id} #{@bridge_pane}' | awk -v r="$survivor_r" '$2 == r {print $1}')"
+	[ -n "$survivor_l" ]
+
+	# Fill the top pane's screen so the cursor ends on its last row.
+	for i in $(seq 1 26); do printf 'zrow%02d\r\n' "$i"; done >"$fifo"
+	$SRC resize-pane -Z -t "$survivor_r"
+
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	zoomed_h="$($SRC display-message -p -t "$survivor_r" '#{pane_height}')"
+	until [ "$($DST display-message -p -t host-sess:1 '#{window_zoomed_flag}')" = 1 ] &&
+		[ "$($DST display-message -p -t "$survivor_l" '#{pane_width}x#{pane_height}')" = "120x$zoomed_h" ]; do
+		[ "$SECONDS" -lt "$deadline" ] || return 1
+		sleep 0.1
 	done
-	[ "$widened" -ge 1 ]
+	hold_settle "$survivor_l"
+	cp "$BATS_TEST_TMPDIR/settled" "$BATS_TEST_TMPDIR/pre"
 
-	for f in "$BATS_TEST_TMPDIR"/stall-* "$BATS_TEST_TMPDIR"/post-*; do
-		[ -e "$f" ] || continue
-		foreign="$(tail -n +2 "$f" | grep . | LC_ALL=C sort -u | LC_ALL=C comm -23 - "$BATS_TEST_TMPDIR/allowed" || true)"
-		if [ -n "$foreign" ]; then
-			printf 'sample %s (width %s) shows rows in neither screen:\n%s\n' "$(basename "$f")" "$(head -n1 "$f")" "$foreign" >&3
-			return 1
-		fi
-	done
+	hold_sample_start "$survivor_l"
+	sleep 0.15
+	$SRC kill-pane -t "$hidden_r"
+	wait "$sampler_pid"
+	rm -f "$BATS_TEST_TMPDIR/slow.on"
+
+	settle_rc=0
+	hold_settle "$survivor_l" || settle_rc=$?
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+	[ "$settle_rc" -eq 0 ]
+
+	hold_oracle
 }
 
 # A remote swap-pane permutes the pane set without changing its membership —

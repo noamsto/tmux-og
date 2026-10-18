@@ -106,7 +106,8 @@ tmux never reflows a pane on the alternate screen
 (`screen_resize(&wp->base, sx, sy, wp->base.saved_grid == NULL)`), and the
 alternate grid has no history (`screen_alternate_on` clears `GRID_HISTORY`).
 A held pane that grows keeps its rows where they were, and the gained area is
-blank. The seed already begins with `ESC[?1049l` (`render.Seed`), which
+blank. A held pane that shrinks loses rows (`screen_resize_y`), which is why
+a locally zoomed window is never held (see "Not regressed"). The seed already begins with `ESC[?1049l` (`render.Seed`), which
 restores the main screen, then clears and repaints it from the remote capture.
 The main screen's history survives the round trip.
 
@@ -130,22 +131,23 @@ Which panes are held. A pane is held only when all of these hold:
 
 - It is a tiled pane present before and after the pass (`remote ∩ newRemote`).
 - It has a registered, unpaused sink.
-- It will be reseeded this pass: in a zoomed window only the zoomed pane, as
-  the `zoomHides` rule decides.
+- It will be reseeded this pass, as the `zoomHides` rule decides. In the
+  zoom-ON transition (remote zoomed, local not yet) only `remoteActive` is
+  held.
+- The window is not locally zoomed (`holdReshaped` returns nil on
+  `w.appliedZoom`). See "Not regressed: Zoom" for why.
 - The pass is structural (`applyPaneOps` will kill, split or swap), or the
-  pane's local dims differ from the target (its `L` cell, or `L.W×L.H` for
-  the zoomed pane). A structural pass holds every candidate. A local
-  `kill-pane` in a zoomed window runs `window_push_zoom`/`window_pop_zoom`
-  (`server-fn.c`), which shrinks the zoomed pane to its cell and regrows it,
-  even though its final dims equal the target. A zoomed geometry-only pass
-  whose layout string changed is held the same way: its `select-layout`
-  unzooms and `assertMirrorZoom` re-zooms.
+  pane's local dims differ from the target (its `L` cell). A structural pass
+  holds every candidate.
 - Its local pane reports `alternate_on` 0 and `alternate-screen` on. A pane
   already on the alternate screen never reflows. A pane with the option off
   ignores both `?1049h` and `?1049l` (`screen_write_alternateon`/`off`), so
   it cannot be held.
+- Its local pane is not dead (`pane_dead` 0). A renderer corpse keeps an open
+  sink channel, so the hold would be queued and the barrier would wait the
+  full `holdWait` every pass.
 
-The first three are known without an exec and pick the candidates. The read
+The first four are known without an exec and pick the candidates. The read
 in step 1 supplies the rest.
 
 Floats are out of scope: the tiled `select-layout` leaves them alone, and they
@@ -155,11 +157,12 @@ reshape only when the remote float changes.
 
 1. **Read.** One local exec, batched with `;`. For each candidate local pane
    (found with `localPaneFor`): `display-message -p` of
-   `#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}`,
-   then `capture-pane -ep`. The capture is exactly `pane_height` rows, so the
-   reply splits by count. A header whose `@bridge_pane` is not the expected
-   remote id skips that pane: the positional map is stale. A failed exec holds
-   nothing, and the pass runs as today.
+   `#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}`
+   (8 fields), then `capture-pane -ep`. The capture is exactly `pane_height`
+   rows, so the reply splits by count. A malformed header, a `@bridge_pane`
+   that is not the expected remote id (the positional map is stale) or a
+   short capture ends the positional parse: that pane and every later one are
+   not held. A failed exec holds nothing, and the pass runs as today.
 2. **Hold.** Enqueue on the pane's sink one daemon-internal frame,
    `frameHold`. Its payload is `ESC \`, then `ESC[?1049h`, then each captured
    row placed with its own CUP (`ESC[<row>;1H`), then a CUP to the read cursor.
@@ -169,9 +172,10 @@ reshape only when the remote float changes.
      ground, ST is a no-op. The interrupted sequence's tail then prints on the
      held screen, which the seed replaces.
    - CUP per row, not CRLF, so a scroll region cannot scroll the copy.
-   - The pump treats the frame like a dims-changing resize for the predictor
-     (unpaint, drop the model), observes the bytes through `streamGround`, and
-     writes them as `FrameOutput`.
+   - The pump treats the frame as a model drop point for the predictor
+     (`predictor.onHold`: a full `reset()` unpaint on the main screen, then the
+     model is dropped), observes the bytes through `streamGround`, and writes
+     them as `FrameOutput`.
    - A full buffer drops the frame. `hold` reports that, and a dropped hold is
      neither awaited nor released.
 3. **Barrier.** The bytes reach local tmux through the renderer's pty
@@ -225,7 +229,10 @@ Residuals, accepted:
 - The hold's `?1049h` clears the pane before its rows are parsed. A client
   redraw between two pty reads of the hold frame shows a blank pane for that
   redraw. The rows usually arrive in the same read.
-- Painted predictions are captured into the copy until the seed.
+- Predictions painted at the read are captured into the held copy and shown
+  until the seed. Cosmetic.
+- A zoomed window whose width changes still reflows on the main screen, as it
+  did before the hold.
 - Output the remote sends between the hold and its seed lands on the held
   alternate screen. The seed, captured after it in stream order, restores it.
 - A rebuild that fails and re-registers the old conn (`resetWindow`'s
@@ -256,9 +263,20 @@ on a reshape.
 
 ## Not regressed
 
-- **Zoom (#413, #557).** Only the pane the pass reseeds is held, so hidden
-  panes are never held. Killing a hidden pane holds the zoomed pane across the
-  local push/pop-zoom. The `if -F` zoom assert is unchanged.
+- **Zoom (#413, #557).** No hold in a locally zoomed window. Every local
+  reshape there shrinks the zoomed pane to its saved cell and regrows it:
+  `kill-pane` runs `window_push_zoom`/`window_pop_zoom` (`server-fn.c`), and
+  `select-layout`/`resize-window` unzoom before the zoom assert re-zooms. On
+  the main screen the shrink pushes rows into history and the regrow pulls
+  them back, so the rows return in place. On the alternate screen there is no
+  `GRID_HISTORY`: `screen_resize_y` deletes rows from the top when the cursor
+  is low and the regrow adds blank rows at the bottom, so held content shifts
+  up until the seed. Measured on scratch tmux next-3.9, 80x45, top pane
+  zoomed, rows `L01`..`L45`, cursor on row 45, hidden pane killed: the main
+  screen keeps `L01 L02 L03` first, a held alternate screen shows `L24 L25
+  L26`. The zoom-ON transition (remote zoomed, local not yet) still holds
+  `remoteActive` only, by the `zoomHides` rule. The `if -F` zoom assert is
+  unchanged.
 - **Floats.** Not held and not reshaped by the pass loop.
 - **Layout presets, border drags (#787, #797, #823).** A tiled drag already
   reshaped the local panes, so their dims equal the target and nothing is
@@ -277,18 +295,24 @@ on a reshape.
   banner. A `tmux` wrapper stalls the daemon's local `select-layout` for 1.5 s,
   as the #808 case does, so the post-kill window is deterministic rather than
   ~20 ms. The test kills the neighbour on the remote and samples the survivor
-  until it settles. Oracle: every non-blank row (trailing spaces trimmed) of
-  every sample is a row of the pre-close or the settled frame. Red on
+  until it settles. Oracle: positional: row i (trailing spaces trimmed) of
+  every sample is blank or row i of the pre-close or the settled frame. The
+  slow wrapper writes a stall marker, which names the samples taken during
+  the stall, so the test asserts it sampled the stalled window. Red on
   origin/main: the stalled frame shows `LOCALJUNK` rows. Green with the hold.
+- **Bats, zoomed**: `a zoomed mirror keeps the zoomed pane's rows in place
+  when the remote closes the hidden pane (#1002)`. The zoomed pane's rows
+  stay in their positions across the close (no hold, so the main-screen
+  push/pop restores them in place).
 - **Go unit tests.**
   - Hold bytes and the read parse: count split, id mismatch, short reply,
-    `alternate-screen` off, already on the alternate screen.
+    `alternate-screen` off, already on the alternate screen, dead pane.
   - Pump: a hold is written as output after the predictor drop. A seed clears
     the held state, so a release after it writes nothing. A release with
     nothing written since the hold writes `ESC[?1049l` and raises `dropped`.
     A hold dropped to a full buffer reports false and is not released.
   - `reconcileSnapshot` on a close sends the read and the hold before
     `kill-pane`, and the barrier poll before the reshape. A refused
-    `select-layout` sends a release. A zoomed reshape holds only the zoomed
-    pane. A geometry-only pass skips panes whose dims do not change.
+    `select-layout` sends a release. A locally zoomed window holds nothing; the
+    zoom-ON transition holds only `remoteActive`. A geometry-only pass skips panes whose dims do not change.
 - **Existing remote suites pass unchanged (AC3).**

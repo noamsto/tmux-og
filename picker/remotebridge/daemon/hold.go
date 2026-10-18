@@ -19,7 +19,8 @@ var (
 
 // holdHeaderFormat is the per-pane header preceding each capture in a hold
 // read. Pipe-delimited: tmux rewrites tabs and newlines for a non-UTF-8 client.
-const holdHeaderFormat = "#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}"
+// pane_dead trails so the geometry fields keep their positions.
+const holdHeaderFormat = "#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}"
 
 // holdReadArgs batches, for every local pane, a header line and the pane's
 // styled visible rows into one tmux invocation, so a reshape pays one fork
@@ -71,7 +72,7 @@ func parseHoldRead(out string, locals, remoteIDs []string) []holdRead {
 			break
 		}
 		f := strings.Split(lines[0], "|")
-		if len(f) != 7 || f[0] != remoteIDs[i] {
+		if len(f) != 8 || f[0] != remoteIDs[i] {
 			break
 		}
 		var n [4]int
@@ -89,7 +90,7 @@ func parseHoldRead(out string, locals, remoteIDs []string) []holdRead {
 		}
 		reads = append(reads, holdRead{
 			local:    local,
-			holdable: f[1] == "0" && f[2] == "1",
+			holdable: f[1] == "0" && f[2] == "1" && f[7] == "0",
 			w:        n[0],
 			h:        n[1],
 			cx:       n[2],
@@ -127,17 +128,22 @@ func holdBytes(rows []string, cx, cy int) []byte {
 // returns the sinks it held: each is owed a release once the pass is over.
 //
 // Only a pane present on both sides of the pass is a candidate (a removed pane
-// is not reshaped, an appended one has nothing on screen yet), and in a zoomed
-// window only the zoomed pane, the one pane the pass reseeds. The read rules
-// out the rest: a pane already on the alternate screen never reflows, and one
-// with alternate-screen off cannot be held.
+// is not reshaped, an appended one has nothing on screen yet), and when the
+// remote zooms a pane the local window does not yet show zoomed, only that
+// pane, the one pane the pass reseeds. The read rules out the rest: a pane
+// already on the alternate screen never reflows, one with alternate-screen off
+// cannot be held, and a dead pane's renderer will never write the hold.
 //
 // force covers the reshapes whose final dims equal the target: every
-// structural op, and a zoomed geometry-only pass, whose select-layout unzooms
-// and whose zoom assert re-zooms. Either shrinks the zoomed pane and regrows
-// it, and the regrow reflows.
+// structural op shrinks a pane and regrows it, and the regrow reflows.
+//
+// A window already zoomed locally is never held: each reshape there shrinks
+// the zoomed pane to its saved cell and regrows it. On the main screen the
+// shrink pushes rows into history and the regrow pulls them back unchanged; the
+// alternate screen has no history, so the shrink drops rows from the top and
+// the regrow adds blanks at the bottom, shifting the content up until the seed.
 func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, structural, zoomed bool, remoteActive string, router *Router) []*outputSink {
-	if cfg.LocalTmuxOut == nil {
+	if cfg.LocalTmuxOut == nil || w.appliedZoom {
 		return nil
 	}
 	zoomHides := zoomed && indexOf(newRemote, remoteActive) >= 0
@@ -175,7 +181,7 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 		fmt.Fprintf(os.Stderr, "daemon: hold read: %v\n", err)
 		return nil
 	}
-	force := structural || (zoomed && L.Raw != w.layout)
+	force := structural
 	var held []*outputSink
 	var heldLocals []string
 	reads := parseHoldRead(out, locals, ids)
