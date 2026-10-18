@@ -798,6 +798,8 @@ if [[ -n $placed ]]; then
 	export OG_DAEMON_RENDERER="$renderer"
 	export OG_DAEMON_REFLOW="$reflow"
 	export OG_DAEMON_SELECT="$selector"
+	predict="$(tmux show-options -gqv @og_bridge_predict 2>/dev/null || true)"
+	export OG_DAEMON_PREDICT="$predict"
 	unset OG_DAEMON_REMOTE_OPEN
 	client_target=()
 	[[ -n ${TMUX_PANE:-} ]] && client_target=(-t "$TMUX_PANE")
@@ -993,6 +995,8 @@ export OG_DAEMON_SOCK="$sock"
 export OG_DAEMON_RENDERER="$renderer"
 export OG_DAEMON_REFLOW="$reflow"
 unset OG_DAEMON_SELECT
+predict="$(tmux show-options -gqv @og_bridge_predict 2>/dev/null || true)"
+export OG_DAEMON_PREDICT="$predict"
 # This very script, so a hand-off (a remote switch-client the daemon pinned back)
 # re-enters the launcher at the revision the daemon itself came from, never
 # whatever a later home-manager switch left on PATH (#336).
