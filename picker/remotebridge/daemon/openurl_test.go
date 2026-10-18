@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -697,5 +698,75 @@ func TestOpenURLBoundAgainstLiveTmux(t *testing.T) {
 	run("set-option", "-a", "-t", "w", openURLOpt, "x")
 	if got := seed(); got != openOversized {
 		t.Errorf("openValueMaxLen+1 bytes: seed = %d bytes, want %q", len(got), openOversized)
+	}
+}
+
+func TestURLOpenersOnOneMachineOpenARecordOnce(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claims")
+	p := &openerProbe{}
+	a, b := p.opener("$1"), p.opener("$1")
+	a.claim = newOpenClaimer(dir, time.Now)
+	b.claim = newOpenClaimer(dir, time.Now)
+	a.handle("$1", " 1-1|http://a")
+	b.handle("$1", " 1-1|http://a")
+	if len(p.opened) != 1 {
+		t.Fatalf("opened %v, want exactly one open", p.opened)
+	}
+	// A different nonce with the same URL is a new open.
+	b.handle("$1", " 1-1|http://a 1-2|http://a")
+	if len(p.opened) != 2 {
+		t.Fatalf("opened %v, want a second open for a new nonce", p.opened)
+	}
+}
+
+func TestOpenClaimerSweepsOldMarkersAndRejectsOpenDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claims")
+	now := time.Now()
+	claim := newOpenClaimer(dir, func() time.Time { return now })
+	if !claim("h", "$1", "1-1") || claim("h", "$1", "1-1") {
+		t.Fatal("first claim should win and the repeat lose")
+	}
+	now = now.Add(openClaimTTL + 2*openClaimSweepGap)
+	if !claim("h", "$1", "1-1") {
+		t.Fatal("a marker past the TTL should have been swept")
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !claim("h", "$1", "1-1") {
+		t.Fatal("an untrusted dir should fail open")
+	}
+}
+
+func TestOpenClaimerFailsOpenOnSymlinkedDir(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	claim := newOpenClaimer(link, time.Now)
+	for range 2 {
+		if !claim("h", "$1", "1-1") {
+			t.Fatal("a symlinked dir should fail open")
+		}
+	}
+}
+
+func TestURLOpenerClaimsOnlyWithinRateBudget(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claims")
+	p := &openerProbe{}
+	o := p.opener("$1")
+	o.claim = newOpenClaimer(dir, time.Now)
+	o.handle("$1", openLog(1, 2*openMaxPerReport))
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != openMaxPerReport {
+		t.Fatalf("%d markers, want %d: suppressed records must not be claimed", len(ents), openMaxPerReport)
 	}
 }

@@ -485,8 +485,16 @@ side is `picker/remotebridge/daemon/openurl.go`.
   replace it, and within one subscription tick only the last survives — a
   bulk open straddling the cap can lose all but its last URL. Two
   controllers mirroring the same remote session both subscribe
-  independently, so both receive every report and both open each URL — not
-  guarded, a duplicate open on each controller by design. `@og_open_client`
+  independently, so both receive every report and each machine opens each
+  URL — a duplicate across machines by design. On ONE machine, however,
+  every daemon mirroring the session (N `--into --window` daemons, a
+  dedicated plus a plain `--into` mirror) gets the same report, so `handle`
+  claims each record with an `O_EXCL` marker (`newOpenClaimer`, sha256 of
+  host+session+nonce) in `$TMPDIR/tmux-og-open-<uid>` (0700, Lstat
+  owner-checked; an untrusted or unwritable dir fails open — a duplicate tab
+  beats a dropped URL) and only the winner opens (#994). The key is the
+  nonce, never the URL, so the same URL under a new nonce opens again.
+  Markers older than 24h are swept at most hourly. The claim comes after the rate gate, so a rate-limited record is never claimed; dedupe assumes the daemons share `$TMPDIR` (a different one per daemon reads as another machine). `@og_open_client`
   holds only the name of the last to register, and that name is all
   `og-open`'s bridged check reads; if that controller disconnects first,
   `og-open` stops seeing a matching registered client and falls back to the
