@@ -444,6 +444,101 @@ func TestPredictorErase(t *testing.T) {
 	}
 }
 
+// An erase and a char echoed in one payload leave the cursor past both, which
+// the head-by-head settle reads as the erase still pending.
+func TestPredictorCoalescedEcho(t *testing.T) {
+	t.Run("erase then char", func(t *testing.T) {
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+		h.confirm("a")
+		h.keys("b")
+		h.output("b")
+		h.keys("\x7f")
+		h.keys("c")
+		h.output("\b \bc")
+		if len(h.p.preds) != 0 {
+			t.Errorf("preds = %+v after the coalesced echo", h.p.preds)
+		}
+		h.settled()
+	})
+	t.Run("char then erase", func(t *testing.T) {
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+		h.confirm("a")
+		h.keys("b")
+		h.output("b")
+		h.keys("c")
+		h.keys("\x7f")
+		h.output("c\b \b")
+		h.keys("d")
+		h.output("d")
+		if len(h.p.preds) != 0 {
+			t.Errorf("preds = %+v after d echoed", h.p.preds)
+		}
+		h.settled()
+		if out := h.keys("e"); !bytes.Contains(out, []byte("\x1b[1;6H\x1b[0;2me")) {
+			t.Errorf("key after the settle = %q, want a paint of e at column 5", out)
+		}
+	})
+	// A char erased again nets a blank the cursor already sits on: no echo
+	// evidence, so a silent prompt must not confirm the epoch.
+	t.Run("net blank does not confirm", func(t *testing.T) {
+		h := newHarness(t, "Password: ", 10, 0, harnessOpts{})
+		h.keys("c")
+		h.keys("\x7f")
+		h.output("\x1b[m")
+		if h.p.confirmed != -1 {
+			t.Errorf("confirmed = %d with nothing echoed", h.p.confirmed)
+		}
+		if out := h.keys("x"); out != nil {
+			t.Errorf("key at a silent prompt painted %q", out)
+		}
+	})
+}
+
+// A screen title shifts vt's cursor unless the model drops it; the paint must
+// land where the remote's cursor is.
+func TestPredictorScreenTitle(t *testing.T) {
+	h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+	h.p.onOutput([]byte("\x1bkzsh\x1b\\"))
+	h.keys("l")
+	h.p.onOutput([]byte("l"))
+	if out := h.p.onKeys([]byte("s")); !bytes.Contains(out, []byte("\x1b[1;4H\x1b[0;2ms")) {
+		t.Errorf("paint = %q, want a faint s at column 3", out)
+	}
+}
+
+func TestPredictorREPFloodDropsModel(t *testing.T) {
+	h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+	h.confirm("a")
+	model := h.model()
+	start := time.Now()
+	h.p.onOutput([]byte(strings.Repeat("\x1b[65535b", 200)))
+	if d := time.Since(start); d > 200*time.Millisecond {
+		t.Errorf("REP flood took %v", d)
+	}
+	if h.p.model != nil {
+		t.Fatal("model survived a REP over the pane width")
+	}
+	requireDrained(t, model)
+}
+
+func TestPredictorAltScreenMidStream(t *testing.T) {
+	h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+	h.confirm("a")
+	h.keys("b")
+	h.requireFaint(3, 0, "b")
+	h.output("\x1b[?1049h\x1b[H\x1b[2J")
+	if len(h.p.preds) != 0 {
+		t.Errorf("preds = %+v on the alt screen", h.p.preds)
+	}
+	for _, k := range []string{"j", "k"} {
+		if out := h.keys(k); out != nil {
+			t.Errorf("keys(%q) on the alt screen = %q", k, out)
+		}
+	}
+	h.output("jk")
+	h.settled()
+}
+
 func TestPredictorShutdown(t *testing.T) {
 	h := newHarness(t, "$ ", 2, 0, harnessOpts{})
 	h.confirm("a")
@@ -600,6 +695,18 @@ func TestStreamGround(t *testing.T) {
 		{"APC BEL does not end", []string{"\x1b_Gq=1\x07"}, false},
 		{"APC ST", []string{"\x1b_Gq=1\x1b\\"}, true},
 		{"DCS BEL does not end", []string{"\x1bPtmux;\x07"}, false},
+		{"DCS passthrough wrapped OSC", []string{"\x1bPtmux;\x1b\x1b]0;x\x07"}, false},
+		{"DCS passthrough inner ST", []string{"\x1bPtmux;\x1b\x1b_Gx\x1b\x1b\\"}, false},
+		{"DCS passthrough outer ST", []string{"\x1bPtmux;\x1b\x1b_Gx\x1b\x1b\\\x1b\\"}, true},
+		{"DCS ESC non-backslash is data", []string{"\x1bPq\x1b[m"}, false},
+		{"DCS ST split", []string{"\x1bPq", "\x1b", "\\"}, true},
+		{"CAN in DCS data", []string{"\x1bPq#0\x18abc"}, false},
+		{"CAN after DCS ESC", []string{"\x1bPq\x1b\x18"}, false},
+		{"CAN before DCS final", []string{"\x1bP1\x18abc"}, true},
+		{"ESC k open", []string{"\x1bkti"}, false},
+		{"ESC k BEL does not end", []string{"\x1bkt\x07"}, false},
+		{"ESC k ST", []string{"\x1bkt", "\x1b\\"}, true},
+		{"ESC k ended by CSI", []string{"\x1bkt\x1b[1m"}, true},
 		{"string ESC non-backslash starts CSI", []string{"\x1b]0;t\x1b["}, false},
 		{"string ESC non-backslash final", []string{"\x1b]0;t\x1b[m"}, true},
 		{"string ESC then ESC final", []string{"\x1b_x\x1b7"}, true},

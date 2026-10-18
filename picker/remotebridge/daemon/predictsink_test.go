@@ -249,6 +249,23 @@ func TestPredictSinkCloseWhilePaintedUnpaints(t *testing.T) {
 	}
 }
 
+// TestPredictSinkWriteErrorClosesModel: a pump that exits on a renderer write
+// error closes the model too.
+func TestPredictSinkWriteErrorClosesModel(t *testing.T) {
+	s, peer := newPipeSink(t)
+	local, ref := newTermEmu(t, 80, 24), newTermEmu(t, 80, 24)
+	primeAC1(t, s, peer, local, ref)
+	m := s.pred.model
+	if m == nil {
+		t.Fatal("no model after a paint")
+	}
+
+	_ = peer.Close()
+	_, _ = s.Write([]byte("s"))
+	s.Wait()
+	requireDrained(t, m)
+}
+
 func bareSink(buf int) *outputSink {
 	s := &outputSink{ch: make(chan sinkFrame, buf)}
 	s.pred = newPredictor(newPredictShared(PredictOn), func() {}, s.isPaused, s.keysLost.Load)

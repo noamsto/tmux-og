@@ -21,6 +21,11 @@ type predictModel struct {
 	// slotUsed is set once the app saves the cursor itself (ESC 7 / CSI s):
 	// the predictor's paint uses the same single save slot.
 	slotUsed bool
+	// poisoned is set by a sequence too costly to model; every later feed fails.
+	poisoned bool
+
+	title titleFilter
+	fbuf  []byte
 
 	// drained closes when the goroutine servicing the emulator's reply pipe exits.
 	drained chan struct{}
@@ -40,6 +45,15 @@ func newPredictModel(w, h int, seed []byte, m predictModes) *predictModel {
 	})
 	e.RegisterCsiHandler('s', func(ansi.Params) bool {
 		pm.slotUsed = true
+		return false
+	})
+	// vt prints REP's char n times, n up to 65535, so a few remote bytes
+	// would cost the pump seconds.
+	e.RegisterCsiHandler('b', func(params ansi.Params) bool {
+		if n, _, _ := params.Param(0, 1); n > w {
+			pm.poisoned = true
+			return true
+		}
 		return false
 	})
 	// SetCallbacks replaces the whole set, so it is called once, here.
@@ -109,8 +123,9 @@ func (pm *predictModel) feed(p []byte) (ok bool) {
 			ok = false
 		}
 	}()
-	_, err := pm.e.Write(p)
-	return err == nil
+	pm.fbuf = pm.title.filter(pm.fbuf[:0], p)
+	_, err := pm.e.Write(pm.fbuf)
+	return err == nil && !pm.poisoned
 }
 
 // close ends the drain goroutine and is safe to repeat. It closes the reply
@@ -136,3 +151,49 @@ func (pm *predictModel) cursor() (x, y int) {
 func (pm *predictModel) alt() bool { return pm.e.IsAltScreen() }
 
 func (pm *predictModel) cell(x, y int) *uv.Cell { return pm.e.CellAt(x, y) }
+
+const (
+	tfText uint8 = iota
+	tfEsc
+	tfTitle
+)
+
+// titleFilter drops the body of tmux's ESC k window-rename string, which vt
+// would print as text. As in tmux, the title ends at CAN, SUB or any ESC, and
+// a C0 control after an ESC executes without ending it. Only the k and the
+// body are dropped: the ESCs around them may end a string vt is still in.
+type titleFilter struct{ st uint8 }
+
+func (f *titleFilter) filter(dst, p []byte) []byte {
+	for _, c := range p {
+		switch f.st {
+		case tfTitle:
+			switch c {
+			case 0x1b:
+				f.st = tfEsc
+			case 0x18, 0x1a:
+				f.st = tfText
+			default:
+				continue
+			}
+		case tfEsc:
+			switch c {
+			case 'k':
+				f.st = tfTitle
+				continue
+			case 0x18, 0x1a:
+				f.st = tfText
+			default:
+				if c >= 0x20 {
+					f.st = tfText
+				}
+			}
+		default:
+			if c == 0x1b {
+				f.st = tfEsc
+			}
+		}
+		dst = append(dst, c)
+	}
+	return dst
+}

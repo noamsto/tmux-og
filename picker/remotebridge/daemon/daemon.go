@@ -2927,6 +2927,10 @@ func (s *outputSink) start(conn net.Conn) {
 	}
 	go func() {
 		defer close(s.done)
+		if s.pred != nil {
+			// Every write-error return would otherwise leak the model.
+			defer s.pred.release()
+		}
 		gfx := s.gfx
 		// kn strips the terminal queries a remote pane's occupant asked ITS
 		// terminal — key negotiation (#338), cursor position, colours, window
@@ -2963,8 +2967,6 @@ func (s *outputSink) start(conn net.Conn) {
 						}
 						// The unpaint precedes the tail: the paint sits after
 						// the last byte written, the tail was never written.
-						// shutdown also closes the model, whose drain
-						// goroutine and emulator would otherwise leak.
 						if s.pred != nil {
 							tail = append(s.pred.shutdown(), tail...)
 						}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
@@ -306,6 +307,9 @@ func (p *predictor) onOutput(b []byte) []byte {
 // resolve settles predictions in order, using the model cursor as the "has the
 // remote processed this key yet" signal; the first pending one stops it.
 func (p *predictor) resolve(m *predictModel) {
+	if p.settlePrefix(m) {
+		return
+	}
 	cx, cy := m.cursor()
 	for len(p.preds) > 0 {
 		pr := p.preds[0]
@@ -329,6 +333,59 @@ func (p *predictor) resolve(m *predictModel) {
 		p.preds = p.preds[1:]
 		p.confirmed = max(p.confirmed, pr.epoch)
 	}
+}
+
+// settlePrefix settles the longest run of predictions that ends where the
+// model cursor is, judging each cell by the last prediction touching it. An
+// erase and a char echoed in one payload leave the cursor past both, which
+// resolve's head-by-head loop reads as the erase still pending. The run must
+// leave some typed char standing: a char erased again ends where the cursor
+// already was, so with nothing echoed yet it would match an unchanged screen.
+func (p *predictor) settlePrefix(m *predictModel) bool {
+	preds := p.preds
+	if len(preds) == 0 {
+		return false
+	}
+	cx, cy := m.cursor()
+	k := -1
+	for i, pr := range preds {
+		if pr.curX == cx && pr.curY == cy {
+			k = i
+		}
+	}
+	if k < 0 {
+		return false
+	}
+	run := preds[:k+1]
+	echoed, match := false, true
+	epoch := p.confirmed
+	for i, pr := range run {
+		epoch = max(epoch, pr.epoch)
+		if slices.ContainsFunc(run[i+1:], func(o prediction) bool { return o.x == pr.x && o.y == pr.y }) {
+			continue
+		}
+		c := m.cell(pr.x, pr.y)
+		switch {
+		case c == nil:
+			match = false
+		case pr.ch != 0:
+			echoed = true
+			match = match && c.Content == string(pr.ch)
+		default:
+			match = match && (c.Content == " " || c.Content == "")
+		}
+	}
+	if !echoed {
+		return false
+	}
+	if !match {
+		p.preds = nil
+		p.epoch++
+		return true
+	}
+	p.preds = preds[k+1:]
+	p.confirmed = epoch
+	return true
 }
 
 func joinBytes(pre, b, post []byte) []byte {
@@ -390,6 +447,13 @@ func (p *predictor) shutdown() []byte {
 	return out
 }
 
+// release stops the timer and closes the model when the pump exits, after
+// shutdown or on a renderer write error; it is safe to repeat.
+func (p *predictor) release() {
+	p.stopTimer()
+	p.dropModel()
+}
+
 func (p *predictor) timerC() <-chan time.Time {
 	if p == nil || p.timer == nil {
 		return nil
@@ -439,8 +503,11 @@ const (
 	sgEsc
 	sgCSI
 	sgOSC    // ends at BEL or ST
-	sgString // DCS, APC, PM, SOS: ends at ST only
+	sgString // APC, PM, SOS and screen's ESC k title: ends at ST only
 	sgStringEsc
+	sgDCSEnter // DCS before its final byte, where CAN and SUB still cancel
+	sgDCS      // DCS data: ESC then anything but a backslash is more data
+	sgDCSEsc
 )
 
 // streamGround tracks whether a byte stream ends at a sequence boundary. It
@@ -461,6 +528,20 @@ func (g *streamGround) observe(b []byte) {
 }
 
 func (g *streamGround) step(c byte) {
+	switch g.st {
+	case sgDCS:
+		if c == 0x1b {
+			g.st = sgDCSEsc
+		}
+		return
+	case sgDCSEsc:
+		if c == '\\' {
+			g.st = sgGround
+		} else {
+			g.st = sgDCS
+		}
+		return
+	}
 	if c == 0x18 || c == 0x1a {
 		g.st, g.utf8Left = sgGround, 0
 		return
@@ -497,6 +578,13 @@ func (g *streamGround) step(c byte) {
 		case c >= 0x40 && c <= 0x7e:
 			g.st = sgGround
 		}
+	case sgDCSEnter:
+		switch {
+		case c == 0x1b:
+			g.st = sgEsc
+		case c >= 0x40 && c <= 0x7e:
+			g.st = sgDCS
+		}
 	case sgOSC, sgString:
 		switch {
 		case c == 0x1b:
@@ -515,7 +603,9 @@ func (g *streamGround) escByte(c byte) {
 		g.st = sgCSI
 	case c == ']':
 		g.st = sgOSC
-	case c == 'P' || c == '_' || c == '^' || c == 'X':
+	case c == 'P':
+		g.st = sgDCSEnter
+	case c == '_' || c == '^' || c == 'X' || c == 'k':
 		g.st = sgString
 	case c >= 0x30 && c <= 0x7e:
 		g.st = sgGround

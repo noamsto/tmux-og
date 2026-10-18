@@ -217,6 +217,73 @@ func TestPredictModelDSRDoesNotBlock(t *testing.T) {
 	}
 }
 
+// tmux takes ESC k as a window-rename string ended by any ESC; vt would print
+// it. oh-my-zsh emits one at every prompt under TERM=tmux*/screen*.
+func TestPredictModelScreenTitle(t *testing.T) {
+	cases := []struct {
+		name   string
+		chunks []string
+		wantX  int
+		text   string
+	}{
+		{"ST", []string{"\x1bkcd foo\x1b\\"}, 2, "$ "},
+		{"split in title", []string{"\x1bkcd", " foo\x1b\\"}, 2, "$ "},
+		{"split after ending ESC", []string{"\x1bkcd foo\x1b", "\\"}, 2, "$ "},
+		{"split after opening ESC", []string{"\x1b", "kcd foo\x1b\\"}, 2, "$ "},
+		{"between text", []string{"ab\x1bkt\x1b\\c"}, 5, "$ abc"},
+		{"ended by a new sequence", []string{"\x1bkt\x1b[1mx"}, 3, "$ x"},
+		{"ended by CAN", []string{"\x1bkt\x18x"}, 3, "$ x"},
+		{"after ESC ESC", []string{"\x1b\x1bkt\x1b\\x"}, 3, "$ x"},
+		{"C0 between ESC and k", []string{"\x1b\bkt\x1b\\x"}, 2, "$x"},
+		{"OSC ST kept", []string{"\x1b]0;t\x1b", "\\x"}, 3, "$ x"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := plainModes(5)
+			m.cx = 2
+			pm := newTestModel(t, 20, 5, "$ ", m)
+			for _, ch := range c.chunks {
+				if !pm.feed([]byte(ch)) {
+					t.Fatalf("feed(%q) failed", ch)
+				}
+			}
+			if x, y := pm.cursor(); x != c.wantX || y != 0 {
+				t.Errorf("cursor = (%d,%d), want (%d,0)", x, y, c.wantX)
+			}
+			for i, want := range c.text {
+				if got := mustCell(t, pm, i, 0).Content; got != string(want) {
+					t.Errorf("cell(%d,0) = %q, want %q", i, got, want)
+				}
+			}
+		})
+	}
+	t.Run("pen after title", func(t *testing.T) {
+		pm := newTestModel(t, 20, 5, "", plainModes(5))
+		pm.feed([]byte("\x1bkt\x1b[1mx"))
+		if c := mustCell(t, pm, 0, 0); c.Style.Attrs&uv.AttrBold == 0 {
+			t.Errorf("cell(0,0) %+v, want bold: the ESC ending the title starts a CSI", c.Style)
+		}
+	})
+}
+
+// REP repeats the last char n times, n up to 65535: one over the pane's
+// width costs the model, not seconds of the pump.
+func TestPredictModelREP(t *testing.T) {
+	pm := newTestModel(t, 20, 5, "", plainModes(5))
+	if !pm.feed([]byte("a\x1b[5b")) {
+		t.Fatal("feed of an in-width REP failed")
+	}
+	if x, _ := pm.cursor(); x != 6 {
+		t.Errorf("cursor x = %d after a REP of 5, want 6", x)
+	}
+	if pm.feed([]byte("\x1b[21b")) {
+		t.Error("feed of a REP over the width succeeded")
+	}
+	if pm.feed([]byte("b")) {
+		t.Error("feed succeeded after a poisoning REP")
+	}
+}
+
 // Step 3 refuses to predict onto any cell whose Width is not 1.
 func TestPredictModelWideCellRepresentation(t *testing.T) {
 	pm := newTestModel(t, 20, 2, "漢a", plainModes(2))
