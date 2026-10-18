@@ -1,14 +1,19 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -101,9 +106,12 @@ type urlOpener struct {
 	session string
 	seen    map[string]bool
 	open    func(string) error
-	notify  func(string)
-	launch  func(func())
-	now     func() time.Time
+	// claim reports whether this opener is the first on the machine to take a
+	// record; nil takes every record.
+	claim  func(host, session, nonce string) bool
+	notify func(string)
+	launch func(func())
+	now    func() time.Time
 	// spent is the token bucket's drain since refilled, so the zero value is
 	// a full bucket.
 	spent    int
@@ -132,6 +140,7 @@ func newURLOpener(cfg Config, session string, open func(string) error) *urlOpene
 		session: session,
 		seen:    map[string]bool{},
 		open:    open,
+		claim:   newOpenClaimer(openClaimDir(), time.Now),
 		notify:  func(m string) { notifyLocal(cfg, m) },
 		launch:  func(f func()) { go f() },
 		now:     time.Now,
@@ -238,6 +247,10 @@ func (o *urlOpener) handle(sess, v string) {
 			suppressed++
 			continue
 		}
+		if o.claim != nil && !o.claim(o.host, o.session, r.nonce) {
+			o.spent--
+			continue
+		}
 		opened++
 		o.launch(func() {
 			if err := o.open(r.url); err != nil {
@@ -271,6 +284,73 @@ func (o *urlOpener) takeToken() bool {
 	}
 	o.spent++
 	return true
+}
+
+const (
+	openClaimTTL      = 24 * time.Hour
+	openClaimSweepGap = time.Hour
+)
+
+// openClaimDir is the per-user directory of claim markers, shared by every
+// daemon of this user on this machine.
+func openClaimDir() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("tmux-og-open-%d", os.Getuid()))
+}
+
+// newOpenClaimer returns a claim func over dir. Every daemon mirroring one
+// remote session receives the same og_open report, so a record is opened by
+// whichever daemon creates its marker first (O_EXCL); another controller
+// machine has its own dir and still opens. An unusable dir fails open: a
+// duplicate tab beats a dropped URL. Markers older than openClaimTTL are swept
+// at most once per openClaimSweepGap, by mtime.
+func newOpenClaimer(dir string, now func() time.Time) func(host, session, nonce string) bool {
+	var mu sync.Mutex
+	var swept time.Time
+	return func(host, session, nonce string) bool {
+		if !openClaimDirOK(dir) {
+			return true
+		}
+		mu.Lock()
+		if now().Sub(swept) >= openClaimSweepGap {
+			swept = now()
+			sweepOpenClaims(dir, now().Add(-openClaimTTL))
+		}
+		mu.Unlock()
+		sum := sha256.Sum256([]byte(host + "\x00" + session + "\x00" + nonce))
+		f, err := os.OpenFile(filepath.Join(dir, hex.EncodeToString(sum[:16])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // dir is the owner-checked claim dir; the name is a hex digest
+		if err != nil {
+			return !errors.Is(err, os.ErrExist)
+		}
+		_ = f.Close()
+		return true
+	}
+}
+
+// openClaimDirOK creates dir 0700 if missing and accepts it only when it is a
+// real directory owned by this user and closed to others: the temp dir is
+// shared, and a squatter could otherwise pre-claim records to suppress opens.
+func openClaimDirOK(dir string) bool {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 != 0 {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
+}
+
+func sweepOpenClaims(dir string, before time.Time) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if fi, err := e.Info(); err == nil && fi.ModTime().Before(before) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 // BrowserOpener is the production Config.OpenURL for goos.
