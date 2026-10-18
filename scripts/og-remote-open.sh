@@ -288,6 +288,17 @@ if [[ -n $win && ! $win =~ ^@?[0-9]+$ ]]; then
 	exit 1
 fi
 
+# The daemon refuses a bad --predict only after the mirror session exists and the
+# client sits on the loading pane, so reject it here, before any ssh or session.
+predict="$(tmux show-options -gqv @og_bridge_predict 2>/dev/null || true)"
+case $predict in
+'' | auto | on | off) ;;
+*)
+	printf 'og-remote-open: @og_bridge_predict must be auto, on or off, got: %q\n' "$predict" >&2
+	exit 1
+	;;
+esac
+
 # A caller-given window on a plain live-session open is a focus hint the probe
 # validates; a restore/new-dir open has no live session to validate against,
 # and with no session named there is nothing a stale index could point into.
@@ -798,7 +809,6 @@ if [[ -n $placed ]]; then
 	export OG_DAEMON_RENDERER="$renderer"
 	export OG_DAEMON_REFLOW="$reflow"
 	export OG_DAEMON_SELECT="$selector"
-	predict="$(tmux show-options -gqv @og_bridge_predict 2>/dev/null || true)"
 	export OG_DAEMON_PREDICT="$predict"
 	unset OG_DAEMON_REMOTE_OPEN
 	client_target=()
@@ -995,7 +1005,6 @@ export OG_DAEMON_SOCK="$sock"
 export OG_DAEMON_RENDERER="$renderer"
 export OG_DAEMON_REFLOW="$reflow"
 unset OG_DAEMON_SELECT
-predict="$(tmux show-options -gqv @og_bridge_predict 2>/dev/null || true)"
 export OG_DAEMON_PREDICT="$predict"
 # This very script, so a hand-off (a remote switch-client the daemon pinned back)
 # re-enters the launcher at the revision the daemon itself came from, never
