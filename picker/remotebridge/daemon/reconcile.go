@@ -146,10 +146,10 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 
 	// Released on every exit, refused reshape and failed seed included. For a
 	// sink a seed already released, the pump drops it.
-	var held []*outputSink
+	var held []heldPane
 	defer func() {
-		for _, s := range held {
-			s.release()
+		for _, h := range held {
+			h.sink.release()
 		}
 	}()
 
@@ -160,6 +160,18 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 	converged := false
 passes:
 	for range maxReconcilePasses {
+		// An earlier pass's hold its seed has not released yet (a refused
+		// select-layout sends no seed; a seed can fail or still be in flight)
+		// would sit through this pass's reshape, which may shrink and regrow it,
+		// while this pass's skip test sees only its own ops. So it is released
+		// and confirmed off the alternate screen first. Unconfirmed, this pass
+		// holds nothing and reshapes as it would without holds.
+		holdOK := true
+		if len(held) > 0 {
+			holdOK = releaseHeld(cfg, held)
+			held = nil
+		}
+
 		newRemote := RemotePaneOrder(L)
 		ops := planPaneOps(remote, newRemote)
 		structural := len(ops.Remove) > 0 || len(ops.Append) > 0 || len(ops.Swaps) > 0
@@ -167,9 +179,12 @@ passes:
 		// Ahead of the pass's first local reshape: tmux reflows a main-screen
 		// pane the instant the reshape below lands, from a local grid and
 		// history the remote never had, and leaves the result up until the
-		// reseed. On the alternate screen it does not reflow at all. Passes that
-		// can shrink a held pane are skipped inside.
-		held = append(held, holdReshaped(cfg, w, L, remote, newRemote, ops, zoomed, router)...)
+		// reseed. On the alternate screen it does not reflow at all. Passes
+		// where a held pane could shrink and then regrow before its seed are
+		// skipped inside.
+		if holdOK {
+			held = holdReshaped(cfg, w, L, remote, newRemote, ops, zoomed, router)
+		}
 
 		switch {
 		case ops.Reset:

@@ -106,10 +106,11 @@ tmux never reflows a pane on the alternate screen
 (`screen_resize(&wp->base, sx, sy, wp->base.saved_grid == NULL)`), and the
 alternate grid has no history (`screen_alternate_on` clears `GRID_HISTORY`).
 A held pane that grows keeps its rows where they were, and the gained area is
-blank. A held pane that shrinks loses rows (`screen_resize_y` deletes from
-the top when the cursor is low, and a later regrow adds blank rows at the
-bottom), so a hold is only taken on a pass where no held pane's height can
-drop (see "Where"). The seed already begins with `ESC[?1049l` (`render.Seed`),
+blank. A single net shrink looks the same on both screens and matches what the
+remote did, but a shrink followed by a regrow does not (`screen_resize_y`
+deletes from the top when the cursor is low, and the regrow adds blank rows at
+the bottom), so a hold is only taken on a pass where no held pane shrinks and
+then regrows before its seed (see "Where"). The seed already begins with `ESC[?1049l` (`render.Seed`),
 which restores the main screen, then clears and repaints it from the remote capture.
 The main screen's history survives the round trip.
 
@@ -130,11 +131,12 @@ split, swap, preset, remote resize, zoom transitions and repair-pass
 reconciles. One choke point covers them all, and `holdReshaped` decides there
 whether the pass may hold at all.
 
-**A pass holds only when no held pane's height can drop.** On the main screen a
-shrink pushes rows into history and the regrow restores them exactly. On the
-alternate screen there is no `GRID_HISTORY`, so `screen_resize_y` deletes rows
-from the top when the cursor is low and a regrow adds blank rows at the bottom:
-held content ends up shifted up. `holdReshaped` therefore returns nil (no read,
+**A pass holds only when no held pane shrinks and then regrows before its
+seed.** A single net shrink looks the same on both screens and matches what the
+remote did. A shrink-then-regrow does not: the main screen round-trips the rows
+through history, but the alternate screen has no `GRID_HISTORY`, so
+`screen_resize_y` deletes rows from the top when the cursor is low and the
+regrow adds blank rows at the bottom: held content ends up shifted up. `holdReshaped` therefore returns nil (no read,
 no hold: the pre-hold behaviour) for:
 
 - a pass with `ops.Append`: `split-window` shrinks a pane, and the following
@@ -152,8 +154,9 @@ would shrink heights first.
 Evidence, scratch tmux next-3.9, 80x45: an unzoomed split of the top of a
 2-pane vertical stack (Append plus a swap). Without a hold the bottom pane
 returns `L01..L22`. With a hold a pane returns `L13...` with a blank last row.
-Assessment probes also showed rotate, preset, a remote resize (shrink-y then
-grow-y) and zoom-on violating with the hold.
+Assessment probes also showed rotate/preset/resize/zoom-on violating with the
+hold. Chained passes without a seed in between are the cross-pass path, now
+released at the loop top (see "Release").
 
 Which panes are held. On a pass that may hold, a pane is held only when all of
 these hold:
@@ -162,7 +165,12 @@ these hold:
 - It has a registered, unpaused sink.
 - The pass reseeds it, and either the pass removes a pane (`force` is
   `len(ops.Remove) > 0`: a close-only pass holds every candidate) or the
-  pane's local dims differ from the target (its `L` cell).
+  pane's local dims differ from the target (its `L` cell). `force` holds even
+  a survivor whose final size matches its target: the local `kill-pane` can
+  give the freed space to a different neighbour than the remote did (tmux
+  next-3.9 gives a closed pane's space to the next cell, stock 3.6a and 3.7c
+  to the previous one), so the survivor may have grown and then shrunk back.
+  Pinned by `TestReconcileHoldForceHoldsAnUnchangedSurvivor`.
 - Its local pane reports `alternate_on` 0 and `alternate-screen` on. A pane
   already on the alternate screen never reflows. A pane with the option off
   ignores both `?1049h` and `?1049l` (`screen_write_alternateon`/`off`), so
@@ -208,8 +216,9 @@ reshape only when the remote float changes.
    - A full buffer drops the frame. `hold` reports that, and a dropped hold is
      neither awaited nor released.
 3. **Barrier.** The bytes reach local tmux through the renderer's pty
-   asynchronously. Poll one batched `display-message -p '#{alternate_on}'` for
-   the held panes until all read 1, bounded by `holdWait` (200 ms). Then
+   asynchronously. `awaitAlt(cfg, locals, want)` polls one batched
+   `display-message -p '#{alternate_on}'` for the held panes until all read
+   `want` (1 after a hold, 0 after a release), bounded by `holdWait` (200 ms). Then
    reshape either way. A late hold still shows the pre-close copy at the new
    size, and the seed releases it.
 4. **Release.** The held state is the pump's own, since only the pump knows
@@ -224,8 +233,23 @@ reshape only when the remote float changes.
      `reseedDropped` repaints it from the remote once it drains). Output may have landed on the held screen and is lost with it,
      and `screen_alternate_off` restores the hold-time cursor and pen. Ground
      truth is the only safe state after an unplanned exit.
-   - The release covers the refused `select-layout`, the seed error, a dropped
-     seed, the reset paths and the trailing passes.
+   - The deferred release covers the refused `select-layout`, the seed error,
+     a dropped seed and the reset paths at function exit. It does not cover a
+     hold carried into a later pass of the same call.
+   - **Cross-pass release.** `reconcileSnapshot` can run several passes, and a
+     hold from an earlier pass may not be released yet: a refused
+     `select-layout` without a pane-count desync sends no seed, a seed is
+     dropped or fails, or a seed is still in flight. So at the top of each
+     later pass the daemon releases every still-held sink and awaits
+     `#{alternate_on}` 0 (`awaitAlt`, bounded by `holdWait`) before
+     reshaping. On a timeout it skips holds for that pass and falls back to
+     origin/main behaviour. Residual: a released pane whose seed legitimately
+     put it on the remote's alternate screen keeps `alternate_on` 1, so that
+     pass waits `holdWait` and holds nothing. Pinned by
+     `TestReconcileHoldReleasesBeforeALaterPass`,
+     `TestReconcileHoldReleaseTimeoutSkipsHolds` and the bats case `a hold
+     carried into a later reconcile pass is released before that pass reshapes
+     (#1002)`.
    - The release goes to the sink object that was held. A sink closed since
      drops it, as every closed sink drops frames.
 

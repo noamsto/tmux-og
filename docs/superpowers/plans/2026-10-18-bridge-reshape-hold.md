@@ -111,12 +111,12 @@ New file `daemon/hold.go`, unit tests in `daemon/hold_test.go`.
      regrown although its final dims equal the target. For each parsed pane
      with `holdable` set and (`force` or (w,h) differs from its target): `sink.hold(holdBytes(rows, cx, cy))`. Keep the sinks
      whose `hold` returned true, with their local ids.
-  5. Barrier, its own function `awaitHeld(cfg Config, locals []string) bool`
+  5. Barrier, its own function `awaitAlt(cfg Config, locals []string, want string) bool`
      so tests drive it directly: until `holdWait` elapses, call
      `cfg.LocalTmuxOut(holdPollArgs(heldLocals)...)` and stop once the reply
-     holds exactly `len(heldLocals)` lines, all `1`, sleeping `holdPoll`
+     holds exactly `len(heldLocals)` lines, all `want` (`1` after a hold, `0` after a release), sleeping `holdPoll`
      between tries. An exec error stops polling at once: the read is not
-     coming back within the window. `awaitHeld` returns
+     coming back within the window. `awaitAlt` returns
      false on a timeout or error; `holdReshaped` then logs
      `daemon: hold %s: not confirmed in %v` once and continues.
   6. Return the held sinks.
@@ -146,7 +146,7 @@ New file `daemon/hold.go`, unit tests in `daemon/hold_test.go`.
   - **Nil `LocalTmuxOut`.** A close with only `LocalTmux` set completes, with
     no hold and no panic.
   - **Barrier.** A short poll reply (one line for two held panes) does not
-    pass. A poll error stops after one call. Both call `awaitHeld`
+    pass. A poll error stops after one call. Both call `awaitAlt`
     directly with a counting fake.
   - **Zoomed geometry-only.** The window is zoomed with `L.Raw != w.layout`
     and the zoomed pane's read dims already equal `L.W×L.H`: it is held.
@@ -243,7 +243,7 @@ Step 6, then Step 7.
 
 Alternate-screen shrinks lose rows (`screen_resize_y` deletes from the top when
 the cursor is low and a regrow adds blank rows at the bottom), so the hold is
-gated to passes where no held pane's height can drop. Spec: "Where".
+gated to passes where no held pane shrinks and then regrows before its seed. Spec: "Where".
 
 - `holdReshaped` returns nil (no read, no hold) for a pass with `ops.Append`, a
   pass with `ops.Swaps`, a zoomed pass (`zoomed`) and a locally zoomed window
@@ -267,3 +267,34 @@ gated to passes where no held pane's height can drop. Spec: "Where".
 - Follow-up, not in this PR: park the hold's cursor at row 1 (rows written
   bottom-up, the barrier checking `cursor_y` 0) and have the pump defer a held
   pane's `%output` until its seed, which would re-enable holds on every pass.
+
+## Round 4 (dispatcher-approved)
+
+- Rule wording: the hold is taken only on passes where no held pane shrinks and
+  then regrows before its seed. A single net shrink looks the same on both
+  screens and matches what the remote did; a shrink-then-regrow does not (the
+  alternate screen has no `GRID_HISTORY`, so the shrink deletes rows from the
+  top when the cursor is low and the regrow adds blanks at the bottom, while
+  the main screen round-trips the rows through history). This replaces the
+  "no held pane's height can drop" phrasing.
+- `force` (a close-only pass holds every candidate) can hold a survivor whose
+  final size matches its target: the local `kill-pane` can give the freed space
+  to a different neighbour than the remote did (next-3.9 gives it to the next
+  cell, stock 3.6a and 3.7c to the previous one). Pinned by
+  `TestReconcileHoldForceHoldsAnUnchangedSurvivor`.
+- Cross-pass release: at the top of each later pass of `reconcileSnapshot` the
+  daemon releases every still-held sink and awaits `#{alternate_on}` 0
+  (`awaitAlt`, bounded by `holdWait`) before reshaping. A timeout skips holds
+  for that pass (origin/main behaviour). The deferred release covers a refused
+  `select-layout`, a seed error and a dropped seed only at function exit, not
+  across passes. Residual: a released pane whose seed put it on the remote's
+  alternate screen keeps `alternate_on` 1, so that pass waits `holdWait` and
+  holds nothing.
+- `awaitAlt(cfg, locals, want)` replaces `awaitHeld`.
+- Tests: `TestReconcileHoldForceHoldsAnUnchangedSurvivor`,
+  `TestReconcileHoldReleasesBeforeALaterPass`,
+  `TestReconcileHoldReleaseTimeoutSkipsHolds`, and the bats case `a hold
+  carried into a later reconcile pass is released before that pass reshapes
+  (#1002)`.
+- Gate: `nix flake check` must pass (with `nix build .#lint` and
+  `nix build .#default`) before the PR.

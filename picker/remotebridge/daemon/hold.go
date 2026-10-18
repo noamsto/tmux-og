@@ -131,31 +131,34 @@ func holdBytes(rows []string, cx, cy int) []byte {
 	return []byte(b.String())
 }
 
+// heldPane is a sink holdReshaped parked, with the local pane it renders into.
+type heldPane struct {
+	sink  *outputSink
+	local string
+}
+
 // holdReshaped holds every pane this pass is about to reshape and reseed, and
-// returns the sinks it held: each is owed a release once the pass is over.
+// returns the panes it held: each is owed a release once the pass is over.
 //
-// It holds only on passes where no held pane's height can drop. The alternate
-// screen has no history: a height shrink deletes rows from the top when the
-// cursor is low, and a regrow only adds blanks at the bottom, so the content
-// ends up shifted until the seed. On the main screen a shrink pushes rows into
-// history and the regrow pulls them back exactly. So the pass is left alone
-// (no read, no hold) when it appends a pane (split-window shrinks one, and a
-// later swap or select-layout can regrow it), swaps panes (a pane passes
-// through another's cell), is zoomed or applied zoomed (a zoom transition or a
-// reshape under zoom shrinks the zoomed pane to its cell and regrows it), or
-// when the window itself is shorter locally than L.H (resize-window shrinks it
-// before select-layout).
+// It holds only on passes where no held pane shrinks and then regrows before
+// its seed. The alternate screen has no history: a height shrink deletes rows
+// from the top when the cursor is low, and a regrow only adds blanks at the
+// bottom, so the content ends up shifted until the seed. On the main screen a
+// shrink pushes rows into history and the regrow pulls them back exactly. A
+// single net shrink looks the same on both screens, and matches what the remote
+// did. So the pass is left alone (no read, no hold) when it appends a pane
+// (split-window shrinks one, and a later swap or select-layout can regrow it),
+// swaps panes (a pane passes through another's cell), is zoomed or applied
+// zoomed (a zoom transition or a reshape under zoom shrinks the zoomed pane to
+// its cell and regrows it), or when the window itself is taller locally than
+// L.H (resize-window shrinks it before select-layout).
 //
 // Only a pane present on both sides of the pass is a candidate: a removed pane
 // is not reshaped, an appended one has nothing on screen yet. The read rules
 // out the rest: a pane already on the alternate screen never reflows, one with
 // alternate-screen off cannot be held, and a dead pane's renderer will never
 // write the hold.
-//
-// A close-only structural pass holds every candidate, since its final dims can
-// equal the target while the kill still shrinks and regrows the survivor and the
-// regrow reflows.
-func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, ops paneOps, zoomed bool, router *Router) []*outputSink {
+func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, ops paneOps, zoomed bool, router *Router) []heldPane {
 	if cfg.LocalTmuxOut == nil || len(ops.Append) > 0 || len(ops.Swaps) > 0 || zoomed || w.appliedZoom {
 		return nil
 	}
@@ -195,8 +198,14 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 			return nil
 		}
 	}
+	// A close-only pass holds every candidate, even one already at its target
+	// dims: the local kill-pane can give the freed space to a different
+	// neighbour than the remote did (tmux next-3.9 gives a closed pane's space
+	// to the next cell, stock releases such as 3.6a and 3.7c to the previous),
+	// so a survivor whose final size matches its target may still have grown
+	// and then shrunk back.
 	force := len(ops.Remove) > 0
-	var held []*outputSink
+	var held []heldPane
 	var heldLocals []string
 	for i, t := range targets {
 		if i >= len(reads) {
@@ -207,7 +216,7 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 			continue
 		}
 		if t.sink.hold(holdBytes(r.rows, r.cx, r.cy)) {
-			held = append(held, t.sink)
+			held = append(held, heldPane{t.sink, r.local})
 			heldLocals = append(heldLocals, r.local)
 		}
 	}
@@ -216,17 +225,34 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 	}
 	// Reshaping anyway on a miss is safe: a hold that lands late still shows
 	// the old copy, now at the new size, and the seed releases it.
-	if !awaitHeld(cfg, heldLocals) {
+	if !awaitAlt(cfg, heldLocals, "1") {
 		fmt.Fprintf(os.Stderr, "daemon: hold %s: not confirmed in %v\n", strings.Join(heldLocals, ","), holdWait)
 	}
 	return held
 }
 
-// awaitHeld polls until every pane in locals reports the alternate screen, or
-// holdWait passes. The hold bytes reach local tmux through each renderer's pty
-// asynchronously, so a reshape issued right after enqueueing them would race
-// them. An exec error gives up at once: no answer is coming back in time.
-func awaitHeld(cfg Config, locals []string) bool {
+// releaseHeld releases every pane in held and reports whether each has
+// confirmed leaving the alternate screen within holdWait. The pump drops a
+// release whose seed already landed.
+func releaseHeld(cfg Config, held []heldPane) bool {
+	locals := make([]string, len(held))
+	for i, h := range held {
+		h.sink.release()
+		locals[i] = h.local
+	}
+	if awaitAlt(cfg, locals, "0") {
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "daemon: release %s: not confirmed in %v\n", strings.Join(locals, ","), holdWait)
+	return false
+}
+
+// awaitAlt polls until every pane in locals reports #{alternate_on} as want,
+// or holdWait passes. Hold and release bytes reach local tmux through each
+// renderer's pty asynchronously, so a reshape issued right after enqueueing
+// them would race them. An exec error gives up at once: no answer is coming
+// back in time.
+func awaitAlt(cfg Config, locals []string, want string) bool {
 	args := holdPollArgs(locals)
 	deadline := time.Now().Add(holdWait)
 	for {
@@ -234,7 +260,7 @@ func awaitHeld(cfg Config, locals []string) bool {
 		if err != nil {
 			return false
 		}
-		if allAltOn(out, len(locals)) {
+		if allAlt(out, len(locals), want) {
 			return true
 		}
 		if !time.Now().Before(deadline) {
@@ -244,14 +270,14 @@ func awaitHeld(cfg Config, locals []string) bool {
 	}
 }
 
-// allAltOn reports that a holdPollArgs reply answers all n panes with 1.
-func allAltOn(out string, n int) bool {
+// allAlt reports that a holdPollArgs reply answers all n panes with want.
+func allAlt(out string, n int, want string) bool {
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 	if len(lines) != n {
 		return false
 	}
 	for _, l := range lines {
-		if l != "1" {
+		if l != want {
 			return false
 		}
 	}

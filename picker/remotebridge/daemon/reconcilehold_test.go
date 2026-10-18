@@ -261,7 +261,8 @@ func holdTwoPane(t *testing.T) controlmode.Layout {
 
 // TestReconcileHoldSkipsPassesThatCanShrinkAPane: on the alternate screen a
 // height shrink deletes rows from the top and the regrow adds blanks at the
-// bottom, so a pass that can shrink a held pane must neither read nor hold.
+// bottom, so a pass that can shrink a held pane and then regrow it must
+// neither read nor hold.
 func TestReconcileHoldSkipsPassesThatCanShrinkAPane(t *testing.T) {
 	L := holdTwoPane(t)
 	order := RemotePaneOrder(L)
@@ -423,8 +424,214 @@ func TestReconcileHoldNilLocalTmuxOutHoldsNothing(t *testing.T) {
 	requireSilence(t, peer)
 }
 
-// TestReconcileHoldAwaitHeld pins the barrier's three outcomes.
-func TestReconcileHoldAwaitHeld(t *testing.T) {
+// TestReconcileHoldForceHoldsAnUnchangedSurvivor: a close-only pass holds a
+// survivor already at its target dims, since the local kill can still grow it
+// and shrink it back.
+func TestReconcileHoldForceHoldsAnUnchangedSurvivor(t *testing.T) {
+	sink, peer := holdPipe(t)
+	router := NewRouter()
+	router.Register("%3", sink)
+	w := holdCloseWindow()
+	L, err := controlmode.ParseLayout(holdOnePane)
+	if err != nil {
+		t.Fatalf("parse layout: %v", err)
+	}
+
+	log := &holdLocalLog{}
+	cfg := Config{
+		LocalTmuxOut: func(argv ...string) (string, error) {
+			if log.add(argv) == "poll" {
+				return "1\n", nil
+			}
+			return holdReply("%3", L.W, L.H), nil
+		},
+	}
+	held := holdReshaped(cfg, w, L, w.remotePanes, RemotePaneOrder(L), paneOps{Remove: []int{1}}, false, router)
+	if want := []heldPane{{sink, "%l3"}}; !slices.Equal(held, want) {
+		t.Fatalf("held = %v, want %v", held, want)
+	}
+	if got := log.snapshot(); !slices.Equal(got, []string{"read", "poll"}) {
+		t.Errorf("local calls = %v, want the read and the poll", got)
+	}
+	f := readHoldFrame(t, peer)
+	if f.Type != wire.FrameOutput || !strings.HasPrefix(string(f.Payload), holdEnterAlt) {
+		t.Fatalf("frame = %v %q, want the hold output", f.Type, f.Payload)
+	}
+}
+
+// holdPassFake is a local tmux whose tiled panes follow kill-pane and
+// split-window. The first poll (the hold barrier) answers 1, every later one
+// releasePoll; the first select-layout is refused.
+type holdPassFake struct {
+	log         *holdLocalLog
+	releasePoll string
+	read        string
+
+	mu       sync.Mutex
+	panes    []string
+	polls    int
+	selects  int
+	splitIDs int
+}
+
+func (f *holdPassFake) config() Config {
+	return Config{
+		LocalTmux: func(argv ...string) error {
+			name := f.log.add(argv)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			switch name {
+			case "kill-pane":
+				f.panes = slices.DeleteFunc(f.panes, func(p string) bool { return p == argv[2] })
+			case "split-window":
+				f.splitIDs++
+				f.panes = append(f.panes, fmt.Sprintf("%%n%d", f.splitIDs))
+			case "select-layout":
+				f.selects++
+				if f.selects == 1 {
+					return errors.New("select-layout refused")
+				}
+			}
+			return nil
+		},
+		LocalTmuxOut: func(argv ...string) (string, error) {
+			name := f.log.add(argv)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			switch name {
+			case "read":
+				return f.read, nil
+			case "poll":
+				f.polls++
+				if f.polls == 1 {
+					return "1\n", nil
+				}
+				return f.releasePoll, nil
+			case "list-panes":
+				var b strings.Builder
+				for _, p := range f.panes {
+					b.WriteString(p + " 0\n")
+				}
+				return b.String(), nil
+			}
+			return "", nil
+		},
+	}
+}
+
+// nthIndex is the position of the n'th (from 1) occurrence of name in entries.
+func nthIndex(entries []string, name string, n int) int {
+	for i, e := range entries {
+		if e == name {
+			n--
+			if n == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// TestReconcileHoldReleasesBeforeALaterPass: pass 1 holds the survivor of a
+// close but its select-layout is refused, so no seed releases it; pass 2 (a
+// split) must release it and see it off the alternate screen before its own
+// reshape, or that reshape lands on the held copy.
+func TestReconcileHoldReleasesBeforeALaterPass(t *testing.T) {
+	sink, peer := holdPipe(t)
+	router := NewRouter()
+	router.Register("%3", sink)
+	w := holdCloseWindow()
+
+	const split = "0000,190x45,0,0{95x45,0,0,3,94x45,96,0,5}"
+	rt, _ := scriptedRT(strings.Join([]string{
+		"%begin 1 1 1", "@1 " + holdOnePane + " %3 0", "%end 1 1 1",
+		"%begin 1 2 1", "@1 " + split + " %3 0", "%end 1 2 1",
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1",
+		"%begin 1 4 1", "SURVIVOR", "%end 1 4 1",
+		"%begin 1 5 1", "@1 " + split + " %3 0", "%end 1 5 1",
+	}, "\n") + "\n")
+
+	log := &holdLocalLog{}
+	fake := &holdPassFake{log: log, releasePoll: "0\n", read: holdReply("%3", 95, 45), panes: []string{"%l3", "%l4"}}
+	reconcileLayout(fake.config(), w, func(string) {}, router, noHellos, newCtlState(), newConverger(), rt)
+
+	got := log.snapshot()
+	read, hold, kill := nthIndex(got, "read", 1), nthIndex(got, "poll", 1), nthIndex(got, "kill-pane", 1)
+	refused, release, splitAt := nthIndex(got, "select-layout", 1), nthIndex(got, "poll", 2), nthIndex(got, "split-window", 1)
+	if read < 0 || read >= hold || hold >= kill || kill >= refused || refused >= release || release >= splitAt {
+		t.Fatalf("local calls = %v, want read, poll, kill-pane, select-layout, then a release poll before split-window", got)
+	}
+	if n := nthIndex(got, "read", 2); n >= 0 {
+		t.Errorf("local calls = %v, want no hold read on the split pass", got)
+	}
+
+	f := readHoldFrame(t, peer)
+	if f.Type != wire.FrameOutput || !strings.HasPrefix(string(f.Payload), holdEnterAlt) {
+		t.Fatalf("first frame = %v %q, want the hold output", f.Type, f.Payload)
+	}
+	requireFrame(t, peer, wire.FrameOutput, holdLeaveAlt)
+	if f := readHoldFrame(t, peer); f.Type != wire.FrameResize {
+		t.Fatalf("third frame = %v %q, want pass 2's resize", f.Type, f.Payload)
+	}
+	if f := readHoldFrame(t, peer); f.Type != wire.FrameSeed {
+		t.Fatalf("fourth frame = %v %q, want pass 2's seed", f.Type, f.Payload)
+	}
+	requireSilence(t, peer)
+}
+
+// TestReconcileHoldReleaseTimeoutSkipsHolds: a release the pane never confirms
+// leaves pass 2 without holds, even a close-only pass that would hold.
+func TestReconcileHoldReleaseTimeoutSkipsHolds(t *testing.T) {
+	saved := holdWait
+	holdWait = 20 * time.Millisecond
+	t.Cleanup(func() { holdWait = saved })
+
+	sink, peer := holdPipe(t)
+	router := NewRouter()
+	router.Register("%3", sink)
+	w := &mirrorWindow{
+		remoteID: "@1", localWin: "@101",
+		remotePanes: []string{"%3", "%4", "%6"}, localPanes: []string{"%l3", "%l4", "%l6"},
+	}
+
+	const closeFour = "0000,190x45,0,0{95x45,0,0,3,94x45,96,0,6}"
+	rt, _ := scriptedRT(strings.Join([]string{
+		"%begin 1 1 1", "@1 " + closeFour + " %3 0", "%end 1 1 1",
+		"%begin 1 2 1", "@1 " + holdOnePane + " %3 0", "%end 1 2 1",
+		"%begin 1 3 1", "0 0 0 0 0 0 0 0 0", "%end 1 3 1",
+		"%begin 1 4 1", "SURVIVOR", "%end 1 4 1",
+		"%begin 1 5 1", "@1 " + holdOnePane + " %3 0", "%end 1 5 1",
+	}, "\n") + "\n")
+
+	log := &holdLocalLog{}
+	fake := &holdPassFake{log: log, releasePoll: "1\n", read: holdReply("%3", 95, 45), panes: []string{"%l3", "%l4", "%l6"}}
+	reconcileLayout(fake.config(), w, func(string) {}, router, noHellos, newCtlState(), newConverger(), rt)
+
+	got := log.snapshot()
+	if nthIndex(got, "kill-pane", 2) < 0 {
+		t.Fatalf("local calls = %v, want pass 2's kill-pane", got)
+	}
+	if nthIndex(got, "read", 1) < 0 || nthIndex(got, "read", 2) >= 0 {
+		t.Errorf("local calls = %v, want pass 1's hold read and none after the unconfirmed release", got)
+	}
+
+	f := readHoldFrame(t, peer)
+	if f.Type != wire.FrameOutput || !strings.HasPrefix(string(f.Payload), holdEnterAlt) {
+		t.Fatalf("first frame = %v %q, want the hold output", f.Type, f.Payload)
+	}
+	requireFrame(t, peer, wire.FrameOutput, holdLeaveAlt)
+	if f := readHoldFrame(t, peer); f.Type != wire.FrameResize {
+		t.Fatalf("third frame = %v %q, want pass 2's resize with no hold ahead of it", f.Type, f.Payload)
+	}
+	if f := readHoldFrame(t, peer); f.Type != wire.FrameSeed {
+		t.Fatalf("fourth frame = %v %q, want pass 2's seed", f.Type, f.Payload)
+	}
+	requireSilence(t, peer)
+}
+
+// TestReconcileHoldAwaitAlt pins the barrier's outcomes for a hold and a
+// release.
+func TestReconcileHoldAwaitAlt(t *testing.T) {
 	saved := holdWait
 	holdWait = 20 * time.Millisecond
 	t.Cleanup(func() { holdWait = saved })
@@ -438,31 +645,31 @@ func TestReconcileHoldAwaitHeld(t *testing.T) {
 		}}, &n
 	}
 
-	t.Run("short reply times out", func(t *testing.T) {
-		cfg, n := counting("1\n", nil)
-		if awaitHeld(cfg, locals) {
-			t.Fatal("awaitHeld = true on one line for two panes")
-		}
-		if *n < 2 {
-			t.Errorf("polled %d times, want retries until holdWait", *n)
-		}
-	})
-	t.Run("exec error stops at once", func(t *testing.T) {
-		cfg, n := counting("", errors.New("exec failed"))
-		if awaitHeld(cfg, locals) {
-			t.Fatal("awaitHeld = true on an exec error")
-		}
-		if *n != 1 {
-			t.Errorf("polled %d times, want 1", *n)
-		}
-	})
-	t.Run("all on passes first try", func(t *testing.T) {
-		cfg, n := counting("1\n1\n", nil)
-		if !awaitHeld(cfg, locals) {
-			t.Fatal("awaitHeld = false with both panes on the alternate screen")
-		}
-		if *n != 1 {
-			t.Errorf("polled %d times, want 1", *n)
-		}
-	})
+	tests := []struct {
+		name  string
+		want  string
+		out   string
+		err   error
+		ok    bool
+		polls func(int) bool
+	}{
+		{"hold confirmed first try", "1", "1\n1\n", nil, true, func(n int) bool { return n == 1 }},
+		{"release confirmed first try", "0", "0\n0\n", nil, true, func(n int) bool { return n == 1 }},
+		{"hold short reply times out", "1", "1\n", nil, false, func(n int) bool { return n >= 2 }},
+		{"release short reply times out", "0", "0\n", nil, false, func(n int) bool { return n >= 2 }},
+		{"release still on the alternate screen times out", "0", "1\n0\n", nil, false, func(n int) bool { return n >= 2 }},
+		{"hold exec error stops at once", "1", "", errors.New("exec failed"), false, func(n int) bool { return n == 1 }},
+		{"release exec error stops at once", "0", "", errors.New("exec failed"), false, func(n int) bool { return n == 1 }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, n := counting(tc.out, tc.err)
+			if got := awaitAlt(cfg, locals, tc.want); got != tc.ok {
+				t.Fatalf("awaitAlt(want %s) on %q = %v, want %v", tc.want, tc.out, got, tc.ok)
+			}
+			if !tc.polls(*n) {
+				t.Errorf("polled %d times", *n)
+			}
+		})
+	}
 }

@@ -1580,6 +1580,43 @@ EOF
 	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
 }
 
+# hold_slow_tmux_refuse is the cross-pass rig. While slow.on exists, the first
+# local select-layout (while fail.once exists) first splits the remote pane named
+# in split.target, so the trailing remote re-read finds a new layout, then exits
+# 1 without running the real select-layout: the daemon's refusal. Every later
+# select-layout runs for real and then stalls 1.5 s, so samples land after that
+# pass's regrow and before its seed.
+hold_slow_tmux_refuse() {
+	mkdir -p "$BATS_TEST_TMPDIR/slowbin"
+	local real
+	real="$(command -v tmux)"
+	cat >"$BATS_TEST_TMPDIR/slowbin/tmux" <<EOF
+#!/bin/sh
+has_dst=0
+has_verb=0
+for arg in "\$@"; do
+	[ "\$arg" = m2dst ] && has_dst=1
+	[ "\$arg" = select-layout ] && has_verb=1
+done
+if [ -e "$BATS_TEST_TMPDIR/slow.on" ] && [ "\$has_dst" -eq 1 ] && [ "\$has_verb" -eq 1 ]; then
+	if [ -e "$BATS_TEST_TMPDIR/fail.once" ]; then
+		rm -f "$BATS_TEST_TMPDIR/fail.once"
+		"$real" -L m2src -f "$SRC_CONF" split-window -v -l 6 -t "\$(cat "$BATS_TEST_TMPDIR/split.target")" 'sleep 600'
+		sleep 0.3
+		exit 1
+	fi
+	"$real" "\$@"
+	rc=\$?
+	: >"$BATS_TEST_TMPDIR/stalling"
+	sleep 1.5
+	rm -f "$BATS_TEST_TMPDIR/stalling"
+	exit "\$rc"
+fi
+exec "$real" "\$@"
+EOF
+	chmod +x "$BATS_TEST_TMPDIR/slowbin/tmux"
+}
+
 # hold_sample_start <local pane> arms the stall and samples that pane's width
 # and rows every 50 ms into stall-<n> (taken while the wrapper's stalling
 # marker existed, before and after the capture) or post-<n>. Line 1 of a sample
@@ -1825,6 +1862,76 @@ hold_oracle() {
 		[ "${f##*-}" -lt "$first_stall" ] && rm -f "$f"
 	done
 	hold_oracle "120 3 0"
+}
+
+# reconcileSnapshot can run several passes in one call. Pass 1 here is a remote
+# close in an unzoomed window: it holds the survivor A on the alternate screen,
+# kills the local pane (A grows), and its select-layout is refused, so with no
+# pane-count desync it sends no seed and A stays held. The trailing remote
+# re-read finds a layout the remote changed meanwhile (the wrapper splits A), so
+# pass 2 runs: a local split-window on A, then select-layout. A hold still on A
+# would shift its rows through that shrink and regrow, so pass 2 must release
+# it first and A must go through pass 2 on the main screen, rows in place.
+@test "a hold carried into a later reconcile pass is released before that pass reshapes (#1002)" {
+	hold_slow_tmux_refuse
+
+	fifo="$BATS_TEST_TMPDIR/feed"
+	mkfifo "$fifo"
+	$SRC new-session -d -s rem -x 120 -y 41 "exec 3<>'$fifo'; cat <&3"
+	a_r="$($SRC display-message -p -t rem '#{pane_id}')"
+	b_r="$($SRC split-window -v -l 9 -P -F '#{pane_id}' -t "$a_r" 'sleep 600')"
+	$DST new-session -d -s host-sess -x 120 -y 41 'sleep 600'
+
+	PATH="$BATS_TEST_TMPDIR/slowbin:$PATH" bridge_up 2 xpass
+
+	survivor_l="$($DST list-panes -t host-sess:1 -F '#{pane_id} #{@bridge_pane}' | awk -v r="$a_r" '$2 == r {print $1}')"
+	[ -n "$survivor_l" ]
+
+	# Fill A's screen with CUP-positioned rows and park the cursor on its last row;
+	# the clear also removes bridge_up's echoed marker.
+	h="$($SRC display-message -p -t "$a_r" '#{pane_height}')"
+	{
+		printf '\033[H\033[2J'
+		for i in $(seq 1 "$h"); do printf '\033[%d;1Hxrow%02d' "$i" "$i"; done
+		printf '\033[%d;4H' "$h"
+	} >"$fifo"
+	last_row="$(printf 'xrow%02d' "$h")"
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	until $DST capture-pane -p -t "$survivor_l" | grep -q "$last_row"; do
+		[ "$SECONDS" -lt "$deadline" ] || return 1
+		sleep 0.1
+	done
+	hold_settle "$survivor_l"
+	cp "$BATS_TEST_TMPDIR/settled" "$BATS_TEST_TMPDIR/pre"
+
+	touch "$BATS_TEST_TMPDIR/fail.once"
+	printf '%s' "$a_r" >"$BATS_TEST_TMPDIR/split.target"
+	hold_sample_start "$survivor_l"
+	sleep 0.15
+	$SRC kill-pane -t "$b_r"
+	wait "$sampler_pid"
+	rm -f "$BATS_TEST_TMPDIR/slow.on"
+
+	settle_rc=0
+	hold_settle "$survivor_l" || settle_rc=$?
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+	[ "$settle_rc" -eq 0 ]
+
+	# The refusal path ran and the wrapper's remote split landed.
+	grep -q 'layout-change select-layout' "$BATS_TEST_TMPDIR/xpass.log"
+	[ "$($SRC list-panes -t rem | wc -l)" -eq 2 ]
+
+	# Frames before pass 2's local split and regrow legitimately differ in height;
+	# only frames from the first stall on (after the regrow) are held to the oracle.
+	first_stall=999
+	for f in "$BATS_TEST_TMPDIR"/stall-*; do
+		[ -e "$f" ] && [ "${f##*-}" -lt "$first_stall" ] && first_stall="${f##*-}"
+	done
+	for f in "$BATS_TEST_TMPDIR"/post-*; do
+		[ "${f##*-}" -lt "$first_stall" ] && rm -f "$f"
+	done
+	hold_oracle "120 2 "
 }
 
 # A remote swap-pane permutes the pane set without changing its membership —
