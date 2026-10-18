@@ -223,6 +223,7 @@ setup() {
 					printf '%s\n' "${FAKE_LIST_SESSIONS:-}" | awk -v id="$4" 'index($0, id "|") == 1 { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }'
 				fi
 				;;
+			*'@og_bridge_predict') [ -n "${FAKE_PREDICT:-}" ] && printf '%s\n' "$FAKE_PREDICT" ;;
 			*"@bridge_host"*) [ -n "${FAKE_BRIDGE_HOST:-}" ] && printf '%s\n' "$FAKE_BRIDGE_HOST" ;;
 			*"@bridge_session"*) [ -n "${FAKE_BRIDGE_SESSION:-}" ] && printf '%s\n' "$FAKE_BRIDGE_SESSION" ;;
 			esac
@@ -1554,12 +1555,15 @@ $0|tp-g6|main' FAKE_PAIR_NAME='my.proj' FAKE_PAIR_HOST='' FAKE_PAIR_SESSION=''
 install_into_fakes() {
 	export LAUNCH_LOG="$BATS_TEST_TMPDIR/launch.log"
 	export SELECT_LOG="$BATS_TEST_TMPDIR/select.log"
+	export PREDICT_LOG="$BATS_TEST_TMPDIR/predict.log"
 	: >"$LAUNCH_LOG"
 	: >"$SELECT_LOG"
+	: >"$PREDICT_LOG"
 	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
 		#!/bin/sh
 		printf 'pid=%s into=%s remote_open=%s local=%s\n' "$$" "${OG_DAEMON_INTO-}" "${OG_DAEMON_REMOTE_OPEN-<unset>}" "${OG_DAEMON_LOCAL_SESS-}" >>"$LAUNCH_LOG"
 		printf 'select=%s\n' "${OG_DAEMON_SELECT-<unset>}" >>"$SELECT_LOG"
+		printf 'predict=%s\n' "${OG_DAEMON_PREDICT-<unset>}" >>"$PREDICT_LOG"
 		if [ -n "${FAKE_DAEMON_DIES:-}" ]; then
 			echo "fake daemon: dial failed" >&2
 			exit 1
@@ -1983,11 +1987,13 @@ $4|a|b'
 
 @test "into: a plain --into launches its daemon with no selector, on the four-field socket" {
 	install_into_fakes
+	export FAKE_PREDICT=off
 
 	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
 	[ "$status" -eq 0 ]
 
 	grep -qxF 'select=' "$SELECT_LOG"
+	grep -qxF 'predict=off' "$PREDICT_LOG"
 	grep -qxF -- "--sock $(into_sock tp-g6 workstation 4242 '$3') ping _" "$CTL_LOG"
 }
 
@@ -2108,13 +2114,17 @@ $4|a|b'
 
 @test "into: a dedicated open launches its daemon with an inherited OG_DAEMON_SELECT unset" {
 	export SELECT_LOG="$BATS_TEST_TMPDIR/select.log"
+	export PREDICT_LOG="$BATS_TEST_TMPDIR/predict.log"
 	: >"$SELECT_LOG"
+	: >"$PREDICT_LOG"
 	cat >"$FAKEBIN/og-remote-bridge-daemon" <<-'EOF'
 		#!/bin/sh
+		printf 'predict=%s\n' "${OG_DAEMON_PREDICT-<unset>}" >>"$PREDICT_LOG"
 		printf 'select=%s\n' "${OG_DAEMON_SELECT-<unset>}" >>"$SELECT_LOG"
 	EOF
 	chmod +x "$FAKEBIN/og-remote-bridge-daemon"
 	export OG_DAEMON_SELECT='@crew_branch=feat/x'
+	export FAKE_PREDICT=off
 
 	run bash "$LAUNCHER" tp-g6 workstation
 	[ "$status" -eq 0 ]
@@ -2125,4 +2135,22 @@ $4|a|b'
 		waited=$((waited + 1))
 	done
 	[ "$(cat "$SELECT_LOG")" = 'select=<unset>' ]
+	[ "$(cat "$PREDICT_LOG")" = 'predict=off' ]
+}
+
+@test "predict: an invalid @og_bridge_predict is refused before any session is created" {
+	install_into_fakes
+	export FAKE_PREDICT=yes
+
+	run bash "$LAUNCHER" tp-g6 workstation
+	[ "$status" -ne 0 ]
+	[[ $output == *"@og_bridge_predict must be auto, on or off, got: yes"* ]]
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch
+	[ "$status" -ne 0 ]
+	[[ $output == *"@og_bridge_predict must be auto, on or off"* ]]
+
+	run grep -E '^(new-session|switch-client)' "$TMUX_LOG"
+	[ "$status" -ne 0 ]
+	[ ! -s "$SSH_LOG" ]
+	[ ! -s "$LAUNCH_LOG" ]
 }

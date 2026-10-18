@@ -665,7 +665,7 @@ func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout
 			// temporary local index it was appended at — the swaps below have
 			// not run yet, so the two differ.
 			seedRenderer(rt, router, c, id, L.Panes[indexOf(newRemote, id)], cfg.graphicsFor(id))
-			go pumpInput(c, id, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, id))
+			go pumpInput(c, id, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, id))
 		}
 	}
 
@@ -751,7 +751,7 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 			w.conns[remoteID] = oldConn
 			// Output while unrouted is lost; the pane stays live but drifts
 			// until the next successful reset/reseed repairs the screen.
-			router.Register(remoteID, newOutputSink(oldConn, cfg.graphicsFor(remoteID)))
+			router.Register(remoteID, newPredictingSink(oldConn, cfg.graphicsFor(remoteID), router.predict))
 		}
 	}
 	return err
@@ -948,7 +948,7 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 			// serializes one pane's input against its own pending upload, so
 			// sharing one between panes would make a float's paste block a
 			// tiled pane's keystrokes.
-			go pumpInput(c, cell.ID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, cell.ID))
+			go pumpInput(c, cell.ID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, cell.ID))
 			wired = append(wired, cell.ID)
 		}
 	}

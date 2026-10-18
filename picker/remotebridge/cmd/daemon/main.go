@@ -224,6 +224,7 @@ func main() {
 	reflowBin := flag.String("reflow", os.Getenv("OG_DAEMON_REFLOW"), "absolute path to tmux-reflow-windows (empty = never force a reflow)")
 	remoteOpenBin := flag.String("remote-open", os.Getenv("OG_DAEMON_REMOTE_OPEN"), "absolute path to og-remote-open (empty = a remote switch-client is pinned back but never handed off)")
 	pauseAfter := flag.Int("pause-after", envIntDefault("OG_DAEMON_PAUSE_AFTER", 1), "seconds of client-read stall before tmux pauses a pane's %output (0 disables); the daemon answers %pause with a %continue re-seed")
+	predict := flag.String("predict", envDefault("OG_DAEMON_PREDICT", "auto"), "predictive local echo in mirror panes: auto (only while echo latency is high), on, or off")
 	// --test-local is Task 9's offline seam: instead of ssh, both "remote" and
 	// "local" are separate local tmux servers on their own -L sockets, so the
 	// bats integration test never touches the network. --session/--window
@@ -241,6 +242,10 @@ func main() {
 	testOutage := flag.String("test-outage-file", os.Getenv("OG_DAEMON_TEST_OUTAGE_FILE"), "test-local: while this file exists, a dial yields no control output (an unreachable remote)")
 	flag.Parse()
 
+	predictMode, err := daemon.ParsePredictMode(*predict)
+	if err != nil {
+		fatal(err)
+	}
 	if *into != "" {
 		if !validInto(*into) {
 			fatal(fmt.Errorf("--into %q is not a session id ($N)", *into))
@@ -464,6 +469,7 @@ func main() {
 		RemoteSession:  *session,
 		RemoteWindow:   strconv.Itoa(*window),
 		PauseAfterSecs: *pauseAfter,
+		Predict:        predictMode,
 		RendererBin:    *rendererBin,
 		LocalTmux:      runLocalTmux,
 		LocalTmuxOut:   runLocalTmuxOut,
@@ -495,7 +501,7 @@ func main() {
 		cfg.RestoreRetry = &b
 	}
 
-	err := daemon.Run(cfg)
+	err = daemon.Run(cfg)
 	cleanup()
 	if err != nil {
 		fatal(err)
