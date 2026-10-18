@@ -287,13 +287,14 @@ func (p *predictor) onOutput(b []byte) []byte {
 		return b
 	}
 	pre := p.unpaint()
+	snap := p.snapshot(m)
 	p.fedSinceKey += len(b)
 	if p.fedSinceKey > predictOutputBudget || p.now().Sub(p.lastKey) > predictIdle || !m.feed(b) {
 		p.reset()
 		p.dropModel()
 		return joinBytes(pre, b, nil)
 	}
-	p.resolve(m)
+	p.resolve(m, snap)
 	if !p.paintable() {
 		p.preds = nil
 	}
@@ -304,88 +305,123 @@ func (p *predictor) onOutput(b []byte) []byte {
 	return joinBytes(pre, b, p.paint())
 }
 
-// resolve settles predictions in order, using the model cursor as the "has the
-// remote processed this key yet" signal; the first pending one stops it.
-func (p *predictor) resolve(m *predictModel) {
-	if p.settlePrefix(m) {
+// resolve settles predictions against the payload just fed: the run it
+// provably completed, else head by head while the cursor is past a char.
+func (p *predictor) resolve(m *predictModel, pre predSnap) {
+	if p.settlePrefix(m, pre) {
+		return
+	}
+	// A barrier typed after these keys bumped the epoch: their verdict can
+	// no longer confirm anything, and a cursor the barrier moved off their
+	// row would leave them painted there until expiry.
+	if len(p.preds) > 0 && p.preds[0].epoch < p.epoch {
+		p.preds = nil
 		return
 	}
 	cx, cy := m.cursor()
 	for len(p.preds) > 0 {
 		pr := p.preds[0]
-		if cy != pr.y {
+		if cy != pr.y || pr.ch == 0 || cx <= pr.x {
 			return
 		}
-		if pr.ch == 0 {
-			if cx > pr.x {
-				return
-			}
-		} else {
-			if cx <= pr.x {
-				return
-			}
-			if c := m.cell(pr.x, pr.y); c == nil || c.Content != string(pr.ch) {
+		if cellText(m.cell(pr.x, pr.y)) != string(pr.ch) {
+			// A later key may have overwritten the cell; only an untouched
+			// one shows the remote drew something else.
+			if !overwritten(p.preds[1:], pr) {
 				p.preds = nil
 				p.epoch++
-				return
 			}
+			return
 		}
 		p.preds = p.preds[1:]
 		p.confirmed = max(p.confirmed, pr.epoch)
 	}
 }
 
-// settlePrefix settles the longest run of predictions that ends where the
-// model cursor is, judging each cell by the last prediction touching it. An
-// erase and a char echoed in one payload leave the cursor past both, which
-// resolve's head-by-head loop reads as the erase still pending. The run must
-// leave some typed char standing: a char erased again ends where the cursor
-// already was, so with nothing echoed yet it would match an unchanged screen.
-func (p *predictor) settlePrefix(m *predictModel) bool {
-	preds := p.preds
-	if len(preds) == 0 {
-		return false
+// overwritten reports whether a prediction in later touches pr's cell.
+func overwritten(later []prediction, pr prediction) bool {
+	return slices.ContainsFunc(later, func(o prediction) bool { return o.x == pr.x && o.y == pr.y })
+}
+
+// predSnap is the model at each outstanding prediction's cell, and its
+// cursor, before a payload is fed.
+type predSnap struct {
+	cx, cy int
+	cells  []string
+}
+
+func (p *predictor) snapshot(m *predictModel) predSnap {
+	s := predSnap{cells: make([]string, len(p.preds))}
+	s.cx, s.cy = m.cursor()
+	for i, pr := range p.preds {
+		s.cells[i] = cellText(m.cell(pr.x, pr.y))
 	}
+	return s
+}
+
+// cellText is a cell's content with a blank cell as a space, "" outside the
+// pane.
+func cellText(c *uv.Cell) string {
+	switch {
+	case c == nil:
+		return ""
+	case c.Content == "":
+		return " "
+	}
+	return c.Content
+}
+
+// settlePrefix settles the shortest run of predictions the payload provably
+// completed: the model cursor is where the run leaves it, every typed char the
+// run leaves standing is in its cell, and the payload moved the cursor or
+// changed one of those cells. Erased cells are not compared: zsh-autosuggestions
+// refills them with grey text. Keys that net to nothing (a char erased again)
+// leave the screen as it was before them, so only the shortest run is proven;
+// a longer one would settle keys whose echo may still be in flight. A run
+// confirms its epoch only if it leaves a typed char standing, so a silent
+// prompt never confirms. With no run matching, a run ending at the cursor
+// whose standing char the payload replaced, and no later key touches, is a
+// misprediction.
+func (p *predictor) settlePrefix(m *predictModel, pre predSnap) bool {
 	cx, cy := m.cursor()
-	k := -1
-	for i, pr := range preds {
-		if pr.curX == cx && pr.curY == cy {
-			k = i
-		}
-	}
-	if k < 0 {
-		return false
-	}
-	run := preds[:k+1]
-	echoed, match := false, true
-	epoch := p.confirmed
-	for i, pr := range run {
-		epoch = max(epoch, pr.epoch)
-		if slices.ContainsFunc(run[i+1:], func(o prediction) bool { return o.x == pr.x && o.y == pr.y }) {
+	moved := cx != pre.cx || cy != pre.cy
+	wrong := false
+	for k, last := range p.preds {
+		if last.curX != cx || last.curY != cy {
 			continue
 		}
-		c := m.cell(pr.x, pr.y)
-		switch {
-		case c == nil:
-			match = false
-		case pr.ch != 0:
-			echoed = true
-			match = match && c.Content == string(pr.ch)
-		default:
-			match = match && (c.Content == " " || c.Content == "")
+		run := p.preds[:k+1]
+		match, changed, typed, proven := true, moved, false, false
+		for i, pr := range run {
+			if pr.ch == 0 || overwritten(run[i+1:], pr) {
+				continue
+			}
+			got := cellText(m.cell(pr.x, pr.y))
+			typed = true
+			changed = changed || got != pre.cells[i]
+			if got != string(pr.ch) {
+				match = false
+				proven = proven || !overwritten(p.preds[k+1:], pr)
+			}
 		}
-	}
-	if !echoed {
-		return false
-	}
-	if !match {
-		p.preds = nil
-		p.epoch++
+		switch {
+		case !changed:
+			continue
+		case !match:
+			wrong = wrong || proven
+			continue
+		}
+		p.preds = p.preds[k+1:]
+		if typed {
+			p.confirmed = max(p.confirmed, last.epoch)
+		}
 		return true
 	}
-	p.preds = preds[k+1:]
-	p.confirmed = epoch
-	return true
+	if wrong {
+		p.preds = nil
+		p.epoch++
+	}
+	return wrong
 }
 
 func joinBytes(pre, b, post []byte) []byte {
@@ -469,10 +505,40 @@ func (p *predictor) onExpire() []byte {
 		return nil
 	}
 	if p.now().Sub(p.preds[0].at) >= p.expiry() {
-		return p.reset()
+		if !p.drawsModel() {
+			return p.reset()
+		}
+		// Keys that net to nothing, echoed in one payload, look exactly like
+		// keys not yet echoed: nothing to repair and no evidence against the
+		// epoch, so they are dropped without a reset.
+		out := p.unpaint()
+		p.preds = nil
+		p.blocked = false
+		p.stopTimer()
+		return out
 	}
 	p.arm()
 	return nil
+}
+
+// drawsModel reports whether the outstanding predictions already show in the
+// model: the cursor is where the last leaves it and every char left standing
+// is in its cell.
+func (p *predictor) drawsModel() bool {
+	m := p.model
+	if m == nil || len(p.preds) == 0 {
+		return false
+	}
+	last := p.preds[len(p.preds)-1]
+	if cx, cy := m.cursor(); cx != last.curX || cy != last.curY {
+		return false
+	}
+	for i, pr := range p.preds {
+		if pr.ch != 0 && !overwritten(p.preds[i+1:], pr) && cellText(m.cell(pr.x, pr.y)) != string(pr.ch) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *predictor) expiry() time.Duration {

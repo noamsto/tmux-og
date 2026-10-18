@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -266,21 +267,52 @@ func TestPredictModelScreenTitle(t *testing.T) {
 	})
 }
 
-// REP repeats the last char n times, n up to 65535: one over the pane's
-// width costs the model, not seconds of the pump.
+// REP repeats the last char n times, n up to 65535, and tmux's REP depends on
+// state the model does not track: any REP costs the model, even one in width.
 func TestPredictModelREP(t *testing.T) {
 	pm := newTestModel(t, 20, 5, "", plainModes(5))
-	if !pm.feed([]byte("a\x1b[5b")) {
-		t.Fatal("feed of an in-width REP failed")
+	if !pm.feed([]byte("a")) {
+		t.Fatal("feed of a plain char failed")
 	}
-	if x, _ := pm.cursor(); x != 6 {
-		t.Errorf("cursor x = %d after a REP of 5, want 6", x)
-	}
-	if pm.feed([]byte("\x1b[21b")) {
-		t.Error("feed of a REP over the width succeeded")
+	if pm.feed([]byte("\x1b[5b")) {
+		t.Error("feed of an in-width REP succeeded")
 	}
 	if pm.feed([]byte("b")) {
 		t.Error("feed succeeded after a poisoning REP")
+	}
+}
+
+// Rows tmux next-3.9 (-f /dev/null, 20x6 pane) draws for each stream: a model
+// that survives a REP must draw the same.
+func TestPredictModelREPMatchesTmux(t *testing.T) {
+	cases := []struct {
+		name, in string
+		tmux     []string
+	}{
+		{"in width", "a\x1b[5b", []string{"aaaaaa"}},
+		{"capped at line end", "ABCDEFGHIJKLMNO\x1b[10b|", []string{"ABCDEFGHIJKLMNOOOOOO", "|"}},
+		{"exact fit", "ABCDEFGHIJKLMNOP\x1b[3b|", []string{"ABCDEFGHIJKLMNOPPPP|"}},
+		{"pending wrap prints none", "ABCDEFGHIJKLMNOPQRST\x1b[1b|", []string{"ABCDEFGHIJKLMNOPQRST", "|"}},
+		{"last column prints one", "ABCDEFGHIJKLMNOPQRS\x1b[1b|", []string{"ABCDEFGHIJKLMNOPQRSS", "|"}},
+		{"after C0 prints none", "xa\r\x1b[3b|", []string{"|a"}},
+		{"after CSI prints none", "xa\x1b[1m\x1b[3b|", []string{"xa|"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pm := newTestModel(t, 20, 6, "", plainModes(6))
+			if !pm.feed([]byte(c.in)) {
+				return
+			}
+			for y, want := range c.tmux {
+				var b strings.Builder
+				for x := range 20 {
+					b.WriteString(cellText(pm.cell(x, y)))
+				}
+				if got := strings.TrimRight(b.String(), " "); got != want {
+					t.Errorf("row %d: model %q, tmux %q", y, got, want)
+				}
+			}
+		})
 	}
 }
 

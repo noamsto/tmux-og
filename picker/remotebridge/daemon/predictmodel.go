@@ -48,13 +48,11 @@ func newPredictModel(w, h int, seed []byte, m predictModes) *predictModel {
 		return false
 	})
 	// vt prints REP's char n times, n up to 65535, so a few remote bytes
-	// would cost the pump seconds.
-	e.RegisterCsiHandler('b', func(params ansi.Params) bool {
-		if n, _, _ := params.Param(0, 1); n > w {
-			pm.poisoned = true
-			return true
-		}
-		return false
+	// would cost the pump seconds; and tmux caps it at the line end, prints
+	// nothing over a pending wrap or after any C0 or CSI. No REP is modelled.
+	e.RegisterCsiHandler('b', func(ansi.Params) bool {
+		pm.poisoned = true
+		return true
 	})
 	// SetCallbacks replaces the whole set, so it is called once, here.
 	e.SetCallbacks(vt.Callbacks{
