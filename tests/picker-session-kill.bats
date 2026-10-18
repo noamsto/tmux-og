@@ -15,6 +15,13 @@ setup() {
 	IN="psk884-in-${BATS_TEST_NUMBER}-$$"
 	OUT="psk884-out-${BATS_TEST_NUMBER}-$$"
 	TMUX_BIN="${TMUX_BIN:?set TMUX_BIN to the built wrapper}"
+	# tmux starts a pane's default shell as a *login* shell, and darwin's
+	# /etc/profile runs path_helper, which replaces PATH with the host's: every
+	# store path drops out, so a launcher typed into a pane is `command not
+	# found` (rc=127, #1004) and its `#!/usr/bin/env bash` shebang would pick the
+	# host's bash. Hence the absolute path below, with the wrapper's bin dir on
+	# the pane's PATH for that bash.
+	PICKER_BIN_DIR="${PICKER_BIN_DIR:?set PICKER_BIN_DIR to the tmux wrapper bin dir}"
 	TEST_HOME="$BATS_TEST_TMPDIR/home"
 	mkdir -p "$TEST_HOME"
 	export HOME="$TEST_HOME"
@@ -188,7 +195,7 @@ modal_float() { # win
 	# Drive the production launcher from window 2, targeting the client on s.
 	# The popup opens in window 1 (the client's window).
 	inner send-keys -t "$other_pane" \
-		"tmux-window-picker --client '$client'; echo rc=\$? >'$rcfile'" Enter
+		"PATH='$PICKER_BIN_DIR':\$PATH '$PICKER_BIN_DIR/tmux-window-picker' --client '$client'; echo rc=\$? >'$rcfile'" Enter
 
 	# Wait for the popup to open, then kill its host window under it.
 	deadline=$((SECONDS + 5))
@@ -221,7 +228,7 @@ modal_float() { # win
 	# Drive the production launcher from a surviving session's pane, targeting
 	# the client on s. This is the run-shell path with the popup pinned to s.
 	inner send-keys -t "$other_pane" \
-		"tmux-session-picker --client '$client' --current s; echo rc=\$? >'$rcfile'" Enter
+		"PATH='$PICKER_BIN_DIR':\$PATH '$PICKER_BIN_DIR/tmux-session-picker' --client '$client' --current s; echo rc=\$? >'$rcfile'" Enter
 
 	# Wait for the popup to open, then kill its host session under it.
 	deadline=$((SECONDS + 5))
