@@ -216,6 +216,34 @@ func TestPredictorQuietExpiry(t *testing.T) {
 	})
 }
 
+// A char+BS run that expires with no output at all also draws the model, but
+// nothing proved the remote echoes it: the epoch must not stay confirmed.
+func TestPredictorQuietExpiryNeedsOutput(t *testing.T) {
+	h := confirmedHarness(t)
+	e0 := h.p.epoch
+	h.keys("a\x7f")
+	h.clock = h.clock.Add(predictExpiryMax)
+	h.expire()
+	if h.p.epoch == e0 || h.p.confirmed >= h.p.epoch {
+		t.Fatalf("epoch %d -> %d, confirmed %d: still confirmed after an expiry with no output", e0, h.p.epoch, h.p.confirmed)
+	}
+	if out := h.keys("p"); out != nil {
+		t.Errorf("key after a no-output expiry painted %q", out)
+	}
+}
+
+func TestPredictorBackspaceRespectsMaxPending(t *testing.T) {
+	h := newHarness(t, "$ ", 2, 0, harnessOpts{w: 300, h: 24})
+	h.confirm("g")
+	h.keys(strings.Repeat("a", predictMaxPending))
+	for range 200 {
+		h.keys("\x7f")
+	}
+	if n := len(h.p.preds); n > predictMaxPending {
+		t.Errorf("%d predictions pending, want at most %d", n, predictMaxPending)
+	}
+}
+
 // A key and Enter echoed in one payload move the cursor off the key's row:
 // the barrier's epoch bump drops the key rather than leave it pending there.
 func TestPredictorBarrierCoalesced(t *testing.T) {

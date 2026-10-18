@@ -227,7 +227,7 @@ keys:
 				continue
 			}
 			x, y := p.base(m)
-			if p.runEpoch != p.epoch || y != p.runY || x-1 < p.runX {
+			if p.runEpoch != p.epoch || y != p.runY || x-1 < p.runX || len(p.preds) >= predictMaxPending {
 				p.blocked = true
 				continue
 			}
@@ -505,7 +505,9 @@ func (p *predictor) onExpire() []byte {
 		return nil
 	}
 	if p.now().Sub(p.preds[0].at) >= p.expiry() {
-		if !p.drawsModel() {
+		// With no output since the last key, a model that draws the predictions
+		// is no evidence: a no-echo prompt looks the same.
+		if p.fedSinceKey == 0 || !p.drawsModel() {
 			return p.reset()
 		}
 		// Keys that net to nothing, echoed in one payload, look exactly like
