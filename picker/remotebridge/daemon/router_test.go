@@ -331,3 +331,53 @@ func TestCloseWindowUnregistersOnlyItsPanes(t *testing.T) {
 		t.Error("@1 still in registry after close")
 	}
 }
+
+func TestRouterExcludedPaneIsNeitherBufferedNorLogged(t *testing.T) {
+	r := NewRouter()
+	r.pendingLifetime = time.Hour
+	r.Route("%1", []byte("before-exclusion"))
+
+	r.SetExcluded(map[string]struct{}{"%1": {}, "%2": {}})
+	r.Route("%1", []byte("after"))
+	r.Route("%2", []byte("never-registered"))
+
+	if len(r.pending) != 0 || r.pendingBytes != 0 {
+		t.Fatalf("excluded panes buffered: pending=%d bytes=%d", len(r.pending), r.pendingBytes)
+	}
+	if r.dropped != 0 || len(r.routeDropLogged) != 0 {
+		t.Fatalf("excluded output counted as a drop: dropped=%d logged=%v", r.dropped, r.routeDropLogged)
+	}
+}
+
+func TestRouterRegisterLiftsExclusionAndBuffersNewPane(t *testing.T) {
+	r := NewRouter()
+	r.SetExcluded(map[string]struct{}{"%1": {}})
+	r.Exclude(map[string]struct{}{"%3": {}})
+
+	// %2 was never excluded: a pane of a selected window, created after start.
+	r.Route("%2", []byte("early"))
+	var sink bytes.Buffer
+	r.Register("%2", &sink)
+	if sink.String() != "early" {
+		t.Fatalf("new selected pane lost pre-registration output: %q", sink.String())
+	}
+
+	// %1 moves into a selected window: registering it ends the exclusion.
+	r.Register("%1", &sink)
+	r.Route("%1", []byte("live"))
+	if !strings.HasSuffix(sink.String(), "live") {
+		t.Fatalf("registered pane still excluded: %q", sink.String())
+	}
+
+	// Excluding a registered pane takes effect when it unregisters.
+	r.Exclude(map[string]struct{}{"%1": {}})
+	r.Route("%1", []byte("more"))
+	if !strings.HasSuffix(sink.String(), "more") {
+		t.Fatalf("registered pane was excluded: %q", sink.String())
+	}
+	r.Unregister("%1")
+	r.Route("%1", []byte("after"))
+	if r.dropped != 0 || len(r.pending) != 0 {
+		t.Fatalf("pane moved to an unselected window was dropped or buffered: dropped=%d pending=%d", r.dropped, len(r.pending))
+	}
+}

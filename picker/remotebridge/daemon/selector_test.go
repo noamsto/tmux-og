@@ -244,3 +244,70 @@ func TestWindowFilterObserve(t *testing.T) {
 	var none *windowFilter
 	none.observe(tests[0].line)
 }
+
+func TestWindowFilterExcludesUnselectedPanes(t *testing.T) {
+	f := newWindowFilter(WindowSelector{raw: "@1", id: "@1"})
+	if f == nil {
+		t.Fatal("filter is nil for a non-zero selector")
+	}
+	f.noteListed([]remoteWindow{{id: "@1", sel: selYes}, {id: "@2", sel: selNo}, {id: "@3", sel: selUnknown}})
+	if _, ok := f.unselected["@2"]; !ok || len(f.unselected) != 1 {
+		t.Fatalf("unselected = %v, want only @2", f.unselected)
+	}
+
+	router := NewRouter()
+	router.pendingLifetime = time.Hour
+	router.Route("%5", []byte("startup noise")) // arrived before the read
+
+	script := "%begin 1 1 1\n@1|%0\n@2|%5\n@2|%6\n%end 1 1 1\n"
+	var issued []string
+	rt := recordingRT(script, &issued)
+	f.excludeUnselected(Config{RemoteSession: "s"}, router, rt)
+	if len(issued) != 1 || !strings.HasPrefix(issued[0], "list-panes -s -t 's'") {
+		t.Fatalf("issued = %v", issued)
+	}
+
+	router.Route("%5", []byte("x"))
+	router.Route("%6", []byte("y"))
+	router.Route("%0", []byte("selected, not yet registered"))
+	if len(router.pending) != 1 || router.pending["%0"] == nil {
+		t.Fatalf("pending = %v, want only the selected pane %%0", router.pending)
+	}
+	if router.dropped != 0 {
+		t.Fatalf("dropped = %d, want 0", router.dropped)
+	}
+
+	// A split in the unselected window arrives as a layout change.
+	f.excludeLayoutPanes(router, controlmode.Line{Kind: controlmode.LayoutChange, Args: []string{"@2", "a1b2,80x24,0,0{40x24,0,0,5,39x24,41,0,7}", "a1b2,80x24,0,0{40x24,0,0,5,39x24,41,0,7}"}})
+	router.Route("%7", []byte("z"))
+	if router.pending["%7"] != nil {
+		t.Fatal("pane %7 of an unselected window was buffered")
+	}
+}
+
+func TestWindowFilterNilExcludesNothing(t *testing.T) {
+	var f *windowFilter
+	f.noteListed([]remoteWindow{{id: "@1", sel: selNo}})
+	f.excludeUnselected(Config{}, NewRouter(), nil)
+	f.excludeLayoutPanes(NewRouter(), controlmode.Line{})
+}
+
+func TestWindowFilterKeepsExclusionOnMalformedFlagOrFailedRead(t *testing.T) {
+	f := newWindowFilter(WindowSelector{raw: "@1", id: "@1"})
+	if f == nil {
+		t.Fatal("filter is nil for a non-zero selector")
+	}
+	f.noteListed([]remoteWindow{{id: "@2", sel: selNo}})
+	f.noteListed([]remoteWindow{{id: "@2", sel: selUnknown}})
+	if _, ok := f.unselected["@2"]; !ok {
+		t.Fatal("malformed flag dropped a previously unselected window")
+	}
+
+	router := NewRouter()
+	router.SetExcluded(map[string]struct{}{"%5": {}})
+	rt := setupWindowRT("%begin 1 1 1\nparse error\n%error 1 1 1\n")
+	f.excludeUnselected(Config{RemoteSession: "s"}, router, rt)
+	if _, ok := router.excluded["%5"]; !ok {
+		t.Fatal("a failed list-panes read changed the excluded set")
+	}
+}
