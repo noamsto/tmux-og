@@ -1088,6 +1088,8 @@ func runMirror(cfg Config) error {
 		return fmt.Errorf("daemon: remote session %s has no windows", cfg.RemoteSession)
 	}
 	startupWins := remoteWins
+	cfg.filter.noteListed(remoteWins)
+	cfg.filter.excludeUnselected(cfg, router, rt)
 	if cfg.filter != nil {
 		startupWins = selectedWindows(remoteWins)
 		if len(startupWins) == 0 {
@@ -1491,7 +1493,9 @@ func runMirror(cfg Config) error {
 			router.Route(l.Pane, l.Data)
 		case controlmode.LayoutChange:
 			if len(l.Args) > 0 {
-				if mw, ok := reg.byRemoteID(l.Args[0]); ok {
+				if mw, ok := reg.byRemoteID(l.Args[0]); !ok {
+					cfg.filter.excludeLayoutPanes(router, l)
+				} else {
 					if dispatchLayoutChange(cfg, mw, l, burst, send, router, waitHellosFn, cst, cv, rt) {
 						retireMirror(cfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
 					}
@@ -2155,7 +2159,8 @@ func addWindow(cfg Config, send func(string), router *Router, waitHellos helloWa
 	}
 	selected := false
 	var addedName string
-	for _, rw := range cfg.filter.parse(string(lw.Data)) {
+	wins := cfg.filter.parse(string(lw.Data))
+	for _, rw := range wins {
 		if rw.id == remoteID {
 			selected = rw.sel == selYes
 			addedName = rw.name
@@ -2163,6 +2168,8 @@ func addWindow(cfg Config, send func(string), router *Router, waitHellos helloWa
 		}
 	}
 	if !selected {
+		cfg.filter.noteListed(wins)
+		cfg.filter.excludeUnselected(cfg, router, rt)
 		return
 	}
 
