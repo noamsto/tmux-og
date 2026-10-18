@@ -597,15 +597,15 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 			defer func() { _ = conn.Close() }()
 			defer func() { _ = peer.Close() }()
 
-			mode := &mouseModeTracker{}
+			sink := &outputSink{}
 			if tt.utf8 {
-				mode.Feed([]byte("\x1b[?1005h"))
+				sink.mouse.Feed([]byte("\x1b[?1005h"))
 			} else {
-				mode.Feed([]byte("\x1b[?1005l"))
+				sink.mouse.Feed([]byte("\x1b[?1005l"))
 			}
 
 			sendCh := make(chan string, 8)
-			go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, func() *mouseModeTracker { return mode })
+			go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, func() *outputSink { return sink })
 
 			_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
 			if err := wire.WriteFrame(peer, wire.FrameInput, []byte(frame)); err != nil {
@@ -636,6 +636,42 @@ func TestPumpInput1005ClickDoesNotDismiss(t *testing.T) {
 	}
 }
 
+// TestPumpInputEnqueuesPredictKeysBeforeSend pins the ordering the predictor
+// relies on: the typed bytes are in the sink channel before send-keys goes out,
+// so the key precedes its own echo.
+func TestPumpInputEnqueuesPredictKeysBeforeSend(t *testing.T) {
+	sink := bareSink(8)
+
+	conn, peer := net.Pipe()
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = peer.Close() }()
+
+	type sent struct {
+		cmd    string
+		queued int
+	}
+	sendCh := make(chan sent, 8)
+	go pumpInput(conn, "%7", func(s string) { sendCh <- sent{s, len(sink.ch)} }, nil, nil, nil, func() *outputSink { return sink })
+
+	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := wire.WriteFrame(peer, wire.FrameInput, []byte("a")); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	select {
+	case got := <-sendCh:
+		if got.queued != 1 {
+			t.Fatalf("send ran with %d frames queued, want the key frame already there", got.queued)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send-keys never arrived")
+	}
+	f := <-sink.ch
+	if f.typ != framePredictKeys || string(f.payload) != "a" {
+		t.Fatalf("queued frame = %#x %q, want framePredictKeys \"a\"", f.typ, f.payload)
+	}
+}
+
 // TestPumpInputTracksSinkReplacementWhileRunning pins that the tracker is
 // resolved off the router per frame: a sink registered over a live pumpInput —
 // resetWindow's revival on the surviving conn — is picked up rather than the
@@ -651,7 +687,7 @@ func TestPumpInputTracksSinkReplacementWhileRunning(t *testing.T) {
 	defer func() { _ = peer.Close() }()
 
 	sendCh := make(chan string, 8)
-	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, sinkMouseResolver(router, "%7"))
+	go pumpInput(conn, "%7", func(s string) { sendCh <- s }, nil, nil, nil, sinkResolver(router, "%7"))
 
 	// Known legacy: the ambiguous frame is a report plus a key -> guard.
 	assertAmbiguousFrame(t, peer, sendCh, true)

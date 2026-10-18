@@ -665,7 +665,7 @@ func applyPaneOps(cfg Config, w *mirrorWindow, ops paneOps, L controlmode.Layout
 			// temporary local index it was appended at — the swaps below have
 			// not run yet, so the two differ.
 			seedRenderer(rt, router, c, id, L.Panes[indexOf(newRemote, id)], cfg.graphicsFor(id))
-			go pumpInput(c, id, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, id))
+			go pumpInput(c, id, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, id))
 		}
 	}
 
@@ -948,7 +948,7 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 			// serializes one pane's input against its own pending upload, so
 			// sharing one between panes would make a float's paste block a
 			// tiled pane's keystrokes.
-			go pumpInput(c, cell.ID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, cell.ID))
+			go pumpInput(c, cell.ID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, cell.ID))
 			wired = append(wired, cell.ID)
 		}
 	}

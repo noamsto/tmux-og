@@ -2116,7 +2116,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 
 	for i, remotePane := range paneIDs {
 		if wired[i] {
-			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, remotePane))
+			go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, remotePane))
 			continue
 		}
 		// A sole pane's failure is fatal: this error is what makes addWindow /
@@ -2130,7 +2130,7 @@ func setupWindow(cfg Config, send func(string), router *Router, waitHellos hello
 			delete(mw.conns, remotePane)
 			return fmt.Errorf("daemon: seed failed for sole pane %s", remotePane)
 		}
-		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, remotePane))
+		go pumpInput(mw.conns[remotePane], remotePane, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, remotePane))
 	}
 
 	// A window that already holds a float when the bridge opens mirrors it now
@@ -2757,7 +2757,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 	mw.conns[hc.paneID] = hc.conn
 	router.Unregister(hc.paneID)
 	seedRenderer(rt, router, hc.conn, hc.paneID, rendererDims(mw, hc.paneID), cfg.graphicsFor(hc.paneID))
-	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkMouseResolver(router, hc.paneID))
+	go pumpInput(hc.conn, hc.paneID, send, cfg.paster(), cfg.RendererDied, cfg.InputSeen, sinkResolver(router, hc.paneID))
 }
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
@@ -3282,20 +3282,12 @@ func (s *outputSink) Close() {
 // stall input forever; tmux uses a similar escape-time window.
 var escCarryGrace = 50 * time.Millisecond
 
-// sinkMouseMode returns the mouse-mode tracker of paneID's registered renderer
-// sink, or nil when the pane has no sink.
-func sinkMouseMode(router *Router, paneID string) *mouseModeTracker {
-	if s := router.sink(paneID); s != nil {
-		return &s.mouse
-	}
-	return nil
-}
-
-// sinkMouseResolver returns a per-frame lookup of paneID's tracker. A resolver
-// rather than a tracker because resetWindow can register a fresh sink on the
-// surviving conn while its pumpInput keeps reading it.
-func sinkMouseResolver(router *Router, paneID string) func() *mouseModeTracker {
-	return func() *mouseModeTracker { return sinkMouseMode(router, paneID) }
+// sinkResolver returns a per-chunk lookup of paneID's registered renderer sink,
+// nil when the pane has none. A resolver rather than a value because
+// resetWindow can register a fresh sink on the surviving conn while its
+// pumpInput keeps reading it.
+func sinkResolver(router *Router, paneID string) func() *outputSink {
+	return func() *outputSink { return router.sink(paneID) }
 }
 
 // pumpInput forwards conn's FrameInput frames to the remote pane as
@@ -3317,7 +3309,11 @@ func sinkMouseResolver(router *Router, paneID string) func() *mouseModeTracker {
 // seen fires for every input frame, before it is forwarded: it is what wakes a
 // parked mirror (Config.InputSeen). The keystroke itself is not held for the
 // reconnect — send fails closed with no connection, as it does for any outage.
-func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func(), mode func() *mouseModeTracker) {
+//
+// sink resolves the pane's renderer sink once per chunk: its mouse tracker
+// classifies dismiss keys and its predictor is fed the typed bytes. It may be
+// nil, and may return nil.
+func pumpInput(conn net.Conn, remotePane string, send func(string), paste *pasteHandler, died func(), seen func(), sink func() *outputSink) {
 	// Read the grace once, before the reader goroutine exists, so the mutable
 	// package var is never read concurrently with a test that sets it.
 	grace := escCarryGrace
@@ -3359,10 +3355,16 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		// isDismissKey is documented for a non-empty slice; paste.handle can
 		// return an empty one when it swallows the payload (paste.go).
 		if len(payload) > 0 {
-			var m *mouseModeTracker
-			if mode != nil {
-				m = mode()
+			var s *outputSink
+			if sink != nil {
+				s = sink()
 			}
+			var m *mouseModeTracker
+			if s != nil {
+				m = &s.mouse
+			}
+			// Enqueued before send-keys so the key precedes its echo in the sink channel.
+			s.keys(payload)
 			if isDismissKey(payload, m) {
 				send(deadKeyCmd(remotePane))
 			}
