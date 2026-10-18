@@ -4265,6 +4265,27 @@ wait_daemon_exit() {
 	[ "$relay_env" = "OG_RELAY_GRAPHICS=" ]
 }
 
+# The reattach repair re-asserts AEYE_CELL_PX like the relay capability: a
+# value lost during the outage (cleared here, standing in for a change nobody
+# could publish) is back once the repair completes. Clearing it only AFTER the
+# drop is observed keeps the startup publish from satisfying the assertion.
+@test "a control-connection drop is followed by the repair re-publishing AEYE_CELL_PX" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 1 drcell --cell-w 15 --cell-h 28
+	wait_cell_env "AEYE_CELL_PX=15x28"
+
+	old_transport="$(transport_child)"
+	[ -n "$old_transport" ]
+	kill -9 "$old_transport"
+	wait_bridge_disconnected drcell "$BATS_TEST_TMPDIR/drcell.log"
+
+	$SRC set-environment -u -t rem AEYE_CELL_PX
+	[ -z "$(cell_env)" ]
+
+	wait_cell_env "AEYE_CELL_PX=15x28"
+}
+
 # #817: a control-connection drop that lands on a same-named session on a
 # DIFFERENT tmux server used to be a hard teardown; the daemon now tears the
 # OLD mirror down internally and re-opens a fresh one onto the new server, in
