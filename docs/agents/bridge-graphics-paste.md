@@ -354,7 +354,9 @@ carries the measured evidence.
   listed on a tie) once at the start of `paste()` — one `list-clients` fork off
   the input pump. Every message of that paste, failures included, goes to that
   same client, so another client of the session never sees it. With no client
-  attached, messages fall back to the session-wide `notifyLocal`. Covered by
+  attached, or the chosen client detaches mid-upload, messages fall back to the
+  session-wide `notifyLocal`. The `list-clients` lookup and the ticker's join are
+  bounded by `clipTimeout`, since the pane's input lock is held across them. Covered by
   `paste_progress_test.go`, whose scratch-server test attaches two clients as
   panes of an outer server and reads each one's screen with `capture-pane`.
 - **Cleanup is a janitor, not a delete.** The path is read at *submit*, which

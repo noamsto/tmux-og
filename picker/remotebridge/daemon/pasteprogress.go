@@ -51,11 +51,11 @@ func (h *pasteHandler) output() pasteOut {
 func (o pasteOut) say(msg string) { o.sayFor(msg, pasteFailTTL) }
 
 func (o pasteOut) sayFor(msg string, ttl time.Duration) {
-	if o.client == "" {
+	// A failed show (the client detached mid-upload) falls back to the
+	// session-wide notify rather than losing the message.
+	if o.client == "" || o.h.status(o.client, msg, ttl) != nil {
 		o.h.notify(msg)
-		return
 	}
-	o.h.status(o.client, msg, ttl)
 }
 
 // pasteProgress is the ticker goroutine behind one paste's spinner.
@@ -85,7 +85,7 @@ func (o pasteOut) startProgress(label string) *pasteProgress {
 		t := time.NewTicker(tick)
 		defer t.Stop()
 		for frame := 0; ; frame++ {
-			o.h.status(o.client, fmt.Sprintf("%s %s · %.1fs", spinnerFrames[frame%len(spinnerFrames)], *p.label.Load(), time.Since(start).Seconds()), pasteFrameTTLTicks*tick)
+			_ = o.h.status(o.client, fmt.Sprintf("%s %s · %.1fs", spinnerFrames[frame%len(spinnerFrames)], *p.label.Load(), time.Since(start).Seconds()), pasteFrameTTLTicks*tick)
 			select {
 			case <-p.done:
 				return
@@ -99,10 +99,17 @@ func (o pasteOut) startProgress(label string) *pasteProgress {
 func (p *pasteProgress) set(label string) { p.label.Store(&label) }
 
 // stop ends the ticker and waits for it, so no frame can land after the
-// message the caller shows next. Safe to call more than once.
+// message the caller shows next. The wait is bounded by clipTimeout: a wedged
+// local tmux must not hold the pane's input lock behind a frame fork. Safe to
+// call more than once.
 func (p *pasteProgress) stop() {
 	p.once.Do(func() { close(p.done) })
-	p.wg.Wait()
+	joined := make(chan struct{})
+	go func() { p.wg.Wait(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(clipTimeout):
+	}
 }
 
 // formatSize renders a byte count for the upload label.
@@ -118,13 +125,29 @@ func formatSize(n int) string {
 
 // activeClient names the mirror session's most recently active client — the
 // one whose keyboard just sent the ctrl+v — or "" when none can be found.
-// The first listed wins a tie.
+// The first listed wins a tie. The lookup is bounded like bridgeProc: it runs
+// with the pane's input lock held.
 func activeClient(cfg Config) string {
 	if cfg.LocalTmuxOut == nil {
 		return ""
 	}
-	out, err := cfg.LocalTmuxOut("list-clients", "-t", cfg.target(), "-F", "#{client_activity}|#{client_name}")
-	if err != nil {
+	type result struct {
+		out string
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, err := cfg.LocalTmuxOut("list-clients", "-t", cfg.target(), "-F", "#{client_activity}|#{client_name}")
+		ch <- result{out, err}
+	}()
+	var out string
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return ""
+		}
+		out = r.out
+	case <-time.After(clipTimeout):
 		return ""
 	}
 	var best string

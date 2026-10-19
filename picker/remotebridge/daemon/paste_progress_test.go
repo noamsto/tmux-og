@@ -21,13 +21,15 @@ type statusLog struct {
 	mu    sync.Mutex
 	calls []statusCall
 	ch    chan statusCall
+	err   error // returned by record, e.g. a detached client
 }
 
-func (l *statusLog) record(client, msg string, ttl time.Duration) {
+func (l *statusLog) record(client, msg string, ttl time.Duration) error {
 	l.mu.Lock()
 	l.calls = append(l.calls, statusCall{client, msg, ttl})
 	l.mu.Unlock()
 	l.ch <- statusCall{client, msg, ttl}
+	return l.err
 }
 
 func (l *statusLog) all() []statusCall {
@@ -171,6 +173,35 @@ func TestPasteWithoutClientFallsBackToNotify(t *testing.T) {
 	}
 }
 
+func TestPasteFailureFallsBackToNotifyWhenClientDetached(t *testing.T) {
+	f, log, release := progressFixture(func(_ context.Context, r <-chan struct{}) (string, error) {
+		<-r
+		return "", errors.New("boom")
+	})
+	log.err = errors.New("can't find client")
+	f.h.handle("%1", []byte("\x16"))
+	close(release)
+	if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") {
+		t.Fatalf("notify = %q", msg)
+	}
+}
+
+func TestRefusedKeptPrefixAbortsBeforeUpload(t *testing.T) {
+	f, log, _ := progressFixture(func(context.Context, <-chan struct{}) (string, error) {
+		t.Error("upload ran after the kept prefix was refused")
+		return "", errors.New("unreachable")
+	})
+	f.refuseAt = 0
+	f.h.handle("%1", []byte("ab\x16"))
+	awaitStatus(t, log, func(c statusCall) bool { return strings.Contains(c.msg, "dropped") })
+	assertSettled(t, log, "dropped")
+	for _, c := range log.all() {
+		if isFrame(c) {
+			t.Errorf("progress frame after a refused kept prefix: %+v", c)
+		}
+	}
+}
+
 func TestPasteProgressHoldsLaterInputBehindThePath(t *testing.T) {
 	f, log, release := progressFixture(func(_ context.Context, r <-chan struct{}) (string, error) {
 		<-r
@@ -303,7 +334,7 @@ func TestPasteProgressShowsOnThePastingClientOnly(t *testing.T) {
 		return "", errors.New("exit status 1")
 	}
 	f.h.clientFor = func() string { return activeClient(cfg) }
-	f.h.status = func(client, msg string, ttl time.Duration) { showOnClient(cfg, client, msg, ttl) }
+	f.h.status = func(client, msg string, ttl time.Duration) error { return showOnClient(cfg, client, msg, ttl) }
 	f.h.tick = 100 * time.Millisecond
 	f.h.handle("%1", []byte("\x16"))
 

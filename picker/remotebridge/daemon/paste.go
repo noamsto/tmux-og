@@ -127,7 +127,7 @@ type pasteHandler struct {
 	// it for ttl. Either nil leaves a paste without progress, and every message
 	// falls back to notify.
 	clientFor func() string
-	status    func(client, msg string, ttl time.Duration)
+	status    func(client, msg string, ttl time.Duration) error
 	// tick is the progress refresh period; zero means pasteTick.
 	tick time.Duration
 
@@ -169,7 +169,7 @@ func (c Config) paster() *pasteHandler {
 		notify:         func(msg string) { notifyLocal(c, msg) },
 		sendCtl:        c.SendCtl,
 		clientFor:      func() string { return activeClient(c) },
-		status:         func(client, msg string, ttl time.Duration) { showOnClient(c, client, msg, ttl) },
+		status:         func(client, msg string, ttl time.Duration) error { return showOnClient(c, client, msg, ttl) },
 	}
 }
 
@@ -601,13 +601,13 @@ func notifyLocal(cfg Config, msg string) bool {
 	if client == "" {
 		return false
 	}
-	showOnClient(cfg, client, msg, 5*time.Second)
+	_ = showOnClient(cfg, client, msg, 5*time.Second)
 	return true
 }
 
 // showOnClient displays msg on one named client for ttl. The message is
 // escaped and passed after -- per this repo's display-message convention.
-func showOnClient(cfg Config, client, msg string, ttl time.Duration) {
+func showOnClient(cfg Config, client, msg string, ttl time.Duration) error {
 	esc := strings.NewReplacer("#", "##", "%", "%%").Replace(msg)
-	_ = cfg.LocalTmux("display-message", "-c", client, "-d", strconv.FormatInt(ttl.Milliseconds(), 10), "--", esc)
+	return cfg.LocalTmux("display-message", "-c", client, "-d", strconv.FormatInt(ttl.Milliseconds(), 10), "--", esc)
 }
