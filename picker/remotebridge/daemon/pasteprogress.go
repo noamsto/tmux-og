@@ -79,9 +79,7 @@ func (o pasteOut) startProgress(label string) *pasteProgress {
 		tick = pasteTick
 	}
 	start := time.Now()
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	p.wg.Go(func() {
 		t := time.NewTicker(tick)
 		defer t.Stop()
 		for frame := 0; ; frame++ {
@@ -92,7 +90,7 @@ func (o pasteOut) startProgress(label string) *pasteProgress {
 			case <-t.C:
 			}
 		}
-	}()
+	})
 	return p
 }
 
