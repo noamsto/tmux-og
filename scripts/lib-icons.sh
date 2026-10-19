@@ -68,6 +68,7 @@ build_proc_icons() {
 	REPLY=""
 	REPLY_DW=0
 	local count=0
+	local -A written=()
 	# shellcheck disable=SC2086  # intentional word splitting
 	for proc in $procs; do
 		((count >= max)) && break
@@ -75,7 +76,8 @@ build_proc_icons() {
 		# pane_current_command reports on macOS); map it back for the lookup.
 		[[ $proc == .*-wrapped ]] && proc="${proc#.}" && proc="${proc%-wrapped}"
 		local icon="${ICON_MAP[$proc]:-$FALLBACK_ICON}"
-		[[ -z $icon ]] && continue
+		[[ -z $icon || -n ${written[$icon]:-} ]] && continue
+		written[$icon]=1
 		REPLY+="$icon "
 		_icon_cell_width "$icon"
 		((REPLY_DW += _ICW + 1)) # icon width + 1 space

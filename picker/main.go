@@ -1321,6 +1321,7 @@ func buildProcIcons(procs []string, maxCount int) (string, int) {
 	var sb strings.Builder
 	dw := 0
 	count := 0
+	written := make(map[string]bool)
 	for _, proc := range procs {
 		if count >= maxCount {
 			break
@@ -1332,9 +1333,10 @@ func buildProcIcons(procs []string, maxCount int) (string, int) {
 		if !ok {
 			icon = fallbackIcon
 		}
-		if icon == "" {
+		if icon == "" || written[icon] {
 			continue
 		}
+		written[icon] = true
 		sb.WriteString(icon)
 		sb.WriteByte(' ')
 		dw += iconCellWidth(icon) + 1

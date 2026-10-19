@@ -40,3 +40,39 @@ func TestBuildProcIconsNormalizesWrapped(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildProcIconsDedupesWrappedAndPlain(t *testing.T) {
+	claudeIcon, ok := iconMap["claude"]
+	if !ok {
+		t.Fatal("iconMap has no entry for \"claude\"")
+	}
+	got, dw := buildProcIcons([]string{".claude-wrapped", "claude"}, 5)
+	if want := claudeIcon + " "; got != want {
+		t.Errorf("buildProcIcons([.claude-wrapped claude]) = %q, want %q", got, want)
+	}
+	if wantDW := iconCellWidth(claudeIcon) + 1; dw != wantDW {
+		t.Errorf("display width = %d, want %d", dw, wantDW)
+	}
+}
+
+func TestBuildProcIconsKeepsDistinctIcons(t *testing.T) {
+	claudeIcon, ok := iconMap["claude"]
+	if !ok {
+		t.Fatal("iconMap has no entry for \"claude\"")
+	}
+	var other string
+	var otherProc string
+	for proc, icon := range iconMap {
+		if icon != "" && icon != claudeIcon {
+			other, otherProc = icon, proc
+			break
+		}
+	}
+	if other == "" {
+		t.Skip("iconMap has no second distinct icon")
+	}
+	got, _ := buildProcIcons([]string{".claude-wrapped", otherProc, "claude"}, 5)
+	if want := claudeIcon + " " + other + " "; got != want {
+		t.Errorf("buildProcIcons = %q, want %q", got, want)
+	}
+}
