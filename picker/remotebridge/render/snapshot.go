@@ -29,11 +29,14 @@ type TerminalModes struct {
 	FocusReporting bool
 }
 
-// Seed paints captured as a full-screen repaint. A nil mouse or nil modes
+// Seed paints captured as a full-screen repaint. A nil mouse, modes or wrap
 // means the remote's state is unknown, and leaves the local pane's modes as
 // they are: a transient read failure must not turn a working mirror
-// mouse-deaf, nor clear a paste/focus mode it can no longer read.
-func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, mouse *MouseMode, modes *TerminalModes) []byte {
+// mouse-deaf, nor clear a paste/focus mode it can no longer read. wrap is
+// DECAWM (?7): tmux keeps one per pane, shared by the main and alternate
+// screens, and ?1049h/l neither saves nor restores it, so a pane left with
+// autowrap off (a reshape hold writes ?7l) stays that way unless a seed sets it.
+func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, mouse *MouseMode, modes *TerminalModes, wrap *bool) []byte {
 	var b bytes.Buffer
 	// Both the alt-screen switch and ED erase with the CURRENT background, and
 	// the live stream this seed interrupts leaves one set, so without this reset
@@ -43,12 +46,22 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	// during a gap must not survive the reseed. ?1049l restores the saved main
 	// screen, so both clears run before the repaint below.
 	b.WriteString("\x1b[?1049l")
+	// ?1049l restores the pen saved at ?1049h (a reshape hold, or an earlier
+	// alt-screen seed), and the 2J below erases with that pen, so reset it again.
+	b.WriteString("\x1b[m")
 	if altScreen {
 		b.WriteString("\x1b[?1049h")
 	}
 	b.WriteString("\x1b[?1l")
 	if appCursorKeys {
 		b.WriteString("\x1b[?1h")
+	}
+	if wrap != nil {
+		if *wrap {
+			b.WriteString("\x1b[?7h")
+		} else {
+			b.WriteString("\x1b[?7l")
+		}
 	}
 	if modes != nil {
 		writeTerminalModes(&b, *modes)

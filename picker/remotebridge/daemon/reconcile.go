@@ -144,6 +144,16 @@ func reconcileSnapshot(cfg Config, w *mirrorWindow, L controlmode.Layout, remote
 		}
 	}
 
+	// Released on every exit, refused reshape and failed seed included. For a
+	// sink a seed already released, the pump drops it; one still held is owed a
+	// reseed, whose seed releases it.
+	var held []*outputSink
+	defer func() {
+		for _, s := range held {
+			s.release()
+		}
+	}()
+
 	// Only a rebuild inside this call may raise it, so a value left over from an
 	// earlier call must not read as floats this one owes a re-add.
 	w.floatsDropped = false
@@ -154,6 +164,14 @@ passes:
 		newRemote := RemotePaneOrder(L)
 		ops := planPaneOps(remote, newRemote)
 		structural := len(ops.Remove) > 0 || len(ops.Append) > 0 || len(ops.Swaps) > 0
+
+		// Ahead of the pass's first local reshape: tmux reflows a main-screen
+		// pane the instant the reshape below lands, from a local grid and
+		// history the remote never had, and leaves the result up until the
+		// reseed. On the alternate screen it does not reflow at all. A hold an
+		// earlier pass's seed has not released yet is carried through this one:
+		// releasing it here would expose the reflowed main screen.
+		held = append(held, holdReshaped(cfg, w, L, remote, newRemote, structural, zoomed, remoteActive, router)...)
 
 		switch {
 		case ops.Reset:
@@ -749,9 +767,12 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 		}
 		if _, ok := w.conns[remoteID]; !ok {
 			w.conns[remoteID] = oldConn
-			// Output while unrouted is lost; the pane stays live but drifts
-			// until the next successful reset/reseed repairs the screen.
-			router.Register(remoteID, newPredictingSink(oldConn, cfg.graphicsFor(remoteID), router.predict))
+			// Output while unrouted is lost, and the pane may still be parked
+			// on a hold's alternate screen the fresh sink knows nothing of:
+			// the reseed repaints it, and its seed releases the hold.
+			s := newPredictingSink(oldConn, cfg.graphicsFor(remoteID), router.predict)
+			s.oweReseed()
+			router.Register(remoteID, s)
 		}
 	}
 	return err

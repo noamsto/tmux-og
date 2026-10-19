@@ -102,6 +102,9 @@ type Config struct {
 	// SeedTimeout bounds one capture-pane reply, whose body may carry a whole
 	// screen; 0 takes defaultSeedTimeout. See armStall.
 	SeedTimeout time.Duration
+	// HoldFreezeMax overrides the pump's hold deadline (holdFreezeMax). Test
+	// only: 0 keeps the 1s production deadline.
+	HoldFreezeMax time.Duration
 	// View is the daemon's live view-identity cell — see Viewing's doc in
 	// viewident.go for the full State model (Desired/Advertised/Relay).
 	// Desired is what every dial's argv reads; Relay is the single capability
@@ -2838,14 +2841,21 @@ type sinkFrame struct {
 	payload []byte
 	// modes rides only on a framePredictSeed.
 	modes *predictModes
+	// park rides only on a frameHold: its cursor move alone, which a pump
+	// already held writes in place of the whole hold.
+	park []byte
 }
 
-// framePredictKeys and framePredictSeed are daemon-internal: they never reach
-// the wire, and the pump consumes them. A key frame shares the channel with
-// output so a key is ordered before its own echo.
+// framePredictKeys, framePredictSeed, frameHold and frameRelease are
+// daemon-internal: they never reach the wire, and the pump consumes them. A key
+// frame shares the channel with output so a key is ordered before its own echo;
+// a hold or release shares it so the pump alone knows what reached the renderer
+// in what order.
 const (
 	framePredictKeys wire.FrameType = 0xf0
 	framePredictSeed wire.FrameType = 0xf1
+	frameHold        wire.FrameType = 0xf2
+	frameRelease     wire.FrameType = 0xf3
 )
 
 // outputSink serializes all daemon->renderer frames for one pane through a
@@ -2886,6 +2896,10 @@ type outputSink struct {
 	// keysLost records a key frame dropped to a full buffer; the predictor
 	// resets at its next key. It never counts toward dropped.
 	keysLost atomic.Bool
+	// heldScreen publishes the pump's held flag; see isHeld.
+	heldScreen atomic.Bool
+	// holdTok numbers this sink's holds; see parkCol.
+	holdTok int
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2952,15 +2966,37 @@ func (s *outputSink) start(conn net.Conn) {
 		// entirely (see the FrameOutput guard below), which is correct: a seed
 		// is capture-pane's rendered cells, never a query.
 		kn := keyneg.NewFilter()
+		// held is true from a written frameHold until a seed or the deadline
+		// ends it. Pump-owned: only the pump knows what reached the renderer in
+		// what order. holdTimer is the deadline, nil unless held.
+		held := false
+		var holdTimer *time.Timer
+		setHeld := func(v bool) {
+			held = v
+			s.heldScreen.Store(v)
+			if !v && holdTimer != nil {
+				holdTimer.Stop()
+				holdTimer = nil
+			}
+		}
 		var pending *sinkFrame
 		for {
 			var f sinkFrame
 			if pending != nil {
 				f, pending = *pending, nil
 			} else {
+				var holdC <-chan time.Time
+				if holdTimer != nil {
+					holdC = holdTimer.C
+				}
 				select {
 				case v, ok := <-s.ch:
 					if !ok {
+						// No ?1049l for a held pane: a sink closes only when its
+						// pane is torn down, or when resetWindow hands its conn
+						// to a fresh sink, which it marks owed a reseed whose
+						// seed releases the pane.
+						setHeld(false)
 						// The pane is gone: flush whatever the proxies were
 						// still holding (a partial sequence cut mid-stream)
 						// rather than silently dropping it. kn only ever holds
@@ -2992,16 +3028,85 @@ func (s *outputSink) start(conn net.Conn) {
 						return
 					}
 					continue
+				case <-holdC:
+					// The seed never came in time. ?1049l restores the real
+					// cursor and pen so live output can flow again; what was
+					// discarded meanwhile only a reseed brings back.
+					setHeld(false)
+					kn.EndRegion()
+					const leaveAlt = "\x1b[?1049l"
+					var out []byte
+					if s.pred != nil {
+						out = s.pred.reset()
+						s.pred.observe([]byte(leaveAlt))
+					}
+					out = append(out, leaveAlt...)
+					if err := wire.WriteStream(conn, wire.FrameOutput, out); err != nil {
+						return
+					}
+					s.mu.Lock()
+					s.dropped++
+					s.mu.Unlock()
+					continue
 				}
 			}
 			switch f.typ {
 			case framePredictKeys:
-				if writeOutputIfAny(conn, s.pred.onKeys(f.payload)) != nil {
+				var out []byte
+				if held {
+					// A paint would land on the held copy.
+					out = s.pred.reset()
+				} else {
+					out = s.pred.onKeys(f.payload)
+				}
+				if writeOutputIfAny(conn, out) != nil {
 					return
 				}
 				continue
 			case framePredictSeed:
-				s.pred.onModelSeed(f.payload, *f.modes)
+				// A model built while held would paint onto the held copy.
+				if !held {
+					s.pred.onModelSeed(f.payload, *f.modes)
+				}
+				continue
+			case frameHold:
+				// Rewriting a held pane would copy the held copy, now possibly
+				// cut by a shrink, and restart the deadline. Its park still
+				// moves the cursor, so the barrier sees the newest hold.
+				if held {
+					if s.pred != nil {
+						s.pred.observe(f.park)
+					}
+					if err := wire.WriteStream(conn, wire.FrameOutput, f.park); err != nil {
+						return
+					}
+					continue
+				}
+				if s.pred != nil {
+					if writeOutputIfAny(conn, s.pred.onHold()) != nil {
+						return
+					}
+					s.pred.observe(f.payload)
+				}
+				setHeld(true)
+				if err := wire.WriteStream(conn, wire.FrameOutput, f.payload); err != nil {
+					return
+				}
+				// The hold's leading ST returned local tmux to ground, so kn
+				// must not stay in a region local tmux has left: it would
+				// forward a query local tmux then answers.
+				kn.EndRegion()
+				holdTimer = time.NewTimer(holdFreezeMax)
+				continue
+			case frameRelease:
+				// ?1049l here would expose the main screen screen_alternate_off
+				// reflowed, so the pane stays held for the reseed's seed to
+				// release.
+				if held {
+					s.mu.Lock()
+					s.dropped++
+					s.mu.Unlock()
+				}
 				continue
 			case wire.FrameOutput:
 				// drainOutput can append more queued FrameOutput frames'
@@ -3016,7 +3121,11 @@ func (s *outputSink) start(conn net.Conn) {
 					s.hasImages.Store(gfx.Retained())
 				}
 				f.payload = buf
-				if len(f.payload) == 0 {
+				// While held, nothing but the release may move the parked
+				// cursor. The filters above still keep their state, and the
+				// seed's capture carries the screen effects; the mouse tracker
+				// and the predictor follow only bytes the renderer gets.
+				if held || len(f.payload) == 0 {
 					continue
 				}
 				s.mouse.Feed(f.payload)
@@ -3024,6 +3133,13 @@ func (s *outputSink) start(conn net.Conn) {
 					f.payload = s.pred.onOutput(f.payload)
 				}
 			case wire.FrameSeed:
+				// The seed leads with ?1049l, which ends a hold. Output
+				// discarded while held may have opened a region in kn that
+				// local tmux, in ground since the hold, never entered.
+				if held {
+					kn.EndRegion()
+				}
+				setHeld(false)
 				if s.pred != nil && writeOutputIfAny(conn, s.pred.onSeed(f.payload)) != nil {
 					return
 				}
@@ -3109,6 +3225,56 @@ func (s *outputSink) keys(p []byte) {
 	}
 }
 
+// hold queues the bytes that switch the local pane to the alternate screen
+// holding a copy of r's rows, and returns the column the hold parks the cursor
+// in. A full channel loses nothing from the remote stream, so it never touches
+// dropped; the caller just reshapes without a hold.
+func (s *outputSink) hold(r holdRead) (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.paused {
+		return 0, false
+	}
+	col := parkCol(s.holdTok, r.w)
+	select {
+	case s.ch <- sinkFrame{typ: frameHold, payload: holdBytes(r.rows, r.h, col, r.wrap), park: parkBytes(col)}:
+		s.holdTok++
+		return col, true
+	default:
+		return 0, false
+	}
+}
+
+// release asks for a reseed of a pane still held: the pump drops it when a seed
+// already released, else marks the sink dropped so reseedDropped's seed
+// releases it. A full channel counts as dropped for the same reason.
+func (s *outputSink) release() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- sinkFrame{typ: frameRelease}:
+	default:
+		s.dropped++
+	}
+}
+
+// oweReseed marks the pane for reseedDropped, whose seed repaints it and, for a
+// pane left on a hold's alternate screen, releases it.
+func (s *outputSink) oweReseed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropped++
+}
+
 // predictSeed hands the predictor a model seed, which the pump never writes to
 // the renderer. A full buffer drops it silently: a later key asks again.
 func (s *outputSink) predictSeed(seed []byte, m predictModes) {
@@ -3136,6 +3302,12 @@ func (s *outputSink) takeModelWanted() bool {
 		return false
 	}
 	return s.modelWanted.CompareAndSwap(true, false)
+}
+
+// isHeld reports the pump's held flag as last published. A snapshot can miss a
+// queued hold or seed, so it is for tests and logging only, never a decision.
+func (s *outputSink) isHeld() bool {
+	return s != nil && s.heldScreen.Load()
 }
 
 func (s *outputSink) isPaused() bool {

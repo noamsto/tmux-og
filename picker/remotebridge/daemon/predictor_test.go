@@ -110,7 +110,7 @@ func newHarness(t *testing.T, captured string, cx, cy int, o harnessOpts) *predH
 	h.p.now = func() time.Time { return h.clock }
 	t.Cleanup(func() { h.p.shutdown() })
 
-	seed := render.Seed([]byte(captured), cx, cy, o.alt, false, nil, nil)
+	seed := render.Seed([]byte(captured), cx, cy, o.alt, false, nil, nil, nil)
 	h.writeLocal(h.p.onResize(o.w, o.h))
 	h.p.observe(seed)
 	h.writeLocal(seed)
@@ -333,7 +333,7 @@ func TestPredictorSeedDrops(t *testing.T) {
 	h := newHarness(t, "$ ", 2, 0, harnessOpts{})
 	h.confirm("a")
 	h.keys("b")
-	seed := render.Seed([]byte("$ ab"), 4, 0, false, false, nil, nil)
+	seed := render.Seed([]byte("$ ab"), 4, 0, false, false, nil, nil, nil)
 	out := h.p.onSeed(seed)
 	if !bytes.HasPrefix(out, []byte("\x1b8\x1b7")) {
 		t.Errorf("onSeed = %q, want an unpaint", out)

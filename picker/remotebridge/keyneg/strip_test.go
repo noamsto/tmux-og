@@ -328,3 +328,33 @@ func TestFeedHeldOSCResumesAcrossESCBoundary(t *testing.T) {
 		t.Fatalf("second Feed() = %q, want %q", got, "A")
 	}
 }
+
+// TestEndRegionStripsQueriesAfterAnOpenRegion: once the caller has returned
+// the local parser to ground, a query must be stripped rather than walked past
+// as region payload. Every region kind, including a DCS with a doubled ESC
+// half-read.
+func TestEndRegionStripsQueriesAfterAnOpenRegion(t *testing.T) {
+	for _, open := range []string{"\x1bPx", "\x1bPx\x1b", "\x1b_x", "\x1b]2;title"} {
+		f := NewFilter()
+		if got := f.Feed([]byte(open)); string(got) != open {
+			t.Fatalf("Feed(%q) = %q, want it forwarded", open, got)
+		}
+		f.EndRegion()
+		if got, want := f.Feed([]byte("a\x1b[6n\x1b[>4;2m\x1b]11;?\x07b")), "ab"; string(got) != want {
+			t.Errorf("after %q and EndRegion, Feed = %q, want %q", open, got, want)
+		}
+	}
+}
+
+// TestEndRegionKeepsHeldBytes: a held partial sequence never reached the local
+// parser, so it still completes and is stripped after EndRegion.
+func TestEndRegionKeepsHeldBytes(t *testing.T) {
+	f := NewFilter()
+	if got := f.Feed([]byte("a\x1b[6")); string(got) != "a" {
+		t.Fatalf("Feed = %q, want the partial held", got)
+	}
+	f.EndRegion()
+	if got := f.Feed([]byte("nb")); string(got) != "b" {
+		t.Errorf("Feed = %q, want the completed query stripped", got)
+	}
+}
