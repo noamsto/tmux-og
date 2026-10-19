@@ -56,8 +56,8 @@ func seedPredictModels(router *Router, rt roundTrip) {
 		if !ok {
 			continue
 		}
-		cx, cy, alt, appck, mouse, tmodes := parseCursor(curLine, curOK)
+		cx, cy, alt, appck, mouse, tmodes, wrap := parseCursor(curLine, curOK)
 		m.cx, m.cy = cx, cy
-		sinks[i].predictSeed(render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, tmodes), m)
+		sinks[i].predictSeed(render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, tmodes, wrap), m)
 	}
 }

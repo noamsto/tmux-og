@@ -42,8 +42,13 @@ type roundTrip = func(cmds ...string) replies
 // one is the degenerate single-command round-trip.
 func one(rt roundTrip, cmd string) (controlmode.Line, bool) { return rt(cmd)() }
 
+// cursorCmd's reply is space-separated and split with strings.Fields, which
+// drops any field that expands empty: a remote tmux missing a format, or an
+// empty #{pane_private_modes}. The wrap field therefore carries a "w" prefix, so
+// it stays one non-empty field wherever the others are dropped and parseCursor
+// can find it by that prefix instead of by position.
 func cursorCmd(paneID string) string {
-	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} #{pane_private_modes}'", paneID)
+	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes}'", paneID)
 }
 
 func captureCmd(paneID string) string {
@@ -91,7 +96,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 	for i, id := range paneIDs {
 		curLine, curOK := next()
 		capLine, capOK := next()
-		cx, cy, alt, appck, mouse, modes := parseCursor(curLine, curOK)
+		cx, cy, alt, appck, mouse, modes, wrap := parseCursor(curLine, curOK)
 		captured, isErr := parseCapture(capLine, capOK)
 		// isErr, not len(captured)==0: a genuinely blank pane is a valid
 		// successful capture with empty Data, so an emptiness check alone
@@ -108,7 +113,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 			onSeed(i, nil, fmt.Errorf("capture-pane failed for %s", id))
 			continue
 		}
-		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, modes), nil)
+		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, modes, wrap), nil)
 	}
 }
 
@@ -119,42 +124,57 @@ func replaceLF(b []byte) []byte {
 // parseCursor parses an already-read display-message reply into
 // "cursor_x cursor_y alternate_on keypad_cursor_flag mouse_standard_flag
 // mouse_button_flag mouse_all_flag mouse_sgr_flag mouse_utf8_flag
-// pane_private_modes". An error reply or a dead stream degrades to
-// (0,0,false,false,nil,nil) rather than rejecting the seed — only the
+// w<wrap_flag> pane_private_modes". An error reply or a dead stream degrades to
+// (0,0,false,false,nil,nil,nil) rather than rejecting the seed — only the
 // capture-pane reply can do that (see parseCapture). mouse is nil (unknown)
-// unless the reply carries the five mouse fields, and modes is nil (unknown)
-// unless it carries the private-mode list: a remote tmux missing that format
-// expands it empty and drops the field.
-func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes) {
+// unless the reply carries the five mouse fields, modes is nil (unknown)
+// unless it carries the private-mode list (a remote tmux missing that format
+// expands it empty and drops the field), and wrap is nil (unknown) unless the
+// w-prefixed field reads w0 or w1.
+func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes, wrap *bool) {
 	if !ok || l.Kind == controlmode.Error {
-		return 0, 0, false, false, nil, nil
+		return 0, 0, false, false, nil, nil, nil
 	}
 	fields := strings.Fields(string(l.Data))
 	if len(fields) < 4 {
-		return 0, 0, false, false, nil, nil
+		return 0, 0, false, false, nil, nil, nil
 	}
 	cx, _ = strconv.Atoi(fields[0])
 	cy, _ = strconv.Atoi(fields[1])
-	if len(fields) >= 9 {
+	// The wrap field is plucked out wherever it sits, so the mouse and modes
+	// rules below see the same field positions as before it existed.
+	rest := make([]string, 0, len(fields)-4)
+	for _, f := range fields[4:] {
+		v, isWrap := strings.CutPrefix(f, "w")
+		if !isWrap {
+			rest = append(rest, f)
+			continue
+		}
+		if v == "0" || v == "1" {
+			on := v == "1"
+			wrap = &on
+		}
+	}
+	if len(rest) >= 5 {
 		mouse = &render.MouseMode{
-			Standard: fields[4] == "1",
-			Button:   fields[5] == "1",
-			All:      fields[6] == "1",
-			SGR:      fields[7] == "1",
-			UTF8:     fields[8] == "1",
+			Standard: rest[0] == "1",
+			Button:   rest[1] == "1",
+			All:      rest[2] == "1",
+			SGR:      rest[3] == "1",
+			UTF8:     rest[4] == "1",
 		}
 	}
 	// #{pane_private_modes} is a comma-separated list of the pane's active
 	// DECSET modes. strings.Fields drops it when the list is empty, so a reply
-	// with fewer than ten fields (an older remote tmux) leaves both modes
-	// unknown rather than reading an absent list as "off".
-	if len(fields) >= 10 {
+	// without it (an older remote tmux) leaves both modes unknown rather than
+	// reading an absent list as "off".
+	if len(rest) >= 6 {
 		modes = &render.TerminalModes{
-			BracketedPaste: privateModeSet(fields[9], 2004),
-			FocusReporting: privateModeSet(fields[9], 1004),
+			BracketedPaste: privateModeSet(rest[5], 2004),
+			FocusReporting: privateModeSet(rest[5], 1004),
 		}
 	}
-	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes
+	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes, wrap
 }
 
 // privateModeSet reports whether a #{pane_private_modes} list contains mode.

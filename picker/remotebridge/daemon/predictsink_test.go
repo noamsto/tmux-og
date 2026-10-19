@@ -86,7 +86,7 @@ func waitModelWanted(t *testing.T, s *outputSink) {
 // prompt: the "l" before it is echoed, which confirms the epoch.
 func primeAC1(t *testing.T, s *outputSink, peer net.Conn, local, ref interface{ Write([]byte) (int, error) }) {
 	t.Helper()
-	seed := render.Seed([]byte("$ "), 2, 0, false, false, nil, nil)
+	seed := render.Seed([]byte("$ "), 2, 0, false, false, nil, nil, nil)
 	s.enqueue(wire.FrameSeed, seed)
 	f := readSinkFrame(t, peer)
 	if f.Type != wire.FrameSeed {
@@ -149,7 +149,7 @@ func TestPredictSinkModelSeedWritesNothing(t *testing.T) {
 
 	m := plainModes(24)
 	m.cx = 2
-	s.predictSeed(render.Seed([]byte("$ "), 2, 0, false, false, nil, nil), m)
+	s.predictSeed(render.Seed([]byte("$ "), 2, 0, false, false, nil, nil, nil), m)
 	expectNoFrame(t, peer)
 
 	s.keys([]byte("a"))

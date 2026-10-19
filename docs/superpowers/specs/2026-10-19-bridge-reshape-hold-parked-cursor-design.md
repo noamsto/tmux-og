@@ -75,7 +75,9 @@ ESC[1;<col>H                 col = 1 + tok%8, clamped to the pane width
 - **Autowrap off.** The read header carries `#{wrap_flag}`. `holdBytes` writes
   `ESC[?7l` after `?1049h`, the rows, then `ESC[?7h` only if the app had wrap
   on. A hold that lands after the pane narrowed would otherwise wrap each wide
-  row into the row below.
+  row into the row below. The restore is a best-effort snapshot: `render.Seed`
+  now carries the app's DECAWM (`?7h`/`?7l` from the `#{wrap_flag}` read with
+  the seed), so a release never leaves autowrap off past the seed.
 - **Bottom-up order.** A late hold, landing on a pane that already shrank below
   `h`, clamps each CUP past the bottom onto the last row. Each lower row then
   overwrites it, and `ESC[2K` clears what a longer row left behind, so the last
@@ -244,6 +246,29 @@ rows in place.
   sink is marked `oweReseed`, and its seed releases the pane.)
 - **Barrier passes early for an alternate-screen app** whose cursor already
   sits at the hold's row-0 column. Its shrink still deletes from the bottom.
+- **Narrow panes (known, shipped as a follow-up).** On a pane narrower than 8
+  columns, `parkCol` = `min(1+tok%8, max(1,w))` parks consecutive holds at the
+  same column. A later hold's barrier can then be satisfied by an earlier hold
+  still on screen, the race the token closes for wider panes, and a reshape can
+  land on a seed still in flight. It heals at the next seed or at
+  `holdFreezeMax` (1 s). Offered fix: `1 + tok%min(8, max(1, w))`; width 1
+  stays a residual.
+- **DECOM, scroll region and charset (known, follow-up).** `?1049h` resets
+  neither the app's origin mode with a scroll region nor its G0/G1 charset.
+  The hold's CUPs are then region-relative: rows land misplaced, the park lands
+  off row 0 and the barrier never confirms (costing `holdWait` per pass). SO/SI
+  cells replay under the stream's charset, so text shows as line-drawing
+  glyphs. It heals at the seed or `holdFreezeMax`. Offered fix: write
+  `ESC(B ESC)0 SI` after `?1049h`, and `ESC[?6l`, or keep DECOM as a residual.
+  Probes: `decom-probe.sh`, `acs-probe.sh` (worker scratchpad).
+- **A DCS terminator split around the hold (known, follow-up).** When keyneg
+  has passed a lone trailing ESC inside a DCS (`escPending`), local tmux reads
+  the hold's `ESC \` as DCS payload and stays in the DCS, swallowing the hold,
+  the seed and later output. The pane stays blank until the remote's next ST;
+  `holdFreezeMax` does not heal it, because the deadline's `?1049l` is swallowed
+  too. keyneg itself over-strips (safe for queries). Offered fix: keyneg
+  reports the pending ESC (e.g. `PendingDCSEscape()`), and the pump writes a
+  single `\` ahead of the hold.
 - Carried over from the first spec:
   - the blank flash if the hold frame spans two pty reads;
   - a split OSC/DCS at the hold boundary is dispatched truncated;

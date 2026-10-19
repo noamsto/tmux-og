@@ -254,14 +254,31 @@ func TestSinkHoldEndsAnOpenRegionInTheQueryFilter(t *testing.T) {
 
 // TestSinkHoldDeadlineEndsARegionOpenedWhileHeld: output discarded while held
 // can open a region local tmux never saw, so the deadline release must not
-// leave the filter inside it.
+// leave the filter inside it. A DCS, not an OSC: the filter ends an OSC at any
+// ESC, so only a DCS payload would swallow the query that follows.
 func TestSinkHoldDeadlineEndsARegionOpenedWhileHeld(t *testing.T) {
 	shrinkHoldFreeze(t, 50*time.Millisecond)
 	s, peer := holdPipe(t)
 	mustHold(t, s, "HOLD")
 	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
-	_, _ = s.Write([]byte("\x1b]2;title"))
+	_, _ = s.Write([]byte("\x1bPx"))
 	requireFrame(t, peer, wire.FrameOutput, holdLeaveAlt)
+
+	_, _ = s.Write([]byte("hello\x1b[6n"))
+	requireFrame(t, peer, wire.FrameOutput, "hello")
+	requireSilence(t, peer)
+}
+
+// TestSinkHoldSeedEndsARegionOpenedWhileHeld: the same, released by the seed
+// instead of the deadline.
+func TestSinkHoldSeedEndsARegionOpenedWhileHeld(t *testing.T) {
+	s, peer := holdPipe(t)
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
+	_, _ = s.Write([]byte("\x1bPx"))
+	const seed = holdLeaveAlt + "SEED"
+	s.enqueue(wire.FrameSeed, []byte(seed))
+	requireFrame(t, peer, wire.FrameSeed, seed)
 
 	_, _ = s.Write([]byte("hello\x1b[6n"))
 	requireFrame(t, peer, wire.FrameOutput, "hello")
@@ -417,7 +434,7 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 	readSinkFrame(t, peer)
 	m := plainModes(24)
 	m.cx = 2
-	s.predictSeed(render.Seed([]byte("$ "), 2, 0, false, false, nil, nil), m)
+	s.predictSeed(render.Seed([]byte("$ "), 2, 0, false, false, nil, nil, nil), m)
 	s.keys([]byte("a"))
 	_, _ = s.Write([]byte("a"))
 	readOutput(t, peer)
@@ -433,7 +450,7 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 
 	m.cx = 3
-	s.predictSeed(render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil), m)
+	s.predictSeed(render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil, nil), m)
 	s.keys([]byte("c"))
 	// A lone UTF-8 lead byte leaves the stream mid-character if observed.
 	_, _ = s.Write([]byte("\xe2"))
@@ -451,7 +468,7 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 		t.Error("output while held was observed")
 	}
 
-	seed := render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil)
+	seed := render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil, nil)
 	s.enqueue(wire.FrameSeed, seed)
 	if f := readSinkFrame(t, peer); f.Type != wire.FrameSeed {
 		t.Fatalf("frame = %v %q, want the seed", f.Type, f.Payload)

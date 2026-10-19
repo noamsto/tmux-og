@@ -417,3 +417,85 @@ func TestPaneSeedsNilPaneIDsIsANoop(t *testing.T) {
 		t.Errorf("sent %v, want no commands issued", sent)
 	}
 }
+
+// TestPaneSeedCarriesWrapThroughSeed: a remote pane with autowrap on must have
+// ?7h in the seed, whatever a reshape hold wrote to the mirror pane before it;
+// one with autowrap off gets ?7l.
+func TestPaneSeedCarriesWrapThroughSeed(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply, want, not string
+	}{
+		{"on", "5 2 0 0 0 0 0 0 0 w1 7,25", "\x1b[?7h", "\x1b[?7l"},
+		{"off", "5 2 0 0 0 0 0 0 0 w0 7,25", "\x1b[?7l", "\x1b[?7h"},
+		{"on with the mode list dropped", "5 2 0 0 0 0 0 0 0 w1", "\x1b[?7h", "\x1b[?7l"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := strings.Join([]string{
+				"%begin 1 1 1", tc.reply, "%end 1 1 1",
+				"%begin 2 2 1", "line-one", "%end 2 2 1",
+			}, "\n") + "\n"
+			var sent []string
+			got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+			if err != nil {
+				t.Fatalf("PaneSeed: %v", err)
+			}
+			if !bytes.Contains(got, []byte(tc.want)) || bytes.Contains(got, []byte(tc.not)) {
+				t.Errorf("seed %q: want %q and not %q", got, tc.want, tc.not)
+			}
+			// The wrap field must not shift the mouse or modes rules.
+			if !bytes.HasSuffix(got, []byte("\x1b[3;6H")) {
+				t.Errorf("seed %q does not end with cursor CUP", got)
+			}
+		})
+	}
+}
+
+// TestPaneSeedUnknownWrapLeavesAutowrapAlone: a reply without a readable wrap
+// field (a remote tmux missing #{wrap_flag} expands it to a bare "w", and an
+// older reply has no field at all) leaves DECAWM alone — unknown is not off.
+func TestPaneSeedUnknownWrapLeavesAutowrapAlone(t *testing.T) {
+	for _, reply := range []string{
+		"5 2 0 0 0 0 0 0 0",
+		"5 2 0 0 0 0 0 0 0 w 7,25",
+		"5 2 0 0 0 0 0 0 0 wx 7,25",
+		"5 2 0 0",
+	} {
+		stream := strings.Join([]string{
+			"%begin 1 1 1", reply, "%end 1 1 1",
+			"%begin 2 2 1", "line-one", "%end 2 2 1",
+		}, "\n") + "\n"
+		var sent []string
+		got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+		if err != nil {
+			t.Fatalf("PaneSeed(%q): %v", reply, err)
+		}
+		if bytes.Contains(got, []byte("\x1b[?7")) {
+			t.Errorf("reply %q: seed %q touches ?7 with the state unknown", reply, got)
+		}
+	}
+}
+
+// TestParseCursorWrapKeepsMouseAndModes: the w-prefixed field is found by its
+// prefix, so mouse and the private-mode list parse the same with it present,
+// absent, or the only field after the base four.
+func TestParseCursorWrapKeepsMouseAndModes(t *testing.T) {
+	line := func(s string) controlmode.Line { return controlmode.Line{Kind: controlmode.End, Data: []byte(s)} }
+	_, _, _, _, mouse, modes, wrap := parseCursor(line("1 2 0 0 0 0 1 1 0 w1 2004"), true)
+	if mouse == nil || !mouse.All || !mouse.SGR || mouse.Standard {
+		t.Errorf("mouse = %+v, want All+SGR", mouse)
+	}
+	if modes == nil || !modes.BracketedPaste || modes.FocusReporting {
+		t.Errorf("modes = %+v, want bracketed paste only", modes)
+	}
+	if wrap == nil || !*wrap {
+		t.Errorf("wrap = %v, want true", wrap)
+	}
+
+	_, _, _, _, mouse, modes, wrap = parseCursor(line("1 2 0 0 w0"), true)
+	if mouse != nil || modes != nil {
+		t.Errorf("mouse = %+v, modes = %+v, want both unknown", mouse, modes)
+	}
+	if wrap == nil || *wrap {
+		t.Errorf("wrap = %v, want false", wrap)
+	}
+}

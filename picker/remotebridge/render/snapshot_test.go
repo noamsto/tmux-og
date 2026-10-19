@@ -6,7 +6,7 @@ import (
 )
 
 func TestSeedAltScreenAndCursor(t *testing.T) {
-	out := string(Seed([]byte("hello"), 2, 0, true, true, nil, nil))
+	out := string(Seed([]byte("hello"), 2, 0, true, true, nil, nil, nil))
 	if !strings.Contains(out, "\x1b[?1049h") {
 		t.Error("should enter alternate screen")
 	}
@@ -22,7 +22,7 @@ func TestSeedAltScreenAndCursor(t *testing.T) {
 }
 
 func TestSeedPlainNoAlt(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil))
 	if strings.Contains(out, "1049h") || strings.Contains(out, "\x1b[?1h") {
 		t.Error("plain seed must not set alt/app-cursor modes")
 	}
@@ -33,7 +33,7 @@ func TestSeedPlainNoAlt(t *testing.T) {
 // emit the DECRST clears — asserting only the "on" modes leaves the mirror
 // stuck in a mode the remote already left (#803).
 func TestSeedClearsAltScreenAndCursorKeys(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil))
 	if !strings.Contains(out, "\x1b[?1049l\x1b[m") {
 		t.Errorf("seed must clear the alt screen: %q", out)
 	}
@@ -58,7 +58,7 @@ func TestSeedTerminalModes(t *testing.T) {
 		{true, true},
 	} {
 		m := TerminalModes{BracketedPaste: tc.bpaste, FocusReporting: tc.focus}
-		out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m))
+		out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil))
 		for _, mode := range []string{"2004", "1004"} {
 			if !strings.Contains(out, "\x1b[?"+mode+"l") {
 				t.Errorf("%+v: seed %q missing clear ?%sl", m, out, mode)
@@ -84,7 +84,7 @@ func TestSeedTerminalModes(t *testing.T) {
 // every DECSET before the 2J/captured content.
 func TestSeedTerminalModesBeforeTheRepaint(t *testing.T) {
 	m := TerminalModes{BracketedPaste: true, FocusReporting: true}
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil))
 	paint := strings.Index(out, "\x1b[2J")
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
@@ -100,7 +100,7 @@ func TestSeedTerminalModesBeforeTheRepaint(t *testing.T) {
 // remote's state could not be read) emits no bracketed-paste or focus DECSET
 // at all, set or clear.
 func TestSeedUnknownTerminalModesLeavesModesAlone(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil))
 	for _, mode := range []string{"2004", "1004"} {
 		if strings.Contains(out, "\x1b[?"+mode) {
 			t.Errorf("seed %q touches mode ?%s with the state unknown", out, mode)
@@ -112,7 +112,7 @@ func TestSeedUnknownTerminalModesLeavesModesAlone(t *testing.T) {
 // so it (and the app-cursor clear) must precede the 2J/captured repaint, or
 // the restore would clobber the freshly reseeded contents.
 func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil))
 	paint := strings.Index(out, "\x1b[2J")
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
@@ -137,7 +137,7 @@ func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
 
 func TestSeedResetsAttrsBeforeErase(t *testing.T) {
 	for _, alt := range []bool{false, true} {
-		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil))
+		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil, nil))
 		if !strings.HasPrefix(out, "\x1b[m") {
 			t.Errorf("alt=%v: erase must follow an SGR reset, or it fills with the live stream's background: %q", alt, out)
 		}
@@ -148,7 +148,7 @@ func TestSeedResetsAttrsBeforeErase(t *testing.T) {
 // ?1049h, so the erase after it needs its own SGR reset, in both alt cases.
 func TestSeedResetsAttrsAfterAltScreenRestore(t *testing.T) {
 	for _, alt := range []bool{false, true} {
-		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil))
+		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil, nil))
 		_, after, found := strings.Cut(out, "\x1b[?1049l")
 		if !found {
 			t.Fatalf("alt=%v: seed has no alt-screen clear: %q", alt, out)
@@ -166,7 +166,7 @@ func TestSeedResetsAttrsAfterAltScreenRestore(t *testing.T) {
 func TestSeedMouseModes(t *testing.T) {
 	for bits := range 1 << 5 {
 		m := MouseMode{Standard: bits&1 != 0, Button: bits&2 != 0, All: bits&4 != 0, SGR: bits&8 != 0, UTF8: bits&16 != 0}
-		out := string(Seed([]byte("x"), 0, 0, false, false, &m, nil))
+		out := string(Seed([]byte("x"), 0, 0, false, false, &m, nil, nil))
 		want := map[string]bool{
 			"1003": m.All,
 			"1002": m.Button && !m.All,
@@ -196,10 +196,35 @@ func TestSeedMouseModes(t *testing.T) {
 // TestSeedUnknownMouseModeLeavesModesAlone: a nil MouseMode (the remote's
 // state could not be read) emits no mouse DECSET at all, set or clear.
 func TestSeedUnknownMouseModeLeavesModesAlone(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil))
 	for _, mode := range []string{"1000", "1002", "1003", "1005", "1006"} {
 		if strings.Contains(out, "\x1b[?"+mode) {
 			t.Errorf("seed %q touches mouse mode ?%s with the state unknown", out, mode)
 		}
+	}
+}
+
+// TestSeedWrapMode: DECAWM is set or cleared to the remote's state, and left
+// alone when it is unknown — tmux keeps it per screen and ?1049h/l does not
+// restore it, so only the seed can undo a ?7l written by a reshape hold.
+func TestSeedWrapMode(t *testing.T) {
+	on, off := true, false
+	for _, tc := range []struct {
+		name string
+		wrap *bool
+		want string
+	}{
+		{"on", &on, "\x1b[?7h"},
+		{"off", &off, "\x1b[?7l"},
+		{"unknown", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, tc.wrap))
+			for _, seq := range []string{"\x1b[?7h", "\x1b[?7l"} {
+				if got, want := strings.Contains(out, seq), seq == tc.want; got != want {
+					t.Errorf("seed %q contains %q = %v, want %v", out, seq, got, want)
+				}
+			}
+		})
 	}
 }
