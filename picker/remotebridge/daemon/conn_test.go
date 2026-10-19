@@ -220,3 +220,63 @@ func TestFreshConnKeepsInBlockNotificationAsBody(t *testing.T) {
 		t.Fatalf("line = %+v, want End holding the row: lifting is off until adoptVersion", l)
 	}
 }
+
+// TestConnStreamEndedHonoursAnExitRoutedAsideByAReplyReader pins #934: a reply
+// reader in flight routes %exit aside to async (it may not dispatch
+// reentrantly) and the stream then closes in the same pass, before the next
+// top-of-pass settle. connStreamEnded must dispatch that queue and report
+// connEnd, or the destroyed pinned session reads as a bare drop and falls into
+// reattach's refused-attach restore window (up to a minute) instead of ending
+// the mirror.
+func TestConnStreamEndedHonoursAnExitRoutedAsideByAReplyReader(t *testing.T) {
+	c := &ctlConn{async: &asyncQueue{}}
+	if _, ok := readReplyRouting(rawTestReader("%exit\n"), NewRouter(), c.async, testStream(), 7); ok {
+		t.Fatal("readReplyRouting returned a reply for a stream with no reply block")
+	}
+	if len(c.async.lines) != 1 || c.async.lines[0].Kind != controlmode.Exit {
+		t.Fatalf("async = %#v, want the one %%exit the reply reader set aside", c.async.lines)
+	}
+
+	dispatched := 0
+	verdict := c.connStreamEnded(func(l controlmode.Line, _ bool) bool {
+		dispatched++
+		return l.Kind == controlmode.Exit
+	})
+	if verdict != connEnd {
+		t.Errorf("connStreamEnded = %v, want connEnd", verdict)
+	}
+	if dispatched != 1 {
+		t.Errorf("dispatched %d queued lines, want 1", dispatched)
+	}
+}
+
+// TestConnStreamEndedIsABareDropWithoutAQueuedExit: the stream closing with
+// nothing set aside is still the reconnect case.
+func TestConnStreamEndedIsABareDropWithoutAQueuedExit(t *testing.T) {
+	c := &ctlConn{async: &asyncQueue{}}
+	if got := c.connStreamEnded(func(controlmode.Line, bool) bool { return false }); got != connDrop {
+		t.Errorf("connStreamEnded = %v, want connDrop", got)
+	}
+}
+
+// TestConnStreamEndedDrainsANonExitQueue: the drain is the queue's, not
+// Exit-specific. A set-aside line whose dispatch ends the connection (an
+// emptied registry, say) ends it; one that reports no ending is still a drop.
+// The dispatch closure runs on a closed connection, but every branch it reaches
+// fails closed on the dead stream rather than hanging.
+func TestConnStreamEndedDrainsANonExitQueue(t *testing.T) {
+	t.Run("queued line that ends the connection", func(t *testing.T) {
+		c := &ctlConn{async: &asyncQueue{}}
+		c.async.push(controlmode.Line{Kind: controlmode.WindowClose, Args: []string{"@1"}})
+		if got := c.connStreamEnded(func(controlmode.Line, bool) bool { return true }); got != connEnd {
+			t.Errorf("connStreamEnded = %v, want connEnd", got)
+		}
+	})
+	t.Run("queued line that does not end the connection", func(t *testing.T) {
+		c := &ctlConn{async: &asyncQueue{}}
+		c.async.push(controlmode.Line{Kind: controlmode.WindowAdd, Args: []string{"@1"}})
+		if got := c.connStreamEnded(func(controlmode.Line, bool) bool { return false }); got != connDrop {
+			t.Errorf("connStreamEnded = %v, want connDrop", got)
+		}
+	})
+}

@@ -4188,7 +4188,8 @@ wait_daemon_exit() {
 		fi
 		sleep 0.1
 	done
-	printf 'wait_daemon_exit(%s): daemon still alive after %sms\n--- daemon log ---\n' "$tag" "$((budget * 100))" >&3
+	printf 'wait_daemon_exit(%s): daemon still alive after %sms; sessions(name:bridge_state:windows)=%s\n--- daemon log ---\n' \
+		"$tag" "$((budget * 100))" "$($DST list-sessions -F '#{session_name}:#{@bridge_state}:#{session_windows}' 2>/dev/null | tr '\n' ' ' || true)" >&3
 	[ -n "$log" ] && tail -60 "$log" >&3 2>/dev/null || true
 	kill -9 "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true

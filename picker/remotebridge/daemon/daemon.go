@@ -1718,7 +1718,7 @@ func runMirror(cfg Config) error {
 			select {
 			case l, ok := <-c.pump.lines:
 				if !ok {
-					return connDrop // control-stream EOF, with no %exit before it
+					return c.connStreamEnded(dispatch)
 				}
 				// Every line taken off this channel must claim its ordinal or the
 				// count falls behind sent and no later round-trip recognises its own
