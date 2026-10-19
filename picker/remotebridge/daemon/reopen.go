@@ -50,6 +50,10 @@ func (e tornDown) Unwrap() error { return e.error }
 // placed daemon with no pin is refused before it dials: every kill of its own
 // windows is pin-gated, so it could never clean up the user's session.
 func Run(cfg Config) error {
+	// Before any sink exists: the pumps read holdFreezeMax unsynchronised.
+	if cfg.HoldFreezeMax > 0 {
+		holdFreezeMax = cfg.HoldFreezeMax
+	}
 	p, ok := pinLocalSession(cfg)
 	if ok {
 		cfg.local = p

@@ -239,6 +239,7 @@ func main() {
 	parkProbe := flag.Duration("park-probe-interval", envDurationDefault("OG_DAEMON_PARK_PROBE_INTERVAL", 0), "test only: how often a parked mirror re-probes on its own (0 = production interval)")
 	replyTimeout := flag.Duration("reply-timeout", envDurationDefault("OG_DAEMON_REPLY_TIMEOUT", 0), "test only: bound one ordinary control reply wait (0 = production deadline)")
 	seedTimeout := flag.Duration("seed-timeout", envDurationDefault("OG_DAEMON_SEED_TIMEOUT", 0), "test only: bound one capture-pane reply wait (0 = production deadline)")
+	holdFreezeMax := flag.Duration("hold-freeze-max", envDurationDefault("OG_DAEMON_HOLD_FREEZE_MAX", 0), "test only: bound how long a held mirror pane may stay frozen before the pump releases it (0 = production deadline)")
 	testOutage := flag.String("test-outage-file", os.Getenv("OG_DAEMON_TEST_OUTAGE_FILE"), "test-local: while this file exists, a dial yields no control output (an unreachable remote)")
 	flag.Parse()
 
@@ -483,6 +484,7 @@ func main() {
 		ParkProbe:      *parkProbe,
 		ReplyTimeout:   *replyTimeout,
 		SeedTimeout:    *seedTimeout,
+		HoldFreezeMax:  *holdFreezeMax,
 		OpenURL:        daemon.BrowserOpener(runtime.GOOS),
 	}
 	if *retryMaxElapsed > 0 {

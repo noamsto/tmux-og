@@ -11,16 +11,19 @@ import (
 )
 
 // holdWait bounds the barrier before a reshape; holdPoll spaces its probes.
-// Package vars so tests can shrink them.
+// holdFreezeMax bounds how long a pane may stay held before the pump releases
+// it on its own. It is longer than holdWait because it spans hold to seed,
+// which includes a reseed's WAN round trip, while holdWait bounds only a local
+// barrier. Package vars so tests can shrink them.
 var (
-	holdWait = 200 * time.Millisecond
-	holdPoll = 2 * time.Millisecond
+	holdWait      = 200 * time.Millisecond
+	holdPoll      = 2 * time.Millisecond
+	holdFreezeMax = 1 * time.Second
 )
 
 // holdHeaderFormat is the per-pane header preceding each capture in a hold
 // read. Pipe-delimited: tmux rewrites tabs and newlines for a non-UTF-8 client.
-// pane_dead and window_height trail so the geometry fields keep their positions.
-const holdHeaderFormat = "#{@bridge_pane}|#{alternate_on}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{pane_dead}|#{window_height}"
+const holdHeaderFormat = "#{@bridge_pane}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{pane_dead}"
 
 // holdReadArgs batches, for every local pane, a header line and the pane's
 // styled visible rows into one tmux invocation, so a reshape pays one fork
@@ -38,14 +41,14 @@ func holdReadArgs(locals []string) []string {
 	return argv
 }
 
-// holdPollArgs batches one alternate_on probe per local pane.
+// holdPollArgs batches one alternate_on and cursor_y probe per local pane.
 func holdPollArgs(locals []string) []string {
 	var argv []string
 	for _, l := range locals {
 		if len(argv) > 0 {
 			argv = append(argv, ";")
 		}
-		argv = append(argv, "display-message", "-p", "-t", l, "#{alternate_on}")
+		argv = append(argv, "display-message", "-p", "-t", l, "#{alternate_on}|#{cursor_y}")
 	}
 	return argv
 }
@@ -55,8 +58,6 @@ type holdRead struct {
 	local    string
 	holdable bool
 	w, h     int
-	cx, cy   int
-	winH     int
 	rows     []string
 }
 
@@ -73,38 +74,22 @@ func parseHoldRead(out string, locals, remoteIDs []string) []holdRead {
 			break
 		}
 		f := strings.Split(lines[0], "|")
-		if len(f) != 9 || f[0] != remoteIDs[i] {
+		if len(f) != 5 || f[0] != remoteIDs[i] {
 			break
 		}
-		// Fields 3-6 are the pane geometry, field 8 the window height.
-		var n [5]int
-		ok := true
-		for j := range n {
-			k := 3 + j
-			if j == 4 {
-				k = 8
-			}
-			v, err := strconv.Atoi(f[k])
-			if err != nil || v < 0 {
-				ok = false
-				break
-			}
-			n[j] = v
-		}
-		if !ok || len(lines)-1 < n[1] {
+		w, werr := strconv.Atoi(f[2])
+		h, herr := strconv.Atoi(f[3])
+		if werr != nil || herr != nil || w < 0 || h < 0 || len(lines)-1 < h {
 			break
 		}
 		reads = append(reads, holdRead{
 			local:    local,
-			holdable: f[1] == "0" && f[2] == "1" && f[7] == "0",
-			w:        n[0],
-			h:        n[1],
-			cx:       n[2],
-			cy:       n[3],
-			winH:     n[4],
-			rows:     lines[1 : 1+n[1]],
+			holdable: f[1] == "1" && f[4] == "0",
+			w:        w,
+			h:        h,
+			rows:     lines[1 : 1+h],
 		})
-		lines = lines[1+n[1]:]
+		lines = lines[1+h:]
 	}
 	return reads
 }
@@ -117,51 +102,47 @@ func parseHoldRead(out string, locals, remoteIDs []string) []holdRead {
 // left an OSC/DCS/APC string or a CSI open; the leading ST terminates the
 // string and aborts the sequence, keeping the 1049h from being swallowed.
 //
+// The cursor is parked at the top-left: screen_resize_y deletes empty rows
+// below the cursor first, so with the cursor on row 0 a shrink only removes
+// bottom rows and a regrow adds blanks below. Every row stays at its position
+// or goes blank, never shifts.
+//
 // Every row is placed with its own CUP rather than joined by CRLF: a scroll
 // region left set by the application would scroll a joined copy instead of
-// painting it in place.
-func holdBytes(rows []string, cx, cy int) []byte {
+// painting it in place. Rows are written bottom-up with ESC[2K: a late hold on
+// a pane already shorter than h clamps each CUP past the bottom onto the last
+// row, and writing upward leaves that row holding its own content.
+func holdBytes(rows []string, h int) []byte {
 	var b strings.Builder
-	b.WriteString("\x1b\\\x1b[?1049h")
-	for i, r := range rows {
-		b.WriteString("\x1b[" + strconv.Itoa(i+1) + ";1H")
-		b.WriteString(r)
+	b.WriteString("\x1b\\\x1b[?1049h\x1b[" + strconv.Itoa(h) + ";1H")
+	for i := h; i >= 1; i-- {
+		b.WriteString("\x1b[" + strconv.Itoa(i) + ";1H\x1b[m\x1b[2K")
+		if i-1 < len(rows) {
+			b.WriteString(rows[i-1])
+		}
 	}
-	b.WriteString("\x1b[" + strconv.Itoa(cy+1) + ";" + strconv.Itoa(cx+1) + "H")
+	b.WriteString("\x1b[1;1H")
 	return []byte(b.String())
 }
 
-// heldPane is a sink holdReshaped parked, with the local pane it renders into.
-type heldPane struct {
-	sink  *outputSink
-	local string
-}
-
 // holdReshaped holds every pane this pass is about to reshape and reseed, and
-// returns the panes it held: each is owed a release once the pass is over.
+// returns the sinks it held: each is owed a release once the pass is over.
 //
-// It holds only on passes where no held pane shrinks and then regrows before
-// its seed. The alternate screen has no history: a height shrink deletes rows
-// from the top when the cursor is low, and a regrow only adds blanks at the
-// bottom, so the content ends up shifted until the seed. On the main screen a
-// shrink pushes rows into history and the regrow pulls them back exactly. A
-// single net shrink looks the same on both screens, and matches what the remote
-// did. So the pass is left alone (no read, no hold) when it appends a pane
-// (split-window shrinks one, and a later swap or select-layout can regrow it),
-// swaps panes (a pane passes through another's cell), is zoomed or applied
-// zoomed (a zoom transition or a reshape under zoom shrinks the zoomed pane to
-// its cell and regrows it), or when the window itself is taller locally than
-// L.H (resize-window shrinks it before select-layout).
+// Any pass may hold: the parked cursor keeps every row at its position through
+// any sequence of shrinks and regrows (see holdBytes), so a pane still held
+// from an earlier pass, or held again here, never shifts.
 //
-// Only a pane present on both sides of the pass is a candidate: a removed pane
-// is not reshaped, an appended one has nothing on screen yet. The read rules
-// out the rest: a pane already on the alternate screen never reflows, one with
-// alternate-screen off cannot be held, and a dead pane's renderer will never
-// write the hold.
-func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, ops paneOps, zoomed bool, router *Router) []heldPane {
-	if cfg.LocalTmuxOut == nil || len(ops.Append) > 0 || len(ops.Swaps) > 0 || zoomed || w.appliedZoom {
+// Only a pane present on both sides of the pass is a candidate (a removed pane
+// is not reshaped, an appended one has nothing on screen yet), and in a zoomed
+// window only the zoomed pane, the one pane the pass reseeds. The read rules
+// out the rest: a pane with alternate-screen off cannot be held, and a dead
+// pane's renderer will never write the hold. A pane still held is read and
+// enqueued like any other; its pump drops the second hold in stream order.
+func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, newRemote []string, structural, zoomed bool, remoteActive string, router *Router) []*outputSink {
+	if cfg.LocalTmuxOut == nil {
 		return nil
 	}
+	zoomHides := zoomed && indexOf(newRemote, remoteActive) >= 0
 	type target struct {
 		sink *outputSink
 		w, h int
@@ -169,7 +150,7 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 	var ids, locals []string
 	var targets []target
 	for i, id := range newRemote {
-		if indexOf(remote, id) < 0 {
+		if indexOf(remote, id) < 0 || (zoomHides && id != remoteActive) {
 			continue
 		}
 		s := router.sink(id)
@@ -180,9 +161,13 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 		if !ok {
 			continue
 		}
+		tw, th := L.Panes[i].W, L.Panes[i].H
+		if zoomHides {
+			tw, th = L.W, L.H
+		}
 		ids = append(ids, id)
 		locals = append(locals, local)
-		targets = append(targets, target{s, L.Panes[i].W, L.Panes[i].H})
+		targets = append(targets, target{s, tw, th})
 	}
 	if len(locals) == 0 {
 		return nil
@@ -193,19 +178,14 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 		return nil
 	}
 	reads := parseHoldRead(out, locals, ids)
-	for _, r := range reads {
-		if r.winH > L.H {
-			return nil
-		}
-	}
-	// A close-only pass holds every candidate, even one already at its target
-	// dims: the local kill-pane can give the freed space to a different
-	// neighbour than the remote did (tmux next-3.9 gives a closed pane's space
-	// to the next cell, stock releases such as 3.6a and 3.7c to the previous),
-	// so a survivor whose final size matches its target may still have grown
-	// and then shrunk back.
-	force := len(ops.Remove) > 0
-	var held []heldPane
+	// A structural pass holds every candidate, even one already at its target
+	// dims: a local kill-pane can give the freed space to a different neighbour
+	// than the remote did (tmux next-3.9 gives a closed pane's space to the next
+	// cell, stock releases such as 3.6a and 3.7c to the previous), so a survivor
+	// whose final size matches its target may still have grown and then shrunk
+	// back.
+	force := structural
+	var held []*outputSink
 	var heldLocals []string
 	for i, t := range targets {
 		if i >= len(reads) {
@@ -215,43 +195,28 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 		if !r.holdable || (!force && r.w == t.w && r.h == t.h) {
 			continue
 		}
-		if t.sink.hold(holdBytes(r.rows, r.cx, r.cy)) {
-			held = append(held, heldPane{t.sink, r.local})
+		if t.sink.hold(holdBytes(r.rows, r.h)) {
+			held = append(held, t.sink)
 			heldLocals = append(heldLocals, r.local)
 		}
 	}
 	if len(held) == 0 {
 		return nil
 	}
-	// Reshaping anyway on a miss is safe: a hold that lands late still shows
-	// the old copy, now at the new size, and the seed releases it.
-	if !awaitAlt(cfg, heldLocals, "1") {
+	// Reshaping anyway on a miss is safe: a hold that lands late still writes
+	// its rows in place at whatever size the pane has reached, and parks the
+	// cursor.
+	if !awaitAlt(cfg, heldLocals, "1|0") {
 		fmt.Fprintf(os.Stderr, "daemon: hold %s: not confirmed in %v\n", strings.Join(heldLocals, ","), holdWait)
 	}
 	return held
 }
 
-// releaseHeld releases every pane in held and reports whether each has
-// confirmed leaving the alternate screen within holdWait. The pump drops a
-// release whose seed already landed.
-func releaseHeld(cfg Config, held []heldPane) bool {
-	locals := make([]string, len(held))
-	for i, h := range held {
-		h.sink.release()
-		locals[i] = h.local
-	}
-	if awaitAlt(cfg, locals, "0") {
-		return true
-	}
-	fmt.Fprintf(os.Stderr, "daemon: release %s: not confirmed in %v\n", strings.Join(locals, ","), holdWait)
-	return false
-}
-
-// awaitAlt polls until every pane in locals reports #{alternate_on} as want,
-// or holdWait passes. Hold and release bytes reach local tmux through each
-// renderer's pty asynchronously, so a reshape issued right after enqueueing
-// them would race them. An exec error gives up at once: no answer is coming
-// back in time.
+// awaitAlt polls until every pane in locals reports
+// #{alternate_on}|#{cursor_y} as want, or holdWait passes. Hold bytes reach
+// local tmux through each renderer's pty asynchronously, so a reshape issued
+// right after enqueueing them would race them. An exec error gives up at once:
+// no answer is coming back in time.
 func awaitAlt(cfg Config, locals []string, want string) bool {
 	args := holdPollArgs(locals)
 	deadline := time.Now().Add(holdWait)

@@ -102,6 +102,9 @@ type Config struct {
 	// SeedTimeout bounds one capture-pane reply, whose body may carry a whole
 	// screen; 0 takes defaultSeedTimeout. See armStall.
 	SeedTimeout time.Duration
+	// HoldFreezeMax overrides the pump's hold deadline (holdFreezeMax). Test
+	// only: 0 keeps the 1s production deadline.
+	HoldFreezeMax time.Duration
 	// View is the daemon's live view-identity cell — see Viewing's doc in
 	// viewident.go for the full State model (Desired/Advertised/Relay).
 	// Desired is what every dial's argv reads; Relay is the single capability
@@ -2879,6 +2882,8 @@ type outputSink struct {
 	// keysLost records a key frame dropped to a full buffer; the predictor
 	// resets at its next key. It never counts toward dropped.
 	keysLost atomic.Bool
+	// heldScreen publishes the pump's held flag; see isHeld.
+	heldScreen atomic.Bool
 	// done closes when the pump goroutine returns. Close only signals the
 	// pump to stop; the pump may still be mid-flush (draining kn/gfx state on
 	// teardown) after Close returns. Wait is how a caller that needs to
@@ -2945,19 +2950,34 @@ func (s *outputSink) start(conn net.Conn) {
 		// entirely (see the FrameOutput guard below), which is correct: a seed
 		// is capture-pane's rendered cells, never a query.
 		kn := keyneg.NewFilter()
-		// held is true from a frameHold until a seed or frameRelease ends it.
-		// Pump-owned: only the pump knows what reached the renderer in what
-		// order.
+		// held is true from a written frameHold until a seed or the deadline
+		// ends it. Pump-owned: only the pump knows what reached the renderer in
+		// what order. holdTimer is the deadline, nil unless held.
 		held := false
+		var holdTimer *time.Timer
+		setHeld := func(v bool) {
+			held = v
+			s.heldScreen.Store(v)
+			if !v && holdTimer != nil {
+				holdTimer.Stop()
+				holdTimer = nil
+			}
+		}
 		var pending *sinkFrame
 		for {
 			var f sinkFrame
 			if pending != nil {
 				f, pending = *pending, nil
 			} else {
+				var holdC <-chan time.Time
+				if holdTimer != nil {
+					holdC = holdTimer.C
+				}
 				select {
 				case v, ok := <-s.ch:
 					if !ok {
+						// No ?1049l for a held pane: it is going away.
+						setHeld(false)
 						// The pane is gone: flush whatever the proxies were
 						// still holding (a partial sequence cut mid-stream)
 						// rather than silently dropping it. kn only ever holds
@@ -2989,50 +3009,73 @@ func (s *outputSink) start(conn net.Conn) {
 						return
 					}
 					continue
+				case <-holdC:
+					// The seed never came in time. ?1049l restores the real
+					// cursor and pen so live output can flow again; what was
+					// discarded meanwhile only a reseed brings back.
+					setHeld(false)
+					const leaveAlt = "\x1b[?1049l"
+					var out []byte
+					if s.pred != nil {
+						out = s.pred.reset()
+						s.pred.observe([]byte(leaveAlt))
+					}
+					out = append(out, leaveAlt...)
+					if err := wire.WriteStream(conn, wire.FrameOutput, out); err != nil {
+						return
+					}
+					s.mu.Lock()
+					s.dropped++
+					s.mu.Unlock()
+					continue
 				}
 			}
 			switch f.typ {
 			case framePredictKeys:
-				if writeOutputIfAny(conn, s.pred.onKeys(f.payload)) != nil {
+				var out []byte
+				if held {
+					// A paint would land on the held copy.
+					out = s.pred.reset()
+				} else {
+					out = s.pred.onKeys(f.payload)
+				}
+				if writeOutputIfAny(conn, out) != nil {
 					return
 				}
 				continue
 			case framePredictSeed:
-				s.pred.onModelSeed(f.payload, *f.modes)
+				// A model built while held would paint onto the held copy.
+				if !held {
+					s.pred.onModelSeed(f.payload, *f.modes)
+				}
 				continue
 			case frameHold:
+				// Rewriting a held pane would copy the held copy, now possibly
+				// cut by a shrink, and restart the deadline.
+				if held {
+					continue
+				}
 				if s.pred != nil {
 					if writeOutputIfAny(conn, s.pred.onHold()) != nil {
 						return
 					}
 					s.pred.observe(f.payload)
 				}
+				setHeld(true)
 				if err := wire.WriteStream(conn, wire.FrameOutput, f.payload); err != nil {
 					return
 				}
-				held = true
+				holdTimer = time.NewTimer(holdFreezeMax)
 				continue
 			case frameRelease:
-				if !held {
-					continue
+				// ?1049l here would expose the main screen screen_alternate_off
+				// reflowed, so the pane stays held for the reseed's seed to
+				// release.
+				if held {
+					s.mu.Lock()
+					s.dropped++
+					s.mu.Unlock()
 				}
-				held = false
-				const leaveAlt = "\x1b[?1049l"
-				var out []byte
-				if s.pred != nil {
-					out = s.pred.reset()
-					s.pred.observe([]byte(leaveAlt))
-				}
-				out = append(out, leaveAlt...)
-				if err := wire.WriteStream(conn, wire.FrameOutput, out); err != nil {
-					return
-				}
-				// Output may have landed on the held screen and is lost with it,
-				// and ?1049l restores the hold-time cursor and pen, so only a
-				// reseed from the remote is safe.
-				s.mu.Lock()
-				s.dropped++
-				s.mu.Unlock()
 				continue
 			case wire.FrameOutput:
 				// drainOutput can append more queued FrameOutput frames'
@@ -3047,7 +3090,11 @@ func (s *outputSink) start(conn net.Conn) {
 					s.hasImages.Store(gfx.Retained())
 				}
 				f.payload = buf
-				if len(f.payload) == 0 {
+				// While held, nothing but the release may move the parked
+				// cursor. The filters above still keep their state, and the
+				// seed's capture carries the screen effects; the mouse tracker
+				// and the predictor follow only bytes the renderer gets.
+				if held || len(f.payload) == 0 {
 					continue
 				}
 				s.mouse.Feed(f.payload)
@@ -3056,7 +3103,7 @@ func (s *outputSink) start(conn net.Conn) {
 				}
 			case wire.FrameSeed:
 				// The seed leads with ?1049l, which ends a hold.
-				held = false
+				setHeld(false)
 				if s.pred != nil && writeOutputIfAny(conn, s.pred.onSeed(f.payload)) != nil {
 					return
 				}
@@ -3162,10 +3209,9 @@ func (s *outputSink) hold(payload []byte) bool {
 	}
 }
 
-// release ends a hold the reseed did not: the pump drops it when a seed already
-// released, else leaves the alternate screen and marks the sink for a reseed. A
-// full channel counts as dropped, since the reseed that follows writes a seed,
-// which releases.
+// release asks for a reseed of a pane still held: the pump drops it when a seed
+// already released, else marks the sink dropped so reseedDropped's seed
+// releases it. A full channel counts as dropped for the same reason.
 func (s *outputSink) release() {
 	if s == nil {
 		return
@@ -3209,6 +3255,12 @@ func (s *outputSink) takeModelWanted() bool {
 		return false
 	}
 	return s.modelWanted.CompareAndSwap(true, false)
+}
+
+// isHeld reports the pump's held flag as last published. A snapshot can miss a
+// queued hold or seed, so it is for tests and logging only, never a decision.
+func (s *outputSink) isHeld() bool {
+	return s != nil && s.heldScreen.Load()
 }
 
 func (s *outputSink) isPaused() bool {
