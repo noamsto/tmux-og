@@ -50,7 +50,13 @@ completes, so the mirror reads as *frozen* rather than dead (#396).
   first identity read failed) this ending cannot fire. The other close paths
   already worked: the last pane of a window with others remaining is
   `%window-close` → `closeWindow`, and a remote with `detach-on-destroy on` sends
-  `%exit`; the #934 bats cases pin all three.
+  `%exit`; the #934 bats cases pin all three. A `%exit` that lands while a reply
+  reader is in flight is set aside in the async queue rather than dispatched
+  (a reply reader may not dispatch reentrantly), and the stream closes in the
+  same pass; `connStreamEnded` drains that queue before declaring a bare drop,
+  so it still ends the mirror instead of falling into reattach's
+  refused-attach restore window (up to a minute). Without that drain the case
+  flaked at `wait_daemon_exit`.
 
 Not done: rebuilding the mirror windows for the new session in place. A daemon
 mirrors exactly one remote session (see the invariant below); the excursion is

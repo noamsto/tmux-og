@@ -812,6 +812,20 @@ const (
 	connReplace
 )
 
+// connStreamEnded is runConn's verdict when the pump channel closes. A %exit
+// that arrived while a reply reader was in flight was routed aside to async by
+// handleAsideLine (a reply reader may not dispatch reentrantly), and the loop
+// reaches this branch in the same pass that queued it, before the next
+// top-of-pass settle. Dispatch that queue here, so a destroyed pinned session
+// (#934) ends the mirror instead of reading as a bare drop and falling into
+// reattach's refused-attach restore window, which is up to a minute.
+func (c *ctlConn) connStreamEnded(dispatch func(controlmode.Line, bool) bool) connVerdict {
+	if c.async.drain(dispatch) {
+		return connEnd
+	}
+	return connDrop
+}
+
 // bridgeStateDisconnected is the @bridge_state value picker/statusline renders
 // a red marker for on a mirror window; absent means connected. It names the
 // state of the user's mirror, not the daemon's retry activity (#482).
