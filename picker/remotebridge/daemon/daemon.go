@@ -3583,6 +3583,11 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 				if died != nil {
 					died()
 				}
+				// A paste still uploading owns bytes only this goroutine may
+				// send: finish it so its path and the held input are not lost.
+				if paste != nil && paste.pumping {
+					paste.replay(paste.finish(remotePane, <-paste.results()), deliver)
+				}
 				return
 			}
 			if r.f.Type != wire.FrameInput {
@@ -3609,6 +3614,12 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 			fire = nil
 			deliver(carry)
 			carry = nil
+		case r := <-paste.results():
+			// The path and the input held behind it go out from here, the one
+			// goroutine that sends this pane's typing, so their order is fixed.
+			if paste != nil {
+				paste.replay(paste.finish(remotePane, r), deliver)
+			}
 		}
 	}
 }

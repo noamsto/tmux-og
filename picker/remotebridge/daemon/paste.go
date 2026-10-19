@@ -8,8 +8,8 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
@@ -121,15 +121,31 @@ type pasteHandler struct {
 	// dropped injection (e.g. mid-reconnect) is a visible failure rather than
 	// a silently discarded ssh keystroke.
 	sendCtl func(cmds ...string) bool
+	// clientFor names the local client that pasted (the mirror session's most
+	// recently active one), or "" when none is attached. status shows msg on
+	// it for ttl. Either nil leaves a paste without progress, and every message
+	// falls back to notify.
+	clientFor func() string
+	status    func(client, msg string, ttl time.Duration) error
+	// tick is the progress refresh period; zero means pasteTick.
+	tick time.Duration
 
-	// mu serializes one pane's pastes against its own later input frames.
-	// handle locks it for every frame and, when a frame triggers a paste,
-	// hands the held lock to the paste goroutine rather than unlocking —
-	// legal in Go, since sync.Mutex has no goroutine affinity. That pins
-	// every later frame (including a same-burst Enter) behind the pending
-	// upload+inject, so a prompt can never submit imageless while the path
-	// is still in flight.
-	mu sync.Mutex
+	// pumping is set from handle until finish: a paste is in flight. Only
+	// the pump goroutine touches it, held, holdAll and the scan state below;
+	// the paste goroutine hands its outcome back through done.
+	pumping bool
+	// held is one entry per input frame, so a replayed lone Escape stays a lone
+	// Escape instead of fusing with the text after it into an Alt chord.
+	held [][]byte
+	// firstDrop is the index in splitPasteDrops's kept of its first dropped
+	// ctrl+v: bytes before it were typed before the gesture and are never held.
+	firstDrop int
+	// holdAll holds every byte, not only the submitting suffix, for a paste
+	// whose triggering frame ended inside a bracketed paste or a partial marker.
+	holdAll bool
+	// done carries the paste goroutine's outcome to the pump goroutine, which
+	// owns every send to this pane so input and the path keep one order.
+	done chan pasteResult
 	// inPaste is the bracketed-paste scan state, carried across frames: a
 	// paste spanning more than one 4096-byte pty read must not lose track of
 	// being inside ESC[200~...ESC[201~ at the frame boundary.
@@ -154,119 +170,198 @@ func (c Config) paster() *pasteHandler {
 		return nil
 	}
 	return &pasteHandler{
+		done:           make(chan pasteResult, 1),
 		upload:         c.PasteUpload,
 		probeClipboard: probeClipboardImage,
 		procFor:        func(remotePane string) (string, error) { return bridgeProc(c, remotePane) },
 		notify:         func(msg string) { notifyLocal(c, msg) },
 		sendCtl:        c.SendCtl,
+		clientFor:      func() string { return activeClient(c) },
+		status:         func(client, msg string, ttl time.Duration) error { return showOnClient(c, client, msg, ttl) },
 	}
 }
 
 // handle returns the bytes to forward to the remote pane. A 0x16 outside a
 // bracketed paste on an agent pane with an image on the clipboard is
-// swallowed; the goroutine it starts sends everything for this pane from
-// here on — the rest of this frame's kept bytes, then the upload+injection —
-// so ordering against whatever the user types next is preserved. Every other
-// case forwards the payload untouched; a forward on a pane that might be an
-// agent notifies why (gate lookup failed, probe couldn't tell, unsupported
+// swallowed and starts the upload on its own goroutine. Until finish runs,
+// typing is not held back: plain text is forwarded at once (it lands before
+// the path, which goes at the end of whatever was typed), and only the first
+// byte that could submit the prompt or move the cursor — and everything after
+// it — is held in order, so a prompt can never submit without its image. Every
+// other case forwards the payload untouched; a forward on a pane that might be
+// an agent notifies why (gate lookup failed, probe couldn't tell, unsupported
 // image type), except a text clipboard and a non-agent proc, which stay
 // silent as they did before this interception existed.
 //
-// mu is held for the duration of the call, or — when a paste is triggered —
-// handed off to the paste goroutine, so a later frame on this same pane
-// cannot race ahead of a pending upload.
+// handle and finish run on the pane's pump goroutine only, so they need no
+// lock and a returned prefix is sent before finish's path.
 func (h *pasteHandler) handle(remotePane string, payload []byte) []byte {
-	h.mu.Lock()
+	if h.pumping {
+		free, rest := h.splitFree(payload)
+		h.hold(rest)
+		return free
+	}
 	kept, drops := h.splitPasteDrops(payload)
 	if drops == 0 {
-		h.mu.Unlock()
 		return payload
 	}
 	proc, err := h.procFor(remotePane)
 	if err != nil {
-		h.mu.Unlock()
 		// Async: notifyLocal forks the local tmux, which a gate timeout
 		// suggests is wedged, and this runs on the input pump.
 		go h.notify(pasteForwardedMsg + err.Error())
 		return payload
 	}
 	if !pasteAgentProcs[proc] {
-		h.mu.Unlock()
 		return payload
 	}
 	probe, ok, err := h.probeClipboard()
 	switch {
 	case err != nil:
-		h.mu.Unlock()
 		go h.notify(pasteForwardedMsg + err.Error())
 		return payload
 	case !ok:
-		h.mu.Unlock()
 		return payload
-	default:
-		if drops > 1 {
-			h.notify(fmt.Sprintf("tmux-og: ignored %d extra clipboard-paste keystroke(s) in one burst", drops-1))
-		}
-		go h.paste(remotePane, kept, probe)
-		return nil
+	}
+	if drops > 1 {
+		h.notify(fmt.Sprintf("tmux-og: ignored %d extra clipboard-paste keystroke(s) in one burst", drops-1))
+	}
+	h.pumping = true
+	h.holdAll = h.inPaste || h.matched != 0
+	go h.paste(probe)
+	free, rest := h.splitFree(kept[h.firstDrop:])
+	h.held = nil
+	h.hold(rest)
+	return append(kept[:h.firstDrop:h.firstDrop], free...)
+}
+
+func (h *pasteHandler) hold(b []byte) {
+	if len(b) > 0 {
+		h.held = append(h.held, b)
 	}
 }
 
-// paste ships one clipboard image to the remote and injects the resulting
-// path into the pane's prompt. It owns mu (handed off by handle) for its
-// whole run, so nothing typed on this pane after the triggering frame can
-// reach the remote ahead of it. Every failure is a visible no-op: the byte
-// was already swallowed, so nothing reaching for the remote's (empty)
-// clipboard runs in its place and lies about what happened.
-func (h *pasteHandler) paste(remotePane string, kept []byte, probe clipboardProbe) {
-	defer h.mu.Unlock()
-	if len(kept) > 0 {
-		h.sendChunks(remotePane, kept)
+// pasteResult is a finished paste goroutine's outcome. path is empty when the
+// goroutine already reported a failure.
+type pasteResult struct {
+	path string
+	out  pasteOut
+}
+
+// results is the channel pumpInput selects on; nil for a nil handler, which
+// blocks forever.
+func (h *pasteHandler) results() <-chan pasteResult {
+	if h == nil {
+		return nil
 	}
+	return h.done
+}
+
+// finish ends a paste on the pump goroutine: it injects the path, then
+// returns the held input, one entry per frame, for the caller to replay.
+func (h *pasteHandler) finish(remotePane string, r pasteResult) [][]byte {
+	h.pumping = false
+	held := h.held
+	h.held = nil
+	// The trailing space keeps whatever the user types next from merging into
+	// the path token, which would silently stop the agent recognising it.
+	if r.path != "" && h.sendChunks(remotePane, append([]byte(r.path), ' '), r.out.say) && r.out.client != "" {
+		_ = h.status(r.out.client, pasteDoneMsg, pasteDoneTTL)
+	}
+	return held
+}
+
+// replay delivers released input frame by frame through deliver (which calls
+// handle, so a held ctrl+v or bracketed paste is intercepted like any other).
+// A frame that starts another paste holds the frames after it behind that one.
+func (h *pasteHandler) replay(held [][]byte, deliver func([]byte)) {
+	for i, b := range held {
+		deliver(b)
+		if h.pumping {
+			h.held = append(h.held, held[i+1:]...)
+			return
+		}
+	}
+}
+
+// splitFree splits payload at the first byte that is not plain text. Plain
+// text is printable ASCII and UTF-8: it can neither submit nor move the
+// cursor. Backspace, tab, Enter, escape sequences (arrows, home/end, paste
+// markers) and every other control byte start the held suffix, so the path is
+// always appended where the text typed so far ends. Once anything is held,
+// everything after it is held too, to keep typing in order.
+func (h *pasteHandler) splitFree(payload []byte) (free, held []byte) {
+	if h.holdAll || len(h.held) > 0 {
+		return nil, payload
+	}
+	for i, c := range payload {
+		if c < 0x20 || c == 0x7f {
+			return payload[:i], payload[i:]
+		}
+	}
+	return payload, nil
+}
+
+// paste uploads one clipboard image. It runs off the pump goroutine, so a
+// slow link never freezes the pane's input; its outcome — the remote path, or
+// nothing after a visible failure — always reaches done, so held input never
+// waits past the upload's own bounds. Every failure is a visible no-op: the
+// byte was already swallowed, so nothing reaching for the remote's (empty)
+// clipboard runs in its place and lies about what happened.
+func (h *pasteHandler) paste(probe clipboardProbe) {
+	out := h.output()
+	var path string
+	defer func() { h.done <- pasteResult{path: path, out: out} }()
+	say := out.say
 	// Claude Code's path-inlining regex excludes bmp, and no converter is
 	// guaranteed on either host — report rather than ship a dead path. (pi's
 	// read tool would take a bmp; the gate set shares one policy.)
 	if !pasteExtRe.MatchString(probe.ext) {
-		h.notify("tmux-og: clipboard image format not pasteable (." + probe.ext + "; copy as png)")
+		say("tmux-og: clipboard image format not pasteable (." + probe.ext + "; copy as png)")
 		return
 	}
+	prog := out.startProgress("reading clipboard image")
+	defer prog.stop()
 	data, err := probe.extract()
 	if err != nil {
-		h.notify("tmux-og: clipboard image read failed: " + err.Error())
+		prog.stop()
+		say("tmux-og: clipboard image read failed: " + err.Error())
 		return
 	}
 	if int64(len(data)) > pasteMaxBytes {
-		h.notify(fmt.Sprintf("tmux-og: clipboard image too large (cap %d MiB)", pasteMaxBytes>>20))
+		prog.stop()
+		say(fmt.Sprintf("tmux-og: clipboard image too large (cap %d MiB)", pasteMaxBytes>>20))
 		return
 	}
+	prog.set(fmt.Sprintf("uploading image (%s)", formatSize(len(data))))
 	ctx, cancel := context.WithTimeout(context.Background(), pasteTimeout)
 	defer cancel()
-	path, err := h.upload(ctx, probe.ext, data)
+	p, err := h.upload(ctx, probe.ext, data)
+	prog.stop()
 	if err != nil {
-		h.notify("tmux-og: image upload to remote failed: " + err.Error())
+		say("tmux-og: image upload to remote failed: " + err.Error())
 		return
 	}
-	if !pastePathRe.MatchString(path) {
-		h.notify("tmux-og: remote returned an unexpected paste path")
+	if !pastePathRe.MatchString(p) {
+		say("tmux-og: remote returned an unexpected paste path")
 		return
 	}
-	// The trailing space keeps whatever the user types next from merging into
-	// the path token, which would silently stop the agent recognising it.
-	h.sendChunks(remotePane, append([]byte(path), ' '))
+	path = p
 }
 
 // sendChunks hex-send-keys payload to remotePane, sidestepping every quoting
 // layer between here and the pane. A refused chunk (the bridge reconnecting,
-// or the remote pane having closed) is a visible notify, not a silent no-op —
+// or the remote pane having closed) is a visible say, not a silent no-op —
 // the rest of payload is abandoned, since the pane's input is already out of
-// order at that point.
-func (h *pasteHandler) sendChunks(remotePane string, payload []byte) {
+// order at that point. It reports whether every chunk was written.
+func (h *pasteHandler) sendChunks(remotePane string, payload []byte, say func(string)) bool {
 	for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
 		if !h.sendCtl(strings.Join(args, " ")) {
-			h.notify("tmux-og: input to the mirror pane was dropped (bridge reconnecting?)")
-			return
+			say("tmux-og: input to the mirror pane was dropped (bridge reconnecting?)")
+			return false
 		}
 	}
+	return true
 }
 
 // splitPasteDrops copies payload without its ctrl+v bytes (0x16), counting
@@ -277,6 +372,7 @@ func (h *pasteHandler) sendChunks(remotePane string, payload []byte) {
 // as it arrives and only its progress is remembered.
 func (h *pasteHandler) splitPasteDrops(payload []byte) (kept []byte, drops int) {
 	kept = make([]byte, 0, len(payload))
+	h.firstDrop = -1
 	for _, c := range payload {
 		marker := bracketedPasteBegin
 		if h.inPaste {
@@ -297,6 +393,9 @@ func (h *pasteHandler) splitPasteDrops(payload []byte) (kept []byte, drops int) 
 			h.matched = 0
 		}
 		if c == 0x16 && !h.inPaste {
+			if drops == 0 {
+				h.firstDrop = len(kept)
+			}
 			drops++
 			continue
 		}
@@ -579,7 +678,13 @@ func notifyLocal(cfg Config, msg string) bool {
 	if client == "" {
 		return false
 	}
-	esc := strings.NewReplacer("#", "##", "%", "%%").Replace(msg)
-	_ = cfg.LocalTmux("display-message", "-c", client, "-d", "5000", "--", esc)
+	_ = showOnClient(cfg, client, msg, 5*time.Second)
 	return true
+}
+
+// showOnClient displays msg on one named client for ttl. The message is
+// escaped and passed after -- per this repo's display-message convention.
+func showOnClient(cfg Config, client, msg string, ttl time.Duration) error {
+	esc := strings.NewReplacer("#", "##", "%", "%%").Replace(msg)
+	return cfg.LocalTmux("display-message", "-c", client, "-d", strconv.FormatInt(ttl.Milliseconds(), 10), "--", esc)
 }
