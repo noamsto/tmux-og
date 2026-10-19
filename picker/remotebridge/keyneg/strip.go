@@ -189,6 +189,16 @@ func (f *Filter) Flush() []byte {
 	return held
 }
 
+// EndRegion leaves any DCS/APC/OSC region the stream had opened, for a caller
+// that has itself returned the local parser to ground mid-stream. held stays:
+// none of it has reached the local parser yet, so it is still parsed from
+// ground once its sequence completes.
+func (f *Filter) EndRegion() {
+	f.region = regionNone
+	f.regionLen = 0
+	f.escPending = false
+}
+
 // classify decides what to do with the escape sequence at the head of b, which
 // begins with ESC, and enters a region when the sequence introduces one.
 func (f *Filter) classify(b []byte) (int, verdict) {

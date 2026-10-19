@@ -148,3 +148,14 @@ Needs Step 1 (`holdFreezeMax`). In `outputSink.start`, alongside the pump-local 
 - Step 1, then Step 2 (needs `holdFreezeMax`), then Step 3 (needs 1 and 2).
 - Step 4 (written, red half) and Step 6 run in parallel with Steps 1–3.
 - Then the green bats run, Step 5, Step 7.
+
+## Review round 1
+
+Changes made after the first review of the revision:
+
+- **Per-hold token.** `hold()` returns a per-sink counter; the hold parks at `ESC[1;<col>H` with `col = 1 + tok%8` (clamped to the pane width), and a duplicate hold the pump drops still writes its park CUP. The barrier polls `#{alternate_on}|#{cursor_y}|#{cursor_x}` and waits for each pane's own `1|0|<col-1>`, so an earlier hold or a seed in flight cannot satisfy it. Residual: an alternate-screen app whose cursor already sits at that cell passes early.
+- **Autowrap.** The read header gains `#{wrap_flag}` (6 fields). `holdBytes` writes `ESC[?7l` after `?1049h`, the rows, then `ESC[?7h` only if the app had wrap on, then the park CUP.
+- **`resetWindow` merge-back.** The re-registered sink is marked `oweReseed`, so its seed releases a pane left parked.
+- **keyneg.** The pump calls `kn.EndRegion()` when a hold is written and when it is released (seed or deadline), because the hold's leading `ESC \` returns local tmux to ground.
+- **Bats.** Every sample is checked; the header is `#{pane_width} #{window_panes} #{pane_height} #{alternate_on}` and each guard pins its reshaped cell; every case asserts the last sample shows the hold released; all six cases run with `--hold-freeze-max 10s`; reproducing the origin/main red needs a daemon wrapper dropping that flag.
+- **Docs.** `docs/agents/bridge-daemon.md` states the rules rather than the review history; the history lives in the spec.

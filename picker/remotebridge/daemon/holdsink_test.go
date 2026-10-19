@@ -44,6 +44,26 @@ func shrinkHoldFreeze(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { holdFreezeMax = saved })
 }
 
+// testHold is a one-row hold read of label in an 80-column pane.
+func testHold(label string) holdRead {
+	return holdRead{w: 80, h: 1, wrap: true, rows: []string{label}}
+}
+
+// holdOut is the output the pump writes for testHold(label) parked at col.
+func holdOut(label string, col int) string {
+	return string(holdBytes([]string{label}, 1, col, true))
+}
+
+// mustHold holds testHold(label) on s and returns the hold's park column.
+func mustHold(t *testing.T, s *outputSink, label string) int {
+	t.Helper()
+	col, ok := s.hold(testHold(label))
+	if !ok {
+		t.Fatal("hold = false on a live sink")
+	}
+	return col
+}
+
 func readHoldFrame(t *testing.T, peer net.Conn) wire.Frame {
 	t.Helper()
 	_ = peer.SetDeadline(time.Now().Add(5 * time.Second))
@@ -93,13 +113,11 @@ func settleDirty(t *testing.T, s *outputSink, wait time.Duration) (int, bool) {
 func TestSinkHoldThenSeedThenReleaseWritesNoRelease(t *testing.T) {
 	s, peer := holdPipe(t)
 	const seed = holdLeaveAlt + "SEED"
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD")
 	s.enqueue(wire.FrameSeed, []byte(seed))
 	s.release()
 
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	requireFrame(t, peer, wire.FrameSeed, seed)
 	requireSilence(t, peer)
 	if n, ok := settleDirty(t, s, 200*time.Millisecond); ok {
@@ -112,12 +130,10 @@ func TestSinkHoldThenSeedThenReleaseWritesNoRelease(t *testing.T) {
 // nothing and asks for a reseed, whose seed releases.
 func TestSinkHoldReleaseWhileHeldOwesReseed(t *testing.T) {
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD")
 	s.release()
 
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	if n, ok := settleDirty(t, s, 5*time.Second); !ok || n != 1 {
 		t.Errorf("takeDirty = %d, %v; want 1, true", n, ok)
 	}
@@ -139,10 +155,8 @@ func TestSinkHoldReleaseWhileHeldOwesReseed(t *testing.T) {
 // capture carries its screen effects instead.
 func TestSinkHoldDiscardsOutputUntilSeed(t *testing.T) {
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	if !s.isHeld() {
 		t.Error("isHeld = false after the hold was written")
 	}
@@ -164,13 +178,11 @@ func TestSinkHoldDiscardsOutputUntilSeed(t *testing.T) {
 // while held, so a store in discarded output is replayed ahead of the seed.
 func TestSinkHoldKeepsKittyStoreFromDiscardedOutput(t *testing.T) {
 	s, peer := holdPipeGfx(t, graphics.New(&stubLocalizer{local: "/local/a.bin"}, nil))
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD")
 	_, _ = s.Write(testKittyStore("9"))
 	s.enqueue(wire.FrameSeed, []byte("SEED"))
 
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	replay := readHoldFrame(t, peer)
 	if replay.Type != wire.FrameOutput || !bytes.Contains(replay.Payload, []byte(kittyLocalisedMarker)) {
 		t.Fatalf("frame after the hold = %v %q, want the retained store's replay", replay.Type, replay.Payload)
@@ -184,13 +196,11 @@ func TestSinkHoldKeepsKittyStoreFromDiscardedOutput(t *testing.T) {
 // seed's clear-then-set brings it up to date.
 func TestSinkHoldDiscardedOutputLeavesMouseTracker(t *testing.T) {
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD")
 	_, _ = s.Write([]byte("\x1b[?1005h"))
 	s.enqueue(wire.FrameResize, wire.EncodeResize(80, 24))
 
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	if f := readHoldFrame(t, peer); f.Type != wire.FrameResize {
 		t.Fatalf("frame after the hold = %v %q, want the resize", f.Type, f.Payload)
 	}
@@ -206,17 +216,55 @@ func TestSinkHoldDiscardedOutputLeavesMouseTracker(t *testing.T) {
 	}
 }
 
-// TestSinkHoldWhileHeldIsDropped: a second hold would copy the held copy, maybe
-// already cut by a shrink, and restart the deadline.
-func TestSinkHoldWhileHeldIsDropped(t *testing.T) {
+// TestSinkHoldWhileHeldWritesOnlyThePark: a second hold would copy the held
+// copy, maybe already cut by a shrink, and restart the deadline; only its park
+// is written, so the barrier sees the cursor at the newest hold's column.
+func TestSinkHoldWhileHeldWritesOnlyThePark(t *testing.T) {
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD1")) || !s.hold([]byte("HOLD2")) {
-		t.Fatal("hold = false on a live sink")
+	mustHold(t, s, "HOLD1")
+	if col := mustHold(t, s, "HOLD2"); col != 2 {
+		t.Fatalf("second hold parks at column %d, want 2", col)
 	}
 	s.enqueue(wire.FrameSeed, []byte("SEED"))
 
-	requireFrame(t, peer, wire.FrameOutput, "HOLD1")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD1", 1))
+	requireFrame(t, peer, wire.FrameOutput, "\x1b[1;2H")
 	requireFrame(t, peer, wire.FrameSeed, "SEED")
+	requireSilence(t, peer)
+}
+
+// TestSinkHoldEndsAnOpenRegionInTheQueryFilter: the hold's leading ST returns
+// local tmux to ground inside a DCS the remote opened, so a query after the
+// seed must be stripped rather than forwarded as DCS payload local tmux, in
+// ground, would answer back to the remote.
+func TestSinkHoldEndsAnOpenRegionInTheQueryFilter(t *testing.T) {
+	s, peer := holdPipe(t)
+	_, _ = s.Write([]byte("\x1bPx"))
+	requireFrame(t, peer, wire.FrameOutput, "\x1bPx")
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
+	const seed = holdLeaveAlt + "SEED"
+	s.enqueue(wire.FrameSeed, []byte(seed))
+	requireFrame(t, peer, wire.FrameSeed, seed)
+
+	_, _ = s.Write([]byte("hello\x1b[6n"))
+	requireFrame(t, peer, wire.FrameOutput, "hello")
+	requireSilence(t, peer)
+}
+
+// TestSinkHoldDeadlineEndsARegionOpenedWhileHeld: output discarded while held
+// can open a region local tmux never saw, so the deadline release must not
+// leave the filter inside it.
+func TestSinkHoldDeadlineEndsARegionOpenedWhileHeld(t *testing.T) {
+	shrinkHoldFreeze(t, 50*time.Millisecond)
+	s, peer := holdPipe(t)
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
+	_, _ = s.Write([]byte("\x1b]2;title"))
+	requireFrame(t, peer, wire.FrameOutput, holdLeaveAlt)
+
+	_, _ = s.Write([]byte("hello\x1b[6n"))
+	requireFrame(t, peer, wire.FrameOutput, "hello")
 	requireSilence(t, peer)
 }
 
@@ -224,17 +272,13 @@ func TestSinkHoldWhileHeldIsDropped(t *testing.T) {
 // so the second is a fresh hold, written in stream order.
 func TestSinkHoldAfterSeedIsWritten(t *testing.T) {
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD1")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD1")
 	s.enqueue(wire.FrameSeed, []byte("SEED"))
-	if !s.hold([]byte("HOLD2")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD2")
 
-	requireFrame(t, peer, wire.FrameOutput, "HOLD1")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD1", 1))
 	requireFrame(t, peer, wire.FrameSeed, "SEED")
-	requireFrame(t, peer, wire.FrameOutput, "HOLD2")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD2", 2))
 	if !s.isHeld() {
 		t.Error("isHeld = false after the second hold")
 	}
@@ -246,10 +290,8 @@ func TestSinkHoldAfterSeedIsWritten(t *testing.T) {
 func TestSinkHoldDeadlineReleases(t *testing.T) {
 	shrinkHoldFreeze(t, 50*time.Millisecond)
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	_, _ = s.Write([]byte("X"))
 
 	requireFrame(t, peer, wire.FrameOutput, holdLeaveAlt)
@@ -267,10 +309,8 @@ func TestSinkHoldDeadlineReleases(t *testing.T) {
 // release comes no earlier than about a second after the hold.
 func TestSinkHoldDeadlineIsHoldFreezeMax(t *testing.T) {
 	s, peer := holdPipe(t)
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 	start := time.Now()
 	requireFrame(t, peer, wire.FrameOutput, holdLeaveAlt)
 	if d := time.Since(start); d < 900*time.Millisecond {
@@ -292,7 +332,7 @@ func TestSinkHoldFullChannelDoesNotCountAsDropped(t *testing.T) {
 	s := &outputSink{ch: make(chan sinkFrame, 1)}
 	s.ch <- sinkFrame{typ: wire.FrameOutput}
 
-	if s.hold([]byte("HOLD")) {
+	if _, ok := s.hold(testHold("HOLD")); ok {
 		t.Fatal("hold = true on a full channel")
 	}
 	if s.dropped != 0 {
@@ -303,12 +343,12 @@ func TestSinkHoldFullChannelDoesNotCountAsDropped(t *testing.T) {
 func TestSinkHoldRefusedWhenPausedOrClosed(t *testing.T) {
 	s := &outputSink{ch: make(chan sinkFrame, 1)}
 	s.pause()
-	if s.hold([]byte("HOLD")) {
+	if _, ok := s.hold(testHold("HOLD")); ok {
 		t.Error("hold = true on a paused sink")
 	}
 	s.resume()
 	s.closed = true
-	if s.hold([]byte("HOLD")) {
+	if _, ok := s.hold(testHold("HOLD")); ok {
 		t.Error("hold = true on a closed sink")
 	}
 	if len(s.ch) != 0 {
@@ -318,7 +358,7 @@ func TestSinkHoldRefusedWhenPausedOrClosed(t *testing.T) {
 
 func TestSinkHoldNilSinkIsSafe(t *testing.T) {
 	var s *outputSink
-	if s.hold([]byte("HOLD")) {
+	if _, ok := s.hold(testHold("HOLD")); ok {
 		t.Error("hold = true on a nil sink")
 	}
 	s.release()
@@ -386,13 +426,11 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 		t.Fatalf("frame before the hold = %q, want a paint of b", out)
 	}
 
-	if !s.hold([]byte("HOLD")) {
-		t.Fatal("hold = false on a live sink")
-	}
+	mustHold(t, s, "HOLD")
 	if out := readOutput(t, peer); !bytes.HasPrefix(out, []byte("\x1b8\x1b7")) {
 		t.Fatalf("frame ahead of the hold = %q, want the unpaint", out)
 	}
-	requireFrame(t, peer, wire.FrameOutput, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 
 	m.cx = 3
 	s.predictSeed(render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil), m)

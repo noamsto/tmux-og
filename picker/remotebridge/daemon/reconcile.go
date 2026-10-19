@@ -767,9 +767,12 @@ func resetWindow(cfg Config, w *mirrorWindow, send func(string), router *Router,
 		}
 		if _, ok := w.conns[remoteID]; !ok {
 			w.conns[remoteID] = oldConn
-			// Output while unrouted is lost; the pane stays live but drifts
-			// until the next successful reset/reseed repairs the screen.
-			router.Register(remoteID, newPredictingSink(oldConn, cfg.graphicsFor(remoteID), router.predict))
+			// Output while unrouted is lost, and the pane may still be parked
+			// on a hold's alternate screen the fresh sink knows nothing of:
+			// the reseed repaints it, and its seed releases the hold.
+			s := newPredictingSink(oldConn, cfg.graphicsFor(remoteID), router.predict)
+			s.oweReseed()
+			router.Register(remoteID, s)
 		}
 	}
 	return err

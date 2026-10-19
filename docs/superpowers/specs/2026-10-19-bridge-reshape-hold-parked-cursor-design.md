@@ -31,10 +31,23 @@ seed. Four review rounds found such paths one at a time:
 
 Gating which passes may hold kept leaving another one.
 
+A review round on the parked-cursor revision itself then found four more:
+
+- an earlier hold, or a seed in flight, could satisfy a later hold's barrier,
+  because every hold parked at the same cell (fix: the per-hold park column);
+- a hold landing after the pane narrowed wrapped each wide row into the row
+  below (fix: autowrap off around the rows);
+- a `resetWindow` merge-back left the pane parked with an unheld sink (fix:
+  `oweReseed`);
+- a DCS/OSC/APC open across the hold made keyneg forward a terminal query that
+  local tmux, returned to ground by the hold's `ESC \`, answered to the
+  remote (fix: `kn.EndRegion()` at hold and release).
+
 ## Design: park the cursor, freeze the pane
 
-**A held pane's cursor sits on row 1, and nothing moves it until the pane is
-released.** Two consequences follow:
+**A held pane's cursor sits on row 0 (screen row 1), and nothing moves it until
+the pane is released.** The column is per hold (see the barrier). Two
+consequences follow:
 
 - With `cy = 0`, a shrink's `eat_empty` step can delete every row except row 1
   from the bottom, so it never reaches the top. Every row stays at its own
@@ -51,24 +64,36 @@ screen does not reflow, and clipped cells survive a narrow-and-widen round trip
 ### Hold bytes (`holdBytes`)
 
 ```
-ESC \  ESC[?1049h  ESC[<h>;1H
+ESC \  ESC[?1049h  ESC[?7l
 for i = h … 1:   ESC[<i>;1H ESC[m ESC[2K <row i>
-ESC[1;1H
+ESC[?7h                      (only if the app had wrap on)
+ESC[1;<col>H                 col = 1 + tok%8, clamped to the pane width
 ```
 
+- **`ESC \` first.** It ends any OSC/DCS/APC string the last frame left open
+  and returns local tmux's input parser to ground (see keyneg below).
+- **Autowrap off.** The read header carries `#{wrap_flag}`. `holdBytes` writes
+  `ESC[?7l` after `?1049h`, the rows, then `ESC[?7h` only if the app had wrap
+  on. A hold that lands after the pane narrowed would otherwise wrap each wide
+  row into the row below.
 - **Bottom-up order.** A late hold, landing on a pane that already shrank below
   `h`, clamps each CUP past the bottom onto the last row. Each lower row then
   overwrites it, and `ESC[2K` clears what a longer row left behind, so the last
   row ends up holding its own content. Measured (10-row pane, 15-row hold):
   top-down gives `row01…row09 row15`; bottom-up gives `row01…row10`.
-- **Row 1 last.** The cursor reaches row 1 only after every row is written, so
-  the barrier can tell a fully parsed hold apart.
+- **Park CUP last.** The cursor reaches the park cell only after every row is
+  written, so the barrier can tell a fully parsed hold apart.
+- **Per-hold column.** `hold()` returns a per-sink counter `tok`, and the hold
+  parks at `ESC[1;<col>H` with `col = 1 + tok%8`, clamped to the pane width. A
+  duplicate hold the pump drops while held still writes its park CUP.
 
 ### Barrier (`awaitAlt`)
 
-The poll reads `#{alternate_on}|#{cursor_y}`. A hold is confirmed at `1|0`. The
-rest is unchanged: exact line count, the `holdWait` (200 ms) bound, stop on an
-exec error. A hold that times out is still in flight. It still lands, writes
+The poll reads `#{alternate_on}|#{cursor_y}|#{cursor_x}`. Each pane's hold is
+confirmed at its own `1|0|<col-1>`. The column is per hold so that an earlier
+hold, or a seed in flight, cannot satisfy this hold's barrier. The rest is
+unchanged: exact line count, the `holdWait` (200 ms) bound, stop on an exec
+error. A hold that times out is still in flight. It still lands, writes
 row by row in place at whatever size the pane has reached by then, and parks
 the cursor.
 
@@ -94,7 +119,7 @@ move its cursor:
   - Lost: the non-screen effects of discarded output (BEL, OSC 52, title
     changes). Mode changes are restored by the seed's clear-then-set.
   - Writing the deferred bytes before the seed is wrong. They are the remote
-    stream for the real cursor, so on the held copy they overwrite row 1. The
+    stream for the real cursor, so on the held copy they overwrite row 0. The
     renderer does not join frames into one pty write: its 4 KiB bufio writer
     flushes whenever its reader runs dry. Even within one write, tmux reads
     the pty in chunks and can redraw between them.
@@ -106,8 +131,9 @@ move its cursor:
 - **A held pane is not held again, and the pump decides that in stream
   order.** `holdReshaped` reads and enqueues a hold for every holdable
   candidate, without checking whether it is already held. When a `frameHold`
-  reaches the pump while `held` is already true, the pump drops it: nothing is
-  written and the deadline is not restarted. So the copy stays the pre-reshape
+  reaches the pump while `held` is already true, the pump drops it: the rows
+  are not rewritten and the deadline is not restarted, but its park CUP is
+  still written. So the copy stays the pre-reshape
   content of the first hold. If a seed came between the two holds, the second
   is written after it, in stream order. Its capture is then either the old copy
   or the seed's content, and both are legitimate.
@@ -120,6 +146,14 @@ move its cursor:
     content). Its shrink-then-regrow shifts rows on origin/main as well, since
     an alternate screen has no history either way.
 
+- **keyneg is told about the hold boundary.** The hold's leading `ESC \`
+  returns local tmux's parser to ground, so the pump calls `kn.EndRegion()`
+  when a hold is written and when it is released (seed or deadline). Without
+  it, a DCS/OSC/APC left open across the hold would make keyneg forward a
+  terminal query as payload that local tmux, now in ground, answers back to
+  the remote. A string spanning the boundary is then scanned as ground
+  (queries stripped, the safe direction).
+
 ### Release
 
 - **The seed releases.** `render.Seed` leads with `?1049l` and then `ESC[m`.
@@ -131,6 +165,9 @@ move its cursor:
     `reseedDropped` repaints from the remote, and that seed releases.
   - The old immediate `?1049l` went away because it exposed the main screen
     reflowed by `screen_alternate_off`: the original junk.
+- **A `resetWindow` merge-back owes a reseed.** The re-registered sink is
+  marked `oweReseed`, so its seed releases a pane left parked on the alternate
+  screen.
 - **Deadline.** `holdFreezeMax` (1 s) is a named constant next to `holdWait`.
   - It is longer than `holdWait` because it bounds the hold-to-seed time,
     which includes a reseed's WAN round trip. `holdWait` bounds only a local
@@ -165,12 +202,13 @@ The read then decides:
   holds every candidate.
 
 The read header is
-`#{@bridge_pane}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{pane_dead}`
-(5 fields). It drops `alternate_on`, the cursor fields and `#{window_height}`.
+`#{@bridge_pane}|#{alternate-screen}|#{pane_width}|#{pane_height}|#{pane_dead}|#{wrap_flag}`
+(6 fields). It drops `alternate_on`, the cursor fields and `#{window_height}`.
 
-For a pane already on the alternate screen, the barrier's `1|0` can pass before
-the hold is parsed, if the app's cursor already sits on row 1. The shrink then
-deletes from the bottom anyway, and the late hold writes its rows in place.
+For a pane already on the alternate screen, the barrier can pass before the
+hold is parsed, if the app's cursor already sits at that hold's row-0 column.
+The shrink then deletes from the bottom anyway, and the late hold writes its
+rows in place.
 
 ## What the user sees
 
@@ -199,15 +237,17 @@ deletes from the bottom anyway, and the late hold writes its rows in place.
   after the seed, as for any seed landing mid-stream today.
 - **Discarded output while held.** Its non-screen side effects (BEL, OSC 52,
   title changes) are lost. Its screen effects arrive with the seed.
-- **A conn replaced while held.** On a reattach rewire, or a `wireRenderer`
-  wired unseeded after a seed error, the new sink starts with `held` false
-  while the local pane still sits parked on the alternate screen. Live output
-  then lands on the copy until the next seed.
+- **An unseeded `wireRenderer`.** After a seed error the pane is wired
+  unseeded and its new sink starts with `held` false, while the local pane may
+  still sit parked on the alternate screen. Live output then lands on the copy
+  until the next seed. (A `resetWindow` merge-back no longer has this: the
+  sink is marked `oweReseed`, and its seed releases the pane.)
+- **Barrier passes early for an alternate-screen app** whose cursor already
+  sits at the hold's row-0 column. Its shrink still deletes from the bottom.
 - Carried over from the first spec:
   - the blank flash if the hold frame spans two pty reads;
   - a split OSC/DCS at the hold boundary is dispatched truncated;
   - predictions painted at the read are captured into the copy;
-  - a `resetWindow` merge-back replaces the held sink;
   - the first seed is the remote's rewrap of an app that repaints on SIGWINCH.
 
 ## Acceptance (dispatcher, for this revision)
@@ -233,8 +273,22 @@ deletes from the bottom anyway, and the late hold writes its rows in place.
   - The split-swap case changes from "takes no hold" to "keeps the bottom
     pane's rows in place".
   - The cross-pass case also asserts that pass 1 held the pane.
-- **New bats cases for the deterministic paths:** rotate, zoom-on, and a late
-  hold on an already-shrunk pane.
+- **New bats cases for the deterministic paths:** rotate and zoom-on. A late
+  hold on an already-shrunk pane is pinned by the `holdBytes` test instead.
+- **Bats harness rules (all six cases):**
+  - All six stall the daemon's local reshape for 1.5 s and so start the daemon
+    with the test-only `--hold-freeze-max 10s`.
+  - Every sample is checked; there are no pre-stall drops.
+  - The sampler header is
+    `#{pane_width} #{window_panes} #{pane_height} #{alternate_on}`, and each
+    case's guard pins its reshaped cell.
+  - Every case asserts that the last sample shows the hold released
+    (`alternate_on` 0).
+  - Reproducing the origin/main red needs a daemon wrapper that drops the
+    `--hold-freeze-max` flag.
+- **Go tests:** the per-hold token and park column, the 6-field header,
+  `holdBytes` autowrap, the barrier's `1|0|<col-1>`, the `oweReseed` merge-back,
+  and `EndRegion` at hold and release.
 - **Freeze:** hold-to-seed latency measured. A forced-deadline test shows a
   seed that never arrives releases at about 1 s and reseeds.
 - **Predictor:** a test that keys during a hold paint nothing, a model seed
