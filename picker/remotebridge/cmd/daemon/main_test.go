@@ -773,9 +773,9 @@ func TestReflowSession(t *testing.T) {
 // which sample only the invoking client.
 func TestSeedViewPrefersTheResolvedIdentityOverTheFlags(t *testing.T) {
 	resolve := func() (daemon.ViewIdentity, bool) {
-		return daemon.ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true
+		return daemon.ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel"), Cell: "15x28"}, true
 	}
-	view := seedView(resolve, "xterm-256color", "", "0")
+	view := seedView(resolve, "xterm-256color", "", "0", "9x9")
 
 	if got := view.Desired(); got != "foot" {
 		t.Errorf("Desired() = %q, want the resolved foot, not the flag seed", got)
@@ -786,6 +786,9 @@ func TestSeedViewPrefersTheResolvedIdentityOverTheFlags(t *testing.T) {
 	if !view.Relay.Load().Sixel() {
 		t.Error("Relay was not seeded from the resolved capability")
 	}
+	if got := view.Cell(); got != "15x28" {
+		t.Errorf("Cell() = %q, want the resolved 15x28, not the flag seed", got)
+	}
 }
 
 // TestSeedViewFallsBackToFlagsWhenUnresolvable is R3's other half: the
@@ -793,7 +796,7 @@ func TestSeedViewPrefersTheResolvedIdentityOverTheFlags(t *testing.T) {
 // session yet, where the flags are all there is.
 func TestSeedViewFallsBackToFlagsWhenUnresolvable(t *testing.T) {
 	resolve := func() (daemon.ViewIdentity, bool) { return daemon.ViewIdentity{}, false }
-	view := seedView(resolve, "xterm-256color", "bpaste,sixel", "1")
+	view := seedView(resolve, "xterm-256color", "bpaste,sixel", "1", "15x28")
 
 	if got := view.Desired(); got != "xterm-256color" {
 		t.Errorf("Desired() = %q, want the flag seed xterm-256color", got)
@@ -803,6 +806,31 @@ func TestSeedViewFallsBackToFlagsWhenUnresolvable(t *testing.T) {
 	}
 	if !view.Relay.Load().Sixel() {
 		t.Error("Relay was not seeded from the -sixel flag")
+	}
+	if got := view.Cell(); got != "15x28" {
+		t.Errorf("Cell() = %q, want the flag seed 15x28", got)
+	}
+}
+
+// An unknown cell size from the flags stays unknown: seedView takes whatever
+// daemon.CellPx made of them, so invalid or zero flags arrive as "".
+func TestSeedViewInvalidCellFlagsSeedNothing(t *testing.T) {
+	resolve := func() (daemon.ViewIdentity, bool) { return daemon.ViewIdentity{}, false }
+	view := seedView(resolve, "xterm-256color", "", "0", daemon.CellPx("0", "0"))
+
+	if got := view.Cell(); got != "" {
+		t.Errorf("Cell() = %q, want empty", got)
+	}
+}
+
+// A resolved identity with no agreed size wins over the flags too: the flags
+// sample only the invoking client, which the resolver has just disagreed with.
+func TestSeedViewResolvedUnknownCellBeatsFlags(t *testing.T) {
+	resolve := func() (daemon.ViewIdentity, bool) { return daemon.ViewIdentity{Term: "foot"}, true }
+	view := seedView(resolve, "xterm-256color", "", "0", "15x28")
+
+	if got := view.Cell(); got != "" {
+		t.Errorf("Cell() = %q, want empty — the resolved identity wins", got)
 	}
 }
 

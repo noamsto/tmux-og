@@ -460,7 +460,9 @@ const resizeFallbackInterval = 30 * time.Second
 // costs nothing — and always refreshes the stored Relay (its raw diagnostic
 // included), but a RelayEnvCmd publish fires only when the resolved
 // CAPABILITY itself changed: a termname-only change, or no attached client at
-// all (R3 — the resolution is empty), publishes nothing. A failed send is
+// all (R3 — the resolution is empty), publishes nothing. The cell size is
+// published the same way, when the resolved one differs from the stored one
+// (a size that became unknown unsets the variable). A failed send is
 // undone the same way the converger's is above: a write that never reached
 // the remote must not be recorded as current, or the next still-different
 // resolve would read as already-published and never retry. This watcher must
@@ -507,6 +509,12 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 				view.Relay.Store(id.Relay)
 				if id.Relay.Sixel() != prev.Sixel() && !send(RelayEnvCmd(remoteSession, id.Relay.String())) {
 					view.Relay.Store(prev)
+				}
+				if prevCell := view.Cell(); id.Cell != prevCell {
+					view.SetCell(id.Cell)
+					if !send(CellEnvSyncCmd(remoteSession, id.Cell)) {
+						view.SetCell(prevCell)
+					}
 				}
 			}
 		}
@@ -1136,8 +1144,10 @@ func runMirror(cfg Config) error {
 	// included — a prior bridge from a sixel-capable terminal can have left
 	// "sixel" in this same session's table, and skipping the write when this
 	// one has nothing to say would leave that stale value standing and make
-	// the remote emit graphics this proxy only drops.
-	sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()))
+	// the remote emit graphics this proxy only drops. The cell size goes in
+	// the same batch and is likewise unconditional: an unknown size unsets a
+	// value an earlier bridge left behind.
+	sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()), CellEnvSyncCmd(cfg.RemoteSession, cfg.View.Cell()))
 
 	_ = os.Remove(cfg.SockPath)
 	listener, err := net.Listen("unix", cfg.SockPath)
@@ -1345,8 +1355,9 @@ func runMirror(cfg Config) error {
 		// teardowns, where the connection is still alive. A residue left by a
 		// SIGKILL or a lost race is corrected by the next bridge's
 		// unconditional RelayEnvCmd write above; a direct attach in that gap
-		// can still read the stale value.
-		sendCtl(RelayEnvUnsetCmd(cfg.RemoteSession))
+		// can still read the stale value. The cell size is the same kind of
+		// residue and gets the same treatment.
+		sendCtl(RelayEnvUnsetCmd(cfg.RemoteSession), CellEnvUnsetCmd(cfg.RemoteSession))
 		// Whichever connection is current, which after a reconnect is no longer
 		// the one cfg.Ctl named.
 		hold.close()
@@ -1872,7 +1883,7 @@ func runMirror(cfg Config) error {
 		// — watchLocalClient's own immediate publish had no live connection to
 		// send it on. Re-sent unconditionally, same as the one-shot at Run()'s
 		// own startup and for the same reason: a stale value must not stand.
-		sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()))
+		sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()), CellEnvSyncCmd(cfg.RemoteSession, cfg.View.Cell()))
 		return true
 	}
 

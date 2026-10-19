@@ -813,11 +813,13 @@ if [[ -n $placed ]]; then
 	unset OG_DAEMON_REMOTE_OPEN
 	client_target=()
 	[[ -n ${TMUX_PANE:-} ]] && client_target=(-t "$TMUX_PANE")
-	term_raw="$(tmux display-message -p "${client_target[@]}" '#{client_termname}|#{client_termfeatures}|#{I/f:sixel}' 2>/dev/null || true)"
-	IFS='|' read -r term termfeatures sixel_flag <<<"$term_raw"
+	term_raw="$(tmux display-message -p "${client_target[@]}" '#{client_termname}|#{client_termfeatures}|#{I/f:sixel}|#{client_cell_width}|#{client_cell_height}' 2>/dev/null || true)"
+	IFS='|' read -r term termfeatures sixel_flag cell_w cell_h <<<"$term_raw"
 	export OG_BRIDGE_TERM="$term"
 	export OG_BRIDGE_TERMFEATURES="$termfeatures"
 	export OG_BRIDGE_SIXEL="$sixel_flag"
+	export OG_BRIDGE_CELL_W="$cell_w"
+	export OG_BRIDGE_CELL_H="$cell_h"
 	cur_sess="$(tmux display-message -p "${client_target[@]}" '#{session_name}' 2>/dev/null || true)"
 	colorterm="" term_program=""
 	read_session_env "$cur_sess" COLORTERM && colorterm="$REPLY" || true
@@ -1019,7 +1021,9 @@ export OG_DAEMON_REMOTE_OPEN="${BASH_SOURCE[0]}"
 # re-deriving a capability from client_termfeatures in Go. Empty (no client,
 # or a control-mode client — client_termfeatures and #{I/f:sixel} are both
 # empty for one) is fine: the remote then falls back to block art, which
-# renders anywhere. A bare `display-message` with no -t falls back to the
+# renders anywhere. The last two, the client's cell size in pixels, seed
+# the daemon's AEYE_CELL_PX until it can resolve a client itself. A bare
+# `display-message` with no -t falls back to the
 # server's most-recently-used session, not necessarily this process's own
 # pane — wrong on any server with more than one attached client — so target
 # $TMUX_PANE explicitly, like initial_mirror_area() above already does.
@@ -1028,13 +1032,15 @@ term_target=()
 # Guarded like the cur_sess read below: now that this targets a specific pane
 # it can fail on a stale $TMUX_PANE, and an empty identity is a valid answer
 # (block art everywhere) rather than a reason to abort the launch. An explicit
-# IFS split, not a two-field suffix-strip: a suffix-strip would fold the third
-# field into termfeatures' tail once a field was merely appended.
-term_raw="$(tmux display-message -p "${term_target[@]}" '#{client_termname}|#{client_termfeatures}|#{I/f:sixel}' 2>/dev/null || true)"
-IFS='|' read -r term termfeatures sixel_flag <<<"$term_raw"
+# IFS split, not a two-field suffix-strip: a suffix-strip would fold the later
+# fields into termfeatures' tail once a field was merely appended.
+term_raw="$(tmux display-message -p "${term_target[@]}" '#{client_termname}|#{client_termfeatures}|#{I/f:sixel}|#{client_cell_width}|#{client_cell_height}' 2>/dev/null || true)"
+IFS='|' read -r term termfeatures sixel_flag cell_w cell_h <<<"$term_raw"
 export OG_BRIDGE_TERM="$term"
 export OG_BRIDGE_TERMFEATURES="$termfeatures"
 export OG_BRIDGE_SIXEL="$sixel_flag"
+export OG_BRIDGE_CELL_W="$cell_w"
+export OG_BRIDGE_CELL_H="$cell_h"
 
 # COLORTERM/TERM_PROGRAM (#543) ride into the INVOKING client's session via
 # update-environment on attach (config/tmux.conf.nix), the same channel
