@@ -142,12 +142,13 @@ func holdBytes(rows []string, h, col int, wrap bool) []byte {
 }
 
 // parkCol is the 1-based column a hold with token tok parks its cursor in,
-// within a pane w columns wide. Consecutive holds of one pane park in different
-// columns, so the barrier can tell this hold from an earlier one still on
-// screen, or from a seed still in flight releasing it, either of which would
-// otherwise report the same parked cursor before this hold has landed. An
+// within a pane w columns wide. Consecutive holds of a pane at least 8 columns
+// wide park in different columns, so the barrier can tell this hold from an
+// earlier one still on screen, or from a seed still in flight releasing it,
+// either of which would otherwise report the same parked cursor before this
+// hold has landed. On a narrower pane consecutive tokens can share a column. An
 // application on its own alternate screen whose cursor already sits at that
-// exact row-0 column still passes early; a shrink then still deletes from the
+// exact row-0 column also passes early; a shrink then still deletes from the
 // bottom.
 func parkCol(tok, w int) int {
 	return min(1+tok%8, max(1, w))
@@ -247,10 +248,10 @@ func holdReshaped(cfg Config, w *mirrorWindow, L controlmode.Layout, remote, new
 }
 
 // awaitAlt polls until every pane in locals reports holdPollFormat as its own
-// entry in want, or holdWait passes. Hold bytes reach
-// local tmux through each renderer's pty asynchronously, so a reshape issued
-// right after enqueueing them would race them. An exec error gives up at once:
-// no answer is coming back in time.
+// entry in want, or holdWait passes. Hold bytes reach local tmux through each
+// renderer's pty asynchronously, so a reshape issued right after enqueueing
+// them would race them. An exec error gives up at once: no answer is coming
+// back in time.
 func awaitAlt(cfg Config, locals, want []string) bool {
 	args := holdPollArgs(locals)
 	deadline := time.Now().Add(holdWait)
