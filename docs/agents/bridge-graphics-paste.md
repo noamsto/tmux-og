@@ -338,6 +338,25 @@ carries the measured evidence.
   of the kept prefix and the path injection. Otherwise a prompt could submit
   imageless with no notification if the user hit Enter inside the upload
   window.
+- **A paste shows progress (#1007).** From the swallow until the path lands, the
+  paste goroutine paints `<spinner> reading clipboard image · 0.5s`, then
+  `<spinner> uploading image (1.2 MiB) · 1.5s`, as a local `display-message -c`
+  refreshed every 250ms (`pasteTick`; one fork per tick, only while a paste
+  runs). Each frame carries a ttl of four ticks, never `-d 0` (which persists
+  until a keypress), so a dead daemon or a goroutine that never reports leaves a
+  message that expires on its own. The ticker is joined before the terminal
+  message, so no frame paints over it: success shows `image pasted` for 1.5s,
+  every failure its usual message. Bytes sent are not shown: the upload is one
+  `ssh` exec with no progress hook. Typed input stays held behind the paste lock
+  exactly as before.
+  **Client targeting:** the daemon cannot tell which client sent the byte, so
+  `activeClient` takes the mirror session's highest `#{client_activity}` (first
+  listed on a tie) once at the start of `paste()` — one `list-clients` fork off
+  the input pump. Every message of that paste, failures included, goes to that
+  same client, so another client of the session never sees it. With no client
+  attached, messages fall back to the session-wide `notifyLocal`. Covered by
+  `paste_progress_test.go`, whose scratch-server test attaches two clients as
+  panes of an outer server and reads each one's screen with `capture-pane`.
 - **Cleanup is a janitor, not a delete.** The path is read at *submit*, which
   can be minutes after the paste, so the store script sweeps sibling
   directories older than 60 minutes on each paste instead of deleting on

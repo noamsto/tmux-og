@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -121,6 +122,14 @@ type pasteHandler struct {
 	// dropped injection (e.g. mid-reconnect) is a visible failure rather than
 	// a silently discarded ssh keystroke.
 	sendCtl func(cmds ...string) bool
+	// clientFor names the local client that pasted (the mirror session's most
+	// recently active one), or "" when none is attached. status shows msg on
+	// it for ttl. Either nil leaves a paste without progress, and every message
+	// falls back to notify.
+	clientFor func() string
+	status    func(client, msg string, ttl time.Duration)
+	// tick is the progress refresh period; zero means pasteTick.
+	tick time.Duration
 
 	// mu serializes one pane's pastes against its own later input frames.
 	// handle locks it for every frame and, when a frame triggers a paste,
@@ -159,6 +168,8 @@ func (c Config) paster() *pasteHandler {
 		procFor:        func(remotePane string) (string, error) { return bridgeProc(c, remotePane) },
 		notify:         func(msg string) { notifyLocal(c, msg) },
 		sendCtl:        c.SendCtl,
+		clientFor:      func() string { return activeClient(c) },
+		status:         func(client, msg string, ttl time.Duration) { showOnClient(c, client, msg, ttl) },
 	}
 }
 
@@ -220,53 +231,64 @@ func (h *pasteHandler) handle(remotePane string, payload []byte) []byte {
 // clipboard runs in its place and lies about what happened.
 func (h *pasteHandler) paste(remotePane string, kept []byte, probe clipboardProbe) {
 	defer h.mu.Unlock()
-	if len(kept) > 0 {
-		h.sendChunks(remotePane, kept)
+	out := h.output()
+	say := out.say
+	if len(kept) > 0 && !h.sendChunks(remotePane, kept, say) {
+		return
 	}
 	// Claude Code's path-inlining regex excludes bmp, and no converter is
 	// guaranteed on either host — report rather than ship a dead path. (pi's
 	// read tool would take a bmp; the gate set shares one policy.)
 	if !pasteExtRe.MatchString(probe.ext) {
-		h.notify("tmux-og: clipboard image format not pasteable (." + probe.ext + "; copy as png)")
+		say("tmux-og: clipboard image format not pasteable (." + probe.ext + "; copy as png)")
 		return
 	}
+	prog := out.startProgress("reading clipboard image")
+	defer prog.stop()
 	data, err := probe.extract()
 	if err != nil {
-		h.notify("tmux-og: clipboard image read failed: " + err.Error())
+		prog.stop()
+		say("tmux-og: clipboard image read failed: " + err.Error())
 		return
 	}
 	if int64(len(data)) > pasteMaxBytes {
-		h.notify(fmt.Sprintf("tmux-og: clipboard image too large (cap %d MiB)", pasteMaxBytes>>20))
+		prog.stop()
+		say(fmt.Sprintf("tmux-og: clipboard image too large (cap %d MiB)", pasteMaxBytes>>20))
 		return
 	}
+	prog.set(fmt.Sprintf("uploading image (%s)", formatSize(len(data))))
 	ctx, cancel := context.WithTimeout(context.Background(), pasteTimeout)
 	defer cancel()
 	path, err := h.upload(ctx, probe.ext, data)
+	prog.stop()
 	if err != nil {
-		h.notify("tmux-og: image upload to remote failed: " + err.Error())
+		say("tmux-og: image upload to remote failed: " + err.Error())
 		return
 	}
 	if !pastePathRe.MatchString(path) {
-		h.notify("tmux-og: remote returned an unexpected paste path")
+		say("tmux-og: remote returned an unexpected paste path")
 		return
 	}
 	// The trailing space keeps whatever the user types next from merging into
 	// the path token, which would silently stop the agent recognising it.
-	h.sendChunks(remotePane, append([]byte(path), ' '))
+	if h.sendChunks(remotePane, append([]byte(path), ' '), say) {
+		out.sayFor(pasteDoneMsg, pasteDoneTTL)
+	}
 }
 
 // sendChunks hex-send-keys payload to remotePane, sidestepping every quoting
 // layer between here and the pane. A refused chunk (the bridge reconnecting,
-// or the remote pane having closed) is a visible notify, not a silent no-op —
+// or the remote pane having closed) is a visible say, not a silent no-op —
 // the rest of payload is abandoned, since the pane's input is already out of
-// order at that point.
-func (h *pasteHandler) sendChunks(remotePane string, payload []byte) {
+// order at that point. It reports whether every chunk was written.
+func (h *pasteHandler) sendChunks(remotePane string, payload []byte, say func(string)) bool {
 	for _, args := range controlmode.SendKeysArgs(remotePane, payload, controlmode.InputChunkBytes) {
 		if !h.sendCtl(strings.Join(args, " ")) {
-			h.notify("tmux-og: input to the mirror pane was dropped (bridge reconnecting?)")
-			return
+			say("tmux-og: input to the mirror pane was dropped (bridge reconnecting?)")
+			return false
 		}
 	}
+	return true
 }
 
 // splitPasteDrops copies payload without its ctrl+v bytes (0x16), counting
@@ -579,7 +601,13 @@ func notifyLocal(cfg Config, msg string) bool {
 	if client == "" {
 		return false
 	}
-	esc := strings.NewReplacer("#", "##", "%", "%%").Replace(msg)
-	_ = cfg.LocalTmux("display-message", "-c", client, "-d", "5000", "--", esc)
+	showOnClient(cfg, client, msg, 5*time.Second)
 	return true
+}
+
+// showOnClient displays msg on one named client for ttl. The message is
+// escaped and passed after -- per this repo's display-message convention.
+func showOnClient(cfg Config, client, msg string, ttl time.Duration) {
+	esc := strings.NewReplacer("#", "##", "%", "%%").Replace(msg)
+	_ = cfg.LocalTmux("display-message", "-c", client, "-d", strconv.FormatInt(ttl.Milliseconds(), 10), "--", esc)
 }
