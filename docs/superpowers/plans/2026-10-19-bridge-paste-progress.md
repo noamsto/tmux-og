@@ -55,11 +55,38 @@ Why (a) fits:
   its existing `notify` (5s), which replaces the spinner. All paths, including
   an upload cancelled by timeout or a refused `send-keys` during a reconnect,
   stop the ticker (`defer`).
-- Typed input held behind the paste is unchanged: the lock handoff in `handle`
-  and the `paste` ordering are not touched. Showing a "queued" count is out of
-  scope.
+- Input handling (owner requirement, "don't hang the pane"): the paste lock is
+  gone. See "Responsive pane" below. A "queued" count is out of scope.
 - Cost: one `display-message` fork per 250ms tick, only for the few seconds a
   paste runs, plus one `list-clients` fork per paste.
+
+## Responsive pane
+
+The old design handed the pane's input mutex to the paste goroutine, so every
+key waited for the upload. New rules:
+
+- Plain text (printable ASCII, UTF-8) typed during the upload is forwarded
+  immediately by `handle`'s return value, so `pumpInput` sends it and feeds the
+  predictor as usual. The path lands at the end of that text with its trailing
+  space.
+- The first non-text byte (Enter/CR, tab, backspace, other control bytes, any
+  ESC sequence including arrows, home/end, ctrl+a/e and bracketed-paste
+  markers) starts a held suffix, and everything after it is held too. This is
+  the conservative reading of "hold from the first cursor-movement key": any
+  byte that can submit or move the cursor is held.
+- Ordering without a lock: only the pump goroutine sends this pane's input.
+  The paste goroutine posts `pasteResult` on a buffered channel; `pumpInput`
+  selects on it, calls `finish` (injects the path) and replays the held bytes
+  through `deliver`, i.e. back through `handle`, so a held ctrl+v is still
+  intercepted. A failure posts an empty path: held keys are released at once
+  with the failure message. The channel always gets exactly one result, so
+  nothing is held past `clipTimeout` + `pasteTimeout`.
+- A triggering frame ending inside a bracketed paste or partial marker sets
+  `holdAll`: hold everything, since the paste body must not precede the path.
+- Tests: text typed mid-upload is returned before the path; Enter lands after
+  the path; cursor keys and everything after the first held byte stay in
+  order; held keys are released on failure; held ctrl+v is re-intercepted;
+  `pumpInput`-level order test.
 
 ## Steps
 

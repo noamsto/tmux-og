@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -789,5 +791,80 @@ func TestPumpInputPasteMarkerSplitByCarryFlush(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 			return
 		}
+	}
+}
+
+// TestPumpInputPasteKeepsPaneResponsive drives the production chain: text
+// typed during an upload is sent at once and lands before the path, Enter
+// waits until the path is injected, and a failed upload releases it anyway.
+func TestPumpInputPasteKeepsPaneResponsive(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fail=%v", fail), func(t *testing.T) {
+			conn, peer := net.Pipe()
+			defer func() { _ = conn.Close() }()
+			defer func() { _ = peer.Close() }()
+			f := newPasteFixture()
+			release := make(chan struct{})
+			f.h.upload = func(context.Context, string, []byte) (string, error) {
+				<-release
+				if fail {
+					return "", errors.New("exit status 1")
+				}
+				return f.uploadOut, nil
+			}
+			sends := make(chan string, 32)
+			f.h.sendCtl = func(cmds ...string) bool { sends <- cmds[0]; return true }
+			go pumpInput(conn, "%1", func(s string) { sends <- s }, f.h, nil, nil, nil)
+
+			write := func(s string) {
+				t.Helper()
+				if err := wire.WriteFrame(peer, wire.FrameInput, []byte(s)); err != nil {
+					t.Fatalf("write %q: %v", s, err)
+				}
+			}
+			next := func(what string) string {
+				t.Helper()
+				for {
+					select {
+					case s := <-sends:
+						if strings.HasPrefix(s, "send-keys") {
+							return s
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatalf("no send for %s", what)
+						return ""
+					}
+				}
+			}
+			write("\x16")
+			write("hi")
+			if got := next("text typed mid-upload"); got != "send-keys -H -t %1 68 69" {
+				t.Fatalf("mid-upload text send = %q", got)
+			}
+			write("\r")
+			for held := time.After(100 * time.Millisecond); ; {
+				select {
+				case s := <-sends:
+					if strings.HasPrefix(s, "send-keys") {
+						t.Fatalf("Enter reached the remote before the upload finished: %q", s)
+					}
+					continue
+				case <-held:
+				}
+				break
+			}
+			close(release)
+			if !fail {
+				path := next("path injection")
+				if !strings.HasSuffix(path, " 20") || !strings.HasPrefix(path, "send-keys -H -t %1 ") {
+					t.Fatalf("path injection = %q", path)
+				}
+			} else if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") {
+				t.Fatalf("notify = %q", msg)
+			}
+			if got := next("held Enter"); got != "send-keys -H -t %1 0d" {
+				t.Fatalf("held Enter send = %q", got)
+			}
+		})
 	}
 }

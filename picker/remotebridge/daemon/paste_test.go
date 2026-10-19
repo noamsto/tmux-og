@@ -104,7 +104,8 @@ type pasteFixture struct {
 
 	mu       sync.Mutex
 	sentAll  []string
-	refuseAt int // sendCtl returns false starting at this 0-based call index; -1 = never
+	held     []byte // input finish released, for replay assertions
+	refuseAt int    // sendCtl returns false starting at this 0-based call index; -1 = never
 }
 
 func newPasteFixture() *pasteFixture {
@@ -115,6 +116,7 @@ func newPasteFixture() *pasteFixture {
 		refuseAt:  -1,
 	}
 	f.h = &pasteHandler{
+		done: make(chan pasteResult, 1),
 		upload: func(_ context.Context, _ string, _ []byte) (string, error) {
 			return f.uploadOut, f.uploadErr
 		},
@@ -153,14 +155,30 @@ func (f *pasteFixture) sendCtl(cmds ...string) bool {
 // from drained into the fixture for assertion.
 func (f *pasteFixture) awaitOutcome(t *testing.T) (sent, notified string) {
 	t.Helper()
+	for {
+		select {
+		case s := <-f.sent:
+			return s, ""
+		case msg := <-f.notified:
+			return "", msg
+		case r := <-f.h.results():
+			f.held = f.h.finish("%1", r)
+		case <-time.After(5 * time.Second):
+			t.Fatal("paste produced no outcome")
+			return "", ""
+		}
+	}
+}
+
+// finishPaste plays the pump goroutine for the in-flight paste: it waits for
+// the goroutine's outcome and runs finish, keeping the released input in held.
+func (f *pasteFixture) finishPaste(t *testing.T) {
+	t.Helper()
 	select {
-	case s := <-f.sent:
-		return s, ""
-	case msg := <-f.notified:
-		return "", msg
+	case r := <-f.h.results():
+		f.held = f.h.finish("%1", r)
 	case <-time.After(5 * time.Second):
-		t.Fatal("paste produced no outcome")
-		return "", ""
+		t.Fatal("paste goroutine never reported its outcome")
 	}
 }
 
@@ -230,21 +248,13 @@ func TestHandleForwardsWhenNoImage(t *testing.T) {
 }
 
 // TestHandleSwallowsAndInjectsOnImage pins the ordering: the byte is
-// swallowed from handle's own return (nothing left for pumpInput's normal
-// forwarding loop), and the goroutine it starts sends the kept prefix BEFORE
-// the path injection, in that order, on the same channel.
+// swallowed, the text typed before it is returned for pumpInput to send, and
+// finish (also on the pump goroutine) then injects the path after it.
 func TestHandleSwallowsAndInjectsOnImage(t *testing.T) {
 	f := newPasteFixture()
 	got := f.h.handle("%1", []byte("x\x16"))
-	if len(got) != 0 {
-		t.Fatalf("handle returned bytes for pumpInput to forward directly: %q", got)
-	}
-	first, notified := f.awaitOutcome(t)
-	if notified != "" {
-		t.Fatalf("unexpected notify: %q", notified)
-	}
-	if !strings.HasPrefix(first, "send-keys -H -t %1 78") { // 0x78 = 'x'
-		t.Fatalf("first send %q is not the kept prefix", first)
+	if string(got) != "x" {
+		t.Fatalf("handle returned %q, want the typed prefix x", got)
 	}
 	cmd, notified := f.awaitOutcome(t)
 	if notified != "" {
@@ -260,45 +270,129 @@ func TestHandleSwallowsAndInjectsOnImage(t *testing.T) {
 	}
 	select {
 	case extra := <-f.sent:
-		t.Errorf("more than two commands sent; extra: %q", extra)
+		t.Errorf("more than one command sent; extra: %q", extra)
 	default:
 	}
 }
 
-// TestHandleSerializesAgainstLaterFrames verifies that a frame arriving on
-// the same pane while a paste is in flight is not forwarded (by pumpInput's
-// own loop, which calls handle for every frame) ahead of the paste's own
-// sends — handle must block until the prior paste releases the lock it was
-// handed.
-func TestHandleSerializesAgainstLaterFrames(t *testing.T) {
+// blockedPaste starts a paste whose upload waits on release.
+func blockedPaste(t *testing.T) (*pasteFixture, chan struct{}) {
+	t.Helper()
 	f := newPasteFixture()
 	release := make(chan struct{})
-	f.h.upload = func(_ context.Context, _ string, _ []byte) (string, error) {
+	f.h.upload = func(context.Context, string, []byte) (string, error) {
 		<-release
-		return f.uploadOut, nil
+		return f.uploadOut, f.uploadErr
 	}
-	got := f.h.handle("%1", []byte("\x16"))
-	if len(got) != 0 {
+	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
 		t.Fatalf("handle returned bytes: %q", got)
 	}
+	return f, release
+}
 
-	unblocked := make(chan []byte, 1)
-	go func() { unblocked <- f.h.handle("%1", []byte("\r")) }()
-
-	select {
-	case <-unblocked:
-		t.Fatal("a later frame's handle returned before the pending paste released the lock")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	close(release)
-	select {
-	case got := <-unblocked:
-		if string(got) != "\r" {
-			t.Errorf("later frame returned %q, want \\r forwarded", got)
+// TestTypingDuringUploadIsNotHeld pins the responsiveness rule: plain text
+// typed while the upload runs is returned at once for pumpInput to send, and
+// the path lands after it.
+func TestTypingDuringUploadIsNotHeld(t *testing.T) {
+	f, release := blockedPaste(t)
+	for _, in := range []string{"hello", " wörld"} {
+		if got := f.h.handle("%1", []byte(in)); string(got) != in {
+			t.Fatalf("plain text %q was held back: got %q", in, got)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("later frame's handle never returned after the paste finished")
+	}
+	close(release)
+	cmd, _ := f.awaitOutcome(t)
+	if !strings.HasPrefix(cmd, "send-keys -H -t %1 ") || !strings.HasSuffix(cmd, " 20") {
+		t.Fatalf("path injection = %q", cmd)
+	}
+	if len(f.held) != 0 {
+		t.Errorf("nothing was held, finish released %q", f.held)
+	}
+}
+
+// TestSubmissionAndCursorKeysAreHeldBehindThePath pins the serialization
+// rule, now scoped to submission: Enter, anything after it, and the first key
+// that could move the cursor are held and handed back, in order, by finish.
+func TestSubmissionAndCursorKeysAreHeldBehindThePath(t *testing.T) {
+	cases := []struct{ name, in, wantFree, wantHeld string }{
+		{"enter", "ab\rcd", "ab", "\rcd"},
+		{"lone enter", "\r", "", "\r"},
+		{"left arrow", "ab\x1b[Dcd", "ab", "\x1b[Dcd"},
+		{"ctrl+a", "ab\x01c", "ab", "\x01c"},
+		{"backspace", "a\x7fb", "a", "\x7fb"},
+		{"tab", "a\tb", "a", "\tb"},
+		{"bracketed paste", "a\x1b[200~zz\x1b[201~", "a", "\x1b[200~zz\x1b[201~"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, release := blockedPaste(t)
+			if got := f.h.handle("%1", []byte(c.in)); string(got) != c.wantFree {
+				t.Errorf("free = %q, want %q", got, c.wantFree)
+			}
+			// Everything after the first held byte is held too, even text.
+			if got := f.h.handle("%1", []byte("late")); c.wantHeld != "" && len(got) != 0 {
+				t.Errorf("text after a held byte was forwarded: %q", got)
+			}
+			close(release)
+			cmd, _ := f.awaitOutcome(t)
+			if !strings.HasPrefix(cmd, "send-keys -H -t %1 ") {
+				t.Fatalf("path injection = %q", cmd)
+			}
+			if want := c.wantHeld + "late"; string(f.held) != want {
+				t.Errorf("released %q, want %q", f.held, want)
+			}
+		})
+	}
+}
+
+// TestHeldInputIsReleasedOnFailure pins that a failed upload still releases
+// the held keys, with the failure shown, rather than leaving the prompt stuck.
+func TestHeldInputIsReleasedOnFailure(t *testing.T) {
+	f, release := blockedPaste(t)
+	f.uploadErr = errors.New("exit status 1")
+	f.h.handle("%1", []byte("\r"))
+	close(release)
+	_, notified := f.awaitOutcome(t)
+	if !strings.Contains(notified, "upload to remote failed") {
+		t.Fatalf("notify = %q", notified)
+	}
+	f.finishPaste(t)
+	if string(f.held) != "\r" {
+		t.Errorf("released %q, want the held Enter", f.held)
+	}
+	if string(f.h.handle("%1", []byte("x"))) != "x" || f.h.pumping {
+		t.Error("handler still holds input after the paste ended")
+	}
+}
+
+// TestHeldCtrlVIsReinterceptedOnRelease pins that held input replays through
+// handle, so a second ctrl+v typed during the first upload is not forwarded raw.
+func TestHeldCtrlVIsReinterceptedOnRelease(t *testing.T) {
+	f, release := blockedPaste(t)
+	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
+		t.Fatalf("second ctrl+v during an upload was forwarded: %q", got)
+	}
+	close(release)
+	f.awaitOutcome(t)
+	if string(f.held) != "\x16" {
+		t.Fatalf("held = %q, want the second ctrl+v", f.held)
+	}
+	if got := f.h.handle("%1", f.held); len(got) != 0 {
+		t.Errorf("replayed ctrl+v was forwarded: %q", got)
+	}
+}
+
+// TestPartialMarkerAfterCtrlVHoldsEverything pins that a triggering frame
+// ending inside a bracketed paste holds even plain text, since its body would
+// otherwise reach the remote ahead of the path.
+func TestPartialMarkerAfterCtrlVHoldsEverything(t *testing.T) {
+	f := newPasteFixture()
+	f.h.upload = func(context.Context, string, []byte) (string, error) { return f.uploadOut, nil }
+	if got := f.h.handle("%1", []byte("\x16\x1b[200~body")); len(got) != 0 {
+		t.Fatalf("handle returned %q", got)
+	}
+	if got := f.h.handle("%1", []byte("more")); len(got) != 0 {
+		t.Errorf("paste body forwarded ahead of the path: %q", got)
 	}
 }
 
@@ -345,38 +439,6 @@ func TestPasteFailuresNotifyAndSendNothing(t *testing.T) {
 				t.Errorf("notify %q lacks %q", notified, c.wantInMsg)
 			}
 		})
-	}
-}
-
-// TestPasteFailureStillForwardsKeptPrefix guards the ordering guarantee on
-// the FAILURE path too: paste() forwards a frame's kept prefix
-// unconditionally, before any of the ext/extract/upload/path checks that can
-// fail. Every case in TestPasteFailuresNotifyAndSendNothing uses a bare
-// "\x16" (kept is empty), which can't tell a correct "forward kept, then
-// fail" from a regression that returns before forwarding kept at all.
-func TestPasteFailureStillForwardsKeptPrefix(t *testing.T) {
-	f := newPasteFixture()
-	f.h.probeClipboard = func() (clipboardProbe, bool, error) {
-		return clipboardProbe{ext: "png", extract: func() ([]byte, error) { return make([]byte, pasteMaxBytes+1), nil }}, true, nil
-	}
-	if got := f.h.handle("%1", []byte("x\x16")); len(got) != 0 {
-		t.Fatalf("byte not swallowed: %q", got)
-	}
-	first, notified := f.awaitOutcome(t)
-	if notified != "" {
-		t.Fatalf("kept prefix step produced a notify instead of a send: %q", notified)
-	}
-	if !strings.HasPrefix(first, "send-keys -H -t %1 78") { // 0x78 = 'x'
-		t.Fatalf("first send %q is not the kept prefix", first)
-	}
-	_, notified = f.awaitOutcome(t)
-	if !strings.Contains(notified, "too large") {
-		t.Errorf("notify %q lacks the oversize failure text", notified)
-	}
-	select {
-	case extra := <-f.sent:
-		t.Errorf("a failed paste should inject no path; extra send: %q", extra)
-	default:
 	}
 }
 
@@ -431,13 +493,8 @@ func TestHandleNotifiesOnRefusedSend(t *testing.T) {
 	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
 		t.Fatalf("byte not swallowed: %q", got)
 	}
-	select {
-	case msg := <-f.notified:
-		if !strings.Contains(msg, "dropped") {
-			t.Errorf("notify %q does not describe the dropped send", msg)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no notify on refused send")
+	if _, msg := f.awaitOutcome(t); !strings.Contains(msg, "dropped") {
+		t.Errorf("notify %q does not describe the dropped send", msg)
 	}
 	select {
 	case s := <-f.sent:
@@ -457,16 +514,9 @@ func TestHandleNotifiesOnExtraBurstedDrop(t *testing.T) {
 	}
 	var sawExtraNotice, sawInjection bool
 	for range 2 {
-		select {
-		case msg := <-f.notified:
-			if strings.Contains(msg, "extra") {
-				sawExtraNotice = true
-			}
-		case <-f.sent:
-			sawInjection = true
-		case <-time.After(5 * time.Second):
-			t.Fatal("paste produced fewer outcomes than expected")
-		}
+		sent, msg := f.awaitOutcome(t)
+		sawExtraNotice = sawExtraNotice || strings.Contains(msg, "extra")
+		sawInjection = sawInjection || sent != ""
 	}
 	if !sawExtraNotice {
 		t.Error("no notify about the extra swallowed ctrl+v")
@@ -491,15 +541,12 @@ func TestHandleMarkerSplitAcrossFrames(t *testing.T) {
 	begin, end := string(bracketedPasteBegin), string(bracketedPasteEnd)
 	await := func(t *testing.T, f *pasteFixture) {
 		t.Helper()
-		select {
-		case s := <-f.sent:
-			if !strings.HasPrefix(s, "send-keys -H -t %1 ") {
-				t.Errorf("send %q is not a hex send-keys to the pane", s)
-			}
-		case msg := <-f.notified:
+		s, msg := f.awaitOutcome(t)
+		if msg != "" {
 			t.Fatalf("unexpected notify: %q", msg)
-		case <-time.After(2 * time.Second):
-			t.Fatal("ctrl+v was not swallowed into a paste")
+		}
+		if !strings.HasPrefix(s, "send-keys -H -t %1 ") {
+			t.Errorf("send %q is not a hex send-keys to the pane", s)
 		}
 	}
 	assertSwallowedAndPasted := func(t *testing.T, f *pasteFixture) {

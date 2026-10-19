@@ -142,6 +142,7 @@ func TestPasteProgressReplacedOnFailureCancelAndRefusedSend(t *testing.T) {
 			f.h.handle("%1", []byte("\x16"))
 			awaitStatus(t, log, isFrame)
 			close(release)
+			f.finishPaste(t)
 			awaitStatus(t, log, func(sc statusCall) bool { return strings.Contains(sc.msg, c.want) })
 			assertSettled(t, log, c.want)
 			f.assertNoNotify(t)
@@ -183,48 +184,6 @@ func TestPasteFailureFallsBackToNotifyWhenClientDetached(t *testing.T) {
 	close(release)
 	if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") {
 		t.Fatalf("notify = %q", msg)
-	}
-}
-
-func TestRefusedKeptPrefixAbortsBeforeUpload(t *testing.T) {
-	f, log, _ := progressFixture(func(context.Context, <-chan struct{}) (string, error) {
-		t.Error("upload ran after the kept prefix was refused")
-		return "", errors.New("unreachable")
-	})
-	f.refuseAt = 0
-	f.h.handle("%1", []byte("ab\x16"))
-	awaitStatus(t, log, func(c statusCall) bool { return strings.Contains(c.msg, "dropped") })
-	assertSettled(t, log, "dropped")
-	for _, c := range log.all() {
-		if isFrame(c) {
-			t.Errorf("progress frame after a refused kept prefix: %+v", c)
-		}
-	}
-}
-
-func TestPasteProgressHoldsLaterInputBehindThePath(t *testing.T) {
-	f, log, release := progressFixture(func(_ context.Context, r <-chan struct{}) (string, error) {
-		<-r
-		return f0path, nil
-	})
-	f.h.handle("%1", []byte("\x16"))
-	awaitStatus(t, log, isFrame)
-	got := make(chan []byte, 1)
-	go func() { got <- f.h.handle("%1", []byte("x\r")) }()
-	select {
-	case <-got:
-		t.Fatal("later input was not held behind the paste")
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(release)
-	f.awaitOutcome(t) // the path send
-	select {
-	case b := <-got:
-		if string(b) != "x\r" {
-			t.Errorf("held input = %q", b)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("held input never released")
 	}
 }
 

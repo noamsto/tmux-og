@@ -331,13 +331,24 @@ carries the measured evidence.
   agent receives the image exactly as if the paste were local. The trailing
   space keeps the user's next keystrokes from merging into the path token,
   which would silently break that resolution.
-- **One pane's paste is serialized against its own later input.** The
-  handler's lock is acquired for every frame and, when a frame triggers a
-  paste, handed off to the paste goroutine rather than released — so nothing
-  typed on that pane afterwards (including Enter) can reach the remote ahead
-  of the kept prefix and the path injection. Otherwise a prompt could submit
-  imageless with no notification if the user hit Enter inside the upload
-  window.
+- **Only submission waits for the path; the pane stays responsive.** The
+  paste goroutine never holds an input lock. While it uploads, `handle` (on the
+  pane's pump goroutine) forwards plain text — printable ASCII and UTF-8 — at
+  once, so it reaches the remote and echoes (through the predictor, #997) as
+  usual, and the path lands at the end of whatever was typed, trailing space
+  kept. The first byte that could submit or move the cursor (Enter/CR, tab,
+  backspace, any other control byte, and every escape sequence: arrows,
+  home/end, bracketed-paste markers) and everything after it is held, in order,
+  so a prompt can never submit without its image and the path is never
+  inserted mid-edit. The goroutine posts its outcome on `done`; `pumpInput`
+  selects on it, injects the path (`finish`) and replays the held bytes through
+  `deliver`, i.e. back through `handle`, so a held `ctrl+v` is intercepted like
+  any other. Everything that sends this pane's input runs on the pump goroutine,
+  which is what keeps input and path in one order. A failed or timed-out upload
+  releases the held keys at once with the failure message; nothing is held past
+  the upload's own bounds (`clipTimeout`, `pasteTimeout`). A triggering frame
+  that ends inside a bracketed paste or a partial marker holds everything
+  (`holdAll`), since its body would otherwise precede the path.
 - **A paste shows progress (#1007).** From the swallow until the path lands, the
   paste goroutine paints `<spinner> reading clipboard image · 0.5s`, then
   `<spinner> uploading image (1.2 MiB) · 1.5s`, as a local `display-message -c`
@@ -347,8 +358,7 @@ carries the measured evidence.
   message that expires on its own. The ticker is joined before the terminal
   message, so no frame paints over it: success shows `image pasted` for 1.5s,
   every failure its usual message. Bytes sent are not shown: the upload is one
-  `ssh` exec with no progress hook. Typed input stays held behind the paste lock
-  exactly as before.
+  `ssh` exec with no progress hook.
   **Client targeting:** the daemon cannot tell which client sent the byte, so
   `activeClient` takes the mirror session's highest `#{client_activity}` (first
   listed on a tie) once at the start of `paste()` — one `list-clients` fork off
@@ -356,7 +366,7 @@ carries the measured evidence.
   same client, so another client of the session never sees it. With no client
   attached, or the chosen client detaches mid-upload, messages fall back to the
   session-wide `notifyLocal`. The `list-clients` lookup and the ticker's join are
-  bounded by `clipTimeout`, since the pane's input lock is held across them. Covered by
+  bounded by `clipTimeout`. Covered by
   `paste_progress_test.go`, whose scratch-server test attaches two clients as
   panes of an outer server and reads each one's screen with `capture-pane`.
 - **Cleanup is a janitor, not a delete.** The path is read at *submit*, which
