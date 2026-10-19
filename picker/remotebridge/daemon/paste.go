@@ -134,10 +134,12 @@ type pasteHandler struct {
 	// the pump goroutine touches it, held, holdAll and the scan state below;
 	// the paste goroutine hands its outcome back through done.
 	pumping bool
-	// held is the typed input waiting for the path: everything from the first
-	// byte that could submit or move the cursor, kept in order and replayed
-	// through handle once the path is injected (or the paste failed).
-	held []byte
+	// held is one entry per input frame, so a replayed lone Escape stays a lone
+	// Escape instead of fusing with the text after it into an Alt chord.
+	held [][]byte
+	// firstDrop is the index in splitPasteDrops's kept of its first dropped
+	// ctrl+v: bytes before it were typed before the gesture and are never held.
+	firstDrop int
 	// holdAll holds every byte, not only the submitting suffix, for a paste
 	// whose triggering frame ended inside a bracketed paste or a partial marker.
 	holdAll bool
@@ -196,7 +198,7 @@ func (c Config) paster() *pasteHandler {
 func (h *pasteHandler) handle(remotePane string, payload []byte) []byte {
 	if h.pumping {
 		free, rest := h.splitFree(payload)
-		h.held = append(h.held, rest...)
+		h.hold(rest)
 		return free
 	}
 	kept, drops := h.splitPasteDrops(payload)
@@ -227,9 +229,16 @@ func (h *pasteHandler) handle(remotePane string, payload []byte) []byte {
 	h.pumping = true
 	h.holdAll = h.inPaste || h.matched != 0
 	go h.paste(probe)
-	free, rest := h.splitFree(kept)
-	h.held = append(h.held[:0], rest...)
-	return free
+	free, rest := h.splitFree(kept[h.firstDrop:])
+	h.held = nil
+	h.hold(rest)
+	return append(kept[:h.firstDrop:h.firstDrop], free...)
+}
+
+func (h *pasteHandler) hold(b []byte) {
+	if len(b) > 0 {
+		h.held = append(h.held, b)
+	}
 }
 
 // pasteResult is a finished paste goroutine's outcome. path is empty when the
@@ -249,9 +258,8 @@ func (h *pasteHandler) results() <-chan pasteResult {
 }
 
 // finish ends a paste on the pump goroutine: it injects the path, then
-// returns the held input for the caller to replay through handle, so a held
-// ctrl+v or bracketed paste is intercepted like any other.
-func (h *pasteHandler) finish(remotePane string, r pasteResult) []byte {
+// returns the held input, one entry per frame, for the caller to replay.
+func (h *pasteHandler) finish(remotePane string, r pasteResult) [][]byte {
 	h.pumping = false
 	held := h.held
 	h.held = nil
@@ -261,6 +269,19 @@ func (h *pasteHandler) finish(remotePane string, r pasteResult) []byte {
 		_ = h.status(r.out.client, pasteDoneMsg, pasteDoneTTL)
 	}
 	return held
+}
+
+// replay delivers released input frame by frame through deliver (which calls
+// handle, so a held ctrl+v or bracketed paste is intercepted like any other).
+// A frame that starts another paste holds the frames after it behind that one.
+func (h *pasteHandler) replay(held [][]byte, deliver func([]byte)) {
+	for i, b := range held {
+		deliver(b)
+		if h.pumping {
+			h.held = append(h.held, held[i+1:]...)
+			return
+		}
+	}
 }
 
 // splitFree splits payload at the first byte that is not plain text. Plain
@@ -351,6 +372,7 @@ func (h *pasteHandler) sendChunks(remotePane string, payload []byte, say func(st
 // as it arrives and only its progress is remembered.
 func (h *pasteHandler) splitPasteDrops(payload []byte) (kept []byte, drops int) {
 	kept = make([]byte, 0, len(payload))
+	h.firstDrop = -1
 	for _, c := range payload {
 		marker := bracketedPasteBegin
 		if h.inPaste {
@@ -371,6 +393,9 @@ func (h *pasteHandler) splitPasteDrops(payload []byte) (kept []byte, drops int) 
 			h.matched = 0
 		}
 		if c == 0x16 && !h.inPaste {
+			if drops == 0 {
+				h.firstDrop = len(kept)
+			}
 			drops++
 			continue
 		}

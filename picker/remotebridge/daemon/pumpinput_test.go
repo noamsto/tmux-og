@@ -868,3 +868,50 @@ func TestPumpInputPasteKeepsPaneResponsive(t *testing.T) {
 		})
 	}
 }
+
+// TestPumpInputConnCloseMidUploadStillInjects pins that a renderer connection
+// closing during the upload does not lose the image or the held keys.
+func TestPumpInputConnCloseMidUploadStillInjects(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer func() { _ = conn.Close() }()
+	f := newPasteFixture()
+	release := make(chan struct{})
+	f.h.upload = func(context.Context, string, []byte) (string, error) {
+		<-release
+		return f.uploadOut, nil
+	}
+	sends := make(chan string, 32)
+	f.h.sendCtl = func(cmds ...string) bool { sends <- cmds[0]; return true }
+	exited := make(chan struct{})
+	go func() {
+		pumpInput(conn, "%1", func(s string) { sends <- s }, f.h, nil, nil, nil)
+		close(exited)
+	}()
+	for _, s := range []string{"\x16", "\r"} {
+		if err := wire.WriteFrame(peer, wire.FrameInput, []byte(s)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	_ = peer.Close()
+	close(release)
+	var got []string
+	for len(got) < 2 {
+		select {
+		case s := <-sends:
+			if strings.HasPrefix(s, "send-keys") {
+				got = append(got, s)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("sends after close = %q, want the path then the held Enter", got)
+		}
+	}
+	if !strings.HasSuffix(got[0], " 20") || got[1] != "send-keys -H -t %1 0d" {
+		t.Errorf("sends = %q", got)
+	}
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Error("pumpInput never returned")
+	}
+}

@@ -98,7 +98,7 @@ func (p *pasteProgress) set(label string) { p.label.Store(&label) }
 
 // stop ends the ticker and waits for it, so no frame can land after the
 // message the caller shows next. The wait is bounded by clipTimeout: a wedged
-// local tmux must not hold the pane's input lock behind a frame fork. Safe to
+// local tmux must not keep held input waiting behind a frame fork. Safe to
 // call more than once.
 func (p *pasteProgress) stop() {
 	p.once.Do(func() { close(p.done) })
@@ -123,8 +123,8 @@ func formatSize(n int) string {
 
 // activeClient names the mirror session's most recently active client — the
 // one whose keyboard just sent the ctrl+v — or "" when none can be found.
-// The first listed wins a tie. The lookup is bounded like bridgeProc: it runs
-// with the pane's input lock held.
+// The first listed wins a tie. The lookup is bounded like bridgeProc: held
+// input waits on the paste goroutine that calls it.
 func activeClient(cfg Config) string {
 	if cfg.LocalTmuxOut == nil {
 		return ""

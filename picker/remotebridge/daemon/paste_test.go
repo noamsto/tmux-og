@@ -162,7 +162,7 @@ func (f *pasteFixture) awaitOutcome(t *testing.T) (sent, notified string) {
 		case msg := <-f.notified:
 			return "", msg
 		case r := <-f.h.results():
-			f.held = f.h.finish("%1", r)
+			f.held = bytes.Join(f.h.finish("%1", r), nil)
 		case <-time.After(5 * time.Second):
 			t.Fatal("paste produced no outcome")
 			return "", ""
@@ -176,7 +176,7 @@ func (f *pasteFixture) finishPaste(t *testing.T) {
 	t.Helper()
 	select {
 	case r := <-f.h.results():
-		f.held = f.h.finish("%1", r)
+		f.held = bytes.Join(f.h.finish("%1", r), nil)
 	case <-time.After(5 * time.Second):
 		t.Fatal("paste goroutine never reported its outcome")
 	}
@@ -823,5 +823,39 @@ func TestWrapperAgentPasteEndToEnd(t *testing.T) {
 	}
 	if sent == "" {
 		t.Fatal("wrapper paste injected no path")
+	}
+}
+
+// TestBytesTypedBeforeCtrlVAreNeverHeld pins that control bytes ahead of the
+// gesture in the same frame go out before the path, as they were typed.
+func TestBytesTypedBeforeCtrlVAreNeverHeld(t *testing.T) {
+	f := newPasteFixture()
+	f.h.upload = func(context.Context, string, []byte) (string, error) { return f.uploadOut, nil }
+	if got := f.h.handle("%1", []byte("hi\r\x16ab\rcd")); string(got) != "hi\rab" {
+		t.Fatalf("free = %q, want the pre-gesture bytes and plain text up to the first held byte", got)
+	}
+	f.awaitOutcome(t)
+	if string(f.held) != "\rcd" {
+		t.Errorf("released %q, want only the suffix typed after the gesture", f.held)
+	}
+}
+
+// TestHeldFramesKeepTheirBoundaries pins that a held lone Escape is replayed
+// as its own frame, not fused with the text typed after it.
+func TestHeldFramesKeepTheirBoundaries(t *testing.T) {
+	f, release := blockedPaste(t)
+	f.h.handle("%1", []byte("\x1b"))
+	f.h.handle("%1", []byte("hello"))
+	close(release)
+	var r pasteResult
+	select {
+	case r = <-f.h.results():
+	case <-time.After(5 * time.Second):
+		t.Fatal("no paste outcome")
+	}
+	var frames []string
+	f.h.replay(f.h.finish("%1", r), func(b []byte) { frames = append(frames, string(b)) })
+	if len(frames) != 2 || frames[0] != "\x1b" || frames[1] != "hello" {
+		t.Errorf("frames = %q, want [ESC hello]", frames)
 	}
 }
