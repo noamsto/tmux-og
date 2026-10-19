@@ -2816,6 +2816,9 @@
             pkgs.runCommand "picker-session-kill-tests" {
               nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
               TMUX_BIN = "${pickerKillTmuxConfig.tmux-wrapped}/bin/tmux";
+              # The launchers the tests type into a pane, by absolute path —
+              # the PATH note in tests/picker-session-kill.bats carries the why.
+              PICKER_BIN_DIR = "${pickerKillTmuxConfig.wrapperBinDir}/bin";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
             } ''
