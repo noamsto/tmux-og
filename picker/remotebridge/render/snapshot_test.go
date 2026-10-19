@@ -205,8 +205,9 @@ func TestSeedUnknownMouseModeLeavesModesAlone(t *testing.T) {
 }
 
 // TestSeedWrapMode: DECAWM is set or cleared to the remote's state, and left
-// alone when it is unknown — tmux keeps it per screen and ?1049h/l does not
-// restore it, so only the seed can undo a ?7l written by a reshape hold.
+// alone when it is unknown — tmux keeps one per pane, shared by the main and
+// alternate screens, and ?1049h/l does not restore it, so only the seed can
+// undo a ?7l written by a reshape hold.
 func TestSeedWrapMode(t *testing.T) {
 	on, off := true, false
 	for _, tc := range []struct {

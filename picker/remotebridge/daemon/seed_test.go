@@ -499,3 +499,11 @@ func TestParseCursorWrapKeepsMouseAndModes(t *testing.T) {
 		t.Errorf("wrap = %v, want false", wrap)
 	}
 }
+
+// The w#{wrap_flag} field is the seed's only source of DECAWM; dropping it silently leaves wrap unknown.
+func TestCursorCmdFormat(t *testing.T) {
+	want := "display-message -p -t %7 -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes}'"
+	if got := cursorCmd("%7"); got != want {
+		t.Errorf("cursorCmd = %q, want %q", got, want)
+	}
+}
