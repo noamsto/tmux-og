@@ -3434,7 +3434,9 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 		case r := <-paste.results():
 			// The path and the input held behind it go out from here, the one
 			// goroutine that sends this pane's typing, so their order is fixed.
-			paste.replay(paste.finish(remotePane, r), deliver)
+			if paste != nil {
+				paste.replay(paste.finish(remotePane, r), deliver)
+			}
 		}
 	}
 }
