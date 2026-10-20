@@ -72,8 +72,8 @@
         configureFlags =
           old.configureFlags
           ++ ["--disable-asan"]
-          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin ["--enable-jemalloc"];
-        buildInputs = old.buildInputs ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [pkgs.jemalloc];
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin ["--enable-jemalloc"];
+        buildInputs = old.buildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.jemalloc];
       });
   in
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -90,9 +90,9 @@
         tmuxConfig = import ./config/tmux.conf.nix {
           inherit pkgs lib;
           tmuxPkg = mkTmux pkgs;
-          carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-          carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-          prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+          carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+          carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
         };
 
         # buildGoModule's checkPhase only runs `go test ./<pkg>` per subPackage
@@ -844,9 +844,9 @@
               (import ./config/tmux.conf.nix ({
                   inherit pkgs lib;
                   tmuxPkg = mkTmux pkgs;
-                  carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-                  carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-                  prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+                  carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                  carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                  prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
                 }
                 // args))
               .tmuxConf;
@@ -900,9 +900,9 @@
               cfg = import ./config/tmux.conf.nix ({
                   inherit pkgs lib;
                   tmuxPkg = mkTmux pkgs;
-                  carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-                  carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-                  prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+                  carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                  carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                  prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
                 }
                 // args);
             in {
@@ -1615,9 +1615,9 @@
             disabledTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2024,7 +2024,7 @@
           # still miss the drift.
           carousel-key-formula-pin =
             pkgs.runCommand "carousel-key-formula-pin" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils inputs.aeye.packages.${pkgs.system}.toggle];
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle];
             } ''
               # Two distinct pairs, so a reordering ("<pane>-<srv>") cannot pass
               # by coincidence on a single sample.
@@ -2547,9 +2547,9 @@
             renameBindTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2585,9 +2585,9 @@
             agentRepaintTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2620,9 +2620,9 @@
             menuBindTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2674,9 +2674,9 @@
             floatDragTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2713,9 +2713,9 @@
             mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2745,9 +2745,9 @@
             floatToolTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2775,9 +2775,9 @@
             popupFloatTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2806,9 +2806,9 @@
             pickerKillTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2852,9 +2852,9 @@
             enterBindTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
               tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
               enrichEnable = false;
               agentUsageEnable = false;
             };
@@ -2943,13 +2943,13 @@
           # Only reachable through homeManagerModules.default, which `nix flake
           # check` never forces — without this alias CI builds nothing for it
           # and downstream consumers compile it from source.
-          tmux-remux = inputs.tmux-remux.packages.${pkgs.system}.default;
+          tmux-remux = inputs.tmux-remux.packages.${pkgs.stdenv.hostPlatform.system}.default;
           # The module's Go tools: built here, against this flake's nixpkgs, so the
           # copy CI pushes is the one every consumer resolves.
           go-tools = import ./picker {inherit pkgs lib;};
           pi-hookyard-plugin =
             pkgs.runCommand "tmux-og-pi-hookyard-plugin" {
-              nativeBuildInputs = [inputs.hookyard.packages.${pkgs.system}.hookyard];
+              nativeBuildInputs = [inputs.hookyard.packages.${pkgs.stdenv.hostPlatform.system}.hookyard];
             } ''
                 install -Dm755 ${./scripts/pi-relaunch-stamp.sh} $out/scripts/pi-relaunch-stamp.sh
                 substituteInPlace $out/scripts/pi-relaunch-stamp.sh \
@@ -3027,13 +3027,13 @@
           import ./modules/home-manager.nix (args
             // {
               tmux-pkg = mkTmux pkgs;
-              tmux-remux-pkg = inputs.tmux-remux.packages.${pkgs.system}.default;
-              carousel-toggle = inputs.aeye.packages.${pkgs.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.system}.default;
+              tmux-remux-pkg = inputs.tmux-remux.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
               carouselPluginSkills = "${inputs.aeye}/adapters/claude-code/plugin/skills";
-              piHookyardPlugin = inputs.self.packages.${pkgs.system}.pi-hookyard-plugin;
-              goTools = inputs.self.packages.${pkgs.system}.go-tools;
-              prdash = inputs.prdash.packages.${pkgs.system}.prdash;
+              piHookyardPlugin = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.pi-hookyard-plugin;
+              goTools = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.go-tools;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
             });
       };
     };
