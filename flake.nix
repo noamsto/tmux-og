@@ -60,6 +60,9 @@
     # explicit --enable/--disable-jemalloc on macOS, because its calloc(3) can
     # fail to zero allocations for complex codepoints (emoji/nerd-font glyphs we
     # render). jemalloc avoids that, so opt in and add the lib to buildInputs.
+    # libpng + zlib (all platforms): configure's image support treats both as
+    # optional and silently skips them, so without them kitty PNG (f=100) and
+    # o=z payloads fail to decode with no build error.
     mkTmux = pkgs:
       pkgs.tmux.overrideAttrs (old: {
         version = "next-3.9";
@@ -73,7 +76,10 @@
           old.configureFlags
           ++ ["--disable-asan"]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin ["--enable-jemalloc"];
-        buildInputs = old.buildInputs ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.jemalloc];
+        buildInputs =
+          old.buildInputs
+          ++ [pkgs.libpng pkgs.zlib]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.jemalloc];
       });
   in
     flake-parts.lib.mkFlake {inherit inputs;} {
