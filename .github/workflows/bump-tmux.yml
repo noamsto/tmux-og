@@ -20,10 +20,12 @@ jobs:
       # github-actions bot: CI runs triggered by the bot's PRs stop at
       # `action_required` (waiting for approval, 0 jobs) and finish as a
       # jobless "failure" when nobody approves them (#1017). BUMP_PR_TOKEN is a
-      # fine-grained PAT (Contents + Pull requests: read/write on this repo).
+      # fine-grained PAT (Contents + Pull requests: read/write on this repo);
+      # it is used only by the push and `gh pr create` below, never persisted
+      # in the checkout for the third-party actions in between.
       - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.BUMP_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Reset onto fresh main
         run: git fetch origin main && git reset --hard FETCH_HEAD
@@ -106,7 +108,7 @@ jobs:
 
           git add flake.nix flake.lock
           git commit -m "chore(tmux): bump upstream pin to ${short} (next-3.9)"
-          git push -f origin "$branch"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
 
           existing=$(gh pr list --head "$branch" --state open --base main --json number --jq length)
           if [ "$existing" -eq 0 ]; then
