@@ -16,7 +16,15 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # The PR must be opened and pushed by an identity CI trusts, not by the
+      # github-actions bot: CI runs triggered by the bot's PRs stop at
+      # `action_required` (waiting for approval, 0 jobs) and finish as a
+      # jobless "failure" when nobody approves them (#1017). The GitHub App
+      # token minted below is used only by the push and `gh pr create`, never
+      # persisted in the checkout for the third-party actions in between.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Reset onto fresh main
         run: git fetch origin main && git reset --hard FETCH_HEAD
@@ -74,15 +82,29 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        if: steps.revs.outputs.up_to_date == 'false' && vars.BUMP_APP_CLIENT_ID != ''
+        with:
+          client-id: ${{ vars.BUMP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BUMP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Commit and open PR
         if: steps.revs.outputs.up_to_date == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           current: ${{ steps.revs.outputs.current }}
           latest: ${{ steps.revs.outputs.latest }}
           short: ${{ steps.revs.outputs.short }}
           log: ${{ steps.log.outputs.log }}
         run: |
+          if [ -z "$APP_TOKEN" ]; then
+            echo "::warning title=BUMP_APP_CLIENT_ID unset::PR is opened by github-actions[bot]; its CI run will wait for approval and run no jobs (#1017). Set the BUMP_APP_CLIENT_ID variable and BUMP_APP_PRIVATE_KEY secret."
+          fi
+          export GH_TOKEN="${APP_TOKEN:-$GITHUB_TOKEN}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           branch="chore/bump-tmux-upstream"
@@ -95,7 +117,7 @@ jobs:
 
           git add flake.nix flake.lock
           git commit -m "chore(tmux): bump upstream pin to ${short} (next-3.9)"
-          git push -f origin "$branch"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
 
           existing=$(gh pr list --head "$branch" --state open --base main --json number --jq length)
           if [ "$existing" -eq 0 ]; then
@@ -116,7 +138,7 @@ jobs:
               --body "$body" \
               --base main \
               --head "$branch" \
-              --assignee "@me"
+              --assignee "$GITHUB_REPOSITORY_OWNER"
           else
             echo "PR already open for $branch targeting main; branch updated, no new PR needed."
           fi
