@@ -162,6 +162,8 @@ has_zoom=0
 # @crew_name (agent codename, stamped by an external fan-out harness) is
 # token-safe (no '|'). Its @crew_color pairs with it but is read straight from the
 # window option in the template, so only the name is pulled here (for width).
+# @crew_dispatcher_host (the short host of a remote-owning dispatcher; empty when
+# local) is read beside it, '|' squashed, and suffixed to the badge as "⇄<host>".
 # @window_has_agent (#671) is a closed "1"/"" token, same shape, so it sits
 # right beside @crew_name — it gates the non-bridge crew badge below.
 # @bridge_win/window_name sit after it: bridge_win is "1" or empty, and a
@@ -173,14 +175,15 @@ has_zoom=0
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
 declare -A win_host win_host_dw win_host_disp
-host_any=0  # 1 when some window is placed (gates the badge fragment in ENTRY)
-crew_colw=0 # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew hasagent wai bridge bid brest bpr bcrew bhost wname bname wtask; do
+host_any=0         # 1 when some window is placed (gates the badge fragment in ENTRY)
+CREW_HOST_ICON='⇄' # plain Unicode (not a Nerd Font glyph); nerd alt: nf-md-remote
+crew_colw=0        # widest codename → shared agent-badge column (0 when no window is tagged)
+while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum prstate prcheck prmerge prdraft prprog ibranch crew chost hasagent wai bridge bid brest bpr bcrew bhost wname bname wtask; do
 	indices+=("$idx")
 	win_clip_prev[$idx]="$wclip"
 	# The zoom marker (" 󰁌", 2 cells) is emitted inline by LABEL_Z on zoomed
@@ -200,6 +203,7 @@ while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum p
 		win_rest_long[$idx]="$brest"
 		win_pr[$idx]="$bpr"
 		crew="$bcrew"
+		chost=""
 		# Short mode drops the remainder for an id-bearing window, matching
 		# build_window_label (which sets REPLY_REST only in its long arm).
 		# Without that, total_short == total_long and a mirror-heavy narrow
@@ -281,6 +285,7 @@ while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum p
 	# The trailing separator space is folded into the segment so the width math is
 	# exact.
 	if [[ -n $crew ]]; then
+		[[ -n $chost ]] && crew="${crew} ${CREW_HOST_ICON}${chost}"
 		win_crew[$idx]="${crew} "
 		measure_display_width "${win_crew[$idx]}"
 		win_crew_dw[$idx]=$REPLY_DW

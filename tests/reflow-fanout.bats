@@ -688,3 +688,48 @@ setup_border_title() {
 	[ "$(tmux -u show -wv -t S:0 @window_label_id_disp)" = "$(tmux -u show -wv -t S:0 @window_label_id)" ]
 	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
 }
+
+# @crew_dispatcher_host: a worker owned by a dispatcher on another machine shows
+# "<codename> ⇄<host>" in the crew badge; the width math counts the suffix.
+@test "a crew window with @crew_dispatcher_host renders the host after the codename" {
+	tmux set -wq -t S:0 @window_has_agent 1
+	tmux set -wq -t S:0 @crew_name blush
+	tmux set -wq -t S:0 @crew_color "#ff0000"
+	tmux set -wq -t S:0 @crew_dispatcher_host halo
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	[ "$(tmux show -wv -t S:0 @window_crew_disp)" = "blush ⇄halo " ]
+	# The width counts the suffix.
+	# shellcheck source=/dev/null
+	source "$TDIR/lib-icons.sh"
+	measure_display_width "$(tmux show -wv -t S:0 @window_crew_disp)"
+	[ "$REPLY_DW" -eq 12 ]
+}
+
+@test "a crew window without @crew_dispatcher_host renders exactly as before" {
+	tmux set -wq -t S:0 @window_has_agent 1
+	tmux set -wq -t S:0 @crew_name blush
+	tmux set -wq -t S:0 @crew_color "#ff0000"
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	[ "$(tmux show -wv -t S:0 @window_crew_disp)" = "blush " ]
+	# shellcheck source=/dev/null
+	source "$TDIR/lib-icons.sh"
+	measure_display_width "$(tmux show -wv -t S:0 @window_crew_disp)"
+	[ "$REPLY_DW" -eq 6 ]
+}
+
+@test "setting @crew_dispatcher_host after the first render re-fires the reflow" {
+	tmux set -wq -t S:0 @crew_name blush
+	run_update_icons # seeds @crew_seen=blush
+	: >"$REFLOW_LOG"
+	run_update_icons # unchanged
+	[ ! -s "$REFLOW_LOG" ]
+
+	tmux set -wq -t S:0 @crew_dispatcher_host halo
+	run_update_icons
+	grep -q -- '--force' "$REFLOW_LOG"
+	[ "$(tmux show -wv -t S:0 @crew_seen)" = "blush halo" ]
+}

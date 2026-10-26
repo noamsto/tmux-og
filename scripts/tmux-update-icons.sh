@@ -441,7 +441,7 @@ main() {
 		# A modal float is chrome, not window content: excluded from this pass
 		# entirely, and the pane under it counts as active while it's open. See
 		# docs/agents/floats.md.
-	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
+	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
 
 	arm_agent_detect
 
@@ -646,7 +646,9 @@ main() {
 		# forced reflow, like task/branch. The multi-line grid's badge column is
 		# reflow-computed (@window_crew_disp + crew_colw), so a name change must
 		# recompute; @crew_color is read live by the format and needs no reflow.
-		# @crew_seen is our own shadow of the last name we acted on.
+		# @crew_seen is our own shadow of the last name we acted on; the field read
+		# above is "<name> <host>" when @crew_dispatcher_host is set, so a host
+		# change retriggers the reflow through the same comparison.
 		if [[ ${win_cur_crew[$wkey]:-} != "${win_cur_crew_seen[$wkey]:-}" ]]; then
 			tmux set -qw -t "$target" @crew_seen "${win_cur_crew[$wkey]:-}"
 			sess_need_reflow[$s]=1
