@@ -36,7 +36,10 @@ func TestRendererPaintsAndForwards(t *testing.T) {
 	_ = server.Close()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run = %v, want nil on conn close", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after conn close")
 	}
@@ -68,7 +71,10 @@ func TestRendererRecordsResize(t *testing.T) {
 	_ = server.Close()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run = %v, want nil on conn close", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after conn close")
 	}

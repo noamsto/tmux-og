@@ -486,7 +486,8 @@ func TestChildCloseUnblocksParkedReader(t *testing.T) {
 		t.Fatal("Close blocked")
 	}
 	select {
-	case <-parked:
+	case err := <-parked:
+		_ = err // which error a closed child yields is not what this test pins
 	case <-time.After(time.Second):
 		t.Fatal("Close left the reader parked")
 	}

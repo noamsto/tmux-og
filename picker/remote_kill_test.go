@@ -481,7 +481,10 @@ func TestSSHKillRemoteSessionCtxCancelReapsProcessGroup(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		if err == nil {
+			t.Error("sshKillRemoteSessionCtx = nil after cancel, want an error")
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("sshKillRemoteSessionCtx did not return after cancel")
 	}
