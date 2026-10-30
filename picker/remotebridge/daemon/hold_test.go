@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -154,7 +155,7 @@ func TestParseHoldRead(t *testing.T) {
 
 func TestHoldBytes(t *testing.T) {
 	got := string(holdBytes([]string{"ab", "\x1b[1mc\x1b[0m", ""}, 3, 4, true))
-	want := "\x1b\\" + "\x1b[?1049h" + "\x1b[?7l" + "\x1b[3;1H" +
+	want := "\x1b\\" + "\x1b[?1049h" + "\x1b(B\x1b)0\x0f\x1b[?6l" + "\x1b[?7l" + "\x1b[3;1H" +
 		"\x1b[3;1H\x1b[m\x1b[2K" +
 		"\x1b[2;1H\x1b[m\x1b[2K" + "\x1b[1mc\x1b[0m" +
 		"\x1b[1;1H\x1b[m\x1b[2K" + "ab" +
@@ -164,11 +165,28 @@ func TestHoldBytes(t *testing.T) {
 	}
 }
 
+// TestHoldBytesResetsOriginModeAndCharset: ?1049h keeps an app's DECOM (with
+// its scroll region) and its G0/G1 designations, so the hold clears origin
+// mode and returns the charset to G0/ASCII before writing its rows. Without it
+// a CUP is region-relative and capture-pane's SO/SI ACS runs replay as literal
+// text.
+func TestHoldBytesResetsOriginModeAndCharset(t *testing.T) {
+	got := string(holdBytes([]string{"ab"}, 1, 1, true))
+	const reset = "\x1b(B\x1b)0\x0f\x1b[?6l"
+	rest, ok := strings.CutPrefix(got, "\x1b\\"+"\x1b[?1049h"+reset)
+	if !ok {
+		t.Fatalf("holdBytes = %q, want the DECOM/charset reset %q after ?1049h", got, reset)
+	}
+	if !strings.HasPrefix(rest, "\x1b[?7l") {
+		t.Errorf("holdBytes after the reset = %q, want ESC[?7l next", rest)
+	}
+}
+
 // TestHoldBytesKeepsAutowrapOff: a pane whose screen had DECAWM off keeps it
 // off, since tmux carries the mode across ?1049l onto the main screen.
 func TestHoldBytesKeepsAutowrapOff(t *testing.T) {
 	got := string(holdBytes([]string{"ab"}, 1, 1, false))
-	want := "\x1b\\" + "\x1b[?1049h" + "\x1b[?7l" + "\x1b[1;1H" +
+	want := "\x1b\\" + "\x1b[?1049h" + "\x1b(B\x1b)0\x0f\x1b[?6l" + "\x1b[?7l" + "\x1b[1;1H" +
 		"\x1b[1;1H\x1b[m\x1b[2K" + "ab" +
 		"\x1b[1;1H"
 	if got != want {
@@ -180,7 +198,7 @@ func TestHoldBytesKeepsAutowrapOff(t *testing.T) {
 // row; the bottom-up order leaves that row holding its own content.
 func TestHoldBytesFewerRowsThanHeight(t *testing.T) {
 	got := string(holdBytes([]string{"ab"}, 3, 1, true))
-	want := "\x1b\\" + "\x1b[?1049h" + "\x1b[?7l" + "\x1b[3;1H" +
+	want := "\x1b\\" + "\x1b[?1049h" + "\x1b(B\x1b)0\x0f\x1b[?6l" + "\x1b[?7l" + "\x1b[3;1H" +
 		"\x1b[3;1H\x1b[m\x1b[2K" +
 		"\x1b[2;1H\x1b[m\x1b[2K" +
 		"\x1b[1;1H\x1b[m\x1b[2K" + "ab" +
@@ -200,6 +218,13 @@ func TestParkCol(t *testing.T) {
 		{8, 80, 1},
 		{5, 3, 3},
 		{5, 0, 1},
+		// Narrow panes: the cycle is the width, so consecutive tokens still
+		// park in different columns as long as w >= 2.
+		{2, 3, 3},
+		{3, 3, 1},
+		{5, 2, 2},
+		{4, 7, 5},
+		{0, 1, 1},
 	}
 	for _, tc := range tests {
 		if got := parkCol(tc.tok, tc.w); got != tc.want {

@@ -252,6 +252,22 @@ func TestSinkHoldEndsAnOpenRegionInTheQueryFilter(t *testing.T) {
 	requireSilence(t, peer)
 }
 
+// TestSinkHoldTerminatesPendingDCSEscape: keyneg forwards a lone trailing ESC
+// inside a DCS, leaving the local parser in tmux's dcs_escape state; the hold's
+// own ESC \ then reads as DCS payload and the pane stays blank through the
+// seed and the deadline. The pump writes one bare \ ahead of the hold so local
+// tmux terminates the DCS first.
+func TestSinkHoldTerminatesPendingDCSEscape(t *testing.T) {
+	s, peer := holdPipe(t)
+	_, _ = s.Write([]byte("\x1bPx"))
+	requireFrame(t, peer, wire.FrameOutput, "\x1bPx")
+	_, _ = s.Write([]byte("\x1b"))
+	requireFrame(t, peer, wire.FrameOutput, "\x1b")
+
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, "\\"+holdOut("HOLD", 1))
+}
+
 // TestSinkHoldDeadlineEndsARegionOpenedWhileHeld: output discarded while held
 // can open a region local tmux never saw, so the deadline release must not
 // leave the filter inside it. A DCS, not an OSC: the filter ends an OSC at any

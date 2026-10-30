@@ -3090,7 +3090,15 @@ func (s *outputSink) start(conn net.Conn) {
 					s.pred.observe(f.payload)
 				}
 				setHeld(true)
-				if err := wire.WriteStream(conn, wire.FrameOutput, f.payload); err != nil {
+				// A lone ESC forwarded inside a DCS leaves the local parser in
+				// dcs_escape, where the hold's own ESC \ reads as DCS payload
+				// and swallows the whole hold. One bare \ returns it to ground
+				// first; kn.EndRegion below clears the filter's matching state.
+				payload := f.payload
+				if kn.PendingDCSEscape() {
+					payload = append([]byte{'\\'}, payload...)
+				}
+				if err := wire.WriteStream(conn, wire.FrameOutput, payload); err != nil {
 					return
 				}
 				// The hold's leading ST returned local tmux to ground, so kn
