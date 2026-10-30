@@ -92,11 +92,15 @@ closed pane's cell still needs the pre-close tree.
 - **The hook.** `window-layout-changed[20]`, beside the grid hook at `[0]`:
 
   ```
-  if -F '#{&&:#{==:#{@dwindle},on},#{&&:#{!:#{@bridge_win}},#{!=:SIG,#{s/[|].*//:@dwindle_cache}}}}' {
-    if -F '#{&&:#{e|<|:COUNT,#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' {
-      run-shell -b "<tmux-dwindle> balance #{q:window_id} #{q:@dwindle_cache}"
+  if -F '#{&&:#{==:#{@dwindle},on},#{!:#{@bridge_win}}}' {
+    if -F '#{!=:SIG,#{s/[|].*//:@dwindle_cache}}' {
+      if -F '#{&&:#{e|<|:COUNT,#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' {
+        run-shell -b "<tmux-dwindle> balance #{q:window_id} #{q:@dwindle_cache}"
+      }
+      set -wF @dwindle_cache 'SIG|#{window_layout}'
     }
-    set -wF @dwindle_cache 'SIG|#{window_layout}'
+  } {
+    if -F '#{@dwindle_cache}' { set -wu @dwindle_cache }
   }
   ```
 
@@ -163,7 +167,7 @@ nothing) and again in the apply guard:
 
 | Case | How it is excluded |
 |---|---|
-| Mode off (global or window) | `#{==:#{@dwindle},on}` is the outer gate: no write, no fork |
+| Mode off (global or window) | `#{==:#{@dwindle},on}` is the outer gate: no fork, no cache write; the else branch drops an existing cache once, so a re-enable never diffs against a stale layout |
 | Dispatcher grid (`@crew_grid=1`) | balance gate requires `#{!=:#{@crew_grid},1}`; `tmux-grid-refit` keeps owning that layout. The cache is still kept, so a window that stops being a grid diffs against a truthful cache |
 | Float closed | the tiled count (`COUNT`) does not drop |
 | Zoomed window | balance gate requires the live `window_zoomed_flag` and the cached zoom field (`#{m/r:^[0-9]+_0_,…}`) to be 0 — tmux unzooms before the close, and zoom fires `window-layout-changed`, so the cache recorded it |
@@ -218,12 +222,15 @@ Horizontal/Vertical entries are labelled with a direction and stay as they are.
   bind's wording), and in a `@crew_grid=1` window only `dwindle: grid window -
   tmux-grid-refit owns this layout`; neither flips the option, since it has no
   effect there.
-- Turning the mode back on for a window: the cache was not maintained while
-  off, so it may be stale. The first close after re-enabling then diffs
-  against a stale tree: either more than one pane differs, the parent cell is
-  not found, or the guard sees different geometry, and each of those exits
-  untouched (worst case: that one close does not balance). The close itself
-  rewrites the cache, so every later close is exact.
+- Turning the mode back on for a window: the hook's else branch clears
+  `@dwindle_cache` on the first layout change while the mode is off (window
+  toggle or global), so the cache never survives a toggle. A re-enabled window
+  starts with an empty cache, which never forks (`e|<|` against `""` is `0`
+  and the zoom regex does not match), and its first layout change seeds the
+  cache from a live layout. The first close right after re-enabling therefore
+  does not balance, and no close ever diffs against a layout from before the
+  toggle. Pinned by a bats case: close a pane with the mode off, re-enable,
+  resize, and assert the resize is not evened.
 
 ## Cost
 
@@ -238,7 +245,9 @@ Horizontal/Vertical entries are labelled with a direction and stay as they are.
   per change, the same as the float/grid gates' pending markers. Unlike those
   gates this one is on in every window by default, so a mouse border drag
   writes the cache once per motion step.
-- Mode off: one `if -F` evaluation per event, nothing else.
+- Mode off: one `if -F` evaluation per event, plus a second one that reads
+  the cache; the first event after the toggle also runs one `set -wu` to
+  drop an existing cache, and later events find it empty and do nothing else.
 - Pinned by a bats case: plant a cache whose `SIG` half matches the window
   and whose `LAYOUT` half is a sentinel, fire a layout-changed event that
   changes nothing, and assert the sentinel survives (a write would replace it).

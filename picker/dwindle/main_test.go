@@ -40,6 +40,17 @@ func (f *fakeTmux) run(args ...string) (string, error) {
 	return f.out, f.err
 }
 
+// logged swaps the package logger for a recorder and returns the recorded
+// calls, one joined string each.
+func logged(t *testing.T) *[]string {
+	t.Helper()
+	var got []string
+	orig := logEvent
+	logEvent = func(args ...string) { got = append(got, strings.Join(args, " ")) }
+	t.Cleanup(func() { logEvent = orig })
+	return &got
+}
+
 func state(dwindle, zoomed, grid, bridge, size, panes, status, layout string) string {
 	return strings.Join([]string{dwindle, zoomed, grid, bridge, size, panes, status, layout}, "|")
 }
@@ -53,10 +64,12 @@ func cache(prev string) string { return "200x50|" + prev }
 func TestBalanceHappyPath(t *testing.T) {
 	for name, prev := range map[string]string{"v2": prevV2, "v1": v1(prevV1Body)} {
 		t.Run(name, func(t *testing.T) {
+			events := logged(t)
 			f := &fakeTmux{out: goodState()}
 			if code := run([]string{"balance", "@1", cache(prev)}, f.run); code != 0 {
 				t.Fatalf("exit %d", code)
 			}
+			wantLogged(t, *events)
 			if len(f.calls) != 2 {
 				t.Fatalf("calls = %v, want state read + if-shell", f.calls)
 			}
@@ -100,6 +113,7 @@ func TestBalancePrechecks(t *testing.T) {
 	}
 	for name, out := range tests {
 		t.Run(name, func(t *testing.T) {
+			events := logged(t)
 			f := &fakeTmux{out: out}
 			if code := run([]string{"balance", "@1", cache(prevV2)}, f.run); code != 0 {
 				t.Fatalf("exit %d", code)
@@ -107,11 +121,15 @@ func TestBalancePrechecks(t *testing.T) {
 			if len(f.calls) != 1 {
 				t.Errorf("calls = %v, want only the read", f.calls)
 			}
+			if len(*events) != 0 {
+				t.Errorf("logged %q for a benign no-op", *events)
+			}
 		})
 	}
 }
 
 func TestBalanceOrderMismatch(t *testing.T) {
+	events := logged(t)
 	f := &fakeTmux{out: state("on", "0", "", "", "200x50", "%2.67.0.133.50 %0.0.0.66.50 ", "off", v1(curV1Body))}
 	if code := run([]string{"balance", "@1", cache(prevV2)}, f.run); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -119,9 +137,11 @@ func TestBalanceOrderMismatch(t *testing.T) {
 	if len(f.calls) != 1 {
 		t.Errorf("calls = %v, want only the read", f.calls)
 	}
+	wantLogged(t, *events, "dwindle reason order-mismatch window @1")
 }
 
 func TestBalanceUnchangedLayout(t *testing.T) {
+	events := logged(t)
 	f := &fakeTmux{out: state("on", "0", "", "", "200x50", "%0.0.0.99.50 %2.100.0.100.50 ", "off", v1(evenBody))}
 	if code := run([]string{"balance", "@1", cache(prevV2)}, f.run); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -129,9 +149,11 @@ func TestBalanceUnchangedLayout(t *testing.T) {
 	if len(f.calls) != 1 {
 		t.Errorf("calls = %v, want only the read", f.calls)
 	}
+	wantLogged(t, *events)
 }
 
 func TestBalanceUnparsableLayout(t *testing.T) {
+	events := logged(t)
 	f := &fakeTmux{out: goodState()}
 	if code := run([]string{"balance", "@1", cache("garbage")}, f.run); code != 0 {
 		t.Fatalf("exit %d", code)
@@ -139,15 +161,28 @@ func TestBalanceUnparsableLayout(t *testing.T) {
 	if len(f.calls) != 1 {
 		t.Errorf("calls = %v, want only the read", f.calls)
 	}
+	if len(*events) != 1 || !strings.HasPrefix((*events)[0], "dwindle reason parse-failed window @1 err ") {
+		t.Errorf("logged %q, want one parse-failed event", *events)
+	}
 }
 
 func TestBalanceReadError(t *testing.T) {
+	events := logged(t)
 	f := &fakeTmux{err: errors.New("no server")}
 	if code := run([]string{"balance", "@1", cache(prevV2)}, f.run); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if len(f.calls) != 1 {
 		t.Errorf("calls = %v, want only the read", f.calls)
+	}
+	wantLogged(t, *events, "dwindle reason read-failed window @1 err no server")
+}
+
+// wantLogged fails unless the recorded events are exactly want.
+func wantLogged(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("logged %q, want %q", got, want)
 	}
 }
 
@@ -161,6 +196,7 @@ func TestBalanceNoTmuxCall(t *testing.T) {
 	}
 	for name, args := range tests {
 		t.Run(name, func(t *testing.T) {
+			events := logged(t)
 			f := &fakeTmux{out: goodState()}
 			if code := run(args, f.run); code != 0 {
 				t.Fatalf("exit %d", code)
@@ -168,6 +204,7 @@ func TestBalanceNoTmuxCall(t *testing.T) {
 			if len(f.calls) != 0 {
 				t.Errorf("calls = %v, want none", f.calls)
 			}
+			wantLogged(t, *events)
 		})
 	}
 }

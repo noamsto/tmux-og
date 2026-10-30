@@ -14,11 +14,14 @@ bats_require_minimum_version 1.5.0 # run !
 #     `-L` server whose pane runs a real `tmux attach`; only the keypress cases
 #     (3, 5) pay for it.
 #   - Hooks run deferred, so "nothing happened" can never be asserted after a
-#     bare sleep. Every negative case ends with a positive control: a second
-#     window with the mode on whose own close balances. Hooks run in event
-#     order, so once the control balanced, the first window's hook has run.
-#   - Every pane runs `sleep 600`, so no shell prompt or init noise moves
-#     anything and no pane exits on its own.
+#     bare sleep. Every negative case proves the hook ran before asserting: a
+#     positive-control window (`prove_hooks_ran`: a second window with the mode
+#     on whose own close balances; hooks run in event order, so once it
+#     balanced, the first window's hook has run), the cache count reaching its
+#     new value (`count_is`), or a later-index probe hook.
+#   - Every pane a case creates directly runs `sleep 600`, so no shell prompt
+#     or init noise moves anything and no pane exits on its own (panes
+#     `prefix + Enter` creates run the default shell).
 #   - The cache must be current before a close: tmux-dwindle diffs against the
 #     layout the previous event stored, so `settle_cache` waits for the cache's
 #     SIG half to equal the live SIG before each kill.
@@ -404,4 +407,29 @@ probe_grew() { (($(probe_lines) > PROBE_BEFORE)); }
 	[[ $line == *'split-h,split-v} #{q:@bridge_pane}'* ]]
 	[[ $line == *'split-window -h'* ]]
 	[[ $line == *'split-window -v'* ]]
+}
+
+@test "11. re-enabling the mode never diffs against a layout from before the toggle" {
+	local ids win
+	read -ra ids <<<"$(mk_columns 3 on)"
+	win="${ids[0]}"
+	settle_cache "$win"
+
+	inner set-option -w -t "$win" @dwindle off
+	inner kill-pane -t "${ids[2]}"
+	uneven_widths "$win"
+	prove_hooks_ran
+
+	inner set-option -w -t "$win" @dwindle on
+	inner resize-pane -t "${ids[1]}" -x 40
+	wait_for count_is "$win" 2 || {
+		echo "cache count never reached 2: $(cache_full "$win")" >&2
+		false
+	}
+	prove_hooks_ran
+
+	[ "$(pane_w "${ids[1]}")" = 40 ] || {
+		echo "widths after resize: $(widths "$win")" >&2
+		false
+	}
 }

@@ -619,6 +619,10 @@ signature deliberately omits `#{window_layout}`, which renders per client.
   plus a redraw of every client (`options_push_changes`), which is why the write
   is skipped on no-op events. A border drag writes once per motion step.
 - The only fork is `tmux-dwindle`, and only on a tiled-count drop.
+- With the mode off (window toggle or global), the first layout change runs one
+  `set -wu` to drop an existing cache; later events read it empty and do
+  nothing. A re-enabled window re-seeds from a live layout, so a toggle can
+  never leave a stale cache to diff against.
 
 ## Regression guards
 

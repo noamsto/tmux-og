@@ -5,7 +5,8 @@
 // the window once, asks controlmode.RebalanceClosedCell for the evened layout
 // and applies it with one guarded select-layout. A hook job's output is
 // discarded, so every runtime no-op exits 0 in silence; only a bad invocation
-// exits 2.
+// exits 2. The failures worth a trace (an unreadable window, an unparsable
+// layout, a pane list out of leaf order) go to og-log-event first.
 package main
 
 import (
@@ -38,6 +39,9 @@ var windowRe = regexp.MustCompile(`^@[0-9]+$`)
 
 type runner func(args ...string) (string, error)
 
+// logEvent is a var so tests can capture it without exec'ing the CLI.
+var logEvent = execLogEvent
+
 func main() {
 	os.Exit(run(os.Args[1:], execTmux))
 }
@@ -45,6 +49,13 @@ func main() {
 func execTmux(args ...string) (string, error) {
 	out, err := exec.Command("tmux", args...).Output() //nolint:gosec // argv is built here and exec'd directly, no shell
 	return strings.TrimSpace(string(out)), err
+}
+
+// execLogEvent fires the og-log-event CLI (best-effort). Bare-name exec relies
+// on the tmux wrapper's PATH. No-ops when debug is off (the CLI checks the
+// sentinel).
+func execLogEvent(args ...string) {
+	_ = exec.Command("og-log-event", args...).Run() //nolint:gosec // fixed binary, argv passed without a shell
 }
 
 func run(args []string, tmux runner) int {
@@ -63,6 +74,7 @@ func run(args []string, tmux runner) int {
 
 	out, err := tmux("display-message", "-p", "-t", win, stateFormat)
 	if err != nil {
+		logEvent("dwindle", "reason", "read-failed", "window", win, "err", err.Error())
 		return 0
 	}
 	f := strings.SplitN(out, "|", stateFields)
@@ -75,13 +87,18 @@ func run(args []string, tmux runner) int {
 	}
 
 	layout, changed, err := controlmode.RebalanceClosedCell(prevLayout, curLayout, borderStatus)
-	if err != nil || !changed {
+	if err != nil {
+		logEvent("dwindle", "reason", "parse-failed", "window", win, "err", err.Error())
+		return 0
+	}
+	if !changed {
 		return 0
 	}
 
 	// A v1 select-layout assigns its leaves to panes positionally, so the
 	// pane list must already be in the layout's leaf order.
 	if !sameOrder(panes, layout.Panes) {
+		logEvent("dwindle", "reason", "order-mismatch", "window", win)
 		return 0
 	}
 	// The literal sits in a format's comma-separated operand.

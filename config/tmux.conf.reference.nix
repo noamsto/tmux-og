@@ -1270,7 +1270,10 @@
     # refresh-client -C (#793). The cached zoom field exists because tmux unzooms
     # before closing a pane, so the live flag is already 0 at the close. run-shell
     # expands @dwindle_cache before the set replaces it.
-    set-hook -g window-layout-changed[20] { if -F '#{&&:#{==:#{@dwindle},on},#{&&:#{!:#{@bridge_win}},#{!=:#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{s/[|].*//:@dwindle_cache}}}}' { if -F '#{&&:#{e|<|:#{n:#{P:#{?pane_floating_flag,,x}}},#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' { run-shell -b "${picker-dwindle-bin} balance #{q:window_id} #{q:@dwindle_cache}" } ; set -wF @dwindle_cache '#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}|#{window_layout}' } }
+    # While the mode is off (window toggle or global) the first layout change drops
+    # the cache, so a re-enabled window re-seeds it from a live layout instead of
+    # diffing against one from before the toggle; an empty cache never forks.
+    set-hook -g window-layout-changed[20] { if -F '#{&&:#{==:#{@dwindle},on},#{!:#{@bridge_win}}}' { if -F '#{!=:#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{s/[|].*//:@dwindle_cache}}' { if -F '#{&&:#{e|<|:#{n:#{P:#{?pane_floating_flag,,x}}},#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' { run-shell -b "${picker-dwindle-bin} balance #{q:window_id} #{q:@dwindle_cache}" } ; set -wF @dwindle_cache '#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}|#{window_layout}' } } { if -F '#{@dwindle_cache}' { set -wu @dwindle_cache } } }
 
     # Tag every newly-created window as a worktree window from its cwd — at
     # creation, regardless of creator or CLAUDECODE (issue #95). new-session
