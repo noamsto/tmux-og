@@ -119,12 +119,11 @@ func lastNonEmpty(s string, n int) string {
 }
 
 const (
+	// A border is a row that starts with boxBorder: typed rows are indented
+	// after `❯ `, so a `───` inside typed text is not at column 0.
 	boxBorder  = "───"
 	footerRows = 4
 )
-
-// A border is a row that starts with boxBorder: typed rows are indented after
-// `❯ `, so a `───` inside typed text is not at column 0.
 
 // promptBox returns the input box and its footer, or "" when no box is found:
 // the last `❯` line between a top and bottom border, the bottom border, then the
