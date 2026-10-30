@@ -81,6 +81,10 @@
   # tracked issue, on the default branch) for itself via `claude-status-update
   # name set`. Exposed to the plugin hook as the @ai_naming global.
   aiNamingEnable ? false,
+  # Dwindle auto-balance (threaded from the module): when a pane closes, even
+  # out the split group it left instead of leaving tmux's uneven hand-down.
+  # Exposed as the window-scoped @dwindle option; prefix + A flips it per window.
+  dwindleEnable ? true,
   # Resume Claude sessions on tmux-remux restore (threaded from the module).
   # When on, tmux-update-icons stamps each Claude pane's @remux_relaunch override
   # so restore relaunches `claude --resume <uuid>` instead of a bare shell.
@@ -288,6 +292,7 @@
   picker-bridge-daemon-bin = "${picker-generate}/bin/og-remote-bridge-daemon";
   picker-bridge-renderer-bin = "${picker-generate}/bin/og-remote-bridge-renderer";
   picker-session-res-bin = "${picker-generate}/bin/tmux-session-resources";
+  picker-dwindle-bin = "${picker-generate}/bin/tmux-dwindle";
 
   picker-agent-detect-bin = "${picker-generate}/bin/agent-detect";
 
@@ -914,6 +919,7 @@
       remote = splashRemote;
     };
     ai_naming.enable = aiNamingEnable;
+    dwindle.enable = dwindleEnable;
     resume = {
       claude = resumeClaudeEnable;
       carousel = resumeCarouselEnable;
@@ -974,6 +980,7 @@
         tmux-enrich-card = picker-card-bin;
         og-remote-bridge-ctl = picker-bridge-ctl-bin;
         tmux-session-resources = picker-session-res-bin;
+        tmux-dwindle = picker-dwindle-bin;
       };
       # The .tmux entry file, never the package root — the template joins no
       # path segments.
@@ -1011,12 +1018,12 @@
     inherit remoteBridgeHosts remoteAuthPersistSeconds;
     inherit splashEnable enrichEnable notifyEnable;
     inherit agentUsageEnable agentUsageMonthlyThreshold;
-    inherit aiNamingEnable resumeClaudeEnable resumeCarouselEnable;
+    inherit aiNamingEnable dwindleEnable resumeClaudeEnable resumeCarouselEnable;
     inherit extraConfText persistWireScript;
     inherit carousel-toggle prdash;
     inherit processIcons script;
     inherit picker-bridge-ctl-bin picker-card-bin picker-splash-bin picker-statusline-bin;
-    inherit picker-session-res-bin;
+    inherit picker-session-res-bin picker-dwindle-bin;
     inherit enrichIconsDoubled enrichIconsRaw;
   };
   referenceConf = reference.tmuxConf;

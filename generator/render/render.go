@@ -50,6 +50,7 @@ type Data struct {
 	AINamingFlag       string
 	ResumeClaudeFlag   string
 	ResumeCarouselFlag string
+	DwindleFlag        string
 
 	// EnrichIconsDoubled is the tmux-format dialect; the card's raw one lives
 	// inside EnrichCardBind. Keeping both reachable at once is the point.
@@ -103,6 +104,7 @@ func Build(cfg *config.Config, p *paths.Paths) Data {
 		AINamingFlag:       oneZero(cfg.AINaming.Enable),
 		ResumeClaudeFlag:   onOff(cfg.Resume.Claude),
 		ResumeCarouselFlag: onOff(cfg.Resume.Carousel),
+		DwindleFlag:        onOff(cfg.Dwindle.Enable),
 		EnrichIconsDoubled: enrichIconsDoubled(cfg),
 		BridgeOpt:          bridgeOpts(),
 		AgentUsageArgs:     agentUsageArgs(cfg),

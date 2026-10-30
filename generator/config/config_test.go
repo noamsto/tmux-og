@@ -268,6 +268,31 @@ func TestDefaults(t *testing.T) {
 	if c.Splash.Remote != "full" {
 		t.Errorf("splash.remote = %q, want full", c.Splash.Remote)
 	}
+	if !c.Dwindle.Enable {
+		t.Error("dwindle.enable = false, want true")
+	}
+}
+
+func TestDwindleEnable(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"absent", minimal, true},
+		{"disabled", minimal + "\n[dwindle]\nenable = false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := Load(write(t, tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Dwindle.Enable != tt.want {
+				t.Fatalf("dwindle.enable = %v, want %v", c.Dwindle.Enable, tt.want)
+			}
+		})
+	}
 }
 
 func TestDefaultPath(t *testing.T) {

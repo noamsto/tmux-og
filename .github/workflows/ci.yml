@@ -30,7 +30,7 @@ jobs:
             runner: ubuntu-latest
             eval-workers: 4
           - system: aarch64-darwin
-            runner: macos-14
+            runner: macos-15
             eval-workers: 2
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30

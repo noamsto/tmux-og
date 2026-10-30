@@ -16,7 +16,7 @@ in
     # repeating it here would rerun timing-sensitive tests on every cache miss.
     doCheck = false;
     vendorHash = "sha256-Z72w5oQsXFFqvkK1ndOTtu7AonXtxAM55JhzgJV5Usc=";
-    subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "sessionres" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl"];
+    subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "sessionres" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl" "dwindle"];
     # -s -w strip debug info for a smaller binary + faster startup. psBin pins
     # tmux-session-resources' ps: it runs from a monitor hook, whose PATH is the
     # server's own — a headless tmux-startup.service sets none. Darwin takes
@@ -43,5 +43,6 @@ in
       mv $out/bin/daemon $out/bin/og-remote-bridge-daemon
       mv $out/bin/renderer $out/bin/og-remote-bridge-renderer
       mv $out/bin/ctl $out/bin/og-remote-bridge-ctl
+      mv $out/bin/dwindle $out/bin/tmux-dwindle
     '';
   }
