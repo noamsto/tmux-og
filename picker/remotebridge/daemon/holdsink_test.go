@@ -252,6 +252,47 @@ func TestSinkHoldEndsAnOpenRegionInTheQueryFilter(t *testing.T) {
 	requireSilence(t, peer)
 }
 
+// TestSinkHoldTerminatesPendingDCSEscape: keyneg forwards a lone trailing ESC
+// inside a DCS, leaving the local parser in tmux's dcs_escape state; the hold's
+// own ESC \ then reads as DCS payload and the pane stays blank through the
+// seed and the deadline. The pump writes one bare \ ahead of the hold so local
+// tmux terminates the DCS first.
+func TestSinkHoldTerminatesPendingDCSEscape(t *testing.T) {
+	s, peer := holdPipe(t)
+	_, _ = s.Write([]byte("\x1bPx"))
+	requireFrame(t, peer, wire.FrameOutput, "\x1bPx")
+	_, _ = s.Write([]byte("\x1b"))
+	requireFrame(t, peer, wire.FrameOutput, "\x1b")
+
+	mustHold(t, s, "HOLD")
+	requireFrame(t, peer, wire.FrameOutput, "\\"+holdOut("HOLD", 1))
+}
+
+// TestSinkHoldObservesThePendingDCSTerminator: the predictor's ground tracker
+// must see exactly the bytes the pump writes. Without the leading \ the
+// tracker stays in sgDCS while the real parser is back in ground, so it
+// withholds every key prediction until the remote's next ST.
+func TestSinkHoldObservesThePendingDCSTerminator(t *testing.T) {
+	s, peer := newPipeSink(t)
+	// Open a DCS and leave the predictor mid-dcs_escape, as keyneg does when it
+	// forwards a lone trailing ESC.
+	_, _ = s.Write([]byte("\x1bPx"))
+	readOutput(t, peer)
+	_, _ = s.Write([]byte("\x1b"))
+	readOutput(t, peer)
+	if s.pred.ground.atGround() {
+		t.Fatal("the predictor left ground on the lone DCS escape")
+	}
+
+	mustHold(t, s, "HOLD")
+	if out := readOutput(t, peer); !bytes.HasPrefix(out, []byte("\\\x1b\\")) {
+		t.Fatalf("hold frame = %q, want the prepended backslash", out)
+	}
+	if !s.pred.ground.atGround() {
+		t.Error("the predictor is still inside the DCS after the hold was written")
+	}
+}
+
 // TestSinkHoldDeadlineEndsARegionOpenedWhileHeld: output discarded while held
 // can open a region local tmux never saw, so the deadline release must not
 // leave the filter inside it. A DCS, not an OSC: the filter ends an OSC at any

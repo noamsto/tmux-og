@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -58,6 +59,8 @@ func regionText(sel, screenText, title string) string {
 	case strings.HasPrefix(sel, "last_lines:"):
 		n := atoiDefault(strings.TrimPrefix(sel, "last_lines:"), 1)
 		return lastNonEmpty(screenText, n)
+	case sel == "prompt_box":
+		return promptBox(screenText)
 	default:
 		return screenText
 	}
@@ -113,6 +116,56 @@ func lastNonEmpty(s string, n int) string {
 		}
 	}
 	return strings.Join(kept, "\n")
+}
+
+const (
+	// A border is a row that starts with boxBorder: typed rows are indented
+	// after `❯ `, so a `───` inside typed text is not at column 0.
+	boxBorder  = "───"
+	footerRows = 4
+)
+
+// promptBox returns the input box and its footer, or "" when no box is found:
+// the last `❯` line between a top and bottom border, the bottom border, then the
+// non-empty rows after it up to the first blank row (footerRows at most). The
+// box is found by its borders, so a typed prompt of any height keeps the footer
+// in the region, a task panel drawn after the blank row never enters it, and an
+// unbordered `❯` (menu cursor, old echo in scrollback) never anchors it.
+func promptBox(s string) string {
+	lines := strings.Split(s, "\n")
+	for b, line := range slices.Backward(lines) {
+		if !strings.HasPrefix(line, boxBorder) {
+			continue
+		}
+		prompt := promptLineAbove(lines[:b])
+		if prompt < 0 {
+			continue
+		}
+		block := slices.Clone(lines[prompt : b+1])
+		for _, l := range lines[b+1:] {
+			if strings.TrimSpace(l) == "" || len(block) >= b+1-prompt+footerRows {
+				break
+			}
+			block = append(block, l)
+		}
+		return strings.Join(block, "\n")
+	}
+	return ""
+}
+
+// promptLineAbove returns the index of the last `❯`-leading line below the
+// nearest border in lines, or -1 when there is no top border or no such line.
+func promptLineAbove(lines []string) int {
+	prompt := -1
+	for i, l := range slices.Backward(lines) {
+		if strings.HasPrefix(l, boxBorder) {
+			return prompt
+		}
+		if prompt < 0 && strings.HasPrefix(strings.TrimLeft(l, " \t"), "❯") {
+			prompt = i
+		}
+	}
+	return -1
 }
 
 func atoiDefault(s string, d int) int {

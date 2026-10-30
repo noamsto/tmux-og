@@ -358,3 +358,36 @@ func TestEndRegionKeepsHeldBytes(t *testing.T) {
 		t.Errorf("Feed = %q, want the completed query stripped", got)
 	}
 }
+
+// TestPendingDCSEscape: only a DCS with a forwarded lone trailing ESC leaves
+// the local parser in dcs_escape. A completed DCS terminates it, and an OSC or
+// APC ends at a bare ESC, so neither is ever pending.
+func TestPendingDCSEscape(t *testing.T) {
+	f := NewFilter()
+	if got := f.Feed([]byte("\x1bPx\x1b")); string(got) != "\x1bPx\x1b" {
+		t.Fatalf("Feed = %q, want the DCS and its lone ESC forwarded", got)
+	}
+	if !f.PendingDCSEscape() {
+		t.Error("PendingDCSEscape = false after a forwarded lone ESC inside a DCS")
+	}
+	// The next byte resolves the pending ESC (still in the DCS) and clears it.
+	f.Feed([]byte("x"))
+	if f.PendingDCSEscape() {
+		t.Error("PendingDCSEscape = true after a non-ESC byte arrived")
+	}
+	// A terminating \ ends the region.
+	f = NewFilter()
+	f.Feed([]byte("\x1bPa\x1b"))
+	f.Feed([]byte("\\"))
+	if f.PendingDCSEscape() {
+		t.Error("PendingDCSEscape = true after the DCS was terminated")
+	}
+	// OSC and APC end at a bare ESC and are never pending.
+	for _, open := range []string{"\x1b]2;title\x1b", "\x1b_x\x1b"} {
+		f = NewFilter()
+		f.Feed([]byte(open))
+		if f.PendingDCSEscape() {
+			t.Errorf("PendingDCSEscape = true for %q", open)
+		}
+	}
+}

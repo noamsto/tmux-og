@@ -74,7 +74,7 @@ assert_rejected_unbridged() {
 assert_rejected_bridged() {
 	export TMUX="/tmp/s,1,0"
 	export TMUX_PANE="%3"
-	export TMUX_STUB_CLIENTS='1|10'
+	export TMUX_STUB_CLIENTS='1||10'
 	assert_rejected "$@"
 }
 
@@ -193,13 +193,13 @@ assert_not_bridged() {
 @test "bridged: appends a record when the log is under the cap" {
 	export TMUX="/tmp/s,1,0"
 	export TMUX_PANE="%3"
-	export TMUX_STUB_CLIENTS=$'0|10\n1|10'
+	export TMUX_STUB_CLIENTS=$'0||10\n1||10'
 	run bash "$SCRIPT" https://example.invalid/x
 	[ "$status" -eq 0 ]
 	local line1 line2
 	line1="$(sed -n '1p' "$TMUX_LOG")"
 	line2="$(sed -n '2p' "$TMUX_LOG")"
-	[ "$line1" = 'list-clients -t %3 -F #{?#{&&:#{client_control_mode},#{==:#{client_name},#{@og_open_client}}},1,0}|#{n:@og_open_url}' ]
+	[ "$line1" = 'list-clients -t %3 -F #{?#{&&:#{client_control_mode},#{||:#{m:* #{client_name} *, #{@og_open_clients} },#{==:#{client_name},#{@og_open_client}}}},1,0}|#{?#{&&:#{client_control_mode},#{&&:#{m:* #{client_name} *, #{@og_open_clients} },#{m:*|#{client_name},#{@og_bridge_owner}}}},#{client_name},}|#{n:@og_open_url}' ]
 	[[ $line2 =~ ^set-option\ -a\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+\|https://example\.invalid/x$ ]]
 	[ ! -s "$OPENED" ]
 }
@@ -207,7 +207,7 @@ assert_not_bridged() {
 @test "bridged: still appends when the log is exactly at the cap" {
 	export TMUX="/tmp/s,1,0"
 	export TMUX_PANE="%3"
-	export TMUX_STUB_CLIENTS='1|4096'
+	export TMUX_STUB_CLIENTS='1||4096'
 	run bash "$SCRIPT" https://example.invalid/x
 	[ "$status" -eq 0 ]
 	local line2
@@ -218,12 +218,56 @@ assert_not_bridged() {
 @test "bridged: replaces the record when the log is over the cap" {
 	export TMUX="/tmp/s,1,0"
 	export TMUX_PANE="%3"
-	export TMUX_STUB_CLIENTS='1|4097'
+	export TMUX_STUB_CLIENTS='1||4097'
 	run bash "$SCRIPT" https://example.invalid/x
 	[ "$status" -eq 0 ]
 	local line2
 	line2="$(sed -n '2p' "$TMUX_LOG")"
 	[[ $line2 =~ ^set-option\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+\|https://example\.invalid/x$ ]]
+}
+
+@test "bridged: tags the record with the owner client a row names" {
+	export TMUX="/tmp/s,1,0"
+	export TMUX_PANE="%3"
+	export TMUX_STUB_CLIENTS=$'0||10\n1|client-7|10'
+	run bash "$SCRIPT" https://example.invalid/x
+	[ "$status" -eq 0 ]
+	local line2
+	line2="$(sed -n '2p' "$TMUX_LOG")"
+	[[ $line2 =~ ^set-option\ -a\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+@client-7\|https://example\.invalid/x$ ]]
+}
+
+@test "bridged: leaves the record untagged when no row names an owner" {
+	export TMUX="/tmp/s,1,0"
+	export TMUX_PANE="%3"
+	export TMUX_STUB_CLIENTS=$'1||10\n0||10'
+	run bash "$SCRIPT" https://example.invalid/x
+	[ "$status" -eq 0 ]
+	local line2
+	line2="$(sed -n '2p' "$TMUX_LOG")"
+	[[ $line2 =~ ^set-option\ -a\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+\|https://example\.invalid/x$ ]]
+}
+
+@test "bridged: tags the replacing record past the cap" {
+	export TMUX="/tmp/s,1,0"
+	export TMUX_PANE="%3"
+	export TMUX_STUB_CLIENTS='1|client-7|4097'
+	run bash "$SCRIPT" https://example.invalid/x
+	[ "$status" -eq 0 ]
+	local line2
+	line2="$(sed -n '2p' "$TMUX_LOG")"
+	[[ $line2 =~ ^set-option\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+@client-7\|https://example\.invalid/x$ ]]
+}
+
+@test "bridged: keeps the owner tag when a later row names none" {
+	export TMUX="/tmp/s,1,0"
+	export TMUX_PANE="%3"
+	export TMUX_STUB_CLIENTS=$'1|client-7|10\n0||10'
+	run bash "$SCRIPT" https://example.invalid/x
+	[ "$status" -eq 0 ]
+	local line2
+	line2="$(sed -n '2p' "$TMUX_LOG")"
+	[[ $line2 =~ ^set-option\ -a\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+@client-7\|https://example\.invalid/x$ ]]
 }
 
 @test "not bridged: TMUX unset" {
@@ -239,7 +283,7 @@ assert_not_bridged() {
 @test "not bridged: only unregistered control clients" {
 	export TMUX="/tmp/s,1,0"
 	export TMUX_PANE="%3"
-	export TMUX_STUB_CLIENTS='0|10'
+	export TMUX_STUB_CLIENTS='0||10'
 	assert_not_bridged
 }
 

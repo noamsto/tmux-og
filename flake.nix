@@ -2202,7 +2202,9 @@
             } ''
               grep -qF 'set-hook -g window-resized[20]' "$CONF"
               grep -qF 'set-hook -g client-detached' "$CONF"
-              grep -qF 'set-hook -gu client-detached' "$CONF"
+              grep -qE '^set-hook -gu client-detached$' "$CONF"
+              grep -qF 'set-hook -gu client-detached[10]' "$CONF"
+              grep -qE 'set-hook -g client-detached\[10\].*tmux-reflow-windows' "$CONF"
               [ "$(grep -cF 'touch -- #{q:@bridge_nudge}' "$CONF")" -eq 2 ]
 
               cp -r ${./tests} tests
@@ -2527,6 +2529,9 @@
               # Same "raw source ships" reasoning as DETACH: og-open needs no
               # build-time placeholder substitution either.
               OG_OPEN = ./scripts/og-open.sh;
+              # The dwindle mirror cases extract the real window-layout-changed[20]
+              # hook (it embeds the store path of tmux-dwindle) from this conf.
+              TMUX_OG_CONF = tmuxConfig.tmuxConf;
             } ''
               cp -r ${./tests} tests
               export HOME=$TMPDIR
