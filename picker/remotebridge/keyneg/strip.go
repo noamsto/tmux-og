@@ -199,6 +199,17 @@ func (f *Filter) EndRegion() {
 	f.escPending = false
 }
 
+// PendingDCSEscape reports that the last walked byte was a lone ESC inside a
+// DCS: it has already been forwarded, so the local parser sits in tmux's
+// dcs_escape state waiting for the byte that decides the ESC. A hold written
+// now would be read as DCS payload (its own ESC \ leaves the parser in the
+// DCS), so the pump emits a single \ ahead of it to return the parser to
+// ground first. Only a DCS can be in this state: an OSC or APC ends at a bare
+// ESC instead of carrying it.
+func (f *Filter) PendingDCSEscape() bool {
+	return f.region == regionDCS && f.escPending
+}
+
 // classify decides what to do with the escape sequence at the head of b, which
 // begins with ESC, and enters a region when the sequence introduces one.
 func (f *Filter) classify(b []byte) (int, verdict) {
