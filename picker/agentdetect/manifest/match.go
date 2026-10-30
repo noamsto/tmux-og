@@ -58,6 +58,8 @@ func regionText(sel, screenText, title string) string {
 	case strings.HasPrefix(sel, "last_lines:"):
 		n := atoiDefault(strings.TrimPrefix(sel, "last_lines:"), 1)
 		return lastNonEmpty(screenText, n)
+	case strings.HasPrefix(sel, "prompt_block:"):
+		return promptBlock(screenText, atoiDefault(strings.TrimPrefix(sel, "prompt_block:"), 1))
 	default:
 		return screenText
 	}
@@ -113,6 +115,40 @@ func lastNonEmpty(s string, n int) string {
 		}
 	}
 	return strings.Join(kept, "\n")
+}
+
+// promptBlock returns the last `❯` line that has a box border within the next
+// four lines, plus the following non-empty lines up to n in total, or "" when
+// no such prompt exists. Anchoring on the prompt box keeps rows drawn below the
+// footer (a task panel) from shifting it, and excludes scrollback above it. A
+// `❯` without a nearby border (menu cursor, panel row) is not a prompt.
+func promptBlock(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(strings.TrimLeft(lines[i], " \t"), "❯") || !borderWithin(lines[i+1:], 4) {
+			continue
+		}
+		block := []string{lines[i]}
+		for _, l := range lines[i+1:] {
+			if len(block) >= n {
+				break
+			}
+			if strings.TrimSpace(l) != "" {
+				block = append(block, l)
+			}
+		}
+		return strings.Join(block, "\n")
+	}
+	return ""
+}
+
+func borderWithin(lines []string, n int) bool {
+	for _, l := range lines[:min(n, len(lines))] {
+		if strings.Contains(l, "───") {
+			return true
+		}
+	}
+	return false
 }
 
 func atoiDefault(s string, d int) int {

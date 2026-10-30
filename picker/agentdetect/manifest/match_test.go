@@ -55,3 +55,32 @@ func TestMatchEmptyRuleDoesNotMatch(t *testing.T) {
 		t.Fatalf("empty rule should not match, got (%q,%v)", got, ok)
 	}
 }
+
+func TestPromptBlockRegion(t *testing.T) {
+	const bar = "────────────"
+	footer := "  🤖 Opus\n  -- INSERT -- · 1 shell"
+	cases := []struct{ name, screen, want string }{
+		{"panel below footer", "old\n" + bar + "\n❯ \n" + bar + "\n" + footer + "\n\n  ● main\n  ◯ a\n  ◯ b\n  ◯ c",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell\n  ● main"},
+		{"trailing blank rows", "❯ \n" + bar + "\n" + footer + "\n  \n\n  \n",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell"},
+		{"panel row starting with prompt glyph", "❯ \n" + bar + "\n" + footer + "\n❯ row\n  ◯ a",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell\n❯ row"},
+		{"menu cursor without border falls back to the older prompt", "❯ \n" + bar + "\n" + footer + "\n\nold\n❯ 1. Yes\n  2. No",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell\nold"},
+		{"no border", "❯ hi\nplain\ntext", ""},
+		{"last prompt wins over scrollback", "❯ old\n" + bar + "\nold footer · 3 shells\nx\ny\nz\n" + bar + "\n❯ new\n" + bar + "\n" + footer,
+			"❯ new\n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell"},
+		{"multi-line prompt", "❯ one\n  two\n" + bar + "\n" + footer,
+			"❯ one\n  two\n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell"},
+		{"leftover rows below footer without shell", "❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT --\nran 2 shells · 3 shells\nx\ny",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT --\nran 2 shells · 3 shells"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := regionText("prompt_block:5", c.screen, ""); got != c.want {
+				t.Fatalf("region = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
