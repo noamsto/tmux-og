@@ -47,7 +47,9 @@ func TestReflowRunShellArgsSurvivesFormatInjection(t *testing.T) {
 	// Stands in for tmux-reflow-windows: records the argv it was invoked
 	// with so the test can assert the malicious session name arrived intact.
 	script := filepath.Join(dir, "record.sh")
-	scriptBody := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(record) + "\n"
+	// Rename into place so the existence poll below never reads a half-written argv.
+	tmp := record + ".tmp"
+	scriptBody := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shellQuote(tmp) + " && mv " + shellQuote(tmp) + " " + shellQuote(record) + "\n"
 	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
