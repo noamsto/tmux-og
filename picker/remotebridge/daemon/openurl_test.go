@@ -3,10 +3,12 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -156,18 +158,32 @@ func TestURLOpenerIgnoresOversizedValue(t *testing.T) {
 }
 
 func TestParseOpenRecords(t *testing.T) {
+	long64 := strings.Repeat("a", 64)
 	cases := []struct {
 		in   string
 		want []openRecord
 	}{
-		{" 1-2|https://a/x 1-3|https://b/y", []openRecord{{"1-2", "https://a/x"}, {"1-3", "https://b/y"}}},
-		{"garbage 1-4|https://c", []openRecord{{"1-4", "https://c"}}},
+		{" 1-2|https://a/x 1-3|https://b/y", []openRecord{{"1-2", "", "https://a/x"}, {"1-3", "", "https://b/y"}}},
+		{"garbage 1-4|https://c", []openRecord{{"1-4", "", "https://c"}}},
 		{"x-1|https://a", nil},
 		{"1-|https://a", nil},
 		{"|https://a", nil},
 		{"12|https://a", nil},
-		{"1-5|https://a/b|c", []openRecord{{"1-5", "https://a/b|c"}}},
+		{"1-5|https://a/b|c", []openRecord{{"1-5", "", "https://a/b|c"}}},
 		{"", nil},
+		{"1-6@client-7|https://a", []openRecord{{"1-6", "client-7", "https://a"}}},
+		{"1-6@" + long64 + "|https://a", []openRecord{{"1-6", long64, "https://a"}}},
+		{"1-6@" + long64 + "a|https://a", nil},
+		{"1-6@|https://a", nil},
+		{"1-6@a.b|https://a", nil},
+		{"1-6@a@b|https://a", nil},
+		{"@client-7|https://a", nil},
+		{"x@client-7|https://a", nil},
+		{"1-6@client-7", nil},
+		// The cut is at the first '|', so an '@' in the URL stays in the URL.
+		{"1-7|https://u@h/p", []openRecord{{"1-7", "", "https://u@h/p"}}},
+		{"1-7@client-7|https://u@h/p|q", []openRecord{{"1-7", "client-7", "https://u@h/p|q"}}},
+		{" 1-1@client-2|https://a 1-2@bad.tag|https://b 1-3|https://c", []openRecord{{"1-1", "client-2", "https://a"}, {"1-3", "", "https://c"}}},
 	}
 	for _, c := range cases {
 		if got := parseOpenRecords(c.in); !reflect.DeepEqual(got, c.want) {
@@ -264,19 +280,43 @@ func TestURLOpenerIgnoresForeignSession(t *testing.T) {
 	}
 }
 
+// connectCmds is the sequence of a connect whose register reads name self as
+// the only client and an empty list: seed, subscribe, the two register reads,
+// then the append and the slot write.
 func connectCmds(target string) []string {
 	return []string{
 		"display-message -p" + target + " " + tmuxQuote(ctlSafe(openURLFormat)),
 		"refresh-client -B " + tmuxQuote("og_open::"+ctlSafe(openURLFormat)),
+		"display-message -p" + target + " " + tmuxQuote(ctlSafe("#{client_name}|#{?#{e|<=:#{n:@og_open_clients},1024},#{@og_open_clients},!oversized}")),
+		"list-clients -F " + tmuxQuote(ctlSafe("#{client_name}")),
+		"set-option -a -F" + target + " @og_open_clients ' #{client_name}'",
 		"set-option -F" + target + " @og_open_client '#{client_name}'",
 	}
+}
+
+// registerReads scripts the register step's two reads: self and the registry
+// list in the first reply, the attached client names in the second.
+func registerReads(self, listed string, attached ...string) []scriptedReply {
+	return []scriptedReply{
+		okReply(body(self + "|" + listed)),
+		okReply(body(strings.Join(attached, "\n"))),
+	}
+}
+
+// connectScript is a clean connect: the seed, the subscribe, a register whose
+// reads name client-7 as the only client and an empty list, and the two
+// register writes that follow.
+func connectScript(seed string) []scriptedReply {
+	s := []scriptedReply{okReply(body(seed)), okReply(body(""))}
+	s = append(s, registerReads("client-7", "", "client-7")...)
+	return append(s, okReply(body("")), okReply(body("")))
 }
 
 func TestURLOpenerConnectOrder(t *testing.T) {
 	p := &openerProbe{}
 	o := p.opener("$1")
 	var issued []string
-	o.connect(scriptRT(&issued, okReply(body(" 1-1|https://old")), okReply(body("")), okReply(body(""))))
+	o.connect(scriptRT(&issued, connectScript(" 1-1|https://old")...))
 	if want := connectCmds(" -t '$1'"); !reflect.DeepEqual(issued, want) {
 		t.Fatalf("issued = %q, want %q", issued, want)
 	}
@@ -295,12 +335,12 @@ func TestURLOpenerReconnectReplaysNothing(t *testing.T) {
 	p := &openerProbe{}
 	o := p.opener("$1")
 	var issued []string
-	o.connect(scriptRT(&issued, okReply(body(" 1-1|https://old")), okReply(body("")), okReply(body(""))))
+	o.connect(scriptRT(&issued, connectScript(" 1-1|https://old")...))
 	o.handle("$1", " 1-1|https://old 1-2|https://new")
 
 	p.opened = nil
 	issued = nil
-	o.connect(scriptRT(&issued, okReply(body(" 1-1|https://old 1-2|https://new")), okReply(body("")), okReply(body(""))))
+	o.connect(scriptRT(&issued, connectScript(" 1-1|https://old 1-2|https://new")...))
 	o.handle("$1", " 1-1|https://old 1-2|https://new")
 	if len(p.opened) != 0 {
 		t.Errorf("a reconnect replayed %v", p.opened)
@@ -310,7 +350,7 @@ func TestURLOpenerReconnectReplaysNothing(t *testing.T) {
 // connectWith runs a clean connect whose seed reply is seed.
 func connectWith(o *urlOpener, seed string) []string {
 	var issued []string
-	o.connect(scriptRT(&issued, okReply(body(seed)), okReply(body("")), okReply(body(""))))
+	o.connect(scriptRT(&issued, connectScript(seed)...))
 	return issued
 }
 
@@ -350,7 +390,7 @@ func TestURLOpenerOversizedSeedKeepsSeen(t *testing.T) {
 		p := &openerProbe{}
 		o := p.opener("$1")
 		o.seen["1-1"] = true
-		if issued := connectWith(o, seed); len(issued) != 3 {
+		if issued := connectWith(o, seed); len(issued) != 6 {
 			t.Errorf("%.20q: issued %q, an oversized seed must still subscribe and register", seed, issued)
 		}
 		if want := map[string]bool{"1-1": true}; !reflect.DeepEqual(o.seen, want) {
@@ -404,7 +444,15 @@ func TestURLOpenerConnectFailures(t *testing.T) {
 		{"seed error", []scriptedReply{errReply}, 1, "seed"},
 		{"seed lost", nil, 1, "seed"},
 		{"subscribe error", []scriptedReply{okReply(body("")), errReply}, 2, "subscribe"},
-		{"register error", []scriptedReply{okReply(body("")), okReply(body("")), errReply}, 3, "register"},
+		{"register self read error", append(connectScript("")[:2:2], errReply, okReply(body("client-7"))), 4, "register"},
+		{"register clients read error", append(connectScript("")[:2:2], okReply(body("client-7|")), errReply), 4, "register"},
+		{"register self read lost", connectScript("")[:2], 4, "register"},
+		{"register clients read lost", connectScript("")[:3], 4, "register"},
+		{"register invalid self", append(connectScript("")[:2:2], registerReads("bad.name", "", "bad.name")...), 4, "register"},
+		{"register empty self", append(connectScript("")[:2:2], registerReads("", "", "")...), 4, "register"},
+		{"register write error", append(connectScript("")[:4:4], okReply(body("")), errReply), 6, "register"},
+		{"register first write error", append(connectScript("")[:4:4], errReply, okReply(body(""))), 6, "register"},
+		{"register write lost", connectScript("")[:5], 6, "register"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -430,9 +478,183 @@ func TestURLOpenerUnknownPinUntargeted(t *testing.T) {
 	p := &openerProbe{}
 	o := p.opener("")
 	var issued []string
-	o.connect(scriptRT(&issued, okReply(body("")), okReply(body("")), okReply(body(""))))
+	o.connect(scriptRT(&issued, connectScript("")...))
 	if want := connectCmds(""); !reflect.DeepEqual(issued, want) {
 		t.Errorf("issued = %q, want %q", issued, want)
+	}
+}
+
+func pruneCmd(target, name string) string {
+	return "set-option -F" + target + " @og_open_clients '#{s/ " + name + "( |$)/ /:@og_open_clients}'"
+}
+
+func TestURLOpenerRegisterWrites(t *testing.T) {
+	const target = " -t '$1'"
+	appendSelf := "set-option -a -F" + target + " @og_open_clients ' #{client_name}'"
+	resetSelf := "set-option -F" + target + " @og_open_clients ' #{client_name}'"
+	slot := "set-option -F" + target + " @og_open_client '#{client_name}'"
+	long65 := strings.Repeat("a", 65)
+	staleNames := make([]string, 0, 20)
+	var capped []string
+	for i := range 20 {
+		staleNames = append(staleNames, fmt.Sprintf("client-%d", 100+i))
+	}
+	for _, n := range staleNames[:openMaxPrunes] {
+		capped = append(capped, pruneCmd(target, n))
+	}
+	cases := []struct {
+		name     string
+		listed   string
+		attached []string
+		want     []string
+	}{
+		{"empty list appends self", "", []string{"client-7"}, []string{appendSelf, slot}},
+		{"self already listed is not re-appended", "client-7", []string{"client-7"}, []string{slot}},
+		{"stale name pruned", "client-3 client-7", []string{"client-7"}, []string{pruneCmd(target, "client-3"), slot}},
+		{"stale name pruned and self appended", "client-3", []string{"client-7"}, []string{pruneCmd(target, "client-3"), appendSelf, slot}},
+		{"live name kept", "client-3", []string{"client-7", "client-3"}, []string{appendSelf, slot}},
+		{"only the stale of several pruned", "client-3 client-4 client-7", []string{"client-7", "client-4"}, []string{pruneCmd(target, "client-3"), slot}},
+		{"repeated stale name pruned once", "client-3 client-3 client-7", []string{"client-7"}, []string{pruneCmd(target, "client-3"), slot}},
+		{"invalid entries never pruned", "bad.name x|y " + long65 + " client-9 client-7", []string{"client-7"}, []string{pruneCmd(target, "client-9"), slot}},
+		{"oversized list is reset to self", openOversized, []string{"client-7"}, []string{resetSelf, slot}},
+		{"oversized list is reset even when self is not attached", openOversized, nil, []string{resetSelf, slot}},
+		{"prunes stop at the cap, then self is appended", strings.Join(staleNames, " "), []string{"client-7"}, append(slices.Clip(capped), appendSelf, slot)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := &openerProbe{}
+			o := p.opener("$1")
+			var issued []string
+			script := []scriptedReply{okReply(body("")), okReply(body(""))}
+			script = append(script, registerReads("client-7", c.listed, c.attached...)...)
+			for range c.want {
+				script = append(script, okReply(body("")))
+			}
+			o.connect(scriptRT(&issued, script...))
+			if len(issued) < 4 || !reflect.DeepEqual(issued[4:], c.want) {
+				t.Errorf("writes = %q, want %q", issued[min(4, len(issued)):], c.want)
+			}
+			if len(p.notified) != 0 {
+				t.Errorf("a clean register notified %q", p.notified)
+			}
+			if o.self != "client-7" {
+				t.Errorf("self = %q, want client-7", o.self)
+			}
+		})
+	}
+}
+
+func TestParseOpenRegister(t *testing.T) {
+	cases := []struct {
+		name, reply, clients string
+		self                 string
+		listed, attached     []string
+		oversized, ok        bool
+	}{
+		{"list", "client-7| client-3 client-7", "client-7\nclient-3\n", "client-7", []string{"client-3", "client-7"}, []string{"client-7", "client-3"}, false, true},
+		{"empty list", "client-7|", "client-7\n", "client-7", []string{}, []string{"client-7"}, false, true},
+		{"oversized", "client-7|" + openOversized, "client-7\n", "client-7", nil, []string{"client-7"}, true, true},
+		{"bad self", "bad.name|", "", "", nil, nil, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			self, listed, attached, oversized, ok := parseOpenRegister(c.reply, c.clients)
+			if self != c.self || !reflect.DeepEqual(listed, c.listed) || !reflect.DeepEqual(attached, c.attached) || oversized != c.oversized || ok != c.ok {
+				t.Errorf("got (%q, %q, %q, %v, %v), want (%q, %q, %q, %v, %v)", self, listed, attached, oversized, ok, c.self, c.listed, c.attached, c.oversized, c.ok)
+			}
+		})
+	}
+}
+
+func TestURLOpenerRegisterInvalidSelfWritesNothing(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	var issued []string
+	o.connect(scriptRT(&issued, append(connectScript("")[:2:2], registerReads("bad.name", "client-3", "bad.name")...)...))
+	if len(issued) != 4 {
+		t.Errorf("issued %q, want only the seed, the subscribe and the two reads", issued)
+	}
+	if o.self != "" {
+		t.Errorf("self = %q, want it unset", o.self)
+	}
+	if len(p.notified) != 1 || !strings.Contains(p.notified[0], "(register failed") {
+		t.Errorf("notified %q, want one register notice", p.notified)
+	}
+}
+
+func TestURLOpenerReconnectClearsSelf(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	var issued []string
+	o.connect(scriptRT(&issued, connectScript("")...))
+	if o.self != "client-7" {
+		t.Fatalf("self = %q after a clean connect", o.self)
+	}
+	o.connect(scriptRT(&issued, append(connectScript("")[:2:2], errReply, errReply)...))
+	if o.self != "" {
+		t.Errorf("self = %q after a failed register read, want it cleared so no tagged record opens under a stale name", o.self)
+	}
+}
+
+func taggedLog(first, n int, tag string) string {
+	var b strings.Builder
+	for i := first; i < first+n; i++ {
+		fmt.Fprintf(&b, " 1-%d@%s|http://a", i, tag)
+	}
+	return b.String()
+}
+
+func TestURLOpenerRoutesTaggedRecords(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	o.self = "client-7"
+	v := " 1-1@client-7|https://mine 1-2@client-9|https://theirs 1-3|https://any"
+	o.handle("$1", v)
+	if want := []string{"https://mine", "https://any"}; !reflect.DeepEqual(p.opened, want) {
+		t.Errorf("opened %v, want %v", p.opened, want)
+	}
+	if want := map[string]bool{"1-1": true, "1-2": true, "1-3": true}; !reflect.DeepEqual(o.seen, want) {
+		t.Errorf("seen = %v, want a skipped record marked seen too", o.seen)
+	}
+	// The skipped record is not reopened if this client later becomes the
+	// target: it was another client's open, already forwarded.
+	p.opened = nil
+	o.self = "client-9"
+	o.handle("$1", v)
+	if len(p.opened) != 0 {
+		t.Errorf("a record tagged for another client opened after self changed: %v", p.opened)
+	}
+	if len(p.notified) != 0 {
+		t.Errorf("skipping notified %q", p.notified)
+	}
+}
+
+func TestURLOpenerUnsetSelfSkipsTagged(t *testing.T) {
+	p := &openerProbe{}
+	o := p.opener("$1")
+	o.handle("$1", " 1-1@client-7|https://tagged 1-2|https://untagged")
+	if want := []string{"https://untagged"}; !reflect.DeepEqual(p.opened, want) {
+		t.Errorf("opened %v, want only the untagged record", p.opened)
+	}
+}
+
+func TestURLOpenerSkippedTaggedRecordsSpendNothing(t *testing.T) {
+	p := &openerProbe{clock: time.Unix(1000, 0)}
+	o := p.opener("$1")
+	o.self = "client-7"
+	// More tagged-for-other records than the per-report cap, then a full burst
+	// of own records: nothing the skipped ones did may eat into either limit.
+	o.handle("$1", taggedLog(1000, 3*openMaxPerReport, "client-9"))
+	if len(p.opened) != 0 || len(p.notified) != 0 {
+		t.Fatalf("opened %v notified %q for records tagged for another client", p.opened, p.notified)
+	}
+	o.handle("$1", openLog(1, 15))
+	o.handle("$1", openLog(16, 15))
+	if len(p.opened) != openBurst {
+		t.Errorf("opened %d, want the full burst of %d", len(p.opened), openBurst)
+	}
+	if len(p.notified) != 0 {
+		t.Errorf("notified %q, want no suppression notice", p.notified)
 	}
 }
 
@@ -467,7 +689,7 @@ func TestOpenSubscriptionSurvivesParseLine(t *testing.T) {
 	if !ok || len(l.Args) < 2 || l.Args[1] != "$1" {
 		t.Fatalf("value %q ok=%v args=%q", v, ok, l.Args)
 	}
-	want := []openRecord{{"1-1", "https://a"}, {"1-2", "https://b|c"}}
+	want := []openRecord{{"1-1", "", "https://a"}, {"1-2", "", "https://b|c"}}
 	if got := parseOpenRecords(v); !reflect.DeepEqual(got, want) {
 		t.Errorf("records = %v, want %v", got, want)
 	}
@@ -635,7 +857,7 @@ func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
 	if out, err := tmux("set-option", "-a", "-t", "w", openURLOpt, " 1-2|https://new").CombinedOutput(); err != nil {
 		t.Fatalf("append %s: %v\n%s", openURLOpt, err, out)
 	}
-	waitOpenRecords(t, lines, []openRecord{{"1-1", "https://old"}, {"1-2", "https://new"}})
+	waitOpenRecords(t, lines, []openRecord{{"1-1", "", "https://old"}, {"1-2", "", "https://new"}})
 
 	clientOpt, err := tmux("show-options", "-v", "-t", "w", openClientOpt).CombinedOutput()
 	if err != nil {
@@ -647,6 +869,169 @@ func TestOpenURLCommandsAgainstLiveTmux(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(string(clientOpt)), strings.TrimSpace(string(clientName)); got != want {
 		t.Errorf("%s = %q, want the control client's name %q", openClientOpt, got, want)
+	}
+}
+
+// openCtl is a control-mode client of an isolated tmux server that runs
+// commands the way the daemon's roundTrip does: every command of a batch on its
+// own line, one reply block each.
+type openCtl struct {
+	t     *testing.T
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	lines chan controlmode.Line
+}
+
+func startOpenCtl(t *testing.T, tmux func(args ...string) *exec.Cmd) *openCtl {
+	t.Helper()
+	ctl := tmux("-C", "attach-session", "-t", "w")
+	stdin, err := ctl.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := ctl.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctl.Start(); err != nil {
+		t.Fatalf("control client: %v", err)
+	}
+	c := &openCtl{t: t, cmd: ctl, stdin: stdin, lines: make(chan controlmode.Line, 256)}
+	t.Cleanup(c.stop)
+	go func() {
+		defer close(c.lines)
+		rd := controlmode.NewReader(stdout)
+		for {
+			l, ok := rd.Next()
+			if !ok {
+				return
+			}
+			c.lines <- l
+		}
+	}()
+	if l := waitReplyLine(t, c.lines, 5*time.Second); l.Kind == controlmode.Error {
+		t.Fatalf("attach refused: %s", l.Data)
+	}
+	return c
+}
+
+func (c *openCtl) stop() {
+	_ = c.cmd.Process.Kill()
+	_ = c.cmd.Wait()
+}
+
+func (c *openCtl) batch(cmds ...string) []controlmode.Line {
+	c.t.Helper()
+	for _, cmd := range cmds {
+		if _, err := fmt.Fprintln(c.stdin, cmd); err != nil {
+			c.t.Fatalf("send %q: %v", cmd, err)
+		}
+	}
+	replies := make([]controlmode.Line, len(cmds))
+	for i, cmd := range cmds {
+		replies[i] = waitReplyLine(c.t, c.lines, 5*time.Second)
+		if replies[i].Kind == controlmode.Error {
+			c.t.Fatalf("%q: %s", cmd, replies[i].Data)
+		}
+	}
+	return replies
+}
+
+// register runs connect's register step with the real builders and parser.
+func (c *openCtl) register(target string) string {
+	c.t.Helper()
+	reads := c.batch(openRegisterReadCmds(target)...)
+	self, listed, attached, oversized, ok := parseOpenRegister(string(reads[0].Data), string(reads[1].Data))
+	if !ok {
+		c.t.Fatalf("register read %q / %q: self is not a usable tag", reads[0].Data, reads[1].Data)
+	}
+	c.batch(openRegisterWriteCmds(target, self, listed, attached, oversized)...)
+	return self
+}
+
+// TestOpenURLRegisterAgainstLiveTmux runs the register step on real control
+// clients: the list is an exact-name set, a client that left is pruned by the
+// next one to register, and the s/ prune never eats a name that merely shares
+// a prefix or suffix with a stale one.
+func TestOpenURLRegisterAgainstLiveTmux(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH — check pickerChecked's nativeBuildInputs in flake.nix")
+		}
+		t.Skip("tmux is not available")
+	}
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := tmux(args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %q: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	option := func(name string) string { return strings.TrimSpace(run("show-options", "-v", "-t", "w", name)) }
+	registry := func() []string { return strings.Fields(option(openClientsOpt)) }
+	sessID := strings.TrimSpace(run("display-message", "-p", "-t", "w", "#{session_id}"))
+	target := " -t " + tmuxQuote(sessID)
+
+	a := startOpenCtl(t, tmux)
+	nameA := a.register(target)
+	if got, want := registry(), []string{nameA}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("registry after the first client = %q, want %q", got, want)
+	}
+
+	b := startOpenCtl(t, tmux)
+	nameB := b.register(target)
+	if nameA == nameB {
+		t.Fatalf("two control clients share the name %q", nameA)
+	}
+	if got, want := registry(), []string{nameA, nameB}; !reflect.DeepEqual(got, want) {
+		t.Errorf("registry with both attached = %q, want %q", got, want)
+	}
+	if got := option(openClientOpt); got != nameB {
+		t.Errorf("%s = %q, want the later client %q", openClientOpt, got, nameB)
+	}
+
+	// Synthetic stale names (live ones are all client-<pid>): one that is a
+	// prefix of a live name and one that extends it, in the middle and at the
+	// end of the list.
+	stale1, stale2 := nameA[:len(nameA)-1], nameA+"9"
+	run("set-option", "-t", "w", openClientsOpt, strings.Join([]string{"", stale1, nameA, stale2, nameB, stale1, stale2}, " "))
+	a.register(target)
+	if got, want := registry(), []string{nameA, nameB}; !reflect.DeepEqual(got, want) {
+		t.Errorf("registry after pruning = %q, want only the live names %q", got, want)
+	}
+	if got := option(openClientOpt); got != nameA {
+		t.Errorf("%s = %q, want the registering client %q", openClientOpt, got, nameA)
+	}
+
+	b.stop()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(strings.Fields(run("list-clients", "-F", "#{client_name}"))) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("tmux still lists the stopped control client")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	a.register(target)
+	if got, want := registry(), []string{nameA}; !reflect.DeepEqual(got, want) {
+		t.Errorf("registry after the other client left = %q, want %q", got, want)
+	}
+
+	// A list over openClientsMaxLen is reset to just the registering client,
+	// not pruned name by name.
+	var big strings.Builder
+	for i := 0; big.Len() <= openClientsMaxLen+76; i++ {
+		fmt.Fprintf(&big, " client-%d", 1000+i)
+	}
+	run("set-option", "-t", "w", openClientsOpt, big.String())
+	run("set-option", "-t", "w", openClientOpt, "client-1")
+	a.register(target)
+	if got, want := run("show-options", "-v", "-t", "w", openClientsOpt), " "+nameA+"\n"; got != want {
+		t.Errorf("registry after an oversized list = %q, want %q", got, want)
+	}
+	if got := option(openClientOpt); got != nameA {
+		t.Errorf("%s = %q, want the registering client %q", openClientOpt, got, nameA)
 	}
 }
 

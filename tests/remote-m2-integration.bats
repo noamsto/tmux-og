@@ -864,7 +864,9 @@ wait_reconnect() {
 
 # two_controllers_up is the first two cases' setup: SRC rem with two windows,
 # window 1 current; S's daemon alone first, learning `small` from SRC; then B's.
-# Sets s_pid, b_pid, small and big.
+# Sets s_pid, b_pid, small and big. A caller may set S_STUB/S_TMP and
+# B_STUB/B_TMP to give a daemon its own opener dir (first on PATH) and TMPDIR,
+# making each daemon its own machine; unset, a daemon inherits both.
 two_controllers_up() {
 	$SRC new-session -d -s rem -x 120 -y 40
 	$SRC new-window -t 'rem:{end}' -a
@@ -874,7 +876,7 @@ two_controllers_up() {
 	obs_attach obs-s 100 30 "$DST" host-sess
 	obs_attach obs-b 150 45 "$DST2" host-sess
 
-	size_daemon_up sz-s m2dst "$DST" rem
+	PATH="${S_STUB:+$S_STUB:}$PATH" TMPDIR="${S_TMP:-${TMPDIR:-/tmp}}" size_daemon_up sz-s m2dst "$DST" rem
 	s_pid=$daemon_pid
 	wait_src_all '100x*'
 	small=$src_size
@@ -882,7 +884,7 @@ two_controllers_up() {
 	# windows are S's plus the 15 rows B's client is taller by.
 	big="150x$((${small#*x} + 15))"
 
-	size_daemon_up sz-b m2dst2 "$DST2" rem
+	PATH="${B_STUB:+$B_STUB:}$PATH" TMPDIR="${B_TMP:-${TMPDIR:-/tmp}}" size_daemon_up sz-b m2dst2 "$DST2" rem
 	b_pid=$daemon_pid
 }
 
@@ -4052,6 +4054,179 @@ $pane 1" ]; then
 	wait "$daemon_pid" 2>/dev/null || true
 
 	[ "$bridge_usage2" = "$bridge_usage" ]
+}
+
+# #1034: og-open's record names the size owner's client, so only that
+# controller opens it. Three "machines" share one SRC: controller S, controller
+# B and the remote itself, each with its own opener stub recording $1 into
+# opened-<s|b|r>. S and B get their own TMPDIR too (separate claim dirs), kept
+# short because the daemon puts unix sockets there.
+
+# og1034_up writes the stubs, puts the remote's stub first on PATH before SRC
+# starts (an unbridged fallback then records instead of opening a browser) and
+# brings both controllers up.
+og1034_up() {
+	local m
+	OG_OPEN="${OG_OPEN:-$BATS_TEST_DIRNAME/../scripts/og-open.sh}"
+	for m in s b r; do
+		mkdir -p "$BATS_TEST_TMPDIR/stub-$m"
+		: >"$BATS_TEST_TMPDIR/opened-$m"
+		# #!/bin/sh: the nix build sandbox has no /usr/bin/env.
+		cat >"$BATS_TEST_TMPDIR/stub-$m/xdg-open" <<-EOF
+			#!/bin/sh
+			echo "\$1" >>"$BATS_TEST_TMPDIR/opened-$m"
+		EOF
+		cp "$BATS_TEST_TMPDIR/stub-$m/xdg-open" "$BATS_TEST_TMPDIR/stub-$m/open"
+		chmod +x "$BATS_TEST_TMPDIR/stub-$m/xdg-open" "$BATS_TEST_TMPDIR/stub-$m/open"
+	done
+	mkdir -p "$OG_TMUX_DIR/ts" "$OG_TMUX_DIR/tb"
+	export PATH="$BATS_TEST_TMPDIR/stub-r:$PATH"
+	S_STUB="$BATS_TEST_TMPDIR/stub-s" S_TMP="$OG_TMUX_DIR/ts"
+	B_STUB="$BATS_TEST_TMPDIR/stub-b" B_TMP="$OG_TMUX_DIR/tb"
+	two_controllers_up
+}
+
+# og1034_client <daemon-pid> prints that daemon's control client's name on SRC:
+# the client whose process is the daemon's attach-session transport.
+og1034_client() {
+	local t
+	t="$(transport_child_of "$1")"
+	[ -n "$t" ] || return 1
+	$SRC list-clients -F '#{client_pid} #{client_name}' | awk -v pid="$t" '$1 == pid {print $2; exit}'
+}
+
+# og1034_failed <why> dumps the daemons' logs, the three stub files and the
+# registration options to fd 3.
+og1034_failed() {
+	local m opt
+	size_failed "$1"
+	for m in s b r; do
+		printf -- '--- opened-%s ---\n' "$m" >&3
+		cat "$BATS_TEST_TMPDIR/opened-$m" >&3 2>&1 || true
+	done
+	for opt in @og_open_clients @og_open_client @og_bridge_owner @og_open_url; do
+		printf -- '--- %s ---\n%s\n' "$opt" "$($SRC show-options -qv -t rem "$opt" 2>&1)" >&3
+	done
+}
+
+# og1034_open <path> runs og-open in the remote pane, with the remote's stub
+# first on PATH in case the pane's shell reset it.
+og1034_open() {
+	$SRC send-keys -t rem "PATH=$BATS_TEST_TMPDIR/stub-r:\$PATH bash '$OG_OPEN' https://example.invalid/$1" Enter
+}
+
+# og1034_wait_owner <client> polls until @og_bridge_owner names that client.
+og1034_wait_owner() {
+	local owner=""
+	for _ in $(seq 1 100); do
+		owner="$($SRC show-options -qv -t rem @og_bridge_owner 2>/dev/null || true)"
+		[[ $owner == *"|$1" ]] && return 0
+		sleep 0.1
+	done
+	og1034_failed "og1034_wait_owner: @og_bridge_owner is '$owner', wanted a record naming $1"
+	return 1
+}
+
+# og1034_wait_opened <s|b|r> <path> polls until that machine's stub recorded the URL.
+og1034_wait_opened() {
+	for _ in $(seq 1 100); do
+		grep -qxF "https://example.invalid/$2" "$BATS_TEST_TMPDIR/opened-$1" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	og1034_failed "og1034_wait_opened: $1 never opened /$2"
+	return 1
+}
+
+# og1034_not_opened <s|b|r> <path> asserts that machine's stub never recorded the URL.
+og1034_not_opened() {
+	if grep -qxF "https://example.invalid/$2" "$BATS_TEST_TMPDIR/opened-$1" 2>/dev/null; then
+		og1034_failed "og1034_not_opened: $1 opened /$2"
+		return 1
+	fi
+}
+
+@test "og-open routes to the controller typed in last (#1034)" {
+	og1034_up
+	s_client="$(og1034_client "$s_pid")"
+	b_client="$(og1034_client "$b_pid")"
+	[ -n "$s_client" ]
+	[ -n "$b_client" ]
+	[ "$s_client" != "$b_client" ]
+
+	wait_src_all "$big"
+	type_until obs-s "$small"
+	og1034_wait_owner "$s_client"
+	og1034_open s
+	og1034_wait_opened s s
+	sleep 2.5
+	og1034_not_opened b s
+	og1034_not_opened r s
+
+	type_until obs-b "$big"
+	og1034_wait_owner "$b_client"
+	og1034_open b
+	og1034_wait_opened b b
+	sleep 2.5
+	og1034_not_opened s b
+	og1034_not_opened r b
+
+	# An owner whose daemon is attached but not in the list (an older
+	# daemon, which writes only the legacy slot) cannot parse a tag, so the
+	# record stays untagged and reaches every listed daemon.
+	$SRC set-option -t rem @og_open_clients " $s_client"
+	og1034_open old-owner
+	og1034_wait_opened b old-owner
+	raw="$($SRC show-options -qv -t rem @og_open_url)"
+	re=' [0-9]+-[0-9]+\|https://example\.invalid/old-owner'
+	[[ $raw =~ $re ]] || {
+		og1034_failed "the older-owner record is tagged or missing: $raw"
+		return 1
+	}
+
+	# A record without a tag (an older remote's og-open) still reaches every
+	# subscribed controller.
+	$SRC set-option -a -t rem @og_open_url " 1-1|https://example.invalid/old"
+	og1034_wait_opened s old
+	og1034_wait_opened b old
+	sleep 2.5
+	og1034_not_opened r old
+	size_daemons_stop
+}
+
+@test "og-open still forwards after the registrant leaves (#1034)" {
+	og1034_up
+	b_client="$(og1034_client "$b_pid")"
+	[ -n "$b_client" ]
+	# B connected last, so it holds the legacy slot.
+	[ "$($SRC show-options -qv -t rem @og_open_client)" = "$b_client" ]
+
+	kill "$b_pid" 2>/dev/null || true
+	wait "$b_pid" 2>/dev/null || true
+	n_ctl=2
+	for _ in $(seq 1 100); do
+		n_ctl="$($SRC list-clients -F '#{client_control_mode}' 2>/dev/null | grep -c '^1$' || true)"
+		[ "$n_ctl" -eq 1 ] && break
+		sleep 0.1
+	done
+	[ "$n_ctl" -eq 1 ]
+
+	[[ $($SRC show-options -qv -t rem @og_bridge_owner) == *"|$b_client" ]] || {
+		og1034_failed "@og_bridge_owner no longer names $b_client"
+		return 1
+	}
+	og1034_open after
+	og1034_wait_opened s after
+	sleep 2.5
+	og1034_not_opened r after
+	# The owner record may still name B, so this pins the survivor path: the
+	# record is untagged, not routed to a client that is gone.
+	raw="$($SRC show-options -qv -t rem @og_open_url)"
+	re=' [0-9]+-[0-9]+\|https://example\.invalid/after'
+	[[ $raw =~ $re ]] || {
+		og1034_failed "the forwarded record is tagged or missing: $raw"
+		return 1
+	}
+	size_daemons_stop
 }
 
 # og-open runs on the REMOTE and reaches the CONTROLLER's opener via

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,25 +20,29 @@ import (
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
-// A remote og-open appends " <nonce>|<url>" records to the session option
-// @og_open_url when a controller has registered itself in @og_open_client;
-// the og_open subscription carries the whole log here, and the controller
-// opens each record it has not seen yet.
+// A remote og-open appends " <nonce>[@<client>]|<url>" records to the session
+// option @og_open_url when a controller has registered itself in
+// @og_open_clients (or the legacy @og_open_client); the og_open subscription
+// carries the whole log here, and the controller opens each record it has not
+// seen yet. A record tagged for another client is that client's to open.
 const (
-	openURLOpt    = "@og_open_url"
-	openClientOpt = "@og_open_client"
-	openURLMaxLen = 4096
+	openURLOpt     = "@og_open_url"
+	openClientOpt  = "@og_open_client"
+	openClientsOpt = "@og_open_clients"
+	openURLMaxLen  = 4096
 )
 
 // The value is written by the remote, and anything with its tmux socket can
 // bypass og-open's own cap, so the controller bounds what a log may cost it.
 const (
-	openValueMaxLen  = 3 * openURLMaxLen
-	openMaxPerReport = 16
-	openBurst        = 30
-	openRefill       = 2 * time.Second
-	openNoticeEvery  = 10 * time.Second
-	openOversized    = "!oversized"
+	openValueMaxLen   = 3 * openURLMaxLen
+	openClientsMaxLen = 1024
+	openMaxPrunes     = 16
+	openMaxPerReport  = 16
+	openBurst         = 30
+	openRefill        = 2 * time.Second
+	openNoticeEvery   = 10 * time.Second
+	openOversized     = "!oversized"
 )
 
 // openURLFormat is the log bounded remote-side: tmux sends option values raw,
@@ -51,23 +56,103 @@ var openURLFormat = "#{?#{e|<=:#{n:" + openURLOpt + "}," + strconv.Itoa(openValu
 // browser's whole lifetime, and a crash hours later is not a failed open.
 const openerWaitBound = 5 * time.Second
 
-var openNonceRe = regexp.MustCompile(`^[0-9]+-[0-9]+$`)
+var (
+	openNonceRe = regexp.MustCompile(`^[0-9]+-[0-9]+$`)
+	openTagRe   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
 
-type openRecord struct{ nonce, url string }
+type openRecord struct{ nonce, tag, url string }
 
 // parseOpenRecords splits a log value into its records, skipping any token
-// that is not "<digits>-<digits>|<url>". The cut is at the FIRST '|', so a
-// pipe inside the URL survives.
+// that is not "<digits>-<digits>[@<tag>]|<url>". The cut is at the FIRST '|',
+// then the nonce part at the first '@', so a pipe or '@' inside the URL
+// survives.
 func parseOpenRecords(v string) []openRecord {
 	var recs []openRecord
 	for tok := range strings.FieldsSeq(v) {
-		nonce, u, ok := strings.Cut(tok, "|")
-		if !ok || !openNonceRe.MatchString(nonce) {
+		head, u, ok := strings.Cut(tok, "|")
+		if !ok {
 			continue
 		}
-		recs = append(recs, openRecord{nonce, u})
+		nonce, tag, tagged := strings.Cut(head, "@")
+		if !openNonceRe.MatchString(nonce) || (tagged && !openTagRe.MatchString(tag)) {
+			continue
+		}
+		recs = append(recs, openRecord{nonce, tag, u})
 	}
 	return recs
+}
+
+// openClientsFormat reads the registry bounded remote-side like openURLFormat:
+// the option is remote-written, and every stale name in it costs a prune
+// command. A live registry is about 14 bytes per controller, so openClientsMaxLen
+// leaves room for dozens. On a tmux without e|<= every register reads
+// oversized and resets, degrading to one registrant like the legacy slot.
+var openClientsFormat = "#{client_name}|#{?#{e|<=:#{n:" + openClientsOpt + "}," + strconv.Itoa(openClientsMaxLen) + "},#{" + openClientsOpt + "}," + openOversized + "}"
+
+// openRegisterReadCmds read this control client's name with the session's
+// registry, and every attached client; list-clients is server-wide, as a
+// registered name can outlive its client on any session.
+func openRegisterReadCmds(target string) []string {
+	return []string{
+		"display-message -p" + target + " " + tmuxQuote(ctlSafe(openClientsFormat)),
+		"list-clients -F " + tmuxQuote(ctlSafe("#{client_name}")),
+	}
+}
+
+// parseOpenRegister splits the two read replies into this client's name, the
+// registry's entries and the attached clients' names. oversized is the remote
+// reporting a registry past openClientsMaxLen, with listed nil. ok is false
+// when the name could not be a tag.
+func parseOpenRegister(selfAndList, clients string) (self string, listed, attached []string, oversized, ok bool) {
+	self, rest, _ := strings.Cut(selfAndList, "|")
+	if !openTagRe.MatchString(self) {
+		return "", nil, nil, false, false
+	}
+	for line := range strings.SplitSeq(clients, "\n") {
+		if line != "" {
+			attached = append(attached, line)
+		}
+	}
+	if rest == openOversized {
+		return self, nil, attached, true, true
+	}
+	return self, strings.Fields(rest), attached, false, true
+}
+
+// openRegisterWriteCmds prune the registry of names no attached client holds,
+// list self unless it already is, and point @og_open_client at self. A name
+// outside the tag charset is never pruned: it goes into a substitution
+// pattern, and cannot be a tag anyway. The registry is remote-written and the
+// controller bounds what it costs: at most openMaxPrunes prunes per register
+// (the rest wait for the next one; a live registry never has that many stale
+// names), and an oversized one is replaced by self alone. The reset drops other
+// live registrants until their next register, accepted because only a hostile
+// or broken remote grows the list past the bound.
+func openRegisterWriteCmds(target, self string, listed, attached []string, oversized bool) []string {
+	if oversized {
+		return []string{
+			"set-option -F" + target + " " + openClientsOpt + " " + tmuxQuote(" #{client_name}"),
+			"set-option -F" + target + " " + openClientOpt + " " + tmuxQuote("#{client_name}"),
+		}
+	}
+	var cmds []string
+	pruned := map[string]bool{}
+	selfListed := false
+	for _, name := range listed {
+		switch {
+		case name == self:
+			selfListed = true
+		case !openTagRe.MatchString(name) || pruned[name] || slices.Contains(attached, name) || len(pruned) >= openMaxPrunes:
+		default:
+			pruned[name] = true
+			cmds = append(cmds, "set-option -F"+target+" "+openClientsOpt+" "+tmuxQuote("#{s/ "+name+"( |$)/ /:"+openClientsOpt+"}"))
+		}
+	}
+	if !selfListed {
+		cmds = append(cmds, "set-option -a -F"+target+" "+openClientsOpt+" "+tmuxQuote(" #{client_name}"))
+	}
+	return append(cmds, "set-option -F"+target+" "+openClientOpt+" "+tmuxQuote("#{client_name}"))
 }
 
 // validOpenURL is the controller-side boundary: the URL is remote-derived and
@@ -105,7 +190,11 @@ type urlOpener struct {
 	// owns. Empty accepts every report, as resShipper does.
 	session string
 	seen    map[string]bool
-	open    func(string) error
+	// self is this control client's name, read at registration: the tag of the
+	// records it opens. Empty until a register succeeds, so no tagged record
+	// opens under a stale name.
+	self string
+	open func(string) error
 	// claim reports whether this opener is the first on the machine to take a
 	// record; nil takes every record.
 	claim  func(host, session, nonce string) bool
@@ -155,7 +244,9 @@ func (o *urlOpener) target() string {
 }
 
 // connect seeds seen, subscribes, then registers this control client, in that
-// order and each only after the last succeeded. tmux re-reports the value on
+// order and each only after the last succeeded. Registering reads the
+// registry, then prunes names no attached client holds, lists this client and
+// points the legacy @og_open_client slot at it. tmux re-reports the value on
 // subscribe, so seeding first is what keeps an attach or reconnect from
 // replaying old records while still opening one appended in between; and
 // registering last means og-open never sees a registered client that lacks
@@ -185,10 +276,35 @@ func (o *urlOpener) connect(rt roundTrip) {
 		o.fail("subscribe")
 		return
 	}
-	// -F expands against the issuing client, which over the control stream
-	// is this one.
-	l, ok = one(rt, "set-option -F"+o.target()+" "+openClientOpt+" "+tmuxQuote("#{client_name}"))
-	if !ok || l.Kind == controlmode.Error {
+	o.register(rt)
+}
+
+// register's -F writes expand against the issuing client, which over the
+// control stream is this one. A failed read writes nothing, so a stale registry
+// is never edited blind.
+func (o *urlOpener) register(rt roundTrip) {
+	o.self = ""
+	next := rt(openRegisterReadCmds(o.target())...)
+	reg, okReg := next()
+	cl, okCl := next()
+	if !okReg || !okCl || reg.Kind == controlmode.Error || cl.Kind == controlmode.Error {
+		o.fail("register")
+		return
+	}
+	self, listed, attached, oversized, ok := parseOpenRegister(string(reg.Data), string(cl.Data))
+	if !ok {
+		o.fail("register")
+		return
+	}
+	o.self = self
+	writes := openRegisterWriteCmds(o.target(), self, listed, attached, oversized)
+	next = rt(writes...)
+	failed := false
+	for range writes {
+		l, ok := next()
+		failed = failed || !ok || l.Kind == controlmode.Error
+	}
+	if failed {
 		o.fail("register")
 	}
 }
@@ -240,7 +356,7 @@ func (o *urlOpener) handle(sess, v string) {
 	for _, r := range recs {
 		fresh := !o.seen[r.nonce] && !seen[r.nonce]
 		seen[r.nonce] = true
-		if !fresh || !validOpenURL(r.url) {
+		if !fresh || (r.tag != "" && r.tag != o.self) || !validOpenURL(r.url) {
 			continue
 		}
 		if opened == openMaxPerReport || !o.takeToken() {
