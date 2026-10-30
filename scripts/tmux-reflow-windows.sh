@@ -85,12 +85,26 @@ fi
 # the path stays inside that field.
 # @og_status_folded / @og_status_cap (prefix+Z, tmux-status-fold) are closed
 # tokens: the fold flag and the animation's temporary ceiling on `status`.
-IFS='|' read -r win_count prev_key HEIGHT FOLDED CAP ICON_REMOTE NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@icon_remote}|#{@bridge_nudge}' 2>/dev/null)
+IFS='|' read -r win_count ATTACHED prev_key HEIGHT FOLDED CAP ICON_REMOTE NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{session_attached}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@icon_remote}|#{@bridge_nudge}' 2>/dev/null)
 # Height only gates the extra window row, so a size-neutral client (empty
 # client_height) falls back to the baseline cap instead of skipping the reflow
 # the way an empty width has to. Resolve it before it reaches the cache key so
 # the key can never be stamped with a trailing blank field.
 [[ $HEIGHT =~ ^[1-9][0-9]*$ ]] || HEIGHT=0
+# Every attached client renders the session's layout, so size it for the
+# narrowest real client. Control clients (the bridge) report a width but are not
+# a terminal. The passed width may be a control client's or another session's,
+# so it is only the fallback for a session with no real client attached (the
+# bridge daemon reflows its mirror session from outside any client).
+# session_attached gates the fork: only list clients when one is attached.
+if [[ $ATTACHED =~ ^[1-9][0-9]*$ ]]; then
+	min_cw=
+	while IFS='|' read -r cw ctl; do
+		[[ $ctl == 1 || ! $cw =~ ^[1-9][0-9]*$ ]] && continue
+		if [[ -z $min_cw ]] || ((cw < min_cw)); then min_cw=$cw; fi
+	done < <(tmux list-clients -t "$SESSION" -F '#{client_width}|#{client_control_mode}' 2>/dev/null)
+	[[ -n $min_cw ]] && WIDTH=$min_cw
+fi
 # Remote-bridge resize nudge (#433): a mirror session carries @bridge_nudge —
 # the file its daemon's watcher stats each tick instead of forking a size
 # query — and this pass touches it on the way through, a cache hit included, so
