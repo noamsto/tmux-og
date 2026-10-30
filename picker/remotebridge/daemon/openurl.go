@@ -223,7 +223,7 @@ func (o *urlOpener) target() string {
 // connect seeds seen, subscribes, then registers this control client, in that
 // order and each only after the last succeeded. Registering reads the
 // registry, then prunes names no attached client holds, lists this client and
-// makes it the untagged target. tmux re-reports the value on
+// points the legacy @og_open_client slot at it. tmux re-reports the value on
 // subscribe, so seeding first is what keeps an attach or reconnect from
 // replaying old records while still opening one appended in between; and
 // registering last means og-open never sees a registered client that lacks

@@ -303,28 +303,64 @@ tool on the remote, opens in the controller's browser instead of the remote's
 (#854). `scripts/og-open.sh` is `$BROWSER` on every tmux-og host; the daemon
 side is `picker/remotebridge/daemon/openurl.go`.
 
-- **Record format.** `og-open` appends `" <epoch>-<pid>|<url>"` to the
-  **session** option `@og_open_url` on the remote (a pane target on
+- **Record format.** `og-open` appends `" <epoch>-<pid>[@<client>]|<url>"` to
+  the **session** option `@og_open_url` on the remote (a pane target on
   `set-option` with no `-w`/`-p` writes the pane's session option, measured) —
   an append-only log, not a single slot, because tmux reports a subscription
   change on a ~1s timer and a bulk open would otherwise overwrite itself
-  inside one tick. Past 4096 bytes `og-open` replaces the value with just its
-  own new record (`set-option` without `-a`) instead of appending — the
-  daemon's `seen` set is what keeps the reset from replaying anything
-  (below).
+  inside one tick. The optional `@<client>` is the **tag**: the control client
+  that alone opens the record (below). The nonce (`<epoch>-<pid>`) is what
+  `seen`, the claim marker and the replay rules key on, never the tag. Past
+  4096 bytes `og-open` replaces the value with just its own new record
+  (`set-option` without `-a`) instead of appending — the daemon's `seen` set
+  is what keeps the reset from replaying anything (below).
 - **The registered-client check is what "bridged" means.** `og-open` lists
-  this pane's session's control-mode clients (`list-clients -t "$TMUX_PANE"`
-  — `-t <pane>` resolves to the pane's session, measured) and treats the
-  session as bridged only when one of them is control-mode **and** named in
-  the session option `@og_open_client` (the daemon's registration, below).
-  Not "any control client": a control client that is not a live `og_open`
-  subscriber — a daemon predating this feature, a daemon whose subscribe
-  failed, iTerm2's `-CC` — would otherwise make `og-open` append to a log
-  nobody reads, and the URL would vanish silently while prdash still reports
-  "Opened". With the name check, such a session reads as "not bridged" and
-  the URL opens on the remote as it did before this feature. A registered
-  client that disconnects stops matching immediately (the check is against
-  the *attached* clients, not the stamped name alone).
+  this pane's session's clients (`list-clients -t "$TMUX_PANE"` — `-t <pane>`
+  resolves to the pane's session, measured), one row each, in a single fork,
+  and treats the session as bridged only when some row is control-mode **and**
+  its `client_name` is in the session option `@og_open_clients` (the daemons'
+  registry, below) **or** equals the legacy single slot `@og_open_client`
+  (still written by new daemons, so a not-yet-upgraded `og-open` keeps its
+  check). The list test pads both sides with spaces (`m:* <name> *,
+  <list> `) so `client-1` never matches `client-12`. Not "any control
+  client": a control client that is not a live `og_open` subscriber — a
+  daemon predating this feature, a daemon whose subscribe failed, iTerm2's
+  `-CC` — would otherwise make `og-open` append to a log nobody reads, and the
+  URL would vanish silently while prdash still reports "Opened". With the name
+  check, such a session reads as "not bridged" and the URL opens on the remote
+  as it did before this feature. A registered client that disconnects stops
+  matching immediately (the check is against the *attached* clients, not the
+  stamped names alone) — and with the list, a surviving controller still
+  matches after the last registrant left, which the single slot (last connect
+  wins) did not: the URL used to open on the remote while a daemon was still
+  attached (#1034).
+- **Routing: the tag is the #979 size owner (#1034).** Two machines mirroring
+  one remote session each run a daemon subscribed to `og_open`, and an
+  untagged record opens on every one of them (the per-machine claimer, below,
+  dedups only daemons sharing a `$TMPDIR`). So the same `list-clients` row
+  also yields a **target**: the attached control client that is both in
+  `@og_open_clients` **and** named by the size-owner record
+  `@og_bridge_owner` (`<token>|<client>`, matched as glob `*|<client>`; see
+  "Size ownership across controllers (#979)" in `bridge-daemon.md`). Target
+  found → the record is tagged with it and only that daemon opens; none (no
+  owner record, the owner unregistered, detached or an older daemon) →
+  untagged, every registered daemon opens it as before. A tag is only ever a
+  registered current daemon's name, so a tagged URL is never routed to a
+  client that cannot read it. Why the owner record and not something else
+  (measured on next-3.9 scratch servers):
+  - a control client's `#{client_activity}` never advances from commands (two
+    `-C` clients, `display-message`/`send-keys`/`set-option`, 8s: both stayed
+    at the attach second), so "most recently active control client" cannot
+    work;
+  - stamping "last input from me" per forwarded keystroke is the wrong signal
+    and a per-key cost: renderer input also carries the local tmux's DA/DSR
+    answers to remote queries from an *idle* controller (#979, see
+    `bridge-daemon.md`), and a user-option write makes `options_push_changes`
+    mark **every** pane of the remote server style-changed, plus a command and
+    an `og-fanout` barrier per key;
+  - the owner record is claimed on counted local activity (DA/DSR excluded by
+    construction) and costs `og-open` one extra format on the list it already
+    forks.
 - **`og-open`'s own validation applies only to the forwarded (bridged)
   path** — it runs after the bridged check above decides this call will
   write a record: `http://` or `https://` (lowercase) with at least one byte
@@ -387,11 +423,37 @@ side is `picker/remotebridge/daemon/openurl.go`.
      still grows, but the daemon opens nothing: the only sign on the
      controller is the gated "ignored an oversized URL log" notice, the same
      failure shape as any other oversized log (below).
-  3. **Register** — only after a successful subscribe:
-     `set-option -F -t '<pin.id>' @og_open_client '#{client_name}'`. `-F`
-     expands against the *issuing* client, which over the control stream is
-     this control client itself (measured, next-3.9) — so this stores the
-     daemon's own `client-<pid>`, not a literal.
+  3. **Register** — only after a successful subscribe, two reads then one
+     batch of writes (`urlOpener.register`):
+     - reads, one `rt` call: `display-message -p -t '<pin.id>'` of
+       `#{client_name}|#{@og_open_clients}` (this control client's own name —
+       `#{client_name}` and the `-F` writes below expand against the *issuing*
+       client, which over the control stream is this control client itself,
+       measured, next-3.9 — plus the registry) and the **server-wide**
+       `list-clients -F '#{client_name}'` (a registered name can outlive its
+       client on any session). Both `ctlSafe`-wrapped. `urlOpener.self` is
+       cleared first and set only from a read whose own name passes the tag
+       charset `^[A-Za-z0-9_-]{1,64}$`; a failed or malformed read leaves it
+       empty (so no tagged record ever matches this daemon), writes nothing — a
+       stale registry is never edited blind — and fails the step.
+     - writes, one batch: for each listed name that is not this client, not
+       attached anywhere on the server and inside the tag charset (a name
+       outside it goes into a substitution pattern and is never pruned), one
+       atomic `set-option -F -t '<pin.id>' @og_open_clients
+       '#{s/ <name>( |$)/ /:@og_open_clients}'`, which removes `client-1` and
+       not `client-12`, also at the end of the list; then `set-option -a -F ...
+       @og_open_clients ' #{client_name}'` unless this client is already
+       listed; then the legacy `set-option -F ... @og_open_client
+       '#{client_name}'` (the single slot, last register wins, kept for older
+       `og-open`). Each write is one remote command evaluated inside the
+       server, never a read-modify-write of the whole list, so two daemons
+       registering at once cannot lose each other's entry; a prune removes only
+       a name the read saw *not attached*, so a live name is never removed. The
+       list stays bounded by live registrants plus names that left since the
+       last register — a disconnected registrant needs no write to drop out,
+       since `og-open` only considers attached clients.
+     - any failed read or write reply → the existing "register failed" notice
+       (step name `register`).
 
   Seeding before subscribing is what keeps both edges right: tmux re-reports
   the current value the moment a subscribe lands, and those nonces are
@@ -399,7 +461,8 @@ side is `picker/remotebridge/daemon/openurl.go`.
   URL — while a record appended between seed and subscribe is not yet in
   `seen`, so the subscribe-time report opens it once. Registering last means
   `og-open` can never see a client that is registered but not yet
-  subscribed. A failed step routes through the same notice gate as every
+  subscribed (so a tagged URL is never routed to a daemon without the
+  subscription). A failed step routes through the same notice gate as every
   other og_open notice (below), naming the step (`"og-open: URL opens on
   <host> will not reach this machine (<step> failed; subscriptions need
   tmux ≥ 3.2)"`), and a failed seed never subscribes, a failed subscribe
@@ -427,14 +490,23 @@ side is `picker/remotebridge/daemon/openurl.go`.
   gate above — on the theory that `og-open`'s own reset, which replaces
   rather than appends past 4096 bytes, brings the log back under the bound
   and opens normally on the report that follows. Otherwise every record's
-  nonce is marked seen regardless of validity, so a malformed or invalid
-  record is never retried; a fresh, `validOpenURL` record opens if fewer
-  than 16 have already opened from this report and a token bucket (30
-  tokens, refilling one per 2s — 30/min, scoped to this `urlOpener` for its
-  whole run) has one to spend, otherwise it is suppressed without spending a
-  token. One "suppressed N URL opens from `<host>` (rate limit)" notice
-  fires per report when anything was suppressed; an invalid or already-seen
-  record is skipped for free and never counts toward it.
+  nonce is marked seen regardless of validity or tag, so a malformed or
+  invalid record is never retried. `parseOpenRecords` takes a token
+  `<nonce>[@<tag>]|<url>` (nonce `^[0-9]+-[0-9]+$`, tag
+  `^[A-Za-z0-9_-]{1,64}$`; the cut is at the first `|`, then the first `@`
+  of the head, so either character inside the URL survives) and skips any
+  other token as it skips a malformed record. A fresh record is then
+  **tag-filtered first**: tagged for another client (`tag != urlOpener.self`;
+  an empty `self` matches no tag) → skipped, before `validOpenURL`, the
+  per-report cap, the token bucket and the claimer, so a URL routed to
+  another controller costs this one no token and no suppression notice. An
+  untagged or own-tagged, `validOpenURL` record opens if fewer than 16 have
+  already opened from this report and a token bucket (30 tokens, refilling
+  one per 2s — 30/min, scoped to this `urlOpener` for its whole run) has one
+  to spend, otherwise it is suppressed without spending a token. One
+  "suppressed N URL opens from `<host>` (rate limit)" notice fires per
+  report when anything was suppressed; an invalid, other-tagged or
+  already-seen record is skipped for free and never counts toward it.
 - **`validOpenURL` is the controller-side security boundary** — the URL is
   remote-derived and becomes a local process's argv, so it is re-checked
   daemon-side regardless of what `og-open` already validated (CLAUDE.md:
@@ -475,6 +547,41 @@ side is `picker/remotebridge/daemon/openurl.go`.
   (fish), whose login-profile rebuild could otherwise shadow the
   tmux-global `BROWSER` with its own — so a bridged prdash float always sees
   the current global value even without a respawn.
+- **Compatibility (record format and registry across versions, #1034).**
+  The tag is invisible to an older daemon, whose nonce regex rejects
+  `<nonce>@<tag>` and so skips the token; a new `og-open` tags only for a
+  registered (current) daemon, so nothing is dropped:
+
+  | `og-open` | daemons | record | opens on |
+  | --- | --- | --- | --- |
+  | old | any | untagged | every subscribed daemon, as before (new daemons still write the slot, so old `og-open` still reads the session as bridged) |
+  | new | old only (none listed; slot only) | untagged | every old daemon, as before |
+  | new | new owner + old other | tagged | the new owner only (old skips the tagged token) |
+  | new | old owner + new other | untagged (the old owner is not in the list) | everyone, as before |
+  | new | owner gone or unregistered, survivors listed | untagged | every listed survivor (one survivor: exactly one) |
+
+- **Accepted edges of owner routing (#1034, not bugs to chase).**
+  - **Claim lag.** The owner record follows counted local activity, which the
+    daemon reads from its reveal poll: a URL opened by the very first input
+    on a controller just switched to, within one reveal poll (1s) plus the
+    claim round-trip, still goes to the previous owner. The typical
+    sequence (navigate, then open) claims first; the same lag already applies
+    to window sizing. Closing it exactly needs the per-key signal rejected
+    above.
+  - **Focus claims too.** `focus-events` is on and a focus-in stamps the
+    local client's `client_activity` with `CLIENT_FOCUSED`, so focusing a
+    controller's terminal claims within one reveal poll, before any key.
+  - **A suspended owner keeps tagged URLs.** An owner machine asleep with its
+    ssh still attached stays the owner until another controller's counted
+    activity claims (a claim needs nothing from the old owner). An open that
+    no input on the awake controller preceded (a background job) goes to the
+    sleeping one, where before both opened it; any input on the awake
+    controller first fixes it.
+  - **Remote pid reuse.** Names are `client-<pid>`; a stale list entry
+    survives until the next register's prune, so a later non-subscriber
+    control client (iTerm2 `-CC`, a pre-#854 daemon) reusing that pid on the
+    same session reads as registered — the same class as the stale slot
+    below, widened to the names since the last register.
 - **Accepted losses** (the design's own list, not bugs to chase): a control
   client that died without tmux noticing yet is still registered, so
   `og-open` still appends to its log — the reattach's seed marks that record
@@ -485,23 +592,28 @@ side is `picker/remotebridge/daemon/openurl.go`.
   replace it, and within one subscription tick only the last survives — a
   bulk open straddling the cap can lose all but its last URL. Two
   controllers mirroring the same remote session both subscribe
-  independently, so both receive every report and each machine opens each
-  URL — a duplicate across machines by design. On ONE machine, however,
-  every daemon mirroring the session (N `--into --window` daemons, a
-  dedicated plus a plain `--into` mirror) gets the same report, so `handle`
-  claims each record with an `O_EXCL` marker (`newOpenClaimer`, sha256 of
-  host+session+nonce) in `$TMPDIR/tmux-og-open-<uid>` (0700, Lstat
-  owner-checked; an untrusted or unwritable dir fails open — a duplicate tab
-  beats a dropped URL) and only the winner opens (#994). The key is the
-  nonce, never the URL, so the same URL under a new nonce opens again.
-  Markers older than 24h are swept at most hourly. The claim comes after the rate gate, so a rate-limited record is never claimed; dedupe assumes the daemons share `$TMPDIR` (a different one per daemon reads as another machine). `@og_open_client`
-  holds only the name of the last to register, and that name is all
-  `og-open`'s bridged check reads; if that controller disconnects first,
-  `og-open` stops seeing a matching registered client and falls back to the
-  remote's own opener until the other reconnects (and re-registers) —
-  degraded to pre-feature behaviour, never a silent drop. A value under the
-  byte bound could still carry raw newlines, since tmux relays a subscribed
-  option's bytes unescaped; `og_open`'s format (seed and subscription) is
+  independently and both receive every report; an **untagged** record (no
+  owner registered, an older `og-open`) still opens on each machine, a
+  duplicate across machines, while a tagged one opens only on the owner. On
+  ONE machine, every daemon mirroring the session (N `--into --window`
+  daemons, a dedicated plus a plain `--into` mirror) gets the same report, so
+  `handle` claims each record it would open with an `O_EXCL` marker
+  (`newOpenClaimer`, sha256 of host+session+nonce) in
+  `$TMPDIR/tmux-og-open-<uid>` (0700, Lstat owner-checked; an untrusted or
+  unwritable dir fails open — a duplicate tab beats a dropped URL) and only
+  the winner opens (#994); it still dedups the untagged records (a tag names
+  one client, so one daemon). The key is the nonce, never the URL, so the same
+  URL under a new nonce opens again. Markers older than 24h are swept at most
+  hourly. The claim comes after the rate gate, so a rate-limited record is
+  never claimed; dedupe assumes the daemons share `$TMPDIR` (a different one
+  per daemon reads as another machine). `@og_open_client` is the legacy
+  single slot — the last to register — read by an older `og-open`'s bridged
+  check; if that controller disconnects first, an older `og-open` stops
+  seeing a matching registered client and falls back to the remote's own
+  opener until another reconnects (and re-registers) — degraded to
+  pre-feature behaviour, never a silent drop. A value under the byte bound
+  could still carry raw newlines, since tmux relays a subscribed option's
+  bytes unescaped; `og_open`'s format (seed and subscription) is
   `ctlSafe`-wrapped like every other, so the log arrives as one line — see
   the "Newline policy (all remote formats)" section (#860).
 
