@@ -321,3 +321,26 @@ func (s *windowSweeper) sweep(cfg Config, send func(string), router *Router, wai
 	healLostWindows(cfg, live, send, router, waitHellos, cst, reg, cv, rt)
 	s.healDeadRenderers(cfg, dead, send, router, waitHellos, cst, reg, cv, rt)
 }
+
+// closeWindowIfGone tears down remoteID's mirror on a %window-close, but only
+// when a list-windows re-read agrees the window left the bridged session.
+// move-window into the session sends %window-add @N followed by
+// %window-close @N, the source session's unlink: tmux reports it as a close
+// rather than %unlinked-window-close because the client's session now holds the
+// window. Acting on it alone would tear down the mirror just built. A listing
+// that cannot be read closes, as the notification alone always has.
+// It reports whether the mirror was closed.
+func closeWindowIfGone(cfg Config, router *Router, cst *ctlState, reg *registry, cv *converger, rt roundTrip, remoteID string) bool {
+	if _, ok := reg.byRemoteID(remoteID); !ok {
+		return false
+	}
+	if lw, ok := one(rt, cfg.filter.listCmd(cfg.RemoteSession)); ok && lw.Kind != controlmode.Error {
+		for _, rw := range cfg.filter.parse(string(lw.Data)) {
+			if rw.id == remoteID && rw.sel != selNo {
+				return false
+			}
+		}
+	}
+	closeWindow(cfg, router, cst, reg, cv, remoteID)
+	return true
+}

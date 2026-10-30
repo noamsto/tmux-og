@@ -1538,8 +1538,9 @@ func runMirror(cfg Config) error {
 			}
 		case controlmode.WindowClose:
 			if len(l.Args) > 0 {
-				closeWindow(flowCfg, router, cst, reg, cv, l.Args[0])
-				return reg.empty()
+				if closeWindowIfGone(flowCfg, router, cst, reg, cv, rt, l.Args[0]) {
+					return reg.empty()
+				}
 			}
 		case controlmode.WindowPaneChanged:
 			// The remote's active pane moved. The echo guards decide whether this
