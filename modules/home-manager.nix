@@ -145,6 +145,7 @@
     splashTimeout = cfg.splash.timeout;
     splashRemote = cfg.splash.remote;
     aiNamingEnable = cfg.aiNaming.enable;
+    dwindleEnable = cfg.dwindle.enable;
     agentUsageEnable = cfg.agentUsage.enable;
     agentUsageRefreshSeconds = cfg.agentUsage.refreshSeconds;
     agentUsageMonthlyThreshold = cfg.agentUsage.monthlyThreshold;
@@ -826,6 +827,22 @@ in {
           `claude-status-update name set`, and again if the focus clearly
           shifts. No separate API call — the running session does it. Requires
           the tmux-og Claude Code plugin (or `skills.enable`) to be installed.
+        '';
+      };
+    };
+
+    dwindle = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Whether closing a pane evens out the split group it left, instead of
+          leaving tmux's uneven hand-down (three equal columns, close the
+          middle: 66/133 becomes 99/100). Only the group the pane belonged to
+          is touched; hand-sized panes elsewhere keep their sizes. Grid
+          windows, floats, zoomed windows and remote mirrors are left alone.
+          `prefix + A` toggles it per window; `prefix + Enter` splits by the
+          pane's shape either way.
         '';
       };
     };

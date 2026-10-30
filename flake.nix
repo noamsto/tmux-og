@@ -1042,6 +1042,7 @@
                   aiNamingEnable = false;
                   resumeClaudeEnable = false;
                   resumeCarouselEnable = false;
+                  dwindleEnable = false;
                   focusFollowsMouse = false;
                   carousel-toggle = null;
                   carousel-aeye = null;
@@ -1058,6 +1059,7 @@
                   aiNamingEnable = true;
                   resumeClaudeEnable = true;
                   resumeCarouselEnable = true;
+                  dwindleEnable = true;
                   focusFollowsMouse = true;
                 };
               }
