@@ -2771,6 +2771,36 @@
               touch $out
             '';
 
+          # Behavioural coverage for dwindle auto-tiling (#1026): the smart-split
+          # bind, balance on close and its exclusions. Same attached-client
+          # harness and reduced conf as float-tool-focus-tests above — a key
+          # binding fires only for a real client. tmuxConf is exported for the
+          # conf assertion on the mirror branch of the Enter bind.
+          dwindle-tests = let
+            dwindleTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "dwindle-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+              TMUX_BIN = "${dwindleTmuxConfig.tmux-wrapped}/bin/tmux";
+              TMUX_OG_CONF = dwindleTmuxConfig.tmuxConf;
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/dwindle.bats
+              touch $out
+            '';
+
           # Popups are modal floating panes since upstream 34cd5da4 (#725);
           # `display-popup` survives only as an undocumented compat command,
           # so this pins what the launchers rely on. Same attached-client
