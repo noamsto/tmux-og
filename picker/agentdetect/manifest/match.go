@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -124,11 +125,11 @@ func lastNonEmpty(s string, n int) string {
 // `❯` without a nearby border (menu cursor, panel row) is not a prompt.
 func promptBlock(s string, n int) string {
 	lines := strings.Split(s, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if !strings.HasPrefix(strings.TrimLeft(lines[i], " \t"), "❯") || !borderWithin(lines[i+1:], 4) {
+	for i, line := range slices.Backward(lines) {
+		if !strings.HasPrefix(strings.TrimLeft(line, " \t"), "❯") || !borderWithin(lines[i+1:], 4) {
 			continue
 		}
-		block := []string{lines[i]}
+		block := []string{line}
 		for _, l := range lines[i+1:] {
 			if len(block) >= n {
 				break
