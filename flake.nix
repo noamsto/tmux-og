@@ -559,16 +559,37 @@
               first_append=$(grep -n 'set -ga update-environment' "$CONF" | head -1 | cut -d: -f1)
               [ "$clear" -lt "$first_append" ]
 
-              # Per-machine vars must not ride update-environment: a later
-              # attach from another machine would overwrite them (#1037).
-              # client-attached[30] pins them from local clients instead.
+              # The per-machine vars stay in update-environment (single-client
+              # behaviour is unchanged); the record-and-restore hook undoes an
+              # ssh client's overwrite of them (#1037).
               for var in DISPLAY WAYLAND_DISPLAY WINDOWID XAUTHORITY KITTY_LISTEN_ON AEYE_HOST; do
-                ! grep -q "update-environment $var\$" "$CONF"
-                grep -Fq "set-environment -gF $var " "$CONF"
+                for hook in 'client-attached\[30\]' 'after-new-session\[40\]'; do
+                  line=$(grep "^set-hook -g $hook " "$CONF")
+                  case "$line" in
+                    *"set -gF @og_local_$var \""*"#{I/e:$var}"*) ;;
+                    *) echo "$hook does not record $var" >&2; exit 1 ;;
+                  esac
+                  case "$line" in
+                    *"set-environment -F $var \"#{@og_local_$var}\""*) ;;
+                    *) echo "$hook does not restore $var" >&2; exit 1 ;;
+                  esac
+                  if printf '%s' "$line" | grep -q 'set-environment [^"]*-t'; then
+                    echo "$hook must not pass -t to set-environment" >&2
+                    exit 1
+                  fi
+                done
               done
-              pin=$(grep -n 'set-hook -g client-attached\[30\]' "$CONF" | head -1 | cut -d: -f1)
-              hook_clear=$(grep -n '^set-hook -gu client-attached$' "$CONF" | head -1 | cut -d: -f1)
-              [ "$hook_clear" -lt "$pin" ]
+              # client-attached resolves the attaching client by #{hook_client}.
+              line=$(grep '^set-hook -g client-attached\[30\] ' "$CONF")
+              case "$line" in
+                *'set -gF @og_attach_client "#{hook_client}"'*) ;;
+                *) echo "client-attached[30] does not stash #{hook_client}" >&2; exit 1 ;;
+              esac
+              for hook in client-attached after-new-session; do
+                hook_clear=$(grep -n "^set-hook -gu $hook\$" "$CONF" | head -1 | cut -d: -f1)
+                hook_set=$(grep -n "^set-hook -g $hook\[[34]0\] .*@og_local_" "$CONF" | head -1 | cut -d: -f1)
+                [ -n "$hook_clear" ] && [ -n "$hook_set" ] && [ "$hook_clear" -lt "$hook_set" ]
+              done
               touch $out
             '';
 

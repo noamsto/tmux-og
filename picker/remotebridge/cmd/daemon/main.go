@@ -79,7 +79,8 @@ func sshControlArgs(ctlSock, host, tmpdir, term, colorterm, termProgram, session
 	//
 	// TERMINFO/TERMINFO_DIRS are local filesystem paths and stay out of this
 	// list: forwarding them would point the remote at a directory that
-	// doesn't exist there. They stay marked "removed" on a bridged remote.
+	// doesn't exist there. They (and KITTY_LISTEN_ON) stay marked "removed"
+	// on a bridged remote.
 	if colorterm != "" {
 		args = append(args, "COLORTERM="+shellQuote(colorterm))
 	}

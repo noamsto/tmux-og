@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 # Live proof for #1037: a second client attaching from another machine (ssh)
-# must not overwrite the first, local client's per-machine env, and the
-# smart-nav bind must resolve the kitty socket per invoking client. Clients are real pty
-# attaches (`script`), so #{I/e:VAR} reads genuine client environments.
+# must not leave the first, local client's per-machine env overwritten, and the
+# smart-nav bind must resolve the kitty socket per invoking client. Clients are
+# real pty attaches (`script`), so #{I/e:VAR} reads genuine client environments.
 
 setup() {
+	script --version 2>/dev/null | grep -q util-linux || skip "no GNU-style script(1) for a pty"
 	TMUX_BIN="${TMUX_BIN:?set TMUX_BIN to the built wrapper}"
 	TEST_HOME="$BATS_TEST_TMPDIR/home"
 	mkdir -p "$TEST_HOME"
@@ -25,12 +26,12 @@ setup() {
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$CLAUDE_STATUS_DIR"/{panes,screen,interrupt,tasks,issues,watchers}
 
-	# The server's own environment seeds the global env: start it with none of
-	# the per-machine vars, whatever the developer shell holds.
 	# A client's stdin must stay open: EOF makes `script` type ^D into the pane.
 	mkfifo "$TMUX_TMPDIR/hold"
 	sleep 120 >"$TMUX_TMPDIR/hold" &
 	HOLD_PID=$!
+	# The server starts with none of the per-machine vars (see t), whatever the
+	# developer shell holds.
 	t new-session -d -s main -x 80 -y 24
 }
 
@@ -59,19 +60,32 @@ wait_for() {
 
 client_count() { [ "$(t list-clients -F '#{client_name}' | grep -c .)" -ge "$1" ]; }
 sess_env() { t show-environment -t "${2:-main}" "$1" 2>/dev/null; }
+# rec_is <var> <value> -- the hook's record of the local client's value.
+rec_is() { [ "$(t show-options -gv "@og_local_$1" 2>/dev/null)" = "$2" ]; }
 sess_env_is() { [ "$(sess_env "$1" "${3:-main}")" = "$2" ]; }
 
-# attach_local / attach_ssh -- background pty attach carrying that machine's env.
+# attach_local / attach_ssh [session] -- background pty attach carrying that
+# machine's env.
 attach_local() {
 	env -u SSH_CONNECTION KITTY_LISTEN_ON=unix:/local DISPLAY=:0 WINDOWID=111 \
 		AEYE_HOST=kitty SSH_AUTH_SOCK=/local/agent \
+		script -qfc "$TMUX_BIN -L probe attach -t ${1:-main}" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
+}
+attach_local_nokitty() {
+	env -u SSH_CONNECTION -u KITTY_LISTEN_ON DISPLAY=:0 \
 		script -qfc "$TMUX_BIN -L probe attach -t main" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
 }
 attach_ssh() {
-	# Lacks WINDOWID/AEYE_HOST on purpose: a default update-environment would mark them removed.
+	# Lacks WINDOWID/AEYE_HOST on purpose: update-environment marks them removed.
 	env -u WINDOWID -u AEYE_HOST SSH_CONNECTION='1.2.3.4 22 5.6.7.8 22' \
 		KITTY_LISTEN_ON=unix:/remote DISPLAY=localhost:10 SSH_AUTH_SOCK=/remote/agent \
-		script -qfc "$TMUX_BIN -L probe attach -t main" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
+		script -qfc "$TMUX_BIN -L probe attach -t ${1:-main}" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
+}
+# local_newsession <name> -- a local pty client that creates its own session.
+local_newsession() {
+	env -u SSH_CONNECTION KITTY_LISTEN_ON=unix:/localnew DISPLAY=:7 WINDOWID=777 \
+		AEYE_HOST=kitty \
+		script -qfc "$TMUX_BIN -L probe new-session -s $1" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
 }
 
 # pane_env <var> [session] -- what a freshly spawned pane sees.
@@ -85,13 +99,16 @@ pane_env() {
 	cat "$out"
 }
 
-@test "second ssh client does not clobber the local client's env" {
+@test "ssh attach after a local one leaves the session env at the local values" {
 	attach_local
 	wait_for 50 client_count 1
 	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/local
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/local
 
 	attach_ssh
 	wait_for 50 client_count 2
+	wait_for 50 sess_env_is SSH_AUTH_SOCK SSH_AUTH_SOCK=/remote/agent
+	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/local
 	sleep 1
 
 	sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/local
@@ -107,32 +124,47 @@ pane_env() {
 	wait_for 50 client_count 1
 	attach_ssh
 	wait_for 50 client_count 2
-	sleep 1
-	sess_env_is SSH_AUTH_SOCK SSH_AUTH_SOCK=/remote/agent
+	wait_for 50 sess_env_is SSH_AUTH_SOCK SSH_AUTH_SOCK=/remote/agent
 }
 
-@test "a session created after a local attach inherits that machine's env" {
-	attach_local
-	wait_for 50 client_count 1
-	wait_for 50 sess_env_is DISPLAY DISPLAY=:0
+@test "an ssh-only attach restores nothing: the ssh values stay" {
 	attach_ssh
+	wait_for 50 client_count 1
+	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/remote
+	sleep 1
+	sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/remote
+	sess_env_is DISPLAY DISPLAY=localhost:10
+}
+
+@test "a local new-session is recorded: a later ssh attach to it restores its values" {
+	local_newsession loc
+	wait_for 50 client_count 1
+	wait_for 50 sess_env_is DISPLAY DISPLAY=:7 loc
+	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/localnew loc
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/localnew
+
+	attach_ssh loc
 	wait_for 50 client_count 2
+	wait_for 50 sess_env_is SSH_AUTH_SOCK SSH_AUTH_SOCK=/remote/agent loc
+	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/localnew loc
 	sleep 1
-	t new-session -d -s two
-	[ "$(pane_env DISPLAY two)" = ":0" ]
+
+	sess_env_is DISPLAY DISPLAY=:7 loc
+	sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/localnew loc
+	[ "$(pane_env DISPLAY loc)" = ":7" ]
 }
 
-@test "an ssh-only attach pins nothing" {
-	attach_ssh
+@test "single client: a local client lacking KITTY_LISTEN_ON still marks it removed" {
+	attach_local_nokitty
 	wait_for 50 client_count 1
-	sleep 1
-	[ "$(sess_env KITTY_LISTEN_ON)" = "-KITTY_LISTEN_ON" ] || [ -z "$(sess_env KITTY_LISTEN_ON)" ]
-	[ "$(t show-environment -g DISPLAY 2>/dev/null | grep -c '^DISPLAY=')" -eq 0 ]
+	wait_for 50 sess_env_is KITTY_LISTEN_ON -KITTY_LISTEN_ON
+	sess_env_is DISPLAY DISPLAY=:0
 }
 
 @test "smart-nav resolves the kitty socket per invoking client" {
 	attach_local
 	wait_for 50 client_count 1
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/local
 	attach_ssh
 	wait_for 50 client_count 2
 	sleep 1

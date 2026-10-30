@@ -463,7 +463,7 @@ wait_for_client() {
 }
 
 # update-environment appends must not stack on reload — the bare `set -gu`
-# clears the list, then the `set -g`/`-ga` lines rebuild it.
+# reverts to tmux defaults, then the seven `-ga` lines reapply our additions.
 @test "update-environment appends are reload-idempotent" {
 	grep -q 'set -gu update-environment' "$(store_conf)"
 
