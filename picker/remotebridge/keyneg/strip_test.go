@@ -370,7 +370,7 @@ func TestPendingDCSEscape(t *testing.T) {
 	if !f.PendingDCSEscape() {
 		t.Error("PendingDCSEscape = false after a forwarded lone ESC inside a DCS")
 	}
-	// The next byte completes ESC ESC (still in the DCS) and clears the flag.
+	// The next byte resolves the pending ESC (still in the DCS) and clears it.
 	f.Feed([]byte("x"))
 	if f.PendingDCSEscape() {
 		t.Error("PendingDCSEscape = true after a non-ESC byte arrived")
