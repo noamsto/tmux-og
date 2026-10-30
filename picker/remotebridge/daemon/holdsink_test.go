@@ -268,6 +268,31 @@ func TestSinkHoldTerminatesPendingDCSEscape(t *testing.T) {
 	requireFrame(t, peer, wire.FrameOutput, "\\"+holdOut("HOLD", 1))
 }
 
+// TestSinkHoldObservesThePendingDCSTerminator: the predictor's ground tracker
+// must see exactly the bytes the pump writes. Without the leading \ the
+// tracker stays in sgDCS while the real parser is back in ground, so it
+// withholds every key prediction until the remote's next ST.
+func TestSinkHoldObservesThePendingDCSTerminator(t *testing.T) {
+	s, peer := newPipeSink(t)
+	// Open a DCS and leave the predictor mid-dcs_escape, as keyneg does when it
+	// forwards a lone trailing ESC.
+	_, _ = s.Write([]byte("\x1bPx"))
+	readOutput(t, peer)
+	_, _ = s.Write([]byte("\x1b"))
+	readOutput(t, peer)
+	if s.pred.ground.atGround() {
+		t.Fatal("the predictor left ground on the lone DCS escape")
+	}
+
+	mustHold(t, s, "HOLD")
+	if out := readOutput(t, peer); !bytes.HasPrefix(out, []byte("\\\x1b\\")) {
+		t.Fatalf("hold frame = %q, want the prepended backslash", out)
+	}
+	if !s.pred.ground.atGround() {
+		t.Error("the predictor is still inside the DCS after the hold was written")
+	}
+}
+
 // TestSinkHoldDeadlineEndsARegionOpenedWhileHeld: output discarded while held
 // can open a region local tmux never saw, so the deadline release must not
 // leave the filter inside it. A DCS, not an OSC: the filter ends an OSC at any
