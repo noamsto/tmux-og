@@ -84,6 +84,7 @@ setup() {
 
 teardown() {
 	tmux kill-server 2>/dev/null || true
+	tmux -L og1038 kill-server 2>/dev/null || true
 }
 
 run_update_icons() {
@@ -732,4 +733,39 @@ setup_border_title() {
 	run_update_icons
 	grep -q -- '--force' "$REFLOW_LOG"
 	[ "$(tmux show -wv -t S:0 @crew_seen)" = "blush halo" ]
+}
+
+@test "the grid sizes for the narrowest attached client, ignoring control clients" {
+	# Two real clients attach through a second private server (-L og1038) whose
+	# panes run `tmux attach`; a control client at the default 80 columns must
+	# never set the layout.
+	tmux -f /dev/null -L og1038 new-session -d -s wide -x 200 -y 40 "env -u TMUX tmux attach -t S"
+	tmux -L og1038 new-session -d -s narrow -x 120 -y 40 "env -u TMUX tmux attach -t S"
+	mkfifo "$TDIR/ctl-in"
+	tmux -C attach -t S <"$TDIR/ctl-in" >/dev/null 2>&1 &
+	exec 9>"$TDIR/ctl-in"
+
+	local i
+	for i in $(seq 100); do
+		[ "$(tmux list-clients -t S | wc -l)" -eq 3 ] && break
+		sleep 0.1
+	done
+	[ "$(tmux list-clients -t S | wc -l)" -eq 3 ]
+
+	bash "$REFLOW" S 200 --force
+	[[ "$(tmux show -v -t S @reflow_key)" == 1:120:* ]]
+	# A hook fired by the control client passes its 80: it must not win.
+	bash "$REFLOW" S 80 --force
+	[[ "$(tmux show -v -t S @reflow_key)" == 1:120:* ]]
+
+	tmux -L og1038 kill-session -t narrow
+	for i in $(seq 100); do
+		[ "$(tmux list-clients -t S | wc -l)" -eq 2 ] && break
+		sleep 0.1
+	done
+	[ "$(tmux list-clients -t S | wc -l)" -eq 2 ]
+
+	bash "$REFLOW" S 80 --force
+	[[ "$(tmux show -v -t S @reflow_key)" == 1:200:* ]]
+	exec 9>&-
 }

@@ -539,6 +539,12 @@ line1_has() {
 	fi
 
 	# Fits whole (88 cells of label in a 95-cell row): plain border.
+	tmux -L og-outer resize-window -t "$outer_pane" -x 100 -y 12
+	for _ in $(seq 1 50); do
+		[ "$(tmux -u list-clients -F '#{client_width}')" = 100 ] && break
+		sleep 0.1
+	done
+	[ "$(tmux -u list-clients -F '#{client_width}')" = 100 ]
 	tmux resize-window -t "$WIN" -x 100 -y 12
 	bash "$OG_TMUX_DIR/reflow.sh" S 100 --force >/dev/null 2>&1
 	[ -z "$(tmux -u show -wv -t "$WIN" @window_label_clipped)" ]
@@ -546,12 +552,24 @@ line1_has() {
 
 	# Narrower than the label: the option flips to 1 after the resize redrew
 	# the border, so only the flip itself can put the title there.
+	tmux -L og-outer resize-window -t "$outer_pane" -x 50 -y 12
+	for _ in $(seq 1 50); do
+		[ "$(tmux -u list-clients -F '#{client_width}')" = 50 ] && break
+		sleep 0.1
+	done
+	[ "$(tmux -u list-clients -F '#{client_width}')" = 50 ]
 	tmux resize-window -t "$WIN" -x 50 -y 12
 	bash "$OG_TMUX_DIR/reflow.sh" S 50 --force >/dev/null 2>&1
 	[ "$(tmux -u show -wv -t "$WIN" @window_label_clipped)" = 1 ]
 	line1_has "$head" 1 "$outer_pane"
 
 	# And back: the unset must clear the title with no other redraw trigger.
+	tmux -L og-outer resize-window -t "$outer_pane" -x 100 -y 12
+	for _ in $(seq 1 50); do
+		[ "$(tmux -u list-clients -F '#{client_width}')" = 100 ] && break
+		sleep 0.1
+	done
+	[ "$(tmux -u list-clients -F '#{client_width}')" = 100 ]
 	tmux resize-window -t "$WIN" -x 100 -y 12
 	bash "$OG_TMUX_DIR/reflow.sh" S 100 --force >/dev/null 2>&1
 	[ -z "$(tmux -u show -wv -t "$WIN" @window_label_clipped)" ]

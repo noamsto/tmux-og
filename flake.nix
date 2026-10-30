@@ -2202,7 +2202,9 @@
             } ''
               grep -qF 'set-hook -g window-resized[20]' "$CONF"
               grep -qF 'set-hook -g client-detached' "$CONF"
-              grep -qF 'set-hook -gu client-detached' "$CONF"
+              grep -qE '^set-hook -gu client-detached$' "$CONF"
+              grep -qF 'set-hook -gu client-detached[10]' "$CONF"
+              grep -qE 'set-hook -g client-detached\[10\].*tmux-reflow-windows' "$CONF"
               [ "$(grep -cF 'touch -- #{q:@bridge_nudge}' "$CONF")" -eq 2 ]
 
               cp -r ${./tests} tests

@@ -466,6 +466,7 @@ set-hook -gu client-resized[20]
 set-hook -gu after-new-session
 set-hook -gu client-session-changed
 set-hook -gu client-detached
+set-hook -gu client-detached[10]
 set-hook -gu client-attached
 set-hook -gu client-attached[20]
 set-hook -gu window-resized
@@ -575,6 +576,12 @@ set-hook -g window-resized[10]      { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!
 # client hooks.
 set-hook -g window-resized[20]      { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
 set-hook -g client-detached         { if -F '#{@bridge_nudge}' { run-shell -b "touch -- #{q:@bridge_nudge}" } }
+# Re-reflow when a client detaches: the narrow client leaving must let the
+# window list widen to the next-narrowest attached client (#1038). Indexed [10]
+# beside the index-0 bridge nudge above; debounced to coalesce with a concurrent
+# client-resized burst. Cleared by its own line on reload,
+# since a bare `set-hook -gu client-detached` removes only index 0.
+set-hook -g client-detached[10]     'run-shell -b "{{index .Paths.Scripts "tmux-reflow-windows"}} --debounce #{qs:session_name} #{q:client_width}"'
 
 # A pane split/kill/move changes the layout without resizing the window, so
 # window-resized never fires and the lead keeps whatever cells tmux
