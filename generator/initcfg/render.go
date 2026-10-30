@@ -81,6 +81,8 @@ var fieldDocs = map[string]string{
 	"resume.claude":   "Whether a restored pane that was running Claude Code relaunches `claude --resume <uuid>` instead of a bare shell.",
 	"resume.carousel": "Whether the image carousel reopens automatically for a restored pane, replaying images from the resumed Claude session's transcript.",
 
+	"dwindle.enable": "Dwindle auto-balance: when a pane closes, even out the split group it leaves. prefix + A toggles it per window.",
+
 	"process_icons": "Per-process-name icon overrides shown in window tabs and the status line. " +
 		"Real defaults live only in config/process-icons.nix (Nix-only data) — this stays empty off-Nix; see that file.",
 }
@@ -169,6 +171,10 @@ func Render() (string, error) {
 	b.WriteString("[resume]\n")
 	writeCommented(&b, "claude", boolLit(d.Resume.Claude), "resume.claude")
 	writeCommented(&b, "carousel", boolLit(d.Resume.Carousel), "resume.carousel")
+	b.WriteString("\n")
+
+	b.WriteString("[dwindle]\n")
+	writeCommented(&b, "enable", boolLit(d.Dwindle.Enable), "dwindle.enable")
 	b.WriteString("\n")
 
 	writeCommentedTable(&b, "[process_icons]", "process_icons")

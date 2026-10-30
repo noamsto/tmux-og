@@ -69,6 +69,7 @@ var RequiredScripts = []string{
 // RequiredBin are the Go binaries the template names directly.
 var RequiredBin = []string{
 	"og-remote-bridge-ctl",
+	"tmux-dwindle",
 	"tmux-enrich-card",
 	"tmux-session-resources",
 	"tmux-splash",

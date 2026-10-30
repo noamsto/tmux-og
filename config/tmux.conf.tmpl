@@ -107,6 +107,10 @@ unbind %
 bind -N 'Split pane horizontally' | if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} split-h #{q:@bridge_pane}" } { split-window -h -c "#{pane_current_path}" }
 unbind '"'
 bind -N 'Split pane vertically' _ if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} split-v #{q:@bridge_pane}" } { split-window -v -c "#{pane_current_path}" }
+# Split by shape. Cells are ~1:2, so pixel width > pixel height <=>
+# pane_width > 2*pane_height (strict >). | and _ stay explicit overrides.
+bind -N 'Split pane by its shape' Enter if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} #{?#{e|>|:#{pane_width},#{e|*|:#{pane_height},2}},split-h,split-v} #{q:@bridge_pane}" } { if-shell -F '#{e|>|:#{pane_width},#{e|*|:#{pane_height},2}}' { split-window -h -c "#{pane_current_path}" } { split-window -v -c "#{pane_current_path}" } }
+bind -N 'Toggle dwindle auto-balance for this window' A if-shell -F '{{.BridgeGate}}' { display-message "dwindle: not mirrored - toggle it on the remote" } { if-shell -F '#{==:#{@crew_grid},1}' { display-message "dwindle: grid window - tmux-grid-refit owns this layout" } { set -wF @dwindle '#{?#{==:#{@dwindle},on},off,on}' ; display-message "dwindle auto-balance: #{@dwindle} (this window)" } }
 bind -N 'Create new window' c if-shell -F '{{.BridgeGate}}' { run-shell "{{.BridgeCtl}} new-window #{q:@bridge_pane}" } { if-shell -F '#{m:scratch-*,#{session_name}}' 'display-message "scratchpad: new windows disabled"' 'new-window -c "#{pane_current_path}"' }
 # Zoom, like every other structural gesture, happens on the remote in a
 # mirror: zooming the local renderer pane grows it without growing the
@@ -346,6 +350,8 @@ set -g @window_split3 999
 set -g @ai_naming "{{.AINamingFlag}}"
 set -g @resume_claude "{{.ResumeClaudeFlag}}"
 set -g @resume_carousel "{{.ResumeCarouselFlag}}"
+# Window-scoped so `set -w @dwindle` overrides it per window; prefix + A flips that.
+set -gw @dwindle "{{.DwindleFlag}}"
 
 # Icon variables
 set -g @icon_session "{{.Icons.Session}}"
@@ -579,6 +585,20 @@ set-hook -g client-detached         { if -F '#{@bridge_nudge}' { run-shell -b "t
 #
 # Same gate and signature as window-resized[10] above (see that comment).
 set-hook -g window-layout-changed   { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!:#{window_zoomed_flag}}},#{&&:#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_layout}},#{!=:#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }},#{@grid_refit_pending}}}}' { set -wF @grid_refit_pending '#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-grid-refit"}} #{q:window_id}" } }
+
+# Dwindle: @dwindle_cache holds "<SIG>|<window_layout>" from the last settled
+# layout, so a closed pane's cell can be evened out against the layout before
+# it. SIG is the tiled count, zoom flag, window size and tiled pane geometry:
+# it is not window_layout, which renders per client. The cache is written only
+# when SIG changes: every option write runs recalculate_sizes plus a redraw of
+# every client, and tmux-next re-fires this hook on every window per
+# refresh-client -C (#793). The cached zoom field exists because tmux unzooms
+# before closing a pane, so the live flag is already 0 at the close. run-shell
+# expands @dwindle_cache before the set replaces it.
+# While the mode is off (window toggle or global) the first layout change drops
+# the cache, so a re-enabled window re-seeds it from a live layout instead of
+# diffing against one from before the toggle; an empty cache never forks.
+set-hook -g window-layout-changed[20] { if -F '#{&&:#{==:#{@dwindle},on},#{!:#{@bridge_win}}}' { if -F '#{!=:#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{s/[|].*//:@dwindle_cache}}' { if -F '#{&&:#{e|<|:#{n:#{P:#{?pane_floating_flag,,x}}},#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' { run-shell -b "{{index .Paths.Bin "tmux-dwindle"}} balance #{q:window_id} #{q:@dwindle_cache}" } ; set -wF @dwindle_cache '#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}|#{window_layout}' } } { if -F '#{@dwindle_cache}' { set -wu @dwindle_cache } } }
 
 # Tag every newly-created window as a worktree window from its cwd — at
 # creation, regardless of creator or CLAUDECODE (issue #95). new-session

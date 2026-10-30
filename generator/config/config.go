@@ -29,6 +29,7 @@ type Config struct {
 	Splash        Splash        `toml:"splash"`
 	AINaming      AINaming      `toml:"ai_naming"`
 	Resume        Resume        `toml:"resume"`
+	Dwindle       Dwindle       `toml:"dwindle"`
 
 	// The merged map (process-icons.nix // extraProcessIcons), never the
 	// overrides alone — the defaults have exactly one home, on the Nix side.
@@ -93,6 +94,10 @@ type AINaming struct {
 type Resume struct {
 	Claude   bool `toml:"claude"`
 	Carousel bool `toml:"carousel"`
+}
+
+type Dwindle struct {
+	Enable bool `toml:"enable"`
 }
 
 var (
@@ -173,6 +178,10 @@ func (c *Config) applyDefaults(md *toml.MetaData) {
 		if !md.IsDefined(f.key...) {
 			*f.target = f.fallback
 		}
+	}
+	// Dwindle is on by default on every install path, matching the Nix module default.
+	if !md.IsDefined("dwindle", "enable") {
+		c.Dwindle.Enable = true
 	}
 }
 
