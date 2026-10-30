@@ -259,16 +259,15 @@ assert_not_bridged() {
 	[[ $line2 =~ ^set-option\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+@client-7\|https://example\.invalid/x$ ]]
 }
 
-@test "bridged: only the second row is registered" {
+@test "bridged: keeps the owner tag when a later row names none" {
 	export TMUX="/tmp/s,1,0"
 	export TMUX_PANE="%3"
-	export TMUX_STUB_CLIENTS=$'0||10\n1||10'
+	export TMUX_STUB_CLIENTS=$'1|client-7|10\n0||10'
 	run bash "$SCRIPT" https://example.invalid/x
 	[ "$status" -eq 0 ]
 	local line2
 	line2="$(sed -n '2p' "$TMUX_LOG")"
-	[[ $line2 =~ ^set-option\ -a\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+\|https://example\.invalid/x$ ]]
-	[ ! -s "$OPENED" ]
+	[[ $line2 =~ ^set-option\ -a\ -t\ %3\ @og_open_url\ \ [0-9]+-[0-9]+@client-7\|https://example\.invalid/x$ ]]
 }
 
 @test "not bridged: TMUX unset" {

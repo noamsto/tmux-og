@@ -4170,6 +4170,19 @@ og1034_not_opened() {
 	og1034_not_opened s b
 	og1034_not_opened r b
 
+	# An owner whose daemon is attached but not in the list (an older
+	# daemon, which writes only the legacy slot) cannot parse a tag, so the
+	# record stays untagged and reaches every listed daemon.
+	$SRC set-option -t rem @og_open_clients " $s_client"
+	og1034_open old-owner
+	og1034_wait_opened b old-owner
+	raw="$($SRC show-options -qv -t rem @og_open_url)"
+	re=' [0-9]+-[0-9]+\|https://example\.invalid/old-owner'
+	[[ $raw =~ $re ]] || {
+		og1034_failed "the older-owner record is tagged or missing: $raw"
+		return 1
+	}
+
 	# A record without a tag (an older remote's og-open) still reaches every
 	# subscribed controller.
 	$SRC set-option -a -t rem @og_open_url " 1-1|https://example.invalid/old"
@@ -4197,6 +4210,10 @@ og1034_not_opened() {
 	done
 	[ "$n_ctl" -eq 1 ]
 
+	[[ $($SRC show-options -qv -t rem @og_bridge_owner) == *"|$b_client" ]] || {
+		og1034_failed "@og_bridge_owner no longer names $b_client"
+		return 1
+	}
 	og1034_open after
 	og1034_wait_opened s after
 	sleep 2.5

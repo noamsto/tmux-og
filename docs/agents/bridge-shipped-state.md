@@ -426,7 +426,8 @@ side is `picker/remotebridge/daemon/openurl.go`.
   3. **Register** — only after a successful subscribe, two reads then one
      batch of writes (`urlOpener.register`):
      - reads, one `rt` call: `display-message -p -t '<pin.id>'` of
-       `#{client_name}|#{@og_open_clients}` (this control client's own name —
+       `#{client_name}|#{?#{e|<=:#{n:@og_open_clients},1024},#{@og_open_clients},!oversized}`
+       (this control client's own name —
        `#{client_name}` and the `-F` writes below expand against the *issuing*
        client, which over the control stream is this control client itself,
        measured, next-3.9 — plus the registry) and the **server-wide**
@@ -435,7 +436,10 @@ side is `picker/remotebridge/daemon/openurl.go`.
        cleared first and set only from a read whose own name passes the tag
        charset `^[A-Za-z0-9_-]{1,64}$`; a failed or malformed read leaves it
        empty (so no tagged record ever matches this daemon), writes nothing — a
-       stale registry is never edited blind — and fails the step.
+       stale registry is never edited blind — and fails the step. The registry
+       read is bounded remote-side like the log (1024 bytes, `!oversized` past
+       it), so a remote that grows `@og_open_clients` cannot make this reply
+       unbounded.
      - writes, one batch: for each listed name that is not this client, not
        attached anywhere on the server and inside the tag charset (a name
        outside it goes into a substitution pattern and is never pruned), one
@@ -445,13 +449,22 @@ side is `picker/remotebridge/daemon/openurl.go`.
        @og_open_clients ' #{client_name}'` unless this client is already
        listed; then the legacy `set-option -F ... @og_open_client
        '#{client_name}'` (the single slot, last register wins, kept for older
-       `og-open`). Each write is one remote command evaluated inside the
+       `og-open`). At most 16 prunes go out per register; the rest wait for
+       the next one. Each write is one remote command evaluated inside the
        server, never a read-modify-write of the whole list, so two daemons
        registering at once cannot lose each other's entry; a prune removes only
-       a name the read saw *not attached*, so a live name is never removed. The
-       list stays bounded by live registrants plus names that left since the
-       last register — a disconnected registrant needs no write to drop out,
-       since `og-open` only considers attached clients.
+       a name the read saw *not attached*, so a live name is never removed. In
+       normal operation the list stays bounded by live registrants plus names
+       that left since the last register — a disconnected registrant needs no
+       write to drop out, since `og-open` only considers attached clients.
+     - on `!oversized`, no prunes: the daemon replaces the list with just its
+       own name (`set-option -F -t '<pin.id>' @og_open_clients ' #{client_name}'`,
+       no `-a`), then writes the legacy slot. This reset drops other live
+       registrants until their next register — accepted, because only a
+       hostile or broken remote grows the list past the bound. A tmux without
+       the `e|<=` operator reads the bound as false, so it takes this
+       reset on every register and degrades to one registrant, like the legacy
+       slot.
      - any failed read or write reply → the existing "register failed" notice
        (step name `register`).
 
@@ -576,7 +589,10 @@ side is `picker/remotebridge/daemon/openurl.go`.
     activity claims (a claim needs nothing from the old owner). An open that
     no input on the awake controller preceded (a background job) goes to the
     sleeping one, where before both opened it; any input on the awake
-    controller first fixes it.
+    controller first fixes it. If that owner's connection then dies before
+    it reads the report, its reconnect seed marks the record seen and the URL
+    opens nowhere: the awake controller already skipped it as tagged for
+    another client (before #1034 the awake controller opened it).
   - **Remote pid reuse.** Names are `client-<pid>`; a stale list entry
     survives until the next register's prune, so a later non-subscriber
     control client (iTerm2 `-CC`, a pre-#854 daemon) reusing that pid on the
