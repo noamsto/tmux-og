@@ -358,6 +358,66 @@ sorted_tiled_dims() {
 	wait "$daemon_pid" 2>/dev/null || true
 }
 
+@test "a window moved into the mirrored session is mirrored, and one moved out is dropped (#1025)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC new-session -d -s other -x 100 -y 30
+	# A second window keeps `other` alive once the first is moved away.
+	$SRC new-window -d -t other:
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	"$DAEMON" --test-local --src-socket m2src --dst-socket m2dst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$BATS_TEST_TMPDIR/dm.sock" \
+		>"$BATS_TEST_TMPDIR/dm.log" 2>&1 &
+	daemon_pid=$!
+
+	stamped=0
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		stamped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+		[ "$stamped" -eq 1 ] && break
+		sleep 0.15
+	done
+	[ "$stamped" -eq 1 ]
+
+	# tmux follows the move-window's %window-add with a %window-close for the
+	# source session's unlink, though the window is still in rem. The mirror
+	# must keep the window it just built.
+	moved="$($SRC list-windows -t other -F '#{window_id}' | head -1)"
+	$SRC move-window -d -s "$moved" -t rem:
+	n=1
+	for _ in $(seq 1 60); do
+		n="$($DST list-windows -t host-sess -F '#{window_id}' 2>/dev/null | wc -l)"
+		[ "$n" -eq 2 ] && break
+		sleep 0.15
+	done
+	[ "$n" -eq 2 ]
+	# Wait for the moved window's mirror to finish building, so the settle check
+	# below runs after the stray %window-close has been handled, not before.
+	stamped=0
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		stamped="$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+		[ "$stamped" -eq 2 ] && break
+		sleep 0.15
+	done
+	[ "$stamped" -eq 2 ]
+	sleep 1
+	[ "$($DST list-windows -t host-sess -F '#{window_id}' | wc -l)" -eq 2 ]
+
+	# Moved back out, it leaves the mirror.
+	$SRC move-window -d -s "$moved" -t other:
+	for _ in $(seq 1 60); do
+		n="$($DST list-windows -t host-sess -F '#{window_id}' 2>/dev/null | wc -l)"
+		[ "$n" -eq 1 ] && break
+		sleep 0.15
+	done
+	[ "$n" -eq 1 ]
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
 @test "a mirror window closing re-indexes the rest without stranding them" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$SRC new-window -t rem
