@@ -4,9 +4,10 @@
 # floats, resolve the nearest geometrically directional pane ourselves: tmux's
 # select-pane only understands the tiled layout.
 # args: <flag> <kitty-dir> <zoomed> <at-edge> <origin-floating> <pane-id> <window-id> [client=<name>]
-# client= names the invoking client; its own kitty socket (none for an ssh
-# client, whose kitty is not this machine's) is authoritative when the arg is
-# present. Absent, $KITTY_LISTEN_ON applies. The socket is resolved here, not
+# client= names the invoking client; its own KITTY_LISTEN_ON is authoritative
+# when the arg is present (an unreachable socket, e.g. an ssh client's without
+# kitten forwarding, fails the kitty call and falls back to select-pane).
+# Absent, $KITTY_LISTEN_ON applies. The socket is resolved here, not
 # in the bind: a nested #{q:#{...}} does not shell-quote.
 # no set -e: a failed query or kitty command falls through to select-pane.
 set -u
@@ -126,7 +127,7 @@ fi
 }
 if [ "$geometry_ok" = 1 ] && [ "$edge" = 1 ] && [ $# -ge 8 ]; then
 	KITTY_LISTEN_ON=
-	[ -n "${8#client=}" ] && KITTY_LISTEN_ON=$(tmux display-message -c "${8#client=}" -p '#{?#{I/e:SSH_CONNECTION},,#{I/e:KITTY_LISTEN_ON}}' 2>/dev/null)
+	[ -n "${8#client=}" ] && KITTY_LISTEN_ON=$(tmux display-message -c "${8#client=}" -p '#{I/e:KITTY_LISTEN_ON}' 2>/dev/null)
 	export KITTY_LISTEN_ON
 fi
 if [ "$geometry_ok" = 1 ] && [ "$edge" = 1 ] && [ -n "${KITTY_LISTEN_ON:-}" ] && command -v kitty >/dev/null 2>&1; then

@@ -52,7 +52,7 @@ setup() {
 	[ ! -s "$TMUX_LOG" ]
 }
 
-@test "client= arg with no client socket (ssh client) is authoritative: no hand-off" {
+@test "client= arg whose client has no socket is authoritative: no hand-off" {
 	export KITTY_LISTEN_ON=unix:/tmp/server TMUX_CLIENT_SOCK=
 	run bash "$SCRIPT" R right 0 1 0 %0 @0 client=/dev/pts/9
 	grep -q 'select-pane -R' "$TMUX_LOG"

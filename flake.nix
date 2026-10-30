@@ -566,12 +566,20 @@
                 for hook in 'client-attached\[30\]' 'after-new-session\[40\]'; do
                   line=$(grep "^set-hook -g $hook " "$CONF")
                   case "$line" in
-                    *"set -gF @og_local_$var \""*"#{I/e:$var}"*) ;;
+                    *"set -F @og_local_$var \""*"#{I/e:$var}"*) ;;
                     *) echo "$hook does not record $var" >&2; exit 1 ;;
                   esac
                   case "$line" in
-                    *"set-environment -F $var \"#{@og_local_$var}\""*) ;;
+                    *"set-environment -F $var \"#{@og_local_$var}\""*"{ if -F \"#{@og_local_seen}\" { set-environment -r $var } }"*) ;;
                     *) echo "$hook does not restore $var" >&2; exit 1 ;;
+                  esac
+                  case "$line" in
+                    *'set -F @og_local_seen 1'*) ;;
+                    *) echo "$hook does not stamp @og_local_seen" >&2; exit 1 ;;
+                  esac
+                  # Records are per session: a global write would cross sessions.
+                  case "$line" in
+                    *'set -gF @og_local_'*) echo "$hook records globally" >&2; exit 1 ;;
                   esac
                   if printf '%s' "$line" | grep -q 'set-environment [^"]*-t'; then
                     echo "$hook must not pass -t to set-environment" >&2
@@ -584,6 +592,13 @@
               case "$line" in
                 *'set -gF @og_attach_client "#{hook_client}"'*) ;;
                 *) echo "client-attached[30] does not stash #{hook_client}" >&2; exit 1 ;;
+              esac
+              # new-session -d has no client of its own: only an attached creator
+              # may record or restore.
+              line=$(grep '^set-hook -g after-new-session\[40\] ' "$CONF")
+              case "$line" in
+                *"'if -F \"#{==:#{client_session},#{session_name}}\" {"*) ;;
+                *) echo "after-new-session[40] is not gated on an attached creator" >&2; exit 1 ;;
               esac
               for hook in client-attached after-new-session; do
                 hook_clear=$(grep -n "^set-hook -gu $hook\$" "$CONF" | head -1 | cut -d: -f1)

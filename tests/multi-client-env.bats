@@ -60,8 +60,11 @@ wait_for() {
 
 client_count() { [ "$(t list-clients -F '#{client_name}' | grep -c .)" -ge "$1" ]; }
 sess_env() { t show-environment -t "${2:-main}" "$1" 2>/dev/null; }
-# rec_is <var> <value> -- the hook's record of the local client's value.
-rec_is() { [ "$(t show-options -gv "@og_local_$1" 2>/dev/null)" = "$2" ]; }
+# rec <var> [session] -- the hook's per-session record of the local client's
+# value. display-message resolves "<session>:" reliably; `show-options -t b`
+# was seen resolving to another session.
+rec() { t display-message -p -t "${2:-main}:" "#{@og_local_$1}" 2>/dev/null; }
+rec_is() { [ "$(rec "$1" "${3:-main}")" = "$2" ]; }
 sess_env_is() { [ "$(sess_env "$1" "${3:-main}")" = "$2" ]; }
 
 # attach_local / attach_ssh [session] -- background pty attach carrying that
@@ -74,6 +77,12 @@ attach_local() {
 attach_local_nokitty() {
 	env -u SSH_CONNECTION -u KITTY_LISTEN_ON DISPLAY=:0 \
 		script -qfc "$TMUX_BIN -L probe attach -t main" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
+}
+# attach_local_b <session> -- a second local terminal with different values.
+attach_local_b() {
+	env -u SSH_CONNECTION KITTY_LISTEN_ON=unix:/localb DISPLAY=:9 WINDOWID=999 \
+		AEYE_HOST=kitty \
+		script -qfc "$TMUX_BIN -L probe attach -t $1" /dev/null <"$TMUX_TMPDIR/hold" >/dev/null 2>&1 &
 }
 attach_ssh() {
 	# Lacks WINDOWID/AEYE_HOST on purpose: update-environment marks them removed.
@@ -141,7 +150,7 @@ pane_env() {
 	wait_for 50 client_count 1
 	wait_for 50 sess_env_is DISPLAY DISPLAY=:7 loc
 	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/localnew loc
-	wait_for 50 rec_is KITTY_LISTEN_ON unix:/localnew
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/localnew loc
 
 	attach_ssh loc
 	wait_for 50 client_count 2
@@ -161,6 +170,72 @@ pane_env() {
 	sess_env_is DISPLAY DISPLAY=:0
 }
 
+@test "a local client lacking KITTY_LISTEN_ON, then an ssh client with it: session ends with it removed" {
+	attach_local_nokitty
+	wait_for 50 client_count 1
+	wait_for 50 sess_env_is KITTY_LISTEN_ON -KITTY_LISTEN_ON
+	wait_for 50 rec_is DISPLAY :0
+
+	attach_ssh
+	wait_for 50 client_count 2
+	wait_for 50 sess_env_is SSH_AUTH_SOCK SSH_AUTH_SOCK=/remote/agent
+	wait_for 50 sess_env_is KITTY_LISTEN_ON -KITTY_LISTEN_ON
+	sleep 1
+
+	sess_env_is KITTY_LISTEN_ON -KITTY_LISTEN_ON
+	sess_env_is DISPLAY DISPLAY=:0
+}
+
+@test "new-session -d with no clients leaves existing records untouched" {
+	attach_local
+	wait_for 50 client_count 1
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/local
+
+	t new-session -d -s other
+	sleep 1
+
+	rec_is KITTY_LISTEN_ON unix:/local
+	[ -z "$(rec seen other)" ]
+	[ -z "$(rec KITTY_LISTEN_ON other)" ]
+}
+
+@test "new-session -d while an ssh client is attached elsewhere does nothing" {
+	attach_ssh
+	wait_for 50 client_count 1
+	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/remote
+
+	t new-session -d -s other
+	sleep 1
+
+	[ -z "$(rec seen other)" ]
+	[ "$(sess_env KITTY_LISTEN_ON other)" != "KITTY_LISTEN_ON=unix:/remote" ]
+	sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/remote
+}
+
+@test "records are per session: another terminal's values never cross into a session" {
+	t new-session -d -s b -x 80 -y 24
+	attach_local
+	wait_for 50 client_count 1
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/local
+	attach_local_b b
+	wait_for 50 client_count 2
+	wait_for 50 rec_is KITTY_LISTEN_ON unix:/localb b
+	wait_for 50 sess_env_is WINDOWID WINDOWID=999 b
+
+	attach_ssh
+	wait_for 50 client_count 3
+	wait_for 50 sess_env_is SSH_AUTH_SOCK SSH_AUTH_SOCK=/remote/agent
+	wait_for 50 sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/local
+	sleep 1
+
+	sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/local
+	sess_env_is WINDOWID WINDOWID=111
+	sess_env_is DISPLAY DISPLAY=:0
+	sess_env_is KITTY_LISTEN_ON KITTY_LISTEN_ON=unix:/localb b
+	rec_is KITTY_LISTEN_ON unix:/local
+	rec_is KITTY_LISTEN_ON unix:/localb b
+}
+
 @test "smart-nav resolves the kitty socket per invoking client" {
 	attach_local
 	wait_for 50 client_count 1
@@ -175,6 +250,8 @@ pane_env() {
 	# shellcheck disable=SC2016  # the shim expands at run time
 	printf '#!/bin/sh\necho "$KITTY_LISTEN_ON" >>"%s"\n' "$TMUX_TMPDIR/kitty.log" >"$TMUX_TMPDIR/bin/kitty"
 	chmod +x "$TMUX_TMPDIR/bin/tmux" "$TMUX_TMPDIR/bin/kitty"
+	# The session value differs from both clients', so only a per-client read passes.
+	t set-environment -t main KITTY_LISTEN_ON unix:/session
 	local root_dir pane win
 	root_dir="$(dirname "$BATS_TEST_DIRNAME")"
 	pane="$(t display-message -p -t main: '#{pane_id}')"
@@ -197,5 +274,5 @@ pane_env() {
 
 	: >"$TMUX_TMPDIR/kitty.log"
 	PATH="$TMUX_TMPDIR/bin:$PATH" bash "$root_dir/scripts/tmux-smart-nav.sh" L left 0 1 0 "$pane" "$win" "client=$r_name"
-	[ ! -s "$TMUX_TMPDIR/kitty.log" ]
+	[ "$(cat "$TMUX_TMPDIR/kitty.log")" = "unix:/remote" ]
 }
