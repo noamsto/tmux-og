@@ -552,7 +552,7 @@ The key-replay mode the user suggested as a second target was not added.
 | --- | --- |
 | Busy pane output and title churn alone | Remote-direct p99 0.6 ms |
 | `-B` monitor ticks | 5 jobs per 5 s |
-| `tmux-reflow-windows` | 2 batched tmux calls, ~7 ms, off the server thread |
+| `tmux-reflow-windows` | 2 batched tmux calls (+1 `list-clients` fork while a client is attached, for the narrowest-client width), ~7 ms, off the server thread |
 | Local `#()` status jobs | Plain local pane p99 3–10 ms with a status client attached |
 | `#()` jobs on a bridge-only host such as halo | Never run: control clients draw no status line |
 
