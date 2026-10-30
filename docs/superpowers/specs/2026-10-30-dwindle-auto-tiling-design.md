@@ -127,7 +127,11 @@ closed pane's cell still needs the pre-close tree.
      by pane-id set, are `C`'s children minus `P`, in order. Not found → exit.
   4. Even `Q`'s children along `Q`'s axis, keeping their total: with `T` the sum
      of their sizes and `n` the count, each gets `T/n` and the last takes the
-     remainder (the same split tmux's `layout_spread_cell` computes). Already
+     remainder (the same split tmux's `layout_spread_cell` computes). With
+     `pane-border-status` top/bottom, the child touching that window edge
+     loses a row to its status line, so — like `layout_spread_cell` — the
+     pane heights are evened and that child's cell gets one extra row (the
+     binary reads the option in its state read). Already
      even → exit. Each resized child's subtree is rescaled: a perpendicular
      container gives every child the new size; a same-axis container splits
      the new size among its children in proportion to their old sizes (largest

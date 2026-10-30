@@ -17,7 +17,13 @@ import (
 // result carries the one cell's new offsets. Every other cell is left exactly
 // as cur has it. Any other input, or a resize that would leave a pane under
 // one cell, is not an error: it returns changed == false.
-func RebalanceClosedCell(prev, cur string) (Layout, bool, error) {
+//
+// paneStatus is the window's pane-border-status. A pane status line takes one
+// row from the child of a top-bottom split that touches the window edge it is
+// drawn on (the top for "top", the bottom for "bottom"; any other value draws
+// none), so the evening is done on pane heights: that child's cell keeps one
+// extra row, as tmux's own spread does.
+func RebalanceClosedCell(prev, cur, paneStatus string) (Layout, bool, error) {
 	prevRoot, err := tiledTree(prev)
 	if err != nil {
 		return Layout{}, false, err
@@ -48,9 +54,16 @@ func RebalanceClosedCell(prev, cur string) (Layout, bool, error) {
 	}
 
 	axis := q.kind
+	edge := -1
+	if axis == '[' {
+		edge = edgeChild(curRoot, q, paneStatus)
+	}
 	total := 0
-	for _, c := range q.children {
+	for i, c := range q.children {
 		total += *dim(c, axis)
+		if i == edge {
+			total--
+		}
 	}
 	n := len(q.children)
 	share := total / n
@@ -60,6 +73,9 @@ func RebalanceClosedCell(prev, cur string) (Layout, bool, error) {
 		targets[i] = share
 		if i == n-1 {
 			targets[i] = total - (n-1)*share
+		}
+		if i == edge {
+			targets[i]++
 		}
 		same = same && targets[i] == *dim(c, axis)
 	}
@@ -79,6 +95,48 @@ func RebalanceClosedCell(prev, cur string) (Layout, bool, error) {
 	writeCell(curRoot, &sb)
 	out.Raw = fmt.Sprintf("%04x,%s", layoutChecksum(sb.String()), sb.String())
 	return out, true, nil
+}
+
+// edgeChild returns the index of the child of top-bottom split q that carries
+// the pane status line, or -1: the first child when paneStatus is "top" and q
+// sits at the top of root, the last when it is "bottom" and q sits at the
+// bottom. Sitting at an edge means being the first (last) child of every
+// top-bottom ancestor.
+func edgeChild(root, q *node, paneStatus string) int {
+	if paneStatus != "top" && paneStatus != "bottom" {
+		return -1
+	}
+	path := pathTo(root, q)
+	for i := 0; i+1 < len(path); i++ {
+		p := path[i]
+		if p.kind != '[' {
+			continue
+		}
+		want := p.children[0]
+		if paneStatus == "bottom" {
+			want = p.children[len(p.children)-1]
+		}
+		if path[i+1] != want {
+			return -1
+		}
+	}
+	if paneStatus == "top" {
+		return 0
+	}
+	return len(q.children) - 1
+}
+
+// pathTo returns the nodes from n down to target inclusive, or nil.
+func pathTo(n, target *node) []*node {
+	if n == target {
+		return []*node{n}
+	}
+	for _, c := range n.children {
+		if p := pathTo(c, target); p != nil {
+			return append([]*node{n}, p...)
+		}
+	}
+	return nil
 }
 
 // tiledTree parses s and returns its tree with float leaves pruned.

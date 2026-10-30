@@ -29,10 +29,10 @@ const (
 	panesExpr = "#{P/i:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}"
 
 	stateFormat = "#{@dwindle}|#{window_zoomed_flag}|#{@crew_grid}|#{@bridge_win}|" +
-		sizeExpr + "|" + panesExpr + "|#{window_layout}"
+		sizeExpr + "|" + panesExpr + "|#{pane-border-status}|#{window_layout}"
 )
 
-const stateFields = 7
+const stateFields = 8
 
 var windowRe = regexp.MustCompile(`^@[0-9]+$`)
 
@@ -69,12 +69,12 @@ func run(args []string, tmux runner) int {
 	if len(f) != stateFields {
 		return 0
 	}
-	dwindle, zoomed, grid, bridge, size, panes, curLayout := f[0], f[1], f[2], f[3], f[4], f[5], f[6]
+	dwindle, zoomed, grid, bridge, size, panes, borderStatus, curLayout := f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]
 	if dwindle != "on" || zoomed != "0" || grid == "1" || bridge != "" {
 		return 0
 	}
 
-	layout, changed, err := controlmode.RebalanceClosedCell(prevLayout, curLayout)
+	layout, changed, err := controlmode.RebalanceClosedCell(prevLayout, curLayout, borderStatus)
 	if err != nil || !changed {
 		return 0
 	}

@@ -39,6 +39,7 @@ func TestRebalanceClosedCell(t *testing.T) {
 	tests := []struct {
 		name      string
 		prev, cur string
+		status    string // pane-border-status; empty is off
 		wantBody  string // empty: expect no change
 		wantIDs   []string
 	}{
@@ -72,6 +73,68 @@ func TestRebalanceClosedCell(t *testing.T) {
 				"100x50,100,0[100x20,100,0,2,100x29,100,21,4]}"),
 			wantBody: "200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
 				"100x50,100,0[100x24,100,0,2,100x25,100,25,4]}",
+			wantIDs: []string{"%0", "%1", "%2", "%4"},
+		},
+		{
+			// Pane status "top": C, the column's top child, loses a row to the
+			// status line, so its cell keeps one more than E's (pane heights
+			// 24 and 24).
+			name:   "top status, column at the top edge",
+			status: "top",
+			prev: v1("200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x15,100,0,2,100x15,100,16,3,100x18,100,32,4]}"),
+			cur: v1("200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x20,100,0,2,100x29,100,21,4]}"),
+			wantBody: "200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x25,100,0,2,100x24,100,26,4]}",
+			wantIDs: []string{"%0", "%1", "%2", "%4"},
+		},
+		{
+			name:   "bottom status, column at the bottom edge",
+			status: "bottom",
+			prev: v1("200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x15,100,0,2,100x15,100,16,3,100x18,100,32,4]}"),
+			cur: v1("200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x20,100,0,2,100x29,100,21,4]}"),
+			wantBody: "200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x24,100,0,2,100x25,100,25,4]}",
+			wantIDs: []string{"%0", "%1", "%2", "%4"},
+		},
+		{
+			name:   "top-floating status draws no line",
+			status: "top-floating",
+			prev: v1("200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x15,100,0,2,100x15,100,16,3,100x18,100,32,4]}"),
+			cur: v1("200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x20,100,0,2,100x29,100,21,4]}"),
+			wantBody: "200x50,0,0{99x50,0,0[99x10,0,0,0,99x39,0,11,1]," +
+				"100x50,100,0[100x24,100,0,2,100x25,100,25,4]}",
+			wantIDs: []string{"%0", "%1", "%2", "%4"},
+		},
+		{
+			// The column sits below A in a top-bottom root, so no child of it
+			// touches the top edge and "top" changes nothing.
+			name:   "top status, column below another pane",
+			status: "top",
+			prev: v1("200x50,0,0[200x10,0,0,0,200x39,0,11{99x39,0,11,1," +
+				"100x39,100,11[100x11,100,11,2,100x11,100,23,3,100x15,100,35,4]}]"),
+			cur: v1("200x50,0,0[200x10,0,0,0,200x39,0,11{99x39,0,11,1," +
+				"100x39,100,11[100x14,100,11,2,100x24,100,26,4]}]"),
+			wantBody: "200x50,0,0[200x10,0,0,0,200x39,0,11{99x39,0,11,1," +
+				"100x39,100,11[100x19,100,11,2,100x19,100,31,4]}]",
+			wantIDs: []string{"%0", "%1", "%2", "%4"},
+		},
+		{
+			// The same column ends at the bottom edge, so "bottom" gives its
+			// last child the extra row.
+			name:   "bottom status, column below another pane",
+			status: "bottom",
+			prev: v1("200x50,0,0[200x10,0,0,0,200x39,0,11{99x39,0,11,1," +
+				"100x39,100,11[100x11,100,11,2,100x11,100,23,3,100x15,100,35,4]}]"),
+			cur: v1("200x50,0,0[200x10,0,0,0,200x39,0,11{99x39,0,11,1," +
+				"100x39,100,11[100x14,100,11,2,100x24,100,26,4]}]"),
+			wantBody: "200x50,0,0[200x10,0,0,0,200x39,0,11{99x39,0,11,1," +
+				"100x39,100,11[100x18,100,11,2,100x20,100,30,4]}]",
 			wantIDs: []string{"%0", "%1", "%2", "%4"},
 		},
 		{
@@ -150,7 +213,7 @@ func TestRebalanceClosedCell(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, changed, err := RebalanceClosedCell(tt.prev, tt.cur)
+			got, changed, err := RebalanceClosedCell(tt.prev, tt.cur, tt.status)
 			if err != nil {
 				t.Fatalf("err = %v", err)
 			}
@@ -194,6 +257,7 @@ func TestRebalanceClosedCellKeepsOtherCellsByteIdentical(t *testing.T) {
 	got, changed, err := RebalanceClosedCell(
 		v1("200x50,0,0{"+left+",100x50,100,0[100x15,100,0,2,100x15,100,16,3,100x18,100,32,4]}"),
 		v1("200x50,0,0{"+left+",100x50,100,0[100x20,100,0,2,100x29,100,21,4]}"),
+		"off",
 	)
 	if err != nil || !changed {
 		t.Fatalf("changed = %v, err = %v", changed, err)
@@ -211,7 +275,7 @@ func TestRebalanceClosedCellErrors(t *testing.T) {
 		"bad v2":   {good, `{"V":2,"L":`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, changed, err := RebalanceClosedCell(in[0], in[1]); err == nil || changed {
+			if _, changed, err := RebalanceClosedCell(in[0], in[1], "off"); err == nil || changed {
 				t.Errorf("changed = %v, err = %v; want an error", changed, err)
 			}
 		})

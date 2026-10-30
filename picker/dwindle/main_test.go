@@ -40,12 +40,12 @@ func (f *fakeTmux) run(args ...string) (string, error) {
 	return f.out, f.err
 }
 
-func state(dwindle, zoomed, grid, bridge, size, panes, layout string) string {
-	return strings.Join([]string{dwindle, zoomed, grid, bridge, size, panes, layout}, "|")
+func state(dwindle, zoomed, grid, bridge, size, panes, status, layout string) string {
+	return strings.Join([]string{dwindle, zoomed, grid, bridge, size, panes, status, layout}, "|")
 }
 
 func goodState() string {
-	return state("on", "0", "", "", "200x50", geom, v1(curV1Body))
+	return state("on", "0", "", "", "200x50", geom, "off", v1(curV1Body))
 }
 
 func cache(prev string) string { return "200x50|" + prev }
@@ -90,11 +90,11 @@ func TestBalanceHappyPath(t *testing.T) {
 
 func TestBalancePrechecks(t *testing.T) {
 	tests := map[string]string{
-		"dwindle off":   state("off", "0", "", "", "200x50", geom, v1(curV1Body)),
-		"dwindle unset": state("", "0", "", "", "200x50", geom, v1(curV1Body)),
-		"zoomed":        state("on", "1", "", "", "200x50", geom, v1(curV1Body)),
-		"crew grid":     state("on", "0", "1", "", "200x50", geom, v1(curV1Body)),
-		"bridge mirror": state("on", "0", "", "1", "200x50", geom, v1(curV1Body)),
+		"dwindle off":   state("off", "0", "", "", "200x50", geom, "off", v1(curV1Body)),
+		"dwindle unset": state("", "0", "", "", "200x50", geom, "off", v1(curV1Body)),
+		"zoomed":        state("on", "1", "", "", "200x50", geom, "off", v1(curV1Body)),
+		"crew grid":     state("on", "0", "1", "", "200x50", geom, "off", v1(curV1Body)),
+		"bridge mirror": state("on", "0", "", "1", "200x50", geom, "off", v1(curV1Body)),
 		"wrong fields":  "on|0|",
 		"empty":         "",
 	}
@@ -112,7 +112,7 @@ func TestBalancePrechecks(t *testing.T) {
 }
 
 func TestBalanceOrderMismatch(t *testing.T) {
-	f := &fakeTmux{out: state("on", "0", "", "", "200x50", "%2.67.0.133.50 %0.0.0.66.50 ", v1(curV1Body))}
+	f := &fakeTmux{out: state("on", "0", "", "", "200x50", "%2.67.0.133.50 %0.0.0.66.50 ", "off", v1(curV1Body))}
 	if code := run([]string{"balance", "@1", cache(prevV2)}, f.run); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
@@ -122,7 +122,7 @@ func TestBalanceOrderMismatch(t *testing.T) {
 }
 
 func TestBalanceUnchangedLayout(t *testing.T) {
-	f := &fakeTmux{out: state("on", "0", "", "", "200x50", "%0.0.0.99.50 %2.100.0.100.50 ", v1(evenBody))}
+	f := &fakeTmux{out: state("on", "0", "", "", "200x50", "%0.0.0.99.50 %2.100.0.100.50 ", "off", v1(evenBody))}
 	if code := run([]string{"balance", "@1", cache(prevV2)}, f.run); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
@@ -187,6 +187,33 @@ func TestUsage(t *testing.T) {
 			}
 			if len(f.calls) != 0 {
 				t.Errorf("calls = %v, want none", f.calls)
+			}
+		})
+	}
+}
+
+func TestBalancePassesBorderStatus(t *testing.T) {
+	const (
+		prev  = "100x50,0,0[100x15,0,0,0,100x15,0,16,1,100x18,0,32,2]"
+		cur   = "100x50,0,0[100x20,0,0,0,100x29,0,21,2]"
+		panes = "%0.0.0.100.20 %2.0.21.100.29 "
+	)
+	tests := map[string]string{
+		"off":    "100x24,0,0,0,100x25,0,25,2",
+		"top":    "100x25,0,0,0,100x24,0,26,2",
+		"bottom": "100x24,0,0,0,100x25,0,25,2",
+	}
+	for status, evened := range tests {
+		t.Run(status, func(t *testing.T) {
+			f := &fakeTmux{out: state("on", "0", "", "", "100x50", panes, status, v1(cur))}
+			if code := run([]string{"balance", "@1", "100x50|" + v1(prev)}, f.run); code != 0 {
+				t.Fatalf("exit %d", code)
+			}
+			if len(f.calls) != 2 {
+				t.Fatalf("calls = %v, want state read + if-shell", f.calls)
+			}
+			if want := "select-layout -t @1 '" + v1("100x50,0,0["+evened+"]") + "'"; f.calls[1][5] != want {
+				t.Errorf("cmd = %q, want %q", f.calls[1][5], want)
 			}
 		})
 	}
