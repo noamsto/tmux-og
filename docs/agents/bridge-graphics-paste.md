@@ -241,7 +241,9 @@ option.
   `display-message` there evaporates — which is why the empty-manifest and
   missing-binary paths used to open a 90%x90% float on the remote and mirror
   it home to say one sentence. The remote script now stamps its outcome
-  (`ok` / `noimages` / `nobin`) on the ctl pane as `@og_carousel` and
+  (`ok` / `noimages` / `nobin`) on the ctl pane as `@og_carousel` (the
+  `dwindle-toggle` verb's daemon-sent `if-shell` stamps `dwindle-on` / `dwindle-off` /
+  `dwindle-grid` on the same option) and
   `daemon/carouselprobe.go` reads it back: a session-lifetime seam like
   `viewReplacer` (its two sides are closures over `Run`'s locals), armed by
   the ctl handler *after* the submit, with a timer `runConn` selects on —

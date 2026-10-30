@@ -9,14 +9,14 @@ import (
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
-// The carousel verb's outcome has to travel from the remote back to this
-// daemon before the user can be told anything: the remote's only client is
+// The carousel and dwindle-toggle verbs' outcome has to travel from the remote
+// back to this daemon before the user can be told anything: the remote's only client is
 // this daemon's control client, which renders no status line, so a
 // display-message issued there evaporates (the same reason agentstatus.go
 // pushes state at write time instead of polling for it). carouselResolveScript
-// stamps its verdict on the ctl pane as carouselVerdictOpt, and this seam is
-// what reads it back and turns it into the one-line notifyLocal message the
-// purely-local prefix+I bind shows (#593).
+// and the dwindle-toggle command stamp their verdict on the ctl pane as
+// carouselVerdictOpt, and this seam is what reads it back and turns it into the
+// one-line notifyLocal message the purely-local prefix+I bind shows (#593).
 const carouselVerdictOpt = "@og_carousel"
 
 // The closed set of verdicts. Whitelisted rather than sanitized: the value is
@@ -26,10 +26,14 @@ const (
 	carouselVerdictOK       = "ok"
 	carouselVerdictNoImages = "noimages"
 	carouselVerdictNoBin    = "nobin"
+
+	carouselVerdictDwindleOn   = "dwindle-on"
+	carouselVerdictDwindleOff  = "dwindle-off"
+	carouselVerdictDwindleGrid = "dwindle-grid"
 )
 
 // carouselProbeInterval and carouselProbeAttempts bound the wait for a
-// verdict. The stamp rides a run-shell -b on the remote, so it lands a few
+// verdict. The carousel stamp rides a run-shell -b on the remote, so it lands a few
 // forks after the press and the first read routinely finds nothing — an empty
 // read is expected, not evidence the press failed. The budget covers a slow
 // remote without leaving a keypress polling forever; past it the press is
@@ -157,13 +161,19 @@ func readCarouselVerdict(rt roundTrip, pane string) (verdict string, ok bool) {
 
 // carouselVerdictMessage is the local status-line text for a verdict, or "" for
 // one with nothing to say. An unknown value says nothing either: the option is
-// remote-derived, and only the three the script writes are ours.
+// remote-derived, and only the verdicts our own commands write are ours.
 func carouselVerdictMessage(verdict, host string) string {
 	switch verdict {
 	case carouselVerdictNoImages:
 		return fmt.Sprintf("no images yet for this pane on %s", host)
 	case carouselVerdictNoBin:
 		return fmt.Sprintf("tmux-claude-images is not on PATH on %s", host)
+	case carouselVerdictDwindleOn:
+		return "dwindle auto-balance: on (remote window)"
+	case carouselVerdictDwindleOff:
+		return "dwindle auto-balance: off (remote window)"
+	case carouselVerdictDwindleGrid:
+		return "dwindle: grid window - tmux-grid-refit owns this layout (remote window)"
 	}
 	return ""
 }
