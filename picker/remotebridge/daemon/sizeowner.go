@@ -23,6 +23,8 @@ import (
 
 const (
 	// bridgeOwnerOption holds "<token>|<client_name>" on the pinned session.
+	// scripts/og-open.sh also reads the record (glob *|<client>), so the format
+	// is a cross-language contract.
 	bridgeOwnerOption = "@og_bridge_owner"
 	ownerSubName      = "og_self"
 	ownerSelfFormat   = "#{client_name}|#{client_flags}|#{@og_bridge_owner}"
