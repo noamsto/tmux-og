@@ -32,6 +32,9 @@ func TestFixtures(t *testing.T) {
 		{"claude_working.txt", "claude", "processing"},
 		{"claude_idle.txt", "claude", "idle"},
 		{"claude_permission.txt", "claude", "waiting"},
+		{"claude_panel_idle.txt", "claude", "idle"},
+		{"claude_panel_bg_shell.txt", "claude", "idle"},
+		{"claude_panel_stale_shell.txt", "claude", "idle"},
 		{"codex_working.txt", "codex", "processing"},
 		{"codex_idle.txt", "codex", "idle"},
 		{"cursor_working.txt", "cursor-agent", "processing"},
@@ -70,6 +73,12 @@ func TestFixtureFlags(t *testing.T) {
 		wantBG               int
 	}{
 		{"claude_bg_shell.txt", "claude", "idle", 1},
+		// A task panel under the footer must neither hide the prompt nor the
+		// footer's shell count; the stale scrollback line must stay unflagged.
+		{"claude_panel_bg_shell.txt", "claude", "idle", 2},
+		{"claude_panel_working.txt", "claude", "processing", 1},
+		{"claude_panel_idle.txt", "claude", "idle", 0},
+		{"claude_panel_stale_shell.txt", "claude", "idle", 0},
 		// "Ran 9 shell commands" in the transcript, and Cursor's "1 task"
 		// counting a foreground tool call, must both stay unflagged.
 		{"claude_idle.txt", "claude", "idle", 0},

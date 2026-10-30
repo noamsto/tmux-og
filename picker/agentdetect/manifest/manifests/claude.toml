@@ -28,19 +28,22 @@ contains = ["do you want to proceed?"]
 [[rules]]
 state = "idle"
 priority = 10
-# last_lines:6 not :3 — real Claude renders 3 lines below the ❯ prompt (box
-# bottom border, the 🤖 status line, and the -- INSERT -- mode hint), so ❯ sits
-# ~4 lines from the bottom. Verified against live idle panes.
-region = "last_lines:6"
+# prompt_box, not last_lines: Claude can draw a task panel (running
+# subagents/background tasks) under the footer, and its rows push the prompt out
+# of any bottom-anchored window. The region is found by the input box's borders:
+# the last ❯ line between a top and bottom ───, the bottom border, and the footer
+# rows after it up to the first blank row (the panel sits after that row). A
+# typed prompt of any height therefore keeps the footer in the region.
+region = "prompt_box"
 regex = '❯'
 not = [ { contains = ["do you want to proceed?"] } ]
 
 # Background shells outlive the turn that started them, so this is a flag, not
 # a state: the pane may be idle, processing, or waiting while it holds one.
-# Anchored on the footer's `·` separator and confined to the last lines — the
+# Anchored on the footer's `·` separator and confined to the prompt box — the
 # transcript is full of "Ran 9 shell commands", and old "1 shell still running"
 # lines stay in the scrollback long after that shell exited.
 [[flags]]
 name = "bg"
-region = "last_lines:3"
+region = "prompt_box"
 regex = '·\s*(\d+)\s+shells?\b'
