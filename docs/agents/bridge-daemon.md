@@ -560,6 +560,22 @@ is the one requirement that reports itself: the asking side prints
 `remote tmux-og too old — rebuild <host>` instead of degrading silently.
 
 
+## Dwindle on a mirror (#1039)
+
+Nobody balances a closed pane locally: the `window-layout-changed[20]` hook's
+gate skips a `@bridge_win` window. The remote's own tmux-og does it, so the
+remote needs a build with dwindle and `@dwindle on` in the window (the default
+follows `programs.tmux-og`); the daemon then mirrors the evened layout like any
+other remote layout change. An older remote, or one with the mode off, leaves
+the freed space on one neighbour and the mirror shows exactly that. The daemon's
+`refresh-client -C` resizes re-fire the hook on the remote, so a close right
+after one relies on the hook's cache gate (`performance.md`, "Dwindle cache
+gate"). Pinned by the `(#1039)` cases in `tests/remote-m2-integration.bats`
+(close via the `kill-pane` ctl verb, directly on the remote, a close racing a
+mirror resize, and a close right after the remote's size changed; only the
+last pins resize-then-close ordering, since the daemon's watcher polls about 1s
+and the racing close usually lands first); they extract the real hook from `TMUX_OG_CONF`.
+
 ## Mirror invariants
 
 - **A dead target can resolve to a live object from the control client (#826).** `display-message`, `if-shell`, `run-shell`, `set-option` and `show-options` resolve `-t` with `CMD_FIND_CANFAIL`. These results were measured on a scratch server running tmux next-3.9, over the daemon's control connection, with `@0 %0` current:

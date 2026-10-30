@@ -8012,3 +8012,141 @@ run_daemon_to_exit() {
 	[ "$daemon_rc" -ne 0 ]
 	grep -qF -- '--select needs --into' "$BATS_TEST_TMPDIR/sel8.log"
 }
+
+# --- dwindle balance-on-close in a mirrored window (#1039) --------------------
+# The local window-layout-changed[20] hook skips a @bridge_win mirror on purpose:
+# the REMOTE's own tmux-og balances, and the daemon mirrors the evened layout
+# back. These cases load the real production hook (extracted from the built conf,
+# TMUX_OG_CONF) plus @dwindle on into SRC, so that path is pinned end to end.
+# The hook runs tmux-dwindle via its store path, and that binary calls `tmux`
+# from PATH, so the tmux on PATH must be the one under test (the flake wires it).
+
+# Same client-independent signature the hook's gate stores in @dwindle_cache.
+DWINDLE_SIG='#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}'
+
+# dwindle_src_conf appends the production dwindle hook and the mode to SRC_CONF.
+# It must run before the first `$SRC new-session`, which is what starts the
+# server and reads that file.
+dwindle_src_conf() {
+	[ -n "${TMUX_OG_CONF:-}" ] || skip "TMUX_OG_CONF not set"
+	local hook
+	hook="$(grep -F 'window-layout-changed[20]' "$TMUX_OG_CONF")"
+	[ -n "$hook" ]
+	[ "$(printf '%s\n' "$hook" | wc -l)" -eq 1 ]
+	printf 'set -gw @dwindle on\n%s\n' "$hook" >>"$SRC_CONF"
+}
+
+# dwindle_cache_settled reports whether the cache's signature half equals the
+# live window signature: tmux-dwindle diffs against the layout the previous
+# event stored, so a close is only meaningful once that has caught up.
+dwindle_cache_settled() {
+	local live cached
+	live="$($SRC display-message -p -t rem "$DWINDLE_SIG")"
+	cached="$($SRC display-message -p -t rem '#{s/[|].*//:@dwindle_cache}')"
+	[ -n "$cached" ] && [ "$live" = "$cached" ]
+}
+
+# dwindle_remote_up builds a 150x40 remote window of three even columns, a
+# same-size local target, and a settled cache, then brings the bridge up.
+# Panes run the default shell: bridge_up types a marker into them.
+dwindle_remote_up() {
+	local tag="$1" _
+	dwindle_src_conf
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC split-window -h -t rem
+	$SRC split-window -h -t rem
+	$SRC select-layout -t rem even-horizontal
+	$DST new-session -d -s host-sess -x 150 -y 40
+	for _ in $(seq 1 100); do
+		dwindle_cache_settled && break
+		sleep 0.1
+	done
+	dwindle_cache_settled
+	bridge_up 3 "$tag"
+}
+
+# dwindle_assert_mirrors_balance waits for the remote's two surviving columns to
+# be even (within 1 cell), then for the mirror's tiled dims to equal the
+# remote's, pane for pane. Tmux alone leaves the freed width on one neighbour
+# (100/49 at 150 columns; balanced is 75/74), so the first condition cannot
+# hold without the remote hook having balanced.
+dwindle_assert_mirrors_balance() {
+	local deadline=$((SECONDS + 20)) src_dims dst_dims
+	local -a widths
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		# Exactly 2 panes: the ctl verb acks before the remote runs the close, and
+		# the pre-close 3 columns (50/49/49) are already within 1 of each other.
+		mapfile -t widths < <($SRC list-panes -t rem -F '#{pane_width}')
+		if [ "${#widths[@]}" -eq 2 ] && [ $((widths[0] - widths[1])) -le 1 ] && [ $((widths[1] - widths[0])) -le 1 ]; then
+			src_dims="$($SRC list-panes -t rem -F '#{pane_width}x#{pane_height}')"
+			dst_dims="$($DST list-panes -t host-sess:1 -F '#{pane_width}x#{pane_height}')"
+			[ "$src_dims" = "$dst_dims" ] && break
+		fi
+		sleep 0.1
+	done
+	mapfile -t widths < <($SRC list-panes -t rem -F '#{pane_width}')
+	src_dims="$($SRC list-panes -t rem -F '#{pane_width}x#{pane_height}')"
+	dst_dims="$($DST list-panes -t host-sess:1 -F '#{pane_width}x#{pane_height}')"
+	printf 'src: %s\ndst: %s\ncache: %s\n' "$(tr '\n' ' ' <<<"$src_dims")" "$(tr '\n' ' ' <<<"$dst_dims")" \
+		"$($SRC display-message -p -t rem '#{@dwindle_cache}')" >&3
+	[ "${#widths[@]}" -eq 2 ]
+	[ $((widths[0] - widths[1])) -le 1 ]
+	[ $((widths[1] - widths[0])) -le 1 ]
+	[ "$src_dims" = "$dst_dims" ]
+	[ "$(pane_map "$SRC" rem '#{pane_id}')" = "$(pane_map "$DST" host-sess:1 '#{@bridge_pane}')" ]
+}
+
+dwindle_bridge_down() {
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
+@test "a pane closed through the mirror is balanced by the remote's dwindle (#1039)" {
+	dwindle_remote_up dwa
+	victim="$(remote_pane_of 1)"
+	[ "$victim" = "$($SRC list-panes -t rem -F '#{pane_id}' | sed -n 2p)" ]
+
+	run "$CTL" --sock "$sock" kill-pane "$victim"
+	[ "$status" -eq 0 ]
+	dwindle_assert_mirrors_balance
+	dwindle_bridge_down
+}
+
+@test "a pane closed directly on the remote is balanced and mirrored (#1039)" {
+	dwindle_remote_up dwb
+	$SRC kill-pane -t "$(remote_pane_of 1)"
+	dwindle_assert_mirrors_balance
+	dwindle_bridge_down
+}
+
+# The daemon drives the remote window size (refresh-client -C), and the resulting
+# layout change must not leave @dwindle_cache stale at the close. C1 issues the
+# mirror resize and the close back-to-back; the daemon's watcher polls ~1s, so
+# the close usually lands BEFORE the resize reaches the remote and this mostly
+# re-tests the plain path. C2 is the real stale-cache case: it waits for the
+# remote window size to change, then closes right away, without waiting for the
+# cache to catch up to the new size.
+@test "a mirror resize back-to-back with a close still balances (#1039)" {
+	dwindle_remote_up dwc
+	$DST resize-window -t host-sess:1 -x 140 -y 40
+	run "$CTL" --sock "$sock" kill-pane "$(remote_pane_of 1)"
+	[ "$status" -eq 0 ]
+	dwindle_assert_mirrors_balance
+	dwindle_bridge_down
+}
+
+@test "a close right after the daemon resizes the remote still balances (#1039)" {
+	dwindle_remote_up dwd
+	$DST resize-window -t host-sess:1 -x 140 -y 40
+	local deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS)) dims=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		dims="$($SRC display-message -p -t rem '#{window_width}x#{window_height}')"
+		[ "$dims" = "140x40" ] && break
+		sleep 0.02
+	done
+	[ "$dims" = "140x40" ]
+	run "$CTL" --sock "$sock" kill-pane "$(remote_pane_of 1)"
+	[ "$status" -eq 0 ]
+	dwindle_assert_mirrors_balance
+	dwindle_bridge_down
+}

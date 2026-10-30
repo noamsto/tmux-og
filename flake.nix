@@ -2527,6 +2527,9 @@
               # Same "raw source ships" reasoning as DETACH: og-open needs no
               # build-time placeholder substitution either.
               OG_OPEN = ./scripts/og-open.sh;
+              # The dwindle mirror cases extract the real window-layout-changed[20]
+              # hook (it embeds the store path of tmux-dwindle) from this conf.
+              TMUX_OG_CONF = tmuxConfig.tmuxConf;
             } ''
               cp -r ${./tests} tests
               export HOME=$TMPDIR
