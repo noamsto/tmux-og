@@ -189,6 +189,8 @@ func TestRouterRouteDropLoggingStateBounded(t *testing.T) {
 	}
 }
 
+// captureRouterStderr redirects both os.Stderr and the router's drop log while
+// f runs, and returns what was written.
 func captureRouterStderr(t *testing.T, f func()) string {
 	t.Helper()
 	old := os.Stderr
@@ -196,13 +198,19 @@ func captureRouterStderr(t *testing.T, f func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	prev := dropLog.Load()
+	var w io.Writer = write
+	dropLog.Store(&w)
 	os.Stderr = write
+	defer func() {
+		dropLog.Store(prev)
+		os.Stderr = old
+		_ = read.Close()
+	}()
 	f()
 	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = old
-	defer func() { _ = read.Close() }()
 	logs, err := io.ReadAll(read)
 	if err != nil {
 		t.Fatal(err)

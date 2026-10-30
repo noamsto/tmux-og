@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -266,8 +267,18 @@ func (r *Router) expireGone(paneID string, g *gonePane) {
 	r.mu.Unlock()
 }
 
+// dropLog is where logDrop writes. The router's expiry timers call logDrop, so
+// it must not read the mutable os.Stderr global that tests swap; tests redirect
+// router drop logs through this.
+var dropLog atomic.Pointer[io.Writer]
+
+func init() {
+	var w io.Writer = os.Stderr
+	dropLog.Store(&w)
+}
+
 func logDrop(paneID string, n int, reason string) {
-	fmt.Fprintf(os.Stderr, "daemon: %s: dropped %d output frame(s) (%s)\n", paneID, n, reason)
+	_, _ = fmt.Fprintf(*dropLog.Load(), "daemon: %s: dropped %d output frame(s) (%s)\n", paneID, n, reason)
 }
 
 // sink returns paneID's registered *outputSink, or nil if none is registered
