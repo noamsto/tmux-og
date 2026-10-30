@@ -494,7 +494,8 @@ func TestURLOpenerRegisterWrites(t *testing.T) {
 	resetSelf := "set-option -F" + target + " @og_open_clients ' #{client_name}'"
 	slot := "set-option -F" + target + " @og_open_client '#{client_name}'"
 	long65 := strings.Repeat("a", 65)
-	var staleNames, capped []string
+	staleNames := make([]string, 0, 20)
+	var capped []string
 	for i := range 20 {
 		staleNames = append(staleNames, fmt.Sprintf("client-%d", 100+i))
 	}
