@@ -22,10 +22,9 @@ import (
 
 // A remote og-open appends " <nonce>[@<client>]|<url>" records to the session
 // option @og_open_url when a controller has registered itself in
-// @og_open_client; the og_open subscription carries the whole log here, and the
-// controller opens each record it has not seen yet. A record tagged for another
-// client is that client's to open. Every controller also lists its client name
-// in @og_open_clients, which og-open reads to pick the tag.
+// @og_open_clients (or the legacy @og_open_client); the og_open subscription
+// carries the whole log here, and the controller opens each record it has not
+// seen yet. A record tagged for another client is that client's to open.
 const (
 	openURLOpt     = "@og_open_url"
 	openClientOpt  = "@og_open_client"

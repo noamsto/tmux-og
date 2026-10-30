@@ -6,10 +6,10 @@
 # record is tagged with the size owner @og_bridge_owner's client only when
 # that client is attached and listed in @og_open_clients (the legacy slot
 # alone never tags: a daemon that writes only it cannot parse a tag), so only
-# that controller opens it. Only the forwarded path validates: whitespace separates the
-# forwarded log's records, a trailing `;` is tmux's argv command separator,
-# and only http(s) may cross the bridge. Off a bridge any argument passes
-# through untouched. See docs/agents/bridge-shipped-state.md.
+# that controller opens it. Only the forwarded path validates: whitespace
+# separates the forwarded log's records, a trailing `;` is tmux's argv command
+# separator, and only http(s) may cross the bridge. Off a bridge any argument
+# passes through untouched. See docs/agents/bridge-shipped-state.md.
 set -uo pipefail
 
 case $# in
