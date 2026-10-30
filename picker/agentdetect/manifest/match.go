@@ -123,6 +123,9 @@ const (
 	footerRows = 4
 )
 
+// A border is a row that starts with boxBorder: typed rows are indented after
+// `❯ `, so a `───` inside typed text is not at column 0.
+
 // promptBox returns the input box and its footer, or "" when no box is found:
 // the last `❯` line between a top and bottom border, the bottom border, then the
 // non-empty rows after it up to the first blank row (footerRows at most). The
@@ -132,7 +135,7 @@ const (
 func promptBox(s string) string {
 	lines := strings.Split(s, "\n")
 	for b, line := range slices.Backward(lines) {
-		if !strings.Contains(line, boxBorder) {
+		if !strings.HasPrefix(line, boxBorder) {
 			continue
 		}
 		prompt := promptLineAbove(lines[:b])
@@ -156,7 +159,7 @@ func promptBox(s string) string {
 func promptLineAbove(lines []string) int {
 	prompt := -1
 	for i, l := range slices.Backward(lines) {
-		if strings.Contains(l, boxBorder) {
+		if strings.HasPrefix(l, boxBorder) {
 			return prompt
 		}
 		if prompt < 0 && strings.HasPrefix(strings.TrimLeft(l, " \t"), "❯") {

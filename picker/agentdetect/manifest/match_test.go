@@ -1,6 +1,9 @@
 package manifest
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func mkManifest(rules ...Rule) Manifest { return Manifest{ID: "t", Rules: rules} }
 
@@ -56,13 +59,48 @@ func TestMatchEmptyRuleDoesNotMatch(t *testing.T) {
 	}
 }
 
+func TestPromptBoxTypedBorderRunKeepsState(t *testing.T) {
+	ms, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := ForCommand(ms, "claude")
+	if !ok {
+		t.Fatal("no claude manifest")
+	}
+	full := strings.Repeat("─", 40)
+	footer := "  🤖 Opus 5.5 | 📊 280k/1M\n  -- INSERT -- ⏵⏵ auto mode on · 1 shell · ← 1 agent"
+	panel := "\n\n  ● main\n  ◯ a\n  ◯ b"
+	for name, screen := range map[string]string{
+		"typed border run":      full + "\n❯ why does the footer row ──── vanish\n" + full + "\n" + footer + panel,
+		"indented typed border": full + "\n❯ look\n  ──────\n  a\n  b\n  c\n" + full + "\n" + footer + panel,
+	} {
+		t.Run(name, func(t *testing.T) {
+			state, flags, _ := Match(m, screen, "", false)
+			if state != "idle" || flags["bg"] != 1 {
+				t.Fatalf("Match = %q bg=%d, want idle bg=1", state, flags["bg"])
+			}
+		})
+	}
+}
+
 func TestPromptBoxRegion(t *testing.T) {
 	const bar = "────────────"
 	footer := "  🤖 Opus\n  -- INSERT -- · 2 shells"
 	panel := "\n\n  ● main\n  ◯ a\n  ◯ b"
 	three := "❯ one\n  two\n  three\n"
 	five := "❯ one\n  two\n  three\n  four\n  five\n"
+	full := strings.Repeat("─", 40)
+	realFooter := "  🤖 Opus 5.5 | 📊 280k/1M\n  -- INSERT -- ⏵⏵ auto mode on · 1 shell · ← 1 agent"
+	typedBorder := "❯ why does the footer row ──── vanish\n" + full + "\n" + realFooter
+	typedRows := "❯ look\n  ──────\n  a\n  b\n  c\n" + full + "\n" + realFooter
 	cases := []struct{ name, screen, want string }{
+		{"border run inside typed prompt text", full + "\n" + typedBorder,
+			typedBorder},
+		{"border run inside typed prompt text with panel", full + "\n" + typedBorder + panel,
+			typedBorder},
+		{"indented border run among typed rows", full + "\n" + typedRows,
+			typedRows},
 		{"panel below blank row", "old\n" + bar + "\n❯ \n" + bar + "\n" + footer + panel,
 			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
 		{"no blank row, footer capped at four rows", bar + "\n❯ \n" + bar + "\na\nb\nc\nd\ne\nf",
