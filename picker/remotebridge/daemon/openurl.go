@@ -36,12 +36,14 @@ const (
 // The value is written by the remote, and anything with its tmux socket can
 // bypass og-open's own cap, so the controller bounds what a log may cost it.
 const (
-	openValueMaxLen  = 3 * openURLMaxLen
-	openMaxPerReport = 16
-	openBurst        = 30
-	openRefill       = 2 * time.Second
-	openNoticeEvery  = 10 * time.Second
-	openOversized    = "!oversized"
+	openValueMaxLen   = 3 * openURLMaxLen
+	openClientsMaxLen = 1024
+	openMaxPrunes     = 16
+	openMaxPerReport  = 16
+	openBurst         = 30
+	openRefill        = 2 * time.Second
+	openNoticeEvery   = 10 * time.Second
+	openOversized     = "!oversized"
 )
 
 // openURLFormat is the log bounded remote-side: tmux sends option values raw,
@@ -82,37 +84,59 @@ func parseOpenRecords(v string) []openRecord {
 	return recs
 }
 
+// openClientsFormat reads the registry bounded remote-side like openURLFormat:
+// the option is remote-written, and every stale name in it costs a prune
+// command. A live registry is about 14 bytes per controller, so openClientsMaxLen
+// leaves room for dozens. On a tmux without e|<= every register reads
+// oversized and resets, degrading to one registrant like the legacy slot.
+var openClientsFormat = "#{client_name}|#{?#{e|<=:#{n:" + openClientsOpt + "}," + strconv.Itoa(openClientsMaxLen) + "},#{" + openClientsOpt + "}," + openOversized + "}"
+
 // openRegisterReadCmds read this control client's name with the session's
 // registry, and every attached client; list-clients is server-wide, as a
 // registered name can outlive its client on any session.
 func openRegisterReadCmds(target string) []string {
 	return []string{
-		"display-message -p" + target + " " + tmuxQuote(ctlSafe("#{client_name}|#{"+openClientsOpt+"}")),
+		"display-message -p" + target + " " + tmuxQuote(ctlSafe(openClientsFormat)),
 		"list-clients -F " + tmuxQuote(ctlSafe("#{client_name}")),
 	}
 }
 
 // parseOpenRegister splits the two read replies into this client's name, the
-// registry's entries and the attached clients' names. ok is false when the
-// name could not be a tag.
-func parseOpenRegister(selfAndList, clients string) (self string, listed, attached []string, ok bool) {
+// registry's entries and the attached clients' names. oversized is the remote
+// reporting a registry past openClientsMaxLen, with listed nil. ok is false
+// when the name could not be a tag.
+func parseOpenRegister(selfAndList, clients string) (self string, listed, attached []string, oversized, ok bool) {
 	self, rest, _ := strings.Cut(selfAndList, "|")
 	if !openTagRe.MatchString(self) {
-		return "", nil, nil, false
+		return "", nil, nil, false, false
 	}
 	for line := range strings.SplitSeq(clients, "\n") {
 		if line != "" {
 			attached = append(attached, line)
 		}
 	}
-	return self, strings.Fields(rest), attached, true
+	if rest == openOversized {
+		return self, nil, attached, true, true
+	}
+	return self, strings.Fields(rest), attached, false, true
 }
 
 // openRegisterWriteCmds prune the registry of names no attached client holds,
 // list self unless it already is, and point @og_open_client at self. A name
 // outside the tag charset is never pruned: it goes into a substitution
-// pattern, and cannot be a tag anyway.
-func openRegisterWriteCmds(target, self string, listed, attached []string) []string {
+// pattern, and cannot be a tag anyway. The registry is remote-written and the
+// controller bounds what it costs: at most openMaxPrunes prunes per register
+// (the rest wait for the next one; a live registry never has that many stale
+// names), and an oversized one is replaced by self alone. The reset drops other
+// live registrants until their next register, accepted because only a hostile
+// or broken remote grows the list past the bound.
+func openRegisterWriteCmds(target, self string, listed, attached []string, oversized bool) []string {
+	if oversized {
+		return []string{
+			"set-option -F" + target + " " + openClientsOpt + " " + tmuxQuote(" #{client_name}"),
+			"set-option -F" + target + " " + openClientOpt + " " + tmuxQuote("#{client_name}"),
+		}
+	}
 	var cmds []string
 	pruned := map[string]bool{}
 	selfListed := false
@@ -120,7 +144,7 @@ func openRegisterWriteCmds(target, self string, listed, attached []string) []str
 		switch {
 		case name == self:
 			selfListed = true
-		case !openTagRe.MatchString(name) || pruned[name] || slices.Contains(attached, name):
+		case !openTagRe.MatchString(name) || pruned[name] || slices.Contains(attached, name) || len(pruned) >= openMaxPrunes:
 		default:
 			pruned[name] = true
 			cmds = append(cmds, "set-option -F"+target+" "+openClientsOpt+" "+tmuxQuote("#{s/ "+name+"( |$)/ /:"+openClientsOpt+"}"))
@@ -268,13 +292,13 @@ func (o *urlOpener) register(rt roundTrip) {
 		o.fail("register")
 		return
 	}
-	self, listed, attached, ok := parseOpenRegister(string(reg.Data), string(cl.Data))
+	self, listed, attached, oversized, ok := parseOpenRegister(string(reg.Data), string(cl.Data))
 	if !ok {
 		o.fail("register")
 		return
 	}
 	o.self = self
-	writes := openRegisterWriteCmds(o.target(), self, listed, attached)
+	writes := openRegisterWriteCmds(o.target(), self, listed, attached, oversized)
 	next = rt(writes...)
 	failed := false
 	for range writes {

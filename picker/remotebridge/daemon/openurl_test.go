@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -286,7 +287,7 @@ func connectCmds(target string) []string {
 	return []string{
 		"display-message -p" + target + " " + tmuxQuote(ctlSafe(openURLFormat)),
 		"refresh-client -B " + tmuxQuote("og_open::"+ctlSafe(openURLFormat)),
-		"display-message -p" + target + " " + tmuxQuote(ctlSafe("#{client_name}|#{@og_open_clients}")),
+		"display-message -p" + target + " " + tmuxQuote(ctlSafe("#{client_name}|#{?#{e|<=:#{n:@og_open_clients},1024},#{@og_open_clients},!oversized}")),
 		"list-clients -F " + tmuxQuote(ctlSafe("#{client_name}")),
 		"set-option -a -F" + target + " @og_open_clients ' #{client_name}'",
 		"set-option -F" + target + " @og_open_client '#{client_name}'",
@@ -490,8 +491,16 @@ func pruneCmd(target, name string) string {
 func TestURLOpenerRegisterWrites(t *testing.T) {
 	const target = " -t '$1'"
 	appendSelf := "set-option -a -F" + target + " @og_open_clients ' #{client_name}'"
+	resetSelf := "set-option -F" + target + " @og_open_clients ' #{client_name}'"
 	slot := "set-option -F" + target + " @og_open_client '#{client_name}'"
 	long65 := strings.Repeat("a", 65)
+	var staleNames, capped []string
+	for i := range 20 {
+		staleNames = append(staleNames, fmt.Sprintf("client-%d", 100+i))
+	}
+	for _, n := range staleNames[:openMaxPrunes] {
+		capped = append(capped, pruneCmd(target, n))
+	}
 	cases := []struct {
 		name     string
 		listed   string
@@ -506,6 +515,9 @@ func TestURLOpenerRegisterWrites(t *testing.T) {
 		{"only the stale of several pruned", "client-3 client-4 client-7", []string{"client-7", "client-4"}, []string{pruneCmd(target, "client-3"), slot}},
 		{"repeated stale name pruned once", "client-3 client-3 client-7", []string{"client-7"}, []string{pruneCmd(target, "client-3"), slot}},
 		{"invalid entries never pruned", "bad.name x|y " + long65 + " client-9 client-7", []string{"client-7"}, []string{pruneCmd(target, "client-9"), slot}},
+		{"oversized list is reset to self", openOversized, []string{"client-7"}, []string{resetSelf, slot}},
+		{"oversized list is reset even when self is not attached", openOversized, nil, []string{resetSelf, slot}},
+		{"prunes stop at the cap, then self is appended", strings.Join(staleNames, " "), []string{"client-7"}, append(slices.Clip(capped), appendSelf, slot)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -526,6 +538,28 @@ func TestURLOpenerRegisterWrites(t *testing.T) {
 			}
 			if o.self != "client-7" {
 				t.Errorf("self = %q, want client-7", o.self)
+			}
+		})
+	}
+}
+
+func TestParseOpenRegister(t *testing.T) {
+	cases := []struct {
+		name, reply, clients string
+		self                 string
+		listed, attached     []string
+		oversized, ok        bool
+	}{
+		{"list", "client-7| client-3 client-7", "client-7\nclient-3\n", "client-7", []string{"client-3", "client-7"}, []string{"client-7", "client-3"}, false, true},
+		{"empty list", "client-7|", "client-7\n", "client-7", []string{}, []string{"client-7"}, false, true},
+		{"oversized", "client-7|" + openOversized, "client-7\n", "client-7", nil, []string{"client-7"}, true, true},
+		{"bad self", "bad.name|", "", "", nil, nil, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			self, listed, attached, oversized, ok := parseOpenRegister(c.reply, c.clients)
+			if self != c.self || !reflect.DeepEqual(listed, c.listed) || !reflect.DeepEqual(attached, c.attached) || oversized != c.oversized || ok != c.ok {
+				t.Errorf("got (%q, %q, %q, %v, %v), want (%q, %q, %q, %v, %v)", self, listed, attached, oversized, ok, c.self, c.listed, c.attached, c.oversized, c.ok)
 			}
 		})
 	}
@@ -906,11 +940,11 @@ func (c *openCtl) batch(cmds ...string) []controlmode.Line {
 func (c *openCtl) register(target string) string {
 	c.t.Helper()
 	reads := c.batch(openRegisterReadCmds(target)...)
-	self, listed, attached, ok := parseOpenRegister(string(reads[0].Data), string(reads[1].Data))
+	self, listed, attached, oversized, ok := parseOpenRegister(string(reads[0].Data), string(reads[1].Data))
 	if !ok {
 		c.t.Fatalf("register read %q / %q: self is not a usable tag", reads[0].Data, reads[1].Data)
 	}
-	c.batch(openRegisterWriteCmds(target, self, listed, attached)...)
+	c.batch(openRegisterWriteCmds(target, self, listed, attached, oversized)...)
 	return self
 }
 
@@ -981,6 +1015,22 @@ func TestOpenURLRegisterAgainstLiveTmux(t *testing.T) {
 	a.register(target)
 	if got, want := registry(), []string{nameA}; !reflect.DeepEqual(got, want) {
 		t.Errorf("registry after the other client left = %q, want %q", got, want)
+	}
+
+	// A list over openClientsMaxLen is reset to just the registering client,
+	// not pruned name by name.
+	var big strings.Builder
+	for i := 0; big.Len() <= openClientsMaxLen+76; i++ {
+		fmt.Fprintf(&big, " client-%d", 1000+i)
+	}
+	run("set-option", "-t", "w", openClientsOpt, big.String())
+	run("set-option", "-t", "w", openClientOpt, "client-1")
+	a.register(target)
+	if got, want := run("show-options", "-v", "-t", "w", openClientsOpt), " "+nameA+"\n"; got != want {
+		t.Errorf("registry after an oversized list = %q, want %q", got, want)
+	}
+	if got := option(openClientOpt); got != nameA {
+		t.Errorf("%s = %q, want the registering client %q", openClientOpt, got, nameA)
 	}
 }
 
