@@ -285,7 +285,7 @@ in {
     extraConfig = lib.mkOption {
       type = lib.types.lines;
       default = "";
-      example = lib.literalExpression "''set -ga update-environment KITTY_LISTEN_ON''";
+      example = lib.literalExpression "''set -ga update-environment MY_VAR''";
       description = ''
         Extra verbatim lines appended to the generated tmux.conf after all
         built-in settings (including persist hooks). Use for one-off tmux

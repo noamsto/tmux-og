@@ -613,21 +613,30 @@
     set -g visual-activity off
 
     # update-environment: clear stale entries first so source-file is idempotent.
-    # Without this, repeated config reloads duplicate TERM, KITTY_LISTEN_ON, etc.
+    # Without this, repeated config reloads duplicate TERM etc.
     set -gu update-environment
+    # tmux's default list spelled out, minus the per-machine display/kitty vars
+    # (DISPLAY WAYLAND_DISPLAY WINDOWID XAUTHORITY). Each attach copies every listed
+    # var from the attaching client into the session and marks it removed when that
+    # client lacks it, so a laptop ssh-attaching to a desktop's server would
+    # overwrite the desktop's values. client-attached[30] pins those from local
+    # clients only. SSH_AUTH_SOCK and the other SSH_* vars stay: a remote client's
+    # panes need its own forwarded agent (last attach wins).
+    set -g update-environment KRB5CCNAME
+    set -ga update-environment MSYSTEM
+    set -ga update-environment SSH_ASKPASS
+    set -ga update-environment SSH_AUTH_SOCK
+    set -ga update-environment SSH_AGENT_PID
+    set -ga update-environment SSH_CONNECTION
+    set -ga update-environment XDG_CURRENT_DESKTOP
+    set -ga update-environment XDG_SESSION_DESKTOP
+    set -ga update-environment XDG_SESSION_TYPE
     # Preserve terminal environment variables
     set -ga update-environment TERM
     set -ga update-environment TERM_PROGRAM
     set -ga update-environment COLORTERM
     set -ga update-environment TERMINFO
     set -ga update-environment TERMINFO_DIRS
-    # kitty remote-control socket, so `kitty @` (carousel reconcile) reaches the
-    # enclosing kitty from panes attached after the server started outside it.
-    set -ga update-environment KITTY_LISTEN_ON
-    # kitty-pane carousel opt-in. The reconcile hook runs in the session env, not
-    # the user's interactive shell, so thread AEYE_HOST in on attach — otherwise
-    # the carousel never follows tmux focus and the launcher degrades to a split.
-    set -ga update-environment AEYE_HOST
 
     # $BROWSER-aware tools (prdash, gh --web) in every server-started pane go
     # through og-open, which forwards to the controlling host when this session
@@ -925,10 +934,10 @@
     # like every other such site. The conf-shell-quoting guard cannot see this one:
     # it scans the emitted text, where the binds below read only "$is_vim".
     is_vim="ps -o state= -o comm= -t #{q:pane_tty} | grep -iqE '^[^TXZ ]+ +(\\S+\\/)?g?(view|l?n?vim?x?|fzf)(diff)?$'"
-    bind-key -N 'Navigate left' -n C-h if-shell "$is_vim" "send-keys C-h" "run-shell 'tmux-smart-nav L left #{q:window_zoomed_flag} #{q:pane_at_left} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
-    bind-key -N 'Navigate down' -n C-j if-shell "$is_vim" "send-keys C-j" "run-shell 'tmux-smart-nav D down #{q:window_zoomed_flag} #{q:pane_at_bottom} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
-    bind-key -N 'Navigate up' -n C-k if-shell "$is_vim" "send-keys C-k" "run-shell 'tmux-smart-nav U up #{q:window_zoomed_flag} #{q:pane_at_top} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
-    bind-key -N 'Navigate right' -n C-l if-shell "$is_vim" "send-keys C-l" "run-shell 'tmux-smart-nav R right #{q:window_zoomed_flag} #{q:pane_at_right} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}'"
+    bind-key -N 'Navigate left' -n C-h if-shell "$is_vim" "send-keys C-h" "run-shell 'tmux-smart-nav L left #{q:window_zoomed_flag} #{q:pane_at_left} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'"
+    bind-key -N 'Navigate down' -n C-j if-shell "$is_vim" "send-keys C-j" "run-shell 'tmux-smart-nav D down #{q:window_zoomed_flag} #{q:pane_at_bottom} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'"
+    bind-key -N 'Navigate up' -n C-k if-shell "$is_vim" "send-keys C-k" "run-shell 'tmux-smart-nav U up #{q:window_zoomed_flag} #{q:pane_at_top} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'"
+    bind-key -N 'Navigate right' -n C-l if-shell "$is_vim" "send-keys C-l" "run-shell 'tmux-smart-nav R right #{q:window_zoomed_flag} #{q:pane_at_right} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'"
 
   '';
 
@@ -1197,6 +1206,15 @@
     # Indexed [20] beside reflow [10] and splash [50]; -gu [20] in the block
     # above clears on reload (bare -gu on the hook name clears every index too).
     set-hook -g client-attached[20]     'run-shell -b "${script.tmux-default-size}/bin/tmux-default-size"'
+    # Per-machine env pinned from LOCAL clients only (no SSH_CONNECTION), session and
+    # global (later sessions inherit the global one). KITTY_LISTEN_ON lets `kitty @`
+    # (carousel reconcile) reach the enclosing kitty; AEYE_HOST is the kitty-pane
+    # carousel opt-in the reconcile hook reads from the session env; DISPLAY and
+    # friends keep spawned panes opening on the local display. #{I/e:VAR} reads the
+    # attaching client. No -t on set-environment: it targets the hook's session,
+    # whereas -t #{hook_session} is a silent no-op. A var the client lacks is left
+    # alone, so only non-empty values are written.
+    set-hook -g client-attached[30]     'if -F "#{==:#{I/e:SSH_CONNECTION},}" { if -F "#{I/e:DISPLAY}" { set-environment -F DISPLAY "#{I/e:DISPLAY}" ; set-environment -gF DISPLAY "#{I/e:DISPLAY}" } ; if -F "#{I/e:WAYLAND_DISPLAY}" { set-environment -F WAYLAND_DISPLAY "#{I/e:WAYLAND_DISPLAY}" ; set-environment -gF WAYLAND_DISPLAY "#{I/e:WAYLAND_DISPLAY}" } ; if -F "#{I/e:WINDOWID}" { set-environment -F WINDOWID "#{I/e:WINDOWID}" ; set-environment -gF WINDOWID "#{I/e:WINDOWID}" } ; if -F "#{I/e:XAUTHORITY}" { set-environment -F XAUTHORITY "#{I/e:XAUTHORITY}" ; set-environment -gF XAUTHORITY "#{I/e:XAUTHORITY}" } ; if -F "#{I/e:KITTY_LISTEN_ON}" { set-environment -F KITTY_LISTEN_ON "#{I/e:KITTY_LISTEN_ON}" ; set-environment -gF KITTY_LISTEN_ON "#{I/e:KITTY_LISTEN_ON}" } ; if -F "#{I/e:AEYE_HOST}" { set-environment -F AEYE_HOST "#{I/e:AEYE_HOST}" ; set-environment -gF AEYE_HOST "#{I/e:AEYE_HOST}" } }'
     set-hook -g client-resized[20]      'run-shell -b "${script.tmux-default-size}/bin/tmux-default-size"'
 
     # Refit floating panes to the new window size (#371). window-resized, not

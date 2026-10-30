@@ -558,6 +558,17 @@
               clear=$(grep -n 'set -gu update-environment' "$CONF" | head -1 | cut -d: -f1)
               first_append=$(grep -n 'set -ga update-environment' "$CONF" | head -1 | cut -d: -f1)
               [ "$clear" -lt "$first_append" ]
+
+              # Per-machine vars must not ride update-environment: a later
+              # attach from another machine would overwrite them (#1037).
+              # client-attached[30] pins them from local clients instead.
+              for var in DISPLAY WAYLAND_DISPLAY WINDOWID XAUTHORITY KITTY_LISTEN_ON AEYE_HOST; do
+                ! grep -q "update-environment $var\$" "$CONF"
+                grep -Fq "set-environment -gF $var " "$CONF"
+              done
+              pin=$(grep -n 'set-hook -g client-attached\[30\]' "$CONF" | head -1 | cut -d: -f1)
+              hook_clear=$(grep -n '^set-hook -gu client-attached$' "$CONF" | head -1 | cut -d: -f1)
+              [ "$hook_clear" -lt "$pin" ]
               touch $out
             '';
 
@@ -586,9 +597,9 @@
                 'U up pane_at_top' \
                 'R right pane_at_right'; do
                 set -- $direction
-                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}" "$CONF"
+                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'" "$CONF"
               done
-              [ "$(grep -c 'tmux-smart-nav .*#{q:pane_id} #{q:window_id}' "$CONF")" -eq 4 ]
+              [ "$(grep -c 'tmux-smart-nav .*#{q:window_id} client=#{?client_name,#{q:client_name},}' "$CONF")" -eq 4 ]
               touch $out
             '';
 
@@ -2427,6 +2438,23 @@
               export HOME=$TMPDIR/home
               mkdir -p "$HOME"
               bats tests/client-theme.bats
+              touch $out
+            '';
+
+          # Live proof for #1037: a second client attaching from another machine
+          # must not overwrite the first client's per-machine env.
+          multi-client-env-tests =
+            pkgs.runCommand "multi-client-env-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux];
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/multi-client-env.bats
               touch $out
             '';
 
