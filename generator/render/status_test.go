@@ -8,13 +8,14 @@ import (
 	"github.com/noamsto/tmux-og/generator/paths"
 )
 
-// The three flags are hand-transcribed bool->string maps in two dialects, and
+// The four flags are hand-transcribed bool->string maps in two dialects, and
 // both arguments default to false — an inverted map is byte-identical wherever
 // only the default is rendered, so pin both values of each.
 func TestFlagStringsBothWays(t *testing.T) {
 	on := Build(&config.Config{
 		AINaming: config.AINaming{Enable: true},
 		Resume:   config.Resume{Claude: true, Carousel: true},
+		Dwindle:  config.Dwindle{Enable: true},
 	}, &paths.Paths{})
 	off := Build(&config.Config{}, &paths.Paths{})
 
@@ -30,6 +31,8 @@ func TestFlagStringsBothWays(t *testing.T) {
 		{"@resume_claude off", off.ResumeClaudeFlag, "off", on.ResumeClaudeFlag},
 		{"@resume_carousel on", on.ResumeCarouselFlag, "on", off.ResumeCarouselFlag},
 		{"@resume_carousel off", off.ResumeCarouselFlag, "off", on.ResumeCarouselFlag},
+		{"@dwindle on", on.DwindleFlag, "on", off.DwindleFlag},
+		{"@dwindle off", off.DwindleFlag, "off", on.DwindleFlag},
 	} {
 		if tt.got != tt.want {
 			t.Errorf("%s = %q, want %q", tt.name, tt.got, tt.want)
