@@ -1,0 +1,14 @@
+TITLE:✳ tmux-og
+  done 10:56 PM · 1 shell still running
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  🤖 Opus 5.5 🧠 high | 📊 280k/1M | ⚡ 50%
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent
+
+  ● main
+  ◯ go-reviewer          Reading register logic
+  ◯ shell-reviewer       Reviewing og-open.sh
+  ◯ docs-reviewer        Reading register logic
+  ◯ security-reviewer    Reading openurl.go
+  ◯ general-purpose      Finding tests
