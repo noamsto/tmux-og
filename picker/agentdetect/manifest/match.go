@@ -59,8 +59,8 @@ func regionText(sel, screenText, title string) string {
 	case strings.HasPrefix(sel, "last_lines:"):
 		n := atoiDefault(strings.TrimPrefix(sel, "last_lines:"), 1)
 		return lastNonEmpty(screenText, n)
-	case strings.HasPrefix(sel, "prompt_block:"):
-		return promptBlock(screenText, atoiDefault(strings.TrimPrefix(sel, "prompt_block:"), 1))
+	case sel == "prompt_box":
+		return promptBox(screenText)
 	default:
 		return screenText
 	}
@@ -118,38 +118,52 @@ func lastNonEmpty(s string, n int) string {
 	return strings.Join(kept, "\n")
 }
 
-// promptBlock returns the last `❯` line that has a box border within the next
-// four lines, plus the following non-empty lines up to n in total, or "" when
-// no such prompt exists. Anchoring on the prompt box keeps rows drawn below the
-// footer (a task panel) from shifting it, and excludes scrollback above it. A
-// `❯` without a nearby border (menu cursor, panel row) is not a prompt.
-func promptBlock(s string, n int) string {
+const (
+	boxBorder  = "───"
+	footerRows = 4
+)
+
+// promptBox returns the input box and its footer, or "" when no box is found:
+// the last `❯` line between a top and bottom border, the bottom border, then the
+// non-empty rows after it up to the first blank row (footerRows at most). The
+// box is found by its borders, so a typed prompt of any height keeps the footer
+// in the region, a task panel drawn after the blank row never enters it, and an
+// unbordered `❯` (menu cursor, old echo in scrollback) never anchors it.
+func promptBox(s string) string {
 	lines := strings.Split(s, "\n")
-	for i, line := range slices.Backward(lines) {
-		if !strings.HasPrefix(strings.TrimLeft(line, " \t"), "❯") || !borderWithin(lines[i+1:], 4) {
+	for b, line := range slices.Backward(lines) {
+		if !strings.Contains(line, boxBorder) {
 			continue
 		}
-		block := []string{line}
-		for _, l := range lines[i+1:] {
-			if len(block) >= n {
+		prompt := promptLineAbove(lines[:b])
+		if prompt < 0 {
+			continue
+		}
+		block := slices.Clone(lines[prompt : b+1])
+		for _, l := range lines[b+1:] {
+			if strings.TrimSpace(l) == "" || len(block) >= b+1-prompt+footerRows {
 				break
 			}
-			if strings.TrimSpace(l) != "" {
-				block = append(block, l)
-			}
+			block = append(block, l)
 		}
 		return strings.Join(block, "\n")
 	}
 	return ""
 }
 
-func borderWithin(lines []string, n int) bool {
-	for _, l := range lines[:min(n, len(lines))] {
-		if strings.Contains(l, "───") {
-			return true
+// promptLineAbove returns the index of the last `❯`-leading line below the
+// nearest border in lines, or -1 when there is no top border or no such line.
+func promptLineAbove(lines []string) int {
+	prompt := -1
+	for i, l := range slices.Backward(lines) {
+		if strings.Contains(l, boxBorder) {
+			return prompt
+		}
+		if prompt < 0 && strings.HasPrefix(strings.TrimLeft(l, " \t"), "❯") {
+			prompt = i
 		}
 	}
-	return false
+	return -1
 }
 
 func atoiDefault(s string, d int) int {

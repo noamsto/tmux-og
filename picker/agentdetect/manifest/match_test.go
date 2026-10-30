@@ -56,29 +56,41 @@ func TestMatchEmptyRuleDoesNotMatch(t *testing.T) {
 	}
 }
 
-func TestPromptBlockRegion(t *testing.T) {
+func TestPromptBoxRegion(t *testing.T) {
 	const bar = "────────────"
-	footer := "  🤖 Opus\n  -- INSERT -- · 1 shell"
+	footer := "  🤖 Opus\n  -- INSERT -- · 2 shells"
+	panel := "\n\n  ● main\n  ◯ a\n  ◯ b"
+	three := "❯ one\n  two\n  three\n"
+	five := "❯ one\n  two\n  three\n  four\n  five\n"
 	cases := []struct{ name, screen, want string }{
-		{"panel below footer", "old\n" + bar + "\n❯ \n" + bar + "\n" + footer + "\n\n  ● main\n  ◯ a\n  ◯ b\n  ◯ c",
-			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell\n  ● main"},
-		{"trailing blank rows", "❯ \n" + bar + "\n" + footer + "\n  \n\n  \n",
-			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell"},
-		{"panel row starting with prompt glyph", "❯ \n" + bar + "\n" + footer + "\n❯ row\n  ◯ a",
-			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell\n❯ row"},
-		{"menu cursor without border falls back to the older prompt", "❯ \n" + bar + "\n" + footer + "\n\nold\n❯ 1. Yes\n  2. No",
-			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell\nold"},
-		{"no border", "❯ hi\nplain\ntext", ""},
-		{"last prompt wins over scrollback", "❯ old\n" + bar + "\nold footer · 3 shells\nx\ny\nz\n" + bar + "\n❯ new\n" + bar + "\n" + footer,
-			"❯ new\n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell"},
-		{"multi-line prompt", "❯ one\n  two\n" + bar + "\n" + footer,
-			"❯ one\n  two\n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 1 shell"},
-		{"leftover rows below footer without shell", "❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT --\nran 2 shells · 3 shells\nx\ny",
-			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT --\nran 2 shells · 3 shells"},
+		{"panel below blank row", "old\n" + bar + "\n❯ \n" + bar + "\n" + footer + panel,
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"no blank row, footer capped at four rows", bar + "\n❯ \n" + bar + "\na\nb\nc\nd\ne\nf",
+			"❯ \n" + bar + "\na\nb\nc\nd"},
+		{"3-row typed prompt", bar + "\n" + three + bar + "\n" + footer,
+			three + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"3-row typed prompt with panel", bar + "\n" + three + bar + "\n" + footer + panel,
+			three + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"5-row typed prompt", bar + "\n" + five + bar + "\n" + footer,
+			five + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"5-row typed prompt with panel", bar + "\n" + five + bar + "\n" + footer + panel,
+			five + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"last prompt line wins within the box", bar + "\n❯ one\n❯ two\n  x\n" + bar + "\n" + footer,
+			"❯ two\n  x\n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"panel row with shell count after blank row", bar + "\n❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT --\n\n  ◯ a · 3 shells",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT --"},
+		{"whitespace-only row ends the footer", bar + "\n❯ \n" + bar + "\n" + footer + "\n   \n  ◯ a · 3 shells",
+			"❯ \n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"last box wins over scrollback", bar + "\n❯ old\n" + bar + "\nold footer · 3 shells\n\nx\n" + bar + "\n❯ new\n" + bar + "\n" + footer,
+			"❯ new\n" + bar + "\n  🤖 Opus\n  -- INSERT -- · 2 shells"},
+		{"dialog does not anchor on an unbordered echo", "❯ old echo\nanswer\nDo you want to proceed?\n❯ 1. Yes\n  2. No", ""},
+		{"dialog bordered below an echo without top border", "❯ old echo\n" + bar + "\nDo you want to proceed?\n❯ 1. Yes", ""},
+		{"no box", "❯ hi\nplain\ntext", ""},
+		{"borders without prompt", bar + "\nplain\n" + bar + "\n" + footer, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := regionText("prompt_block:5", c.screen, ""); got != c.want {
+			if got := regionText("prompt_box", c.screen, ""); got != c.want {
 				t.Fatalf("region = %q, want %q", got, c.want)
 			}
 		})
