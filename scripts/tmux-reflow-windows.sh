@@ -91,13 +91,11 @@ IFS='|' read -r win_count ATTACHED prev_key HEIGHT FOLDED CAP ICON_REMOTE NUDGE 
 # the way an empty width has to. Resolve it before it reaches the cache key so
 # the key can never be stamped with a trailing blank field.
 [[ $HEIGHT =~ ^[1-9][0-9]*$ ]] || HEIGHT=0
-# The layout is per session but every attached client renders it: size the grid
-# for the narrowest attached real client so it fits on all of them (#1038).
-# Control clients are the bridge's connection, not a terminal: they report a
-# width but must never set the layout. The passed width is only a fallback: a
-# hook's #{client_width} may belong to a control client or another session's
-# client, so it must not join the minimum. With no real client attached it
-# stands (the bridge daemon reflows its mirror session from outside any client).
+# Every attached client renders the session's layout, so size it for the
+# narrowest real client. Control clients (the bridge) report a width but are not
+# a terminal. The passed width may be a control client's or another session's,
+# so it is only the fallback for a session with no real client attached (the
+# bridge daemon reflows its mirror session from outside any client).
 # session_attached gates the fork: only list clients when one is attached.
 if [[ $ATTACHED =~ ^[1-9][0-9]*$ ]]; then
 	min_cw=
