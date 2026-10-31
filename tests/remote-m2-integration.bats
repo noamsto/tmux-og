@@ -6855,7 +6855,10 @@ attach_pty_client() {
 		sleep 0.15
 	done
 	[ "$src_z" = 1 ]
-	[ "$dst_z" = 1 ]
+	[ "$dst_z" = 1 ] || {
+		tail -n 20 "$BATS_TEST_TMPDIR/splitkill.log" >&2
+		false
+	}
 
 	new="$($SRC split-window -v -t rem -P -F '#{pane_id}')"
 	$SRC kill-pane -t "$new"
@@ -6871,8 +6874,14 @@ attach_pty_client() {
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
 
-	[ "$src_z" = "$dst_z" ]
-	[ "$src_dims" = "$dst_dims" ]
+	[ "$src_z" = "$dst_z" ] || {
+		tail -n 20 "$BATS_TEST_TMPDIR/splitkill.log" >&2
+		false
+	}
+	[ "$src_dims" = "$dst_dims" ] || {
+		tail -n 20 "$BATS_TEST_TMPDIR/splitkill.log" >&2
+		false
+	}
 }
 
 # #645: the pin bump (#652) made `#{window_layout}` over a control client
