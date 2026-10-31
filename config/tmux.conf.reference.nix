@@ -702,7 +702,7 @@
     # Split by shape. Cells are ~1:2, so pixel width > pixel height <=>
     # pane_width > 2*pane_height (strict >). | and _ stay explicit overrides.
     bind -N 'Split pane by its shape' Enter if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} #{?#{e|>|:#{pane_width},#{e|*|:#{pane_height},2}},split-h,split-v} #{q:@bridge_pane}" } { if-shell -F '#{e|>|:#{pane_width},#{e|*|:#{pane_height},2}}' { split-window -h -c "#{pane_current_path}" } { split-window -v -c "#{pane_current_path}" } }
-    bind -N 'Toggle dwindle auto-balance for this window' A if-shell -F '${bridgeGate}' { display-message "dwindle: not mirrored - toggle it on the remote" } { if-shell -F '#{==:#{@crew_grid},1}' { display-message "dwindle: grid window - tmux-grid-refit owns this layout" } { set -wF @dwindle '#{?#{==:#{@dwindle},on},off,on}' ; display-message "dwindle auto-balance: #{@dwindle} (this window)" } }
+    bind -N 'Toggle dwindle auto-balance for this window' A if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} dwindle-toggle #{q:@bridge_pane}" } { if-shell -F '#{==:#{@crew_grid},1}' { display-message "dwindle: grid window - tmux-grid-refit owns this layout" } { set -wF @dwindle '#{?#{==:#{@dwindle},on},off,on}' ; display-message "dwindle auto-balance: #{@dwindle} (this window)" } }
     bind -N 'Create new window' c if-shell -F '${bridgeGate}' { run-shell "${bridgeCtl} new-window #{q:@bridge_pane}" } { if-shell -F '#{m:scratch-*,#{session_name}}' 'display-message "scratchpad: new windows disabled"' 'new-window -c "#{pane_current_path}"' }
     # Zoom, like every other structural gesture, happens on the remote in a
     # mirror: zooming the local renderer pane grows it without growing the

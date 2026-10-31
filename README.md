@@ -144,7 +144,8 @@ When a tiled pane closes, the remaining panes of the split group it left even
 out; other groups keep their sizes. It is on by default;
 `programs.tmux-og.dwindle.enable = false;` turns it off (off-Nix:
 `[dwindle] enable = false` in `config.toml`), and <kbd>prefix</kbd> <kbd>A</kbd>
-toggles it per window. It is skipped for dispatcher grid windows, float closes,
+toggles it per window (in a mirror window it flips the remote window's flag
+and reports the result in the status line). It is skipped for dispatcher grid windows, float closes,
 zoomed windows and mirror windows (the remote balances), and tmux-remux
 restores keep their saved sizes.
 
@@ -193,7 +194,7 @@ Press <kbd>prefix</kbd> then <kbd>C-Space</kbd> for the in-terminal cheatsheet.
 | <kbd>R</kbd> | Snapshot picker |
 | <kbd>C-s</kbd> | Save snapshot now |
 | <kbd>F</kbd> / <kbd>J</kbd> | tmux-fingers copy / jump mode |
-| <kbd>A</kbd> | Toggle dwindle auto-balance for this window |
+| <kbd>A</kbd> | Toggle dwindle auto-balance for this window (in a mirror: the remote window) |
 | <kbd>D</kbd> | Toggle debug logging |
 
 <kbd>u</kbd>/<kbd>U</kbd>/<kbd>R</kbd>/<kbd>C-s</kbd> require `persist.enable` (on by default);
