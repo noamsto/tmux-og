@@ -1043,7 +1043,7 @@ export OG_BRIDGE_CELL_W="$cell_w"
 export OG_BRIDGE_CELL_H="$cell_h"
 
 # COLORTERM/TERM_PROGRAM (#543) ride into the INVOKING client's session via
-# update-environment on attach (config/tmux.conf.nix), the same channel
+# update-environment on attach (config/tmux.conf.tmpl), the same channel
 # #{client_termname} reflects the outer terminal through above. Read them off
 # that session, not $local_sess — the mirror session just created a few lines
 # up has no attaching client yet, so it never receives an update-environment

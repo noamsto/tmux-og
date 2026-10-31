@@ -73,7 +73,7 @@ func sshControlArgs(ctlSock, host, tmpdir, term, colorterm, termProgram, session
 		args = append(args, "TERM="+shellQuote(term))
 	}
 	// COLORTERM/TERM_PROGRAM are in tmux-og's update-environment
-	// (config/tmux.conf.nix) alongside TERM, so a bridged attach that carries
+	// (config/tmux.conf.tmpl) alongside TERM, so a bridged attach that carries
 	// none of them into the remote tmux gets both marked "explicitly removed"
 	// (#543) — every later program in that session loses truecolor detection.
 	//

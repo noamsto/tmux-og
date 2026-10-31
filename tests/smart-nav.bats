@@ -9,7 +9,7 @@ setup() {
 	export TMUX_LOG="$BATS_TEST_TMPDIR/tmux.log"
 	: >"$TMUX_LOG"
 	printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$KITTY_LOG" >"$STUB/kitty"
-	printf '%s\n' '#!/usr/bin/env bash' 'if [ "$1" = list-panes ]; then' '  [ "${TMUX_LIST_PANES_FAIL:-0}" = 1 ] && exit 1' '  printf "%b" "${TMUX_PANES:-}"' '  exit 0' 'fi' >"$STUB/tmux"
+	printf '%s\n' '#!/usr/bin/env bash' 'if [ "$1" = list-panes ]; then' '  [ "${TMUX_LIST_PANES_FAIL:-0}" = 1 ] && exit 1' '  printf "%b" "${TMUX_PANES:-}"' '  exit 0' 'fi' 'if [ "$1" = display-message ]; then printf "%s" "${TMUX_CLIENT_SOCK:-}"; exit 0; fi' >"$STUB/tmux"
 	printf 'echo "$*" >>"%s"\n' "$TMUX_LOG" >>"$STUB/tmux"
 	chmod +x "$STUB/kitty" "$STUB/tmux"
 	export PATH="$STUB:$PATH"
@@ -42,6 +42,35 @@ setup() {
 	run bash "$SCRIPT" R right 0 1 0 %0 @0
 	grep -q '@ action neighboring_window right' "$KITTY_LOG"
 	[ ! -s "$TMUX_LOG" ]
+}
+
+@test "client= arg: the client's own socket overrides the env one for the kitty call" {
+	export KITTY_LISTEN_ON=unix:/tmp/server TMUX_CLIENT_SOCK=unix:/tmp/client
+	printf '#!/usr/bin/env bash\necho "$KITTY_LISTEN_ON $*" >>"%s"\n' "$KITTY_LOG" >"$STUB/kitty"
+	run bash "$SCRIPT" R right 0 1 0 %0 @0 client=/dev/pts/9
+	grep -q '^unix:/tmp/client @ action neighboring_window right' "$KITTY_LOG"
+	[ ! -s "$TMUX_LOG" ]
+}
+
+@test "client= arg whose client has no socket is authoritative: no hand-off" {
+	export KITTY_LISTEN_ON=unix:/tmp/server TMUX_CLIENT_SOCK=
+	run bash "$SCRIPT" R right 0 1 0 %0 @0 client=/dev/pts/9
+	grep -q 'select-pane -R' "$TMUX_LOG"
+	[ ! -s "$KITTY_LOG" ]
+}
+
+@test "empty client= arg (no client): no hand-off despite env socket" {
+	export KITTY_LISTEN_ON=unix:/tmp/server TMUX_CLIENT_SOCK=unix:/tmp/client
+	run bash "$SCRIPT" R right 0 1 0 %0 @0 client=
+	grep -q 'select-pane -R' "$TMUX_LOG"
+	[ ! -s "$KITTY_LOG" ]
+}
+
+@test "client= arg works without an env socket" {
+	unset KITTY_LISTEN_ON
+	export TMUX_CLIENT_SOCK=unix:/tmp/client
+	run bash "$SCRIPT" R right 0 1 0 %0 @0 client=/dev/pts/9
+	grep -q '@ action neighboring_window right' "$KITTY_LOG"
 }
 
 @test "failed geometry query falls back to native navigation without kitty" {

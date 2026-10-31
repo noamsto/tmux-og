@@ -558,6 +558,53 @@
               clear=$(grep -n 'set -gu update-environment' "$CONF" | head -1 | cut -d: -f1)
               first_append=$(grep -n 'set -ga update-environment' "$CONF" | head -1 | cut -d: -f1)
               [ "$clear" -lt "$first_append" ]
+
+              # The per-machine vars stay in update-environment (single-client
+              # behaviour is unchanged); the record-and-restore hook undoes an
+              # ssh client's overwrite of them (#1037).
+              for var in DISPLAY WAYLAND_DISPLAY WINDOWID XAUTHORITY KITTY_LISTEN_ON AEYE_HOST; do
+                for hook in 'client-attached\[30\]' 'after-new-session\[40\]'; do
+                  line=$(grep "^set-hook -g $hook " "$CONF")
+                  case "$line" in
+                    *"set -F @og_local_$var \""*"#{I/e:$var}"*) ;;
+                    *) echo "$hook does not record $var" >&2; exit 1 ;;
+                  esac
+                  case "$line" in
+                    *"set-environment -F $var \"#{@og_local_$var}\""*"{ if -F \"#{@og_local_seen}\" { set-environment -r $var } }"*) ;;
+                    *) echo "$hook does not restore $var" >&2; exit 1 ;;
+                  esac
+                  case "$line" in
+                    *'set -F @og_local_seen 1'*) ;;
+                    *) echo "$hook does not stamp @og_local_seen" >&2; exit 1 ;;
+                  esac
+                  # Records are per session: a global write would cross sessions.
+                  case "$line" in
+                    *'set -gF @og_local_'*) echo "$hook records globally" >&2; exit 1 ;;
+                  esac
+                  if printf '%s' "$line" | grep -q 'set-environment [^"]*-t'; then
+                    echo "$hook must not pass -t to set-environment" >&2
+                    exit 1
+                  fi
+                done
+              done
+              # client-attached resolves the attaching client by #{hook_client}.
+              line=$(grep '^set-hook -g client-attached\[30\] ' "$CONF")
+              case "$line" in
+                *'set -gF @og_attach_client "#{hook_client}"'*) ;;
+                *) echo "client-attached[30] does not stash #{hook_client}" >&2; exit 1 ;;
+              esac
+              # new-session -d has no client of its own: only an attached creator
+              # may record or restore.
+              line=$(grep '^set-hook -g after-new-session\[40\] ' "$CONF")
+              case "$line" in
+                *"'if -F \"#{==:#{client_session},#{session_name}}\" {"*) ;;
+                *) echo "after-new-session[40] is not gated on an attached creator" >&2; exit 1 ;;
+              esac
+              for hook in client-attached after-new-session; do
+                hook_clear=$(grep -n "^set-hook -gu $hook\$" "$CONF" | head -1 | cut -d: -f1)
+                hook_set=$(grep -n "^set-hook -g $hook\[[34]0\] .*@og_local_" "$CONF" | head -1 | cut -d: -f1)
+                [ -n "$hook_clear" ] && [ -n "$hook_set" ] && [ "$hook_clear" -lt "$hook_set" ]
+              done
               touch $out
             '';
 
@@ -586,9 +633,9 @@
                 'U up pane_at_top' \
                 'R right pane_at_right'; do
                 set -- $direction
-                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id}" "$CONF"
+                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'" "$CONF"
               done
-              [ "$(grep -c 'tmux-smart-nav .*#{q:pane_id} #{q:window_id}' "$CONF")" -eq 4 ]
+              [ "$(grep -c 'tmux-smart-nav .*#{q:window_id} client=#{?client_name,#{q:client_name},}' "$CONF")" -eq 4 ]
               touch $out
             '';
 
@@ -2427,6 +2474,23 @@
               export HOME=$TMPDIR/home
               mkdir -p "$HOME"
               bats tests/client-theme.bats
+              touch $out
+            '';
+
+          # Live proof for #1037: a second client attaching from another machine
+          # must not overwrite the first client's per-machine env.
+          multi-client-env-tests =
+            pkgs.runCommand "multi-client-env-tests" {
+              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux];
+              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/multi-client-env.bats
               touch $out
             '';
 
