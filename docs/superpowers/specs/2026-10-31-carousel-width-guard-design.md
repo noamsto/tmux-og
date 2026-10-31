@@ -71,25 +71,39 @@ derivation `tmux-update-icons` uses for the remux stamp).
 
 ## Restore target
 
-Space `S`:
+The host is *paired* when it is a tiled pane in the same window directly left
+of the carousel (`host_left + host_width + 1 == carousel_left`) with the
+identical top and height: the cell the two split.
 
-- if the host pane is a tiled pane in the same window, horizontally adjacent to
-  the carousel (one's `left + width + 1` equals the other's `left`) and
-  vertically overlapping it, `S = host_width + 1 + carousel_width` — the cell
-  the two split;
-- else `S = window_width`.
+`resize-pane -x` (tmux `layout_resize_pane`) walks up to the pane's nearest
+left-right ancestor and adjusts the child on the pane's path, borrowing from
+its next sibling, unless that child is the last one, in which case the previous
+sibling is adjusted and the pane's left border moves. Geometry alone cannot
+tell which pane of a nested row is last, so the donor is chosen by three rules:
+
+1. **Carousel at the window's right edge** (`left + width == window_width`): it
+   is the last child at every left-right level, so
+   `resize-pane -t <carousel> -x <target>` moves its left border and takes the
+   columns from the cell on its left. `S = host_width + 1 + carousel_width`
+   when paired, else `S = window_width`.
+2. **Otherwise, a paired host**: the host ends a cell whose next sibling holds
+   the carousel, so `resize-pane -t <host> -x <S - 1 - target>` with
+   `S = host_width + 1 + carousel_width` moves their shared border.
+3. **Otherwise the carousel is declined**: resizing it would take the columns
+   from the pane on its right (measured: `[A 100 | [H 15 / C 15] | X 37]` at
+   154 went to `A 90, H/C 61, X 1`). The gate's marker stops further forks at
+   that geometry.
 
 If `S < MIN_COLS + 1 + MAIN_MIN_COLS` (61) the guard does nothing (too narrow
-for a usable pair). Otherwise `target = max(MIN_COLS, S * SHARE_PCT / 100)` and
-the guard grows the carousel to `<target>`. In the reported case (154 wide,
-152/1) that is 61, leaving the agent pane 92.
+for a usable pair). Otherwise `target = max(MIN_COLS, S * SHARE_PCT / 100)`. In
+the reported case (154 wide, 152/1) that is 61, leaving the agent pane 92.
 
 Using the pair rather than the window keeps a three-pane `A | H | C` window from
-crushing `H`. `resize-pane -x` moves a non-last pane's right border, so with the
-host on the left the guard runs `resize-pane -t <host> -x <S - 1 - target>`
-(resizing the carousel would take the columns from a pane right of it);
-otherwise `resize-pane -t <carousel> -x <target>`. It restores one carousel per
-run; the resize re-fires the gate for any other one, against fresh widths.
+crushing `H`. Resizing the host whenever it sat on the left was rejected: in
+`[[K | H] / Y] | C` the host is the last pane of its nested row, so resizing it
+moved its own left border and left the carousel at 1 column. The guard restores
+the first fixable carousel per run, skipping declined ones; the resize re-fires
+the gate for any other one, against fresh widths.
 
 ## Wiring
 
@@ -137,11 +151,12 @@ right before forking. That one marker does two jobs:
 The marker must mean "tried and could not fix", never "fixed": the triggers
 are deterministic, so the same action can squeeze a restored carousel back to
 the identical geometry (same pane ids, 152/1 at 154), which a lingering marker
-would then suppress forever. So a resize that brings the carousel to
-`MIN_COLS` or more clears the marker in the same tmux command list:
+would then suppress forever. So a successful restore — a resize that brings
+the carousel to `MIN_COLS` or more — clears the marker in the same tmux
+command list (`<pane>` is the carousel or the host, per "Restore target"):
 
 ```
-resize-pane -t <carousel> -x <target> \; if -F -t <carousel> '#{e|>=|:#{pane_width},20}' { set -wu -t <window> @carousel_guard_sig }
+resize-pane -t <pane> -x <cols> \; if -F -t <carousel> '#{e|>=|:#{pane_width},20}' { set -wu -t <window> @carousel_guard_sig }
 ```
 
 One option write per successful restore, which is rare. A declined restore, a
@@ -152,10 +167,12 @@ moves.
 
 The script re-reads the window in one `list-panes` and re-applies the zoom,
 grid and mirror checks (the window can change between gate and backgrounded
-run), clearing the marker when one holds so an unzoom at the same geometry is
-restored. It then restores the first squeezed carousel it can per "Restore
-target", inside an `if -F` that repeats those checks atomically (`resize-pane`
-unzooms a zoomed window) and clears the marker instead of resizing.
+run) and exits when one holds. It then restores the first squeezed carousel it
+can per "Restore target", inside an `if -F` that repeats those checks
+atomically (`resize-pane` unzooms a zoomed window) and skips the resize when
+one holds. Either way the script clears the marker on a successful restore, or
+when the window is (or became) zoomed, so an unzoom at the same geometry is
+restored; a mirror or grid window is never written.
 
 ## Coexistence and ping-pong
 
@@ -191,7 +208,11 @@ that logs each fork, then execs the real script.
    window: zero forks, width unchanged.
 4. Too-narrow window (50 wide, carousel at 1): zero forks. Wide window but
    too-narrow pair (`A | H | C` with `H + C` < 61): exactly one fork, nothing
-   changed, and further events fork nothing.
+   changed, and further events fork nothing. A carousel with no safe donor
+   (`[A 100 | [H 15 / C 15] | X 37]`): one fork, geometry unchanged.
+   Donor rules: a middle carousel shrinks its host (`H | C | X`, X untouched);
+   a right-edge carousel beside a nested row (`[[K | H] / Y] | C`) takes its
+   columns from its left.
 5. Re-squeeze: restore, squeeze again to the identical geometry, restored
    again (red if the marker survives a successful restore).
 6. No ping-pong: after one restore, further resizes and an idle settle fork

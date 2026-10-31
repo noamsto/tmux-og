@@ -9,9 +9,11 @@
 #   args: <target-window>   (the layout-change/resize hook passes #{window_id})
 # The hook gate writes @carousel_guard_sig before forking this run, so events
 # at an unchanged geometry skip. The marker means "tried and could not fix":
-# it is cleared when the carousel reaches MIN_COLS, in the same command list
-# as the resize, because the same action can squeeze a restored carousel back
-# to the identical geometry and a lingering marker would then suppress it.
+# it is cleared on a successful restore, in the same command list as the
+# resize, because the same action can squeeze a restored carousel back to the
+# identical geometry and a lingering marker would then suppress it. It is also
+# cleared when the window is or became zoomed; a mirror or grid window is
+# never written.
 set -uo pipefail
 
 # The hook gate's `20` and `61` (MIN_COLS + 1 + MAIN_MIN_COLS) are literals.
@@ -50,27 +52,36 @@ still_tiled='#{&&:#{&&:#{!:#{window_zoomed_flag}},#{!:#{@bridge_win}}},#{!=:#{@c
 clear_marker="set -wu -t $target @carousel_guard_sig"
 clear_if_zoomed="if -F -t $target '#{&&:#{window_zoomed_flag},#{!:#{@bridge_win}}}' '$clear_marker'"
 
+# resize-pane -x adjusts the pane's cell in its nearest left-right row and
+# takes the columns from the next cell, or from the previous one when the cell
+# is last in that row. Geometry cannot tell which pane of a nested row is
+# last, so only two moves are safe:
+#   - a carousel at the window's right edge is last at every level, so
+#     resizing it moves its left border and the columns come from its left;
+#   - a host directly left of the carousel with the same rows ends a cell
+#     whose next cell holds the carousel, so shrinking the host moves their
+#     shared border.
+# Any other carousel is declined, because resizing it would take the columns
+# from the pane on its right; the gate's marker stops further forks here.
 for entry in "${carousels[@]}"; do
 	c=${entry%%|*}
 	src=${entry#*|}
 	host="%${src##*-}"
-	space=$wwidth
-	resized=$c
-	# The cell the carousel splits with its host. resize-pane -x moves a
-	# pane's right border unless it is the last in its row, so resizing a
-	# carousel with the host on its left would take the columns from the pane
-	# to its right: the host is resized instead, moving their shared border.
+	cl=${left[$c]} ct=${top[$c]} cw=${width[$c]} ch=${height[$c]}
+	paired=0
 	if [[ -n ${width[$host]:-} ]]; then
-		hl=${left[$host]} ht=${top[$host]} hw=${width[$host]} hh=${height[$host]}
-		cl=${left[$c]} ct=${top[$c]} cw=${width[$c]} ch=${height[$c]}
-		if ((ht < ct + ch && ct < ht + hh)); then
-			if ((hl + hw + 1 == cl)); then
-				space=$((hw + 1 + cw))
-				resized=$host
-			elif ((cl + cw + 1 == hl)); then
-				space=$((hw + 1 + cw))
-			fi
-		fi
+		hw=${width[$host]}
+		((left[$host] + hw + 1 == cl && top[$host] == ct && height[$host] == ch)) && paired=1
+	fi
+	if ((cl + cw == wwidth)); then
+		resized=$c
+		space=$wwidth
+		((paired)) && space=$((hw + 1 + cw))
+	elif ((paired)); then
+		resized=$host
+		space=$((hw + 1 + cw))
+	else
+		continue
 	fi
 	((space < MIN_COLS + 1 + MAIN_MIN_COLS)) && continue
 	tw=$((space * SHARE_PCT / 100))

@@ -635,9 +635,11 @@ not a mirror, not a grid and not zoomed, and the tiled geometry differs from
 - The marker is written before the fork, so a burst of layout events forks once
   and a window tmux cannot grow (or one the script declines) stops forking at
   that geometry instead of looping on its own resize.
-- The script clears it only when the carousel reached 20 columns, in the same
-  command list as the `resize-pane`. A cleared marker means "fixed", so an
-  identical re-squeeze later is restored again; a lingering one would suppress it.
+- The script clears it on a successful restore (the carousel reached 20
+  columns, checked in the same command list as the `resize-pane`), or when the
+  window is (or became) zoomed; a mirror or grid window is never written. A
+  marker cleared by a restore means "fixed", so an identical re-squeeze later is
+  restored again; a lingering one would suppress it.
 - This is an option write on an event path, which the #793 findings warn
   about (every write runs `recalculate_sizes()` plus a redraw of every client).
   It is acceptable here because it happens only on the rare trip path, once per

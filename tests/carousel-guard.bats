@@ -386,10 +386,66 @@ layout_changes() { tmux show-options -g -v @lc; }
 	for p in "$MAIN" "$c1" "$x" "$c2"; do
 		[ "$(width_of "$p")" -ge 20 ]
 	done
-	[ "$(fork_count)" -le 3 ]
+	[ "$(fork_count)" -eq 2 ]
 }
 
-@test "a bottom carousel in a narrow column grows the column" {
+@test "a vanished window exits quietly" {
+	run bash "$GUARD" '@99999'
+	[ "$status" -eq 0 ]
+	[ -z "$output" ]
+}
+
+@test "a right-edge carousel beside a nested row takes its columns from the left" {
+	# [[K | H] / Y] | C, C split off H. H is the last pane of its nested row,
+	# so resizing H would move H's left border and leave C at 1 column.
+	local host bottom car
+	host="$(split_h "$MAIN")"
+	bottom="$(tmux split-window -v -f -t "$MAIN" -P -F '#{pane_id}' 'sleep 600')"
+	car="$(tmux split-window -h -f -t "$MAIN" -P -F '#{pane_id}' 'sleep 600')"
+	make_carousel "$car" "$host"
+	tmux resize-pane -t "$car" -x 1
+	[ "$(width_of "$MAIN")" -eq 76 ]
+	[ "$(width_of "$host")" -eq 75 ]
+	[ "$(width_of "$bottom")" -eq 152 ]
+	arm_guard_hooks
+
+	fire_same
+
+	# H's rows differ from C's: S = window width 154, target 61, and the
+	# columns come from the cell on C's left.
+	poll_width "$car" 61
+	[ "$(width_of "$MAIN")" -eq 46 ]
+	[ "$(width_of "$host")" -eq 45 ]
+	[ "$(width_of "$bottom")" -eq 92 ]
+	[ -z "$(marker)" ]
+}
+
+@test "a carousel stacked under its host mid-row is declined" {
+	# [A | [H / C] | X], C split off H: no safe donor, since resizing C would
+	# take its columns from X.
+	local host right car
+	host="$(split_h "$MAIN")"
+	right="$(split_h "$host")"
+	car="$(split_v "$host")"
+	make_carousel "$car" "$host"
+	tmux resize-pane -t "$MAIN" -x 100
+	tmux resize-pane -t "$host" -x 15
+	[ "$(width_of "$car")" -eq 15 ]
+	[ "$(width_of "$right")" -eq 37 ]
+	local before
+	before="$(layout)"
+	arm_guard_hooks
+
+	fire_same
+	poll_forks 1
+	sleep "$SETTLE"
+	[ "$(fork_count)" -eq 1 ]
+	[ "$(layout)" = "$before" ]
+	[ "$(width_of "$right")" -eq 37 ]
+	[ -n "$(marker)" ]
+}
+
+@test "a bottom carousel in a narrow right-edge column grows the column" {
 	local host car
 	host="$(split_h "$MAIN")"
 	tmux resize-pane -t "$host" -x 15
@@ -400,7 +456,8 @@ layout_changes() { tmux show-options -g -v @lc; }
 
 	fire_same
 
-	# The host is above, not beside it: S = window width 154, target 61.
+	# C is at the window's right edge and its host is above it, not beside
+	# it: S = window width 154, target 61, taken from MAIN on its left.
 	poll_width "$car" 61
 	[ "$(width_of "$host")" -eq 61 ]
 	[ "$(width_of "$MAIN")" -eq 92 ]
