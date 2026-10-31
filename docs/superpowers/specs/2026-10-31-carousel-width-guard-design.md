@@ -81,11 +81,15 @@ Space `S`:
 
 If `S < MIN_COLS + 1 + MAIN_MIN_COLS` (61) the guard does nothing (too narrow
 for a usable pair). Otherwise `target = max(MIN_COLS, S * SHARE_PCT / 100)` and
-the guard runs `resize-pane -t <carousel> -x <target>`. In the reported case
-(154 wide, 152/1) that is 61, leaving the agent pane 92.
+the guard grows the carousel to `<target>`. In the reported case (154 wide,
+152/1) that is 61, leaving the agent pane 92.
 
 Using the pair rather than the window keeps a three-pane `A | H | C` window from
-crushing `H`: tmux takes the growth from the carousel's neighbour cell.
+crushing `H`. `resize-pane -x` moves a non-last pane's right border, so with the
+host on the left the guard runs `resize-pane -t <host> -x <S - 1 - target>`
+(resizing the carousel would take the columns from a pane right of it);
+otherwise `resize-pane -t <carousel> -x <target>`. It restores one carousel per
+run; the resize re-fires the gate for any other one, against fresh widths.
 
 ## Wiring
 
@@ -148,7 +152,10 @@ moves.
 
 The script re-reads the window in one `list-panes` and re-applies the zoom,
 grid and mirror checks (the window can change between gate and backgrounded
-run), then restores each squeezed carousel per "Restore target".
+run), clearing the marker when one holds so an unzoom at the same geometry is
+restored. It then restores the first squeezed carousel it can per "Restore
+target", inside an `if -F` that repeats those checks atomically (`resize-pane`
+unzooms a zoomed window) and clears the marker instead of resizing.
 
 ## Coexistence and ping-pong
 

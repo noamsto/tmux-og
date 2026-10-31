@@ -36,8 +36,14 @@ POLL_TRIES=300
 # Wall-clock wait before asserting that nothing was forked.
 SETTLE=1
 
+# Every test call names its own socket, so a stray TMUX can never reach the
+# user's server. The guard's own bare tmux calls run inside run-shell jobs,
+# which inherit TMUX pointing at this server.
+tmux() { command tmux -L og-cg "$@"; }
+
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
+	unset TMUX
+	type -P tmux >/dev/null || skip "tmux not on PATH"
 
 	REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 	GUARD="$REPO_ROOT/scripts/tmux-carousel-guard.sh"
@@ -47,7 +53,6 @@ setup() {
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
-	unset TMUX
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
@@ -329,6 +334,59 @@ layout_changes() { tmux show-options -g -v @lc; }
 	sleep "$SETTLE"
 	[ "$(fork_count)" -eq 1 ]
 	[ "$(layout)" = "$before" ]
+}
+
+@test "a middle carousel takes its columns from the host, not the pane to its right" {
+	# H | C | X, C split off H. Resizing C itself would move its right border
+	# and crush X; the guard resizes H instead.
+	local car right
+	car="$(split_h "$MAIN")"
+	right="$(split_h "$car")"
+	make_carousel "$car" "$MAIN"
+	tmux resize-pane -t "$car" -x 1
+	tmux resize-pane -t "$MAIN" -x 90
+	[ "$(width_of "$car")" -eq 1 ]
+	[ "$(width_of "$right")" -eq 61 ]
+	arm_guard_hooks
+
+	fire_same
+
+	# S = 90 + 1 + 1 = 92, target 36.
+	poll_width "$car" 36
+	[ "$(width_of "$MAIN")" -eq 55 ]
+	[ "$(width_of "$right")" -eq 61 ]
+}
+
+@test "two squeezed carousels are both restored without crushing a host" {
+	# H1 | C1 | X | C2, C1 split off H1 and C2 off X, both at 1 column.
+	local c1 x c2
+	c1="$(split_h "$MAIN")"
+	x="$(split_h "$c1")"
+	c2="$(split_h "$x")"
+	make_carousel "$c1" "$MAIN"
+	make_carousel "$c2" "$x"
+	tmux resize-pane -t "$MAIN" -x 74
+	tmux resize-pane -t "$c1" -x 1
+	tmux resize-pane -t "$c2" -x 1
+	[ "$(width_of "$c1")" -eq 1 ]
+	[ "$(width_of "$c2")" -eq 1 ]
+	[ "$(width_of "$x")" -eq 75 ]
+	arm_guard_hooks
+
+	fire_same
+
+	# One carousel per run: the first restore's own layout change forks the
+	# run that restores the second.
+	poll_width "$c1" 30
+	poll_width "$c2" 30
+	sleep "$SETTLE"
+	[ "$(width_of "$MAIN")" -eq 45 ]
+	[ "$(width_of "$x")" -eq 46 ]
+	local p
+	for p in "$MAIN" "$c1" "$x" "$c2"; do
+		[ "$(width_of "$p")" -ge 20 ]
+	done
+	[ "$(fork_count)" -le 3 ]
 }
 
 @test "a bottom carousel in a narrow column grows the column" {
