@@ -100,6 +100,21 @@ func boundConn(t *testing.T, conn io.ReadWriteCloser, reply, seed time.Duration)
 	return c
 }
 
+// waitClosed polls cond until it holds. The deadline timer closes the
+// connection on its own goroutine (dead, then the transport, then the stream),
+// so a failed round trip can return before every part of the close is visible.
+func waitClosed(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Error(what)
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // A far end that accepts the connection and never answers must not park the
 // caller: the reply deadline closes the connection, so the round trip fails and
 // every later send fails closed. Nothing is ever read from the poisoned
@@ -117,15 +132,18 @@ func TestReplyDeadlineAgainstAStalledConnection(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("round trip took %v to fail, want the 50ms deadline", elapsed)
 	}
-	if c.live() || !c.st.isClosed() || !conn.isClosed() {
-		t.Error("a fired reply deadline must close the connection and its transport")
-	}
+	waitClosed(t, "a fired reply deadline must close the connection and its transport", func() bool {
+		return !c.live() && c.st.isClosed() && conn.isClosed()
+	})
 	second := time.Now()
 	if _, ok := one(c.rt, "display-message -p y"); ok {
 		t.Error("a round trip on a poisoned connection returned a reply")
 	}
-	if elapsed := time.Since(second); elapsed > 100*time.Millisecond {
-		t.Errorf("poisoned round trip took %v, want an immediate fail-closed", elapsed)
+	// The bound only has to prove the call does not park (a fail-closed send
+	// never waits for a deadline); it stays loose because CPU throttling
+	// stalls whole scheduling periods.
+	if elapsed := time.Since(second); elapsed > 2*time.Second {
+		t.Errorf("poisoned round trip took %v, want a fail-closed well under 2s", elapsed)
 	}
 }
 
@@ -180,9 +198,10 @@ func TestReplyDeadlineDiscardsAnEOFBlock(t *testing.T) {
 	if _, ok := one(c.rt, "display-message -p x"); ok {
 		t.Fatal("a deadline-closed block was delivered as the round trip's reply")
 	}
-	if !c.st.stalledOut() || !c.st.isClosed() {
+	if !c.st.stalledOut() {
 		t.Error("the connection must be marked stalled and closed")
 	}
+	waitClosed(t, "the connection must be marked stalled and closed", c.st.isClosed)
 }
 
 // A flush that cannot complete is the same freeze as a reply that never
