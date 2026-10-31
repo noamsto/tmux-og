@@ -960,3 +960,14 @@ ships the remote window's own label state across instead.
   gone (#958); the mirror card only ever sees the result, carried home as
   `@bridge_pr_*`.
 
+
+## Remote Dwindle Toggle (`prefix + A`, #1040)
+
+A mirror window shows nothing about dwindle: `@dwindle` is a remote window
+option the daemon neither carries nor writes locally. `prefix + A` instead
+sends the `dwindle-toggle` ctl verb, and the remote's answer (`dwindle-on` /
+`dwindle-off` / `dwindle-grid`, a closed set) comes home as a one-line
+`notifyLocal` message via the `@og_carousel` verdict stamp
+(`bridge-daemon.md`). A remote without the dwindle hooks still reports on: the
+flip and the stamp are plain `set-option`s, so the message is accurate even
+when nothing there acts on the flag.

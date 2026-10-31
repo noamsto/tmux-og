@@ -533,6 +533,24 @@ var verbs = map[string]verb{
 		cmd := fmt.Sprintf("run-shell -b -t %s %s", pane, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)))
 		return []string{cmd}, nil
 	}},
+	// prefix + A on a mirror flips the REMOTE window's @dwindle. The remote's
+	// only client is this daemon's control client, which has no status line, so
+	// a display-message there evaporates: the outcome is stamped on the ctl pane
+	// in carouselVerdictOpt and carouselProbe reads it back (same seam as
+	// carousel). A stale stamp is cleared first, so a press cannot be answered
+	// with an earlier one's verdict.
+	//
+	// Every command in a branch carries its own -t, and `;` never `\;`
+	// separates them, for the reasons the tool verb spells out. No layout/moves:
+	// the flip changes no geometry itself.
+	"dwindle-toggle": {probe: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
+		grid := fmt.Sprintf("set-option -p -t %s %s %s", pane, carouselVerdictOpt, carouselVerdictDwindleGrid)
+		flip := fmt.Sprintf("set -wF -t %s @dwindle '#{?#{==:#{@dwindle},on},off,on}' ; set-option -pF -t %s %s 'dwindle-#{@dwindle}'",
+			pane, pane, carouselVerdictOpt)
+		cmd := fmt.Sprintf("if-shell -F -t %s %s %s %s",
+			pane, tmuxQuote("#{==:#{@crew_grid},1}"), tmuxQuote(grid), tmuxQuote(flip))
+		return []string{carouselClearCmd(pane), cmd}, nil
+	}},
 	// The tool binds (prefix p/g/b/k/y) open a float locally, and this is the
 	// remote leg: it now opens a float on the remote too, at the same shape
 	// (remoteToolFloat) the local bind uses, so the mirror can reconcile it

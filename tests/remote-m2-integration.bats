@@ -883,6 +883,9 @@ two_controllers_up() {
 	# Both local servers load DST_CONF and both clients sit in OBS panes, so B's
 	# windows are S's plus the 15 rows B's client is taller by.
 	big="150x$((${small#*x} + 15))"
+	# AFTER_S_UP is an optional hook, run once S's daemon is up and before B's
+	# starts.
+	[ -z "${AFTER_S_UP:-}" ] || "$AFTER_S_UP"
 
 	PATH="${B_STUB:+$B_STUB:}$PATH" TMPDIR="${B_TMP:-${TMPDIR:-/tmp}}" size_daemon_up sz-b m2dst2 "$DST2" rem
 	b_pid=$daemon_pid
@@ -3066,6 +3069,66 @@ remote_pane_of() {
 	[ "$src_dims" = "$dst_dims" ]
 }
 
+@test "ctl dwindle-toggle flips the REMOTE window's @dwindle and refuses a grid window" {
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC new-window -d -t rem
+	$DST new-session -d -s host-sess -x 150 -y 40
+	bridge_up 1 c1
+
+	w1="$($SRC display-message -p -t rem:1 '#{window_id}')"
+	w2="$($SRC display-message -p -t rem:2 '#{window_id}')"
+	p1="$($SRC display-message -p -t "$w1" '#{pane_id}')"
+	p2="$($SRC display-message -p -t "$w2" '#{pane_id}')"
+	$SRC set-option -w -t "$w1" @dwindle off
+	$SRC set-option -w -t "$w2" @dwindle off
+	$SRC set-option -w -t "$w2" @crew_grid 1
+
+	# A verb only resolves a pane the bridge already mirrors.
+	for _ in $(seq 1 60); do
+		[ "$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' | grep -cx -e "$p1" -e "$p2")" -eq 2 ] && break
+		sleep 0.15
+	done
+
+	run "$CTL" --sock "$sock" dwindle-toggle "$p1"
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		v="$($SRC show-options -wqv -t "$w1" @dwindle)"
+		[ "$v" = on ] && break
+		sleep 0.15
+	done
+	[ "$v" = on ]
+
+	run "$CTL" --sock "$sock" dwindle-toggle "$p1"
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		v="$($SRC show-options -wqv -t "$w1" @dwindle)"
+		[ "$v" = off ] && break
+		sleep 0.15
+	done
+	[ "$v" = off ]
+
+	# The grid press is a refusal, so nothing is observable until a later press
+	# proves it has been processed: commands reach the remote in order.
+	run "$CTL" --sock "$sock" dwindle-toggle "$p2"
+	[ "$status" -eq 0 ]
+	run "$CTL" --sock "$sock" dwindle-toggle "$p1"
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		v="$($SRC show-options -wqv -t "$w1" @dwindle)"
+		[ "$v" = on ] && break
+		sleep 0.15
+	done
+	[ "$v" = on ]
+	[ "$($SRC show-options -wqv -t "$w2" @dwindle)" = off ]
+
+	# The flip is the remote's: the mirror window never gains the option.
+	mirror_win="$($DST display-message -p -t host-sess:1 '#{window_id}')"
+	[ -z "$($DST show-options -wqv -t "$mirror_win" @dwindle)" ]
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
 @test "ctl zoom zooms the REMOTE window and the mirror zooms with it" {
 	$SRC new-session -d -s rem -x 150 -y 40
 	$SRC split-window -v -t rem
@@ -4083,6 +4146,7 @@ og1034_up() {
 	export PATH="$BATS_TEST_TMPDIR/stub-r:$PATH"
 	S_STUB="$BATS_TEST_TMPDIR/stub-s" S_TMP="$OG_TMUX_DIR/ts"
 	B_STUB="$BATS_TEST_TMPDIR/stub-b" B_TMP="$OG_TMUX_DIR/tb"
+	AFTER_S_UP=og1034_wait_s_registered
 	two_controllers_up
 }
 
@@ -4124,6 +4188,32 @@ og1034_wait_owner() {
 		sleep 0.1
 	done
 	og1034_failed "og1034_wait_owner: @og_bridge_owner is '$owner', wanted a record naming $1"
+	return 1
+}
+
+# og1034_wait_legacy_slot <client> polls until the legacy @og_open_client slot
+# names that client. A daemon registers after its mirror panes are stamped, so
+# two_controllers_up returning does not mean B has registered.
+og1034_wait_legacy_slot() {
+	local slot=""
+	for _ in $(seq 1 100); do
+		slot="$($SRC show-options -qv -t rem @og_open_client 2>/dev/null || true)"
+		[ "$slot" = "$1" ] && return 0
+		sleep 0.1
+	done
+	og1034_failed "og1034_wait_legacy_slot: @og_open_client is '$slot', wanted $1"
+	return 1
+}
+
+# og1034_wait_s_registered polls until S has registered @og_open_client. A
+# daemon registers after its mirror panes are stamped, so without this S's
+# registration can land after B's and take the legacy slot.
+og1034_wait_s_registered() {
+	for _ in $(seq 1 100); do
+		[ -n "$($SRC show-options -qv -t rem @og_open_client 2>/dev/null || true)" ] && return 0
+		sleep 0.1
+	done
+	og1034_failed "og1034_wait_s_registered: S never registered @og_open_client"
 	return 1
 }
 
@@ -4198,7 +4288,8 @@ og1034_not_opened() {
 	b_client="$(og1034_client "$b_pid")"
 	[ -n "$b_client" ]
 	# B connected last, so it holds the legacy slot.
-	[ "$($SRC show-options -qv -t rem @og_open_client)" = "$b_client" ]
+	og1034_wait_legacy_slot "$b_client"
+	og1034_wait_owner "$b_client"
 
 	kill "$b_pid" 2>/dev/null || true
 	wait "$b_pid" 2>/dev/null || true
