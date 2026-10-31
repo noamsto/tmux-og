@@ -883,6 +883,9 @@ two_controllers_up() {
 	# Both local servers load DST_CONF and both clients sit in OBS panes, so B's
 	# windows are S's plus the 15 rows B's client is taller by.
 	big="150x$((${small#*x} + 15))"
+	# AFTER_S_UP is an optional hook, run once S's daemon is up and before B's
+	# starts.
+	[ -z "${AFTER_S_UP:-}" ] || "$AFTER_S_UP"
 
 	PATH="${B_STUB:+$B_STUB:}$PATH" TMPDIR="${B_TMP:-${TMPDIR:-/tmp}}" size_daemon_up sz-b m2dst2 "$DST2" rem
 	b_pid=$daemon_pid
@@ -4083,6 +4086,7 @@ og1034_up() {
 	export PATH="$BATS_TEST_TMPDIR/stub-r:$PATH"
 	S_STUB="$BATS_TEST_TMPDIR/stub-s" S_TMP="$OG_TMUX_DIR/ts"
 	B_STUB="$BATS_TEST_TMPDIR/stub-b" B_TMP="$OG_TMUX_DIR/tb"
+	AFTER_S_UP=og1034_wait_s_registered
 	two_controllers_up
 }
 
@@ -4124,6 +4128,32 @@ og1034_wait_owner() {
 		sleep 0.1
 	done
 	og1034_failed "og1034_wait_owner: @og_bridge_owner is '$owner', wanted a record naming $1"
+	return 1
+}
+
+# og1034_wait_legacy_slot <client> polls until the legacy @og_open_client slot
+# names that client. A daemon registers after its mirror panes are stamped, so
+# two_controllers_up returning does not mean B has registered.
+og1034_wait_legacy_slot() {
+	local slot=""
+	for _ in $(seq 1 100); do
+		slot="$($SRC show-options -qv -t rem @og_open_client 2>/dev/null || true)"
+		[ "$slot" = "$1" ] && return 0
+		sleep 0.1
+	done
+	og1034_failed "og1034_wait_legacy_slot: @og_open_client is '$slot', wanted $1"
+	return 1
+}
+
+# og1034_wait_s_registered polls until S has registered @og_open_client. A
+# daemon registers after its mirror panes are stamped, so without this S's
+# registration can land after B's and take the legacy slot.
+og1034_wait_s_registered() {
+	for _ in $(seq 1 100); do
+		[ -n "$($SRC show-options -qv -t rem @og_open_client 2>/dev/null || true)" ] && return 0
+		sleep 0.1
+	done
+	og1034_failed "og1034_wait_s_registered: S never registered @og_open_client"
 	return 1
 }
 
@@ -4198,7 +4228,8 @@ og1034_not_opened() {
 	b_client="$(og1034_client "$b_pid")"
 	[ -n "$b_client" ]
 	# B connected last, so it holds the legacy slot.
-	[ "$($SRC show-options -qv -t rem @og_open_client)" = "$b_client" ]
+	og1034_wait_legacy_slot "$b_client"
+	og1034_wait_owner "$b_client"
 
 	kill "$b_pid" 2>/dev/null || true
 	wait "$b_pid" 2>/dev/null || true
