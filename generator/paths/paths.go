@@ -43,6 +43,7 @@ var RequiredScripts = []string{
 	"og-remote-theme",
 	"tmux-agent-usage",
 	"tmux-apply-theme-colors",
+	"tmux-carousel-guard",
 	"tmux-client-theme",
 	"tmux-default-size",
 	"tmux-float-refit",
