@@ -115,21 +115,26 @@ re-parses that format, so `select-layout` restores the exact geometry), and
 the apply is one command list:
 
 ```
-if -F -t <carousel> '<still tiled>' {
-  set -w -t <window> @carousel_guard_busy 1 ; resize-pane -t <pane> -x <cols> ;
-  if -F -t <carousel> '<carousel ≥ 20 and no other tiled pane < 20>'
+if -F -t <carousel> '<still tiled and the signature still equals the one read>' {
+  resize-pane -t <pane> -x <cols> ;
+  if -F -t <carousel> '<carousel ≥ 20 and no pane that was ≥ 20 is now < 20>'
     { set -wu -t <window> @carousel_guard_sig }
     { select-layout -t <window> '<snapshot>' ; set -wF -t <window> @carousel_guard_sig '<SIG>' }
-} { <clear the marker if zoomed> } ; set -wu -t <window> @carousel_guard_busy
+} { <clear the marker if zoomed> }
 ```
 
+Only panes that were at least 20 columns in the snapshot are protected, matched
+by pane id, so a pane already narrower than 20 (a 15-column sidebar) never
+blocks the restore. The signature check is `tmux-dwindle`'s stale-view guard: a
+pane split between the script's read and its apply would make the snapshot
+`select-layout` fail and could leave a crushed neighbour, so a changed window is
+left untouched and the gate forks again at the new geometry.
+
 A rollback re-stamps the marker with the restored geometry in the gate's own
-SIG format, so the layout changes the apply itself causes fork nothing.
-`@carousel_guard_busy` (window option, tmux-og-owned) is set only while the
-apply runs and the gate skips while it is set, so the guard's own
-resize/rollback never forks a peer mid-apply. It is cleared by the outer list,
-so a failing resize or `select-layout`, which skips the rest of its own
-branch, cannot leave it set.
+SIG format, so the layout changes the apply itself causes fork nothing. The
+marker is the only anti-loop mechanism: a mid-apply flag cannot work, because on
+tmux next-3.9 the layout hooks run after the whole command list, when such a
+flag is already clear.
 
 ## Wiring
 
@@ -152,7 +157,6 @@ layout-changed. Both carry the byte-identical body.
 **GATE** (in-process, no fork), all of:
 
 - `#{!:#{@bridge_win}}` — not a mirror window (daemon-owned geometry);
-- `#{!:#{@carousel_guard_busy}}` — not mid-apply (see "Verify and roll back");
 - `#{!=:#{@crew_grid},1}` — not a dispatcher grid (`tmux-grid-refit` owns it);
 - `#{!:#{window_zoomed_flag}}` — zoom is user state; unzoom refires
   `window-layout-changed`, so the guard re-evaluates then;
@@ -240,8 +244,9 @@ that logs each fork, then execs the real script.
    columns from its left. A restore that would crush a neighbour
    (even-horizontal `38/38/74/1`) is rolled back: one fork, the pre-event
    layout, the marker equal to the live signature, and the layout-change
-   counter flat afterwards. A window with `@carousel_guard_busy` set forks
-   nothing.
+   counter flat afterwards. A pre-existing 15-column sidebar does not block the
+   restore (`154x40,0,0{15x40,0,0,1,136x40,16,0,2,1x40,153,0,3}`), and a window
+   changed between the script's read and its apply is left untouched.
 5. Re-squeeze: restore, squeeze again to the identical geometry, restored
    again (red if the marker survives a successful restore).
 6. No ping-pong: after one restore, further resizes and an idle settle fork

@@ -504,7 +504,6 @@ poll_layout_changes_over() {
 	[ "$(width_of "$CAR")" -eq 1 ]
 	# Re-stamped with the restored geometry: the gate stays quiet at it.
 	[ "$(marker)" = "$(live_sig)" ]
-	[ -z "$(tmux show-options -w -v -t "$WIN" @carousel_guard_busy 2>/dev/null)" ]
 }
 
 @test "a rollback forks nothing more and the layout stays put" {
@@ -528,18 +527,54 @@ poll_layout_changes_over() {
 	[ "$(fork_count)" -eq 1 ]
 }
 
-@test "a window mid-apply forks nothing" {
-	squeezed_pair
-	tmux set-option -w -t "$WIN" @carousel_guard_busy 1
+@test "a pre-existing narrow sidebar does not block the restore" {
+	local side host car
+	side="$MAIN"
+	host="$(split_h "$side")"
+	car="$(split_h "$host")"
+	make_carousel "$car" "$host"
+	tmux resize-pane -t "$side" -x 15
+	tmux resize-pane -t "$car" -x 1
+	# 154x40,0,0{15x40,0,0,1,136x40,16,0,2,1x40,153,0,3}
+	[ "$(width_of "$side")" -eq 15 ]
+	[ "$(width_of "$host")" -eq 136 ]
+	[ "$(width_of "$car")" -eq 1 ]
 	arm_guard_hooks
 
 	fire_same
-	assert_no_fork
-	[ "$(width_of "$CAR")" -eq 1 ]
 
-	tmux set-option -w -u -t "$WIN" @carousel_guard_busy
-	fire_same
-	poll_width "$CAR" 61
+	# C is at the right edge and paired with H: S = 138, target 55, taken from H.
+	poll_width "$car" 55
+	[ "$(width_of "$side")" -eq 15 ]
+	[ "$(width_of "$host")" -eq 82 ]
+	[ -z "$(marker)" ]
+}
+
+@test "a window changed between the read and the apply is left untouched" {
+	crushing_row
+	local shim="$BATS_TEST_TMPDIR/shim"
+	mkdir -p "$shim"
+	# Stands in for the guard's bare `tmux`: splits the third pane just before
+	# the apply's `if`, after the guard has read the window.
+	cat >"$shim/tmux" <<EOF
+#!$(command -v bash)
+real='$(type -P tmux)'
+if [[ \$1 == if ]]; then
+	"\$real" -L og-cg split-window -d -h -t '${ROW[2]}' 'sleep 600'
+fi
+exec "\$real" -L og-cg "\$@"
+EOF
+	chmod +x "$shim/tmux"
+
+	PATH="$shim:$PATH" bash "$GUARD" "$WIN"
+
+	# Applied against the stale snapshot, the resize leaves 38/38/38/14/61.
+	[ "$(tmux list-panes -t "$WIN" | grep -c .)" -eq 5 ]
+	local w
+	while read -r w; do
+		[ "$w" -ge 20 ] || [ "$w" -eq 1 ]
+	done < <(tmux list-panes -t "$WIN" -F '#{pane_width}')
+	[ "$(width_of "$CAR")" -eq 1 ]
 }
 
 @test "a bottom carousel in a narrow right-edge column grows the column" {
@@ -671,7 +706,6 @@ poll_layout_changes_over() {
 	[ -n "$main_min_cols" ]
 	[[ $lc == *"#{e|<|:#{pane_width},$min_cols}"* ]]
 	[[ $lc == *"#{e|>=|:#{window_width},$((min_cols + 1 + main_min_cols))}"* ]]
-	[[ $lc == *'#{!:#{@carousel_guard_busy}}'* ]]
 
 	# The script's rollback re-stamps the marker with SIG_FMT; any drift from
 	# the gate's signature would make the rolled-back window fork again.

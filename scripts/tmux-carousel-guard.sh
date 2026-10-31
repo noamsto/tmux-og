@@ -30,9 +30,11 @@ target=${1:-}
 
 declare -A left top width height
 carousels=()
+protected=
 wwidth=0
 snapshot=
-while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src layout; do
+read_sig=
+while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src layout sig; do
 	# The window can change between the gate and this backgrounded run. Only a
 	# zoom needs the marker cleared, so an unzoom back to this same geometry is
 	# restored instead of suppressed; a mirror window is daemon-owned and never
@@ -43,25 +45,31 @@ while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src layout
 	fi
 	wwidth=$ww
 	snapshot=$layout
+	read_sig=$sig
 	[[ $floating == 1 ]] && continue
 	left[$pane]=$pl
 	top[$pane]=$pt
 	width[$pane]=$pw
 	height[$pane]=$ph
 	[[ -n $src ]] && ((pw < MIN_COLS)) && carousels+=("$pane|$src")
-done < <(tmux list-panes -t "$target" -F '#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@claude_img_src}|#{window_layout}' 2>/dev/null)
+	[[ -z $src ]] && ((pw >= MIN_COLS)) && protected+="<$pane>"
+done < <(tmux list-panes -t "$target" -F "#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@claude_img_src}|#{window_layout}|$SIG_FMT" 2>/dev/null)
 
 # Re-checked inside the apply list: resize-pane unzooms a zoomed window, and a
 # zoom, mirror or grid flag can land between the read above and the resize.
 # Only a zoom clears the marker (see above); a mirror window is never written.
-still_tiled='#{&&:#{&&:#{!:#{window_zoomed_flag}},#{!:#{@bridge_win}}},#{!=:#{@crew_grid},1}}'
+# A changed signature means the snapshot is stale (a pane split since the read
+# would make its select-layout fail), so the window is left for the next gate.
+still_tiled="#{&&:#{&&:#{&&:#{!:#{window_zoomed_flag}},#{!:#{@bridge_win}}},#{!=:#{@crew_grid},1}},#{==:$SIG_FMT,$read_sig}}"
 clear_marker="set -wu -t $target @carousel_guard_sig"
 clear_if_zoomed="if -F -t $target '#{&&:#{window_zoomed_flag},#{!:#{@bridge_win}}}' '$clear_marker'"
 
 # A restore is kept only when the carousel reached MIN_COLS and no other tiled
-# pane is under MIN_COLS; otherwise the window is rolled back to the snapshot
-# read above, which select-layout restores exactly.
-restored="#{&&:#{e|>=|:#{pane_width},$MIN_COLS},#{!:#{P:#{?#{&&:#{!:#{@claude_img_src}},#{&&:#{!:#{pane_floating_flag}},#{e|<|:#{pane_width},$MIN_COLS}}},x,}}}}"
+# pane that was at least MIN_COLS in the snapshot is now under it (a pane
+# already narrower, like a sidebar, is not the guard's doing); otherwise the
+# window is rolled back to the snapshot read above, which select-layout
+# restores exactly. Protected panes match by id through a glob over '<%1><%2>'.
+restored="#{&&:#{e|>=|:#{pane_width},$MIN_COLS},#{!:#{P:#{?#{&&:#{&&:#{!:#{@claude_img_src}},#{m:*<#{pane_id}>*,$protected}},#{&&:#{!:#{pane_floating_flag}},#{e|<|:#{pane_width},$MIN_COLS}}},x,}}}}"
 
 # resize-pane -x adjusts the pane's cell in its nearest left-right row and
 # takes the columns from the next cell, or from the previous one when the cell
@@ -104,13 +112,10 @@ for entry in "${carousels[@]}"; do
 	# again and the next run handles any other squeezed carousel against fresh
 	# widths rather than the ones read above. The rollback re-stamps the
 	# marker with the restored geometry, so its own layout change forks
-	# nothing. @carousel_guard_busy keeps the gate from forking a peer
-	# mid-apply; it is set inside the branch and cleared by the outer list, so
-	# a failing resize or rollback, which skips the rest of its branch, cannot
-	# leave it set.
+	# nothing.
 	tmux if -F -t "$c" "$still_tiled" \
-		"set -w -t $target @carousel_guard_busy 1 ; resize-pane -t $resized -x $cols ; if -F -t $c '$restored' { $clear_marker } { select-layout -t $target '$snapshot' ; set -wF -t $target @carousel_guard_sig '$SIG_FMT' }" \
-		"$clear_if_zoomed" \; set -wu -t "$target" @carousel_guard_busy 2>/dev/null
+		"resize-pane -t $resized -x $cols ; if -F -t $c '$restored' { $clear_marker } { select-layout -t $target '$snapshot' ; set -wF -t $target @carousel_guard_sig '$SIG_FMT' }" \
+		"$clear_if_zoomed"
 	exit 0
 done
 exit 0

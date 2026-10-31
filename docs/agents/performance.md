@@ -645,8 +645,12 @@ not a mirror, not a grid and not zoomed, and the tiled geometry differs from
   marker is re-stamped with the restored geometry (the script's `SIG_FMT`,
   byte-identical to the gate's), so the rollback's own layout change forks
   nothing.
-- The gate also skips while `@carousel_guard_busy` is set: the script holds it
-  across its resize/rollback list, so no peer forks mid-apply.
+- The apply list is guarded by the window signature the script read
+  (`#{==:<SIG_FMT>,<sig as read>}`, as `tmux-dwindle`'s stale-view guard): a
+  window that changed between read and apply is left untouched, and the gate
+  forks again at the new geometry. Only pane widths of at least 20 in the
+  snapshot are protected by the rollback check, so a pre-existing narrow pane
+  (a 15-column sidebar) never blocks a restore.
 - This is an option write on an event path, which the #793 findings warn
   about (every write runs `recalculate_sizes()` plus a redraw of every client).
   It is acceptable here because it happens only on the rare trip path, once per
