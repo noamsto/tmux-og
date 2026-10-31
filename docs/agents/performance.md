@@ -624,6 +624,27 @@ signature deliberately omits `#{window_layout}`, which renders per client.
   nothing. A re-enabled window re-seeds from a live layout, so a toggle can
   never leave a stale cache to diff against.
 
+## Carousel guard gate (#1056)
+
+`window-layout-changed[30]` and `window-resized[30]` each evaluate one in-process
+`if -F`. It forks `tmux-carousel-guard` only when a tiled carousel pane
+(`@claude_img_src`) is under 20 columns in a window at least 61 wide that is
+not a mirror, not a grid and not zoomed, and the tiled geometry differs from
+`@carousel_guard_sig`. Every other event is a format evaluation and nothing else.
+
+- The marker is written before the fork, so a burst of layout events forks once
+  and a window tmux cannot grow (or one the script declines) stops forking at
+  that geometry instead of looping on its own resize.
+- The script clears it only when the carousel reached 20 columns, in the same
+  command list as the `resize-pane`. A cleared marker means "fixed", so an
+  identical re-squeeze later is restored again; a lingering one would suppress it.
+- This is an option write on an event path, which the #793 findings warn
+  about (every write runs `recalculate_sizes()` plus a redraw of every client).
+  It is acceptable here because it happens only on the rare trip path, once per
+  distinct squeezed geometry; the concern is a write on every event.
+- `tests/carousel-guard.bats` (`carousel-guard-tests`, part of `nix flake check`)
+  pins the fork counts and that the gate's `20`/`61` literals match the script.
+
 ## Regression guards
 
 - `tests/grid-refit.bats` (`grid-refit-tests`, part of `nix flake check`)
