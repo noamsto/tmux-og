@@ -840,7 +840,13 @@ func focusLocalPane(cfg Config, cst *ctlState, w *mirrorWindow, order []string, 
 	// Record before issuing: the local select-pane fires after-select-pane, whose
 	// ctl report must be recognised as this move's echo rather than a new gesture.
 	cst.noteLocalFocus(w.remoteID, remoteActive)
-	if err := cfg.LocalTmux("select-pane", "-t", local); err != nil {
+	argv := []string{"select-pane", "-t", local}
+	if _, float := w.localFloats[remoteActive]; w.appliedZoom && !float {
+		// A plain select-pane to another pane unzooms the window and leaves
+		// appliedZoom stale, so later zoom notices would dedup forever.
+		argv = []string{"select-pane", "-Z", "-t", local}
+	}
+	if err := cfg.LocalTmux(argv...); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: reconcile select-pane: %v\n", err)
 	}
 }

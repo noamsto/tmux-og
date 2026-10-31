@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
@@ -278,5 +279,74 @@ func TestFocusLocalPaneFollowsAMirroredFloat(t *testing.T) {
 	// place by then or the resulting ctl report reads as a fresh gesture.
 	if !notedFirst {
 		t.Error("noteLocalFocus had not run when select-pane was issued")
+	}
+}
+
+// A plain select-pane to another pane unzooms a zoomed tmux window, so following
+// the remote's focus inside an applied-zoom mirror needs -Z or appliedZoom goes
+// stale and every later zoom notice dedups (#1036).
+func TestFocusLocalPaneKeepsAppliedZoom(t *testing.T) {
+	tests := []struct {
+		name    string
+		zoomed  bool
+		floatID string
+		follow  []string
+		want    [][]string
+	}{
+		{
+			name:   "zoomed tiled follow",
+			zoomed: true,
+			follow: []string{"%1", "%0"},
+			want: [][]string{
+				{"select-pane", "-Z", "-t", "%l1"},
+				{"select-pane", "-Z", "-t", "%l0"},
+			},
+		},
+		{
+			name:    "zoomed float follow",
+			zoomed:  true,
+			floatID: "%9",
+			follow:  []string{"%9"},
+			want:    [][]string{{"select-pane", "-t", "%l9"}},
+		},
+		{
+			name:   "unzoomed tiled follow",
+			zoomed: false,
+			follow: []string{"%1", "%0"},
+			want: [][]string{
+				{"select-pane", "-t", "%l1"},
+				{"select-pane", "-t", "%l0"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCtlState()
+			w := newRegistry().add("@1", "@101")
+			w.remotePanes = []string{"%0", "%1"}
+			w.localPanes = []string{"%l0", "%l1"}
+			w.appliedZoom = tc.zoomed
+			if tc.floatID != "" {
+				w.localFloats[tc.floatID] = "%l9"
+			}
+			c.setWindowPanes("@1", w.allRemotePanes())
+			c.noteLocalFocus("@1", "%0")
+
+			var argv [][]string
+			cfg := Config{LocalTmux: func(a ...string) error {
+				argv = append(argv, a)
+				return nil
+			}}
+			for _, pane := range tc.follow {
+				target, ok := c.applyRemoteFocus("@1", pane)
+				if !ok {
+					t.Fatalf("applyRemoteFocus(%s) did not follow", pane)
+				}
+				focusLocalPane(cfg, c, w, w.remotePanes, target)
+			}
+			if !reflect.DeepEqual(argv, tc.want) {
+				t.Fatalf("issued %v, want %v", argv, tc.want)
+			}
+		})
 	}
 }
