@@ -235,3 +235,32 @@ func TestHandleCtlArmsTheProbeOnASubmittedPress(t *testing.T) {
 		t.Errorf("pending = %d, want 1", p.pendingCount())
 	}
 }
+
+func TestCarouselProbeReportsDwindleVerdicts(t *testing.T) {
+	tests := []struct {
+		verdict string
+		want    string
+	}{
+		{carouselVerdictDwindleOn, "dwindle auto-balance: on (remote window)"},
+		{carouselVerdictDwindleOff, "dwindle auto-balance: off (remote window)"},
+		{carouselVerdictDwindleGrid, "dwindle: grid window - tmux-grid-refit owns this layout (remote window)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.verdict, func(t *testing.T) {
+			rt, _ := scriptedRT(verdictReplies(tc.verdict))
+			spy := &notifySpy{}
+			var sent []string
+
+			p := newCarouselProbe()
+			p.arm("%7")
+			p.poll(spy.cfg("g6"), rt, sinkSend(&sent))
+
+			if len(spy.msgs) != 1 || !strings.Contains(spy.msgs[0], tc.want) {
+				t.Errorf("messages = %q, want %q", spy.msgs, tc.want)
+			}
+			if want := carouselClearCmd("%7"); len(sent) != 1 || sent[0] != want {
+				t.Errorf("sent = %q, want just %q", sent, want)
+			}
+		})
+	}
+}

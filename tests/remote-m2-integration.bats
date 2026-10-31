@@ -3069,6 +3069,66 @@ remote_pane_of() {
 	[ "$src_dims" = "$dst_dims" ]
 }
 
+@test "ctl dwindle-toggle flips the REMOTE window's @dwindle and refuses a grid window" {
+	$SRC new-session -d -s rem -x 150 -y 40
+	$SRC new-window -d -t rem
+	$DST new-session -d -s host-sess -x 150 -y 40
+	bridge_up 1 c1
+
+	w1="$($SRC display-message -p -t rem:1 '#{window_id}')"
+	w2="$($SRC display-message -p -t rem:2 '#{window_id}')"
+	p1="$($SRC display-message -p -t "$w1" '#{pane_id}')"
+	p2="$($SRC display-message -p -t "$w2" '#{pane_id}')"
+	$SRC set-option -w -t "$w1" @dwindle off
+	$SRC set-option -w -t "$w2" @dwindle off
+	$SRC set-option -w -t "$w2" @crew_grid 1
+
+	# A verb only resolves a pane the bridge already mirrors.
+	for _ in $(seq 1 60); do
+		[ "$($DST list-panes -s -t host-sess -F '#{@bridge_pane}' | grep -cx -e "$p1" -e "$p2")" -eq 2 ] && break
+		sleep 0.15
+	done
+
+	run "$CTL" --sock "$sock" dwindle-toggle "$p1"
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		v="$($SRC show-options -wqv -t "$w1" @dwindle)"
+		[ "$v" = on ] && break
+		sleep 0.15
+	done
+	[ "$v" = on ]
+
+	run "$CTL" --sock "$sock" dwindle-toggle "$p1"
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		v="$($SRC show-options -wqv -t "$w1" @dwindle)"
+		[ "$v" = off ] && break
+		sleep 0.15
+	done
+	[ "$v" = off ]
+
+	# The grid press is a refusal, so nothing is observable until a later press
+	# proves it has been processed: commands reach the remote in order.
+	run "$CTL" --sock "$sock" dwindle-toggle "$p2"
+	[ "$status" -eq 0 ]
+	run "$CTL" --sock "$sock" dwindle-toggle "$p1"
+	[ "$status" -eq 0 ]
+	for _ in $(seq 1 60); do
+		v="$($SRC show-options -wqv -t "$w1" @dwindle)"
+		[ "$v" = on ] && break
+		sleep 0.15
+	done
+	[ "$v" = on ]
+	[ "$($SRC show-options -wqv -t "$w2" @dwindle)" = off ]
+
+	# The flip is the remote's: the mirror window never gains the option.
+	mirror_win="$($DST display-message -p -t host-sess:1 '#{window_id}')"
+	[ -z "$($DST show-options -wqv -t "$mirror_win" @dwindle)" ]
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
 @test "ctl zoom zooms the REMOTE window and the mirror zooms with it" {
 	$SRC new-session -d -s rem -x 150 -y 40
 	$SRC split-window -v -t rem

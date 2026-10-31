@@ -333,6 +333,27 @@ func TestParseCtlVerbTranslation(t *testing.T) {
 	}
 }
 
+func TestParseCtlDwindleToggle(t *testing.T) {
+	c := newCtlStateWith("@1", "%2", "%3")
+	req, err := c.parseCtl([]string{wire.CtlProtocolVersion, "dwindle-toggle", "%3"}, "sess")
+	if err != nil {
+		t.Fatalf("parseCtl: %v", err)
+	}
+	want := []string{
+		"set-option -pu -t %3 @og_carousel",
+		`if-shell -F -t %3 '#{==:#{@crew_grid},1}' 'set-option -p -t %3 @og_carousel dwindle-grid' 'set -wF -t %3 @dwindle '\''#{?#{==:#{@dwindle},on},off,on}'\'' ; set-option -pF -t %3 @og_carousel '\''dwindle-#{@dwindle}'\'''`,
+	}
+	if !reflect.DeepEqual(req.cmds, want) {
+		t.Errorf("cmds = %q, want %q", req.cmds, want)
+	}
+	if req.probePane != "%3" {
+		t.Errorf("probePane = %q, want %%3", req.probePane)
+	}
+	if req.wantLayout != "" || req.invalidate != "" {
+		t.Errorf("wantLayout = %q, invalidate = %q, want neither", req.wantLayout, req.invalidate)
+	}
+}
+
 func TestParseCtlRejects(t *testing.T) {
 	tests := []struct {
 		name string
@@ -366,6 +387,10 @@ func TestParseCtlRejects(t *testing.T) {
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
+		{"version skew names the daemon's version", []string{"8", "dwindle-toggle", "%3"}, `this daemon speaks "9"`},
+		{"dwindle-toggle takes no argument", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%3", "x"}, "wants 0 argument"},
+		{"dwindle-toggle refuses an unmirrored pane", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%99"}, "not mirrored"},
+		{"dwindle-toggle refuses a pane injection attempt", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%3; kill-server"}, "not mirrored"},
 		{"tile-layout wants its one layout argument", []string{wire.CtlProtocolVersion, "tile-layout", "%3"}, "wants 1 argument"},
 		{"tile-layout rejects a second argument", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "a", "b"}, "wants 1 argument"},
 		{"tile-layout rejects unparsable text", []string{wire.CtlProtocolVersion, "tile-layout", "%3", "garbage"}, "layout:"},
