@@ -714,6 +714,29 @@
               touch $out
             '';
 
+          # The carousel-guard WIRING (#1056). Both setters are indexed [30] so
+          # they coexist with grid-refit at index 0 (layout-changed) and 10
+          # (resized), dwindle [20], float-refit at 0 and nudge [20]: an
+          # unindexed second setter would silently replace those. The bare `-gu`
+          # clears must still precede them, or they would wipe the [30] hooks
+          # on every config reload.
+          carousel-guard-conf-assertions =
+            pkgs.runCommand "carousel-guard-conf-assertions" {
+              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              grep -E 'set-hook -g window-layout-changed\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
+              grep -E 'set-hook -g window-resized\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
+
+              lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
+              lsetter=$(grep -n 'set-hook -g window-layout-changed\[30\]' "$CONF" | head -1 | cut -d: -f1)
+              [ "$lclear" -lt "$lsetter" ]
+              clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
+              setter=$(grep -n 'set-hook -g window-resized\[30\]' "$CONF" | head -1 | cut -d: -f1)
+              [ "$clear" -lt "$setter" ]
+              touch $out
+            '';
+
           # Layout gestures on a mirror (#787). Every stock layout key
           # (prefix M-1..M-7, Space, E, C-o, M-o) must be re-bound behind
           # bridgeGate, with its else-branch the stock command verbatim: a
@@ -2326,6 +2349,24 @@
               cp -r ${./tests} tests
               export HOME=$TMPDIR
               bats tests/grid-refit.bats
+              touch $out
+            '';
+
+          carousel-guard-tests =
+            pkgs.runCommand "carousel-guard-tests" {
+              # mkTmux, not pkgs.tmux: the test creates a real floating pane,
+              # same trap as float-refit-tests above.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              # The test sources the *production* [30] hook lines out of the
+              # rendered conf, so it exercises the real gate, not a hand-rolled
+              # copy; the dwindle case also runs the store-built tmux-dwindle.
+              TMUX_OG_CONF = tmuxConfig.tmuxConf;
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              cp -r ${./config} config
+              export HOME=$TMPDIR
+              bats tests/carousel-guard.bats
               touch $out
             '';
 

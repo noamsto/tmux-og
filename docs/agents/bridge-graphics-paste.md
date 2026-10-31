@@ -257,6 +257,10 @@ option.
   `ok` is stamped before the `exec` so the common case stops the probe
   instead of burning that budget.
 - Remote host needs `tmux-claude-images` and `resvg` on PATH.
+- **A squeezed carousel is restored by `tmux-carousel-guard`** (#1056; see
+  `scripts.md`): a tiled carousel pane under 20 columns grows back to a usable
+  width. A mirror window skips it, because its geometry is the remote's, so the
+  remote host must run a tmux-og build with the guard and have reloaded its conf.
 
 ## Bridge Image Paste
 

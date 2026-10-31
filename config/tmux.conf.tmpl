@@ -627,6 +627,25 @@ set-hook -g window-layout-changed   { if -F '#{&&:#{&&:#{==:#{@crew_grid},1},#{!
 # diffing against one from before the toggle; an empty cache never forks.
 set-hook -g window-layout-changed[20] { if -F '#{&&:#{==:#{@dwindle},on},#{!:#{@bridge_win}}}' { if -F '#{!=:#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{s/[|].*//:@dwindle_cache}}' { if -F '#{&&:#{e|<|:#{n:#{P:#{?pane_floating_flag,,x}}},#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' { run-shell -b "{{index .Paths.Bin "tmux-dwindle"}} balance #{q:window_id} #{q:@dwindle_cache}" } ; set -wF @dwindle_cache '#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}|#{window_layout}' } } { if -F '#{@dwindle_cache}' { set -wu @dwindle_cache } } }
 
+# Carousel width guard (#1056). A side carousel squeezed to 1 column stays
+# there: a pane at the minimum cannot shrink and growth is shared evenly, so
+# every later resize, reattach or remux restore preserves it. The gate forks
+# tmux-carousel-guard only when a tiled @claude_img_src pane is under 20
+# columns in a window at least 61 wide. It skips a mirror (@bridge_win; the
+# remote runs its own guard), a grid (@crew_grid=1; tmux-grid-refit owns it),
+# a zoomed window (unzoom re-fires window-layout-changed) and floats.
+#
+# @carousel_guard_sig holds the geometry the gate last forked on and is
+# written before the fork, so a burst forks once, and a window tmux cannot
+# grow or the script declines stops forking at that geometry. The script
+# clears it only after a successful restore, so an identical re-squeeze is
+# restored again; a restore that crushed another pane is rolled back and the
+# marker re-stamped. Indexed [30] after dwindle [20]: dwindle forks only on a
+# pane-count drop, so a guard resize never re-triggers it. The bare
+# `set-hook -gu` of both hooks above clears every index on reload.
+set-hook -g window-layout-changed[30] { if -F '#{&&:#{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{e|>=|:#{window_width},61}}},#{&&:#{P:#{?#{&&:#{&&:#{@claude_img_src},#{!:#{pane_floating_flag}}},#{e|<|:#{pane_width},20}},1,}},#{!=:#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{@carousel_guard_sig}}}}' { set -wF @carousel_guard_sig '#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-carousel-guard"}} #{q:window_id}" } }
+set-hook -g window-resized[30]        { if -F '#{&&:#{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{e|>=|:#{window_width},61}}},#{&&:#{P:#{?#{&&:#{&&:#{@claude_img_src},#{!:#{pane_floating_flag}}},#{e|<|:#{pane_width},20}},1,}},#{!=:#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{@carousel_guard_sig}}}}' { set -wF @carousel_guard_sig '#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-carousel-guard"}} #{q:window_id}" } }
+
 # Tag every newly-created window as a worktree window from its cwd — at
 # creation, regardless of creator or CLAUDECODE (issue #95). new-session
 # doesn't fire after-new-window for its first window, so both are needed; -b
