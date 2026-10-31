@@ -640,12 +640,20 @@ not a mirror, not a grid and not zoomed, and the tiled geometry differs from
   window is (or became) zoomed; a mirror or grid window is never written. A
   marker cleared by a restore means "fixed", so an identical re-squeeze later is
   restored again; a lingering one would suppress it.
+- A restore that crushed another tiled pane under 20 columns is rolled back to
+  the script's `#{window_layout}` snapshot in the same command list, and the
+  marker is re-stamped with the restored geometry (the script's `SIG_FMT`,
+  byte-identical to the gate's), so the rollback's own layout change forks
+  nothing.
+- The gate also skips while `@carousel_guard_busy` is set: the script holds it
+  across its resize/rollback list, so no peer forks mid-apply.
 - This is an option write on an event path, which the #793 findings warn
   about (every write runs `recalculate_sizes()` plus a redraw of every client).
   It is acceptable here because it happens only on the rare trip path, once per
   distinct squeezed geometry; the concern is a write on every event.
 - `tests/carousel-guard.bats` (`carousel-guard-tests`, part of `nix flake check`)
-  pins the fork counts and that the gate's `20`/`61` literals match the script.
+  pins the fork counts, the rollback's quiet settle, and that the gate's
+  `20`/`61` literals and signature format match the script.
 
 ## Regression guards
 

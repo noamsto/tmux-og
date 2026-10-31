@@ -175,6 +175,43 @@ arm_counter() {
 
 layout_changes() { tmux show-options -g -v @lc; }
 
+# live_sig: the window's tiled-geometry signature, in the script's SIG_FMT
+# (the last test pins it byte-identical to the gate's).
+live_sig() {
+	tmux display-message -p -t "$WIN" "$(sed -n "s/^SIG_FMT='\(.*\)'\$/\1/p" "$GUARD")"
+}
+
+# crushing_row: A | B | X | C even-horizontal, C split off X and squeezed to
+# 1 column (38/38/74/1 at 154), C's host recorded as MAIN. C is at the right
+# edge, so the donor rules resize C, but tmux takes its columns from X alone
+# (measured 38/38/14/61). Leaves the panes in ROW, the carousel in CAR.
+crushing_row() {
+	local b x
+	b="$(split_h "$MAIN")"
+	x="$(split_h "$b")"
+	CAR="$(split_h "$x")"
+	make_carousel "$CAR" "$MAIN"
+	tmux select-layout -t "$WIN" even-horizontal
+	tmux resize-pane -t "$CAR" -x 1
+	ROW=("$MAIN" "$b" "$x")
+	[ "$(width_of "$MAIN")" -eq 38 ]
+	[ "$(width_of "$b")" -eq 38 ]
+	[ "$(width_of "$x")" -eq 74 ]
+	[ "$(width_of "$CAR")" -eq 1 ]
+}
+
+# poll_layout_changes_over <n>: wait until arm_counter counted more than <n>.
+poll_layout_changes_over() {
+	local tries=0
+	while ((tries < POLL_TRIES)); do
+		(("$(layout_changes)" > $1)) && return 0
+		sleep 0.1
+		((tries++)) || true
+	done
+	echo "layout changes: $(layout_changes), want more than $1" >&3
+	return 1
+}
+
 @test "a squeezed side carousel is restored to 40% of the pair" {
 	local car
 	car="$(split_h "$MAIN")"
@@ -445,6 +482,66 @@ layout_changes() { tmux show-options -g -v @lc; }
 	[ -n "$(marker)" ]
 }
 
+@test "a restore that crushes a neighbour is rolled back" {
+	crushing_row
+	local before
+	before="$(layout)"
+	arm_guard_hooks
+	arm_counter
+
+	fire_same
+
+	# fire_same counts 1; more means the guard's resize landed, and with it
+	# the rollback in the same command list.
+	poll_layout_changes_over 2
+	sleep "$SETTLE"
+	[ "$(fork_count)" -eq 1 ]
+	[ "$(layout)" = "$before" ]
+	local p
+	for p in "${ROW[@]}"; do
+		[ "$(width_of "$p")" -ge 20 ]
+	done
+	[ "$(width_of "$CAR")" -eq 1 ]
+	# Re-stamped with the restored geometry: the gate stays quiet at it.
+	[ "$(marker)" = "$(live_sig)" ]
+	[ -z "$(tmux show-options -w -v -t "$WIN" @carousel_guard_busy 2>/dev/null)" ]
+}
+
+@test "a rollback forks nothing more and the layout stays put" {
+	crushing_row
+	arm_guard_hooks
+	arm_counter
+
+	fire_same
+	poll_layout_changes_over 2
+	sleep "$SETTLE"
+	local settled
+	settled="$(layout_changes)"
+
+	sleep "$SETTLE"
+	[ "$(layout_changes)" -eq "$settled" ]
+	[ "$(fork_count)" -eq 1 ]
+
+	# A later event at the rolled-back geometry is suppressed by the marker.
+	fire_same
+	sleep "$SETTLE"
+	[ "$(fork_count)" -eq 1 ]
+}
+
+@test "a window mid-apply forks nothing" {
+	squeezed_pair
+	tmux set-option -w -t "$WIN" @carousel_guard_busy 1
+	arm_guard_hooks
+
+	fire_same
+	assert_no_fork
+	[ "$(width_of "$CAR")" -eq 1 ]
+
+	tmux set-option -w -u -t "$WIN" @carousel_guard_busy
+	fire_same
+	poll_width "$CAR" 61
+}
+
 @test "a bottom carousel in a narrow right-edge column grows the column" {
 	local host car
 	host="$(split_h "$MAIN")"
@@ -574,4 +671,14 @@ layout_changes() { tmux show-options -g -v @lc; }
 	[ -n "$main_min_cols" ]
 	[[ $lc == *"#{e|<|:#{pane_width},$min_cols}"* ]]
 	[[ $lc == *"#{e|>=|:#{window_width},$((min_cols + 1 + main_min_cols))}"* ]]
+	[[ $lc == *'#{!:#{@carousel_guard_busy}}'* ]]
+
+	# The script's rollback re-stamps the marker with SIG_FMT; any drift from
+	# the gate's signature would make the rolled-back window fork again.
+	local sig_fmt hook_sig
+	sig_fmt="$(sed -n "s/^SIG_FMT='\(.*\)'\$/\1/p" "$GUARD")"
+	hook_sig="$(sed -nE "s/.*set -wF @carousel_guard_sig '([^']*)'.*/\1/p" <<<"$lc")"
+	[ -n "$sig_fmt" ]
+	[ "$sig_fmt" = "$hook_sig" ]
+	[[ $lc == *"#{!=:$sig_fmt,#{@carousel_guard_sig}}"* ]]
 }

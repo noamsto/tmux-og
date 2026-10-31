@@ -105,6 +105,32 @@ moved its own left border and left the carousel at 1 column. The guard restores
 the first fixable carousel per run, skipping declined ones; the resize re-fires
 the gate for any other one, against fresh widths.
 
+**Verify and roll back.** The rules above are a first guess: tmux takes the
+columns from one sibling cell in the layout tree, which geometry cannot see.
+Measured leaks at the right edge: even-horizontal `38/38/74/1` at 154 went to
+`38/38/14/61`; `[[K 25 | H 70] / Y] | C` at 98 left K at 6;
+`[A 100 | H 51 | [C / D]]` left H at 1. So the script also snapshots
+`#{window_layout}` in its `list-panes` read (its own client renders and
+re-parses that format, so `select-layout` restores the exact geometry), and
+the apply is one command list:
+
+```
+if -F -t <carousel> '<still tiled>' {
+  set -w -t <window> @carousel_guard_busy 1 ; resize-pane -t <pane> -x <cols> ;
+  if -F -t <carousel> '<carousel ≥ 20 and no other tiled pane < 20>'
+    { set -wu -t <window> @carousel_guard_sig }
+    { select-layout -t <window> '<snapshot>' ; set -wF -t <window> @carousel_guard_sig '<SIG>' }
+} { <clear the marker if zoomed> } ; set -wu -t <window> @carousel_guard_busy
+```
+
+A rollback re-stamps the marker with the restored geometry in the gate's own
+SIG format, so the layout changes the apply itself causes fork nothing.
+`@carousel_guard_busy` (window option, tmux-og-owned) is set only while the
+apply runs and the gate skips while it is set, so the guard's own
+resize/rollback never forks a peer mid-apply. It is cleared by the outer list,
+so a failing resize or `select-layout`, which skips the rest of its own
+branch, cannot leave it set.
+
 ## Wiring
 
 A new script `scripts/tmux-carousel-guard.sh <window_id>`, forked by two new
@@ -126,6 +152,7 @@ layout-changed. Both carry the byte-identical body.
 **GATE** (in-process, no fork), all of:
 
 - `#{!:#{@bridge_win}}` — not a mirror window (daemon-owned geometry);
+- `#{!:#{@carousel_guard_busy}}` — not mid-apply (see "Verify and roll back");
 - `#{!=:#{@crew_grid},1}` — not a dispatcher grid (`tmux-grid-refit` owns it);
 - `#{!:#{window_zoomed_flag}}` — zoom is user state; unzoom refires
   `window-layout-changed`, so the guard re-evaluates then;
@@ -144,24 +171,22 @@ right before forking. That one marker does two jobs:
   every event at the same geometry is skipped until something moves;
 - termination: if the script declines (pair too narrow) or tmux cannot grow the
   carousel (every neighbour at its minimum), geometry does not change, so the
-  next event matches the marker and nothing forks again. A partial grow changes
-  geometry and allows one more attempt, which then either reaches `MIN_COLS`
-  (gate false) or changes nothing (marker matches).
+  next event matches the marker and nothing forks again. A partial grow below
+  `MIN_COLS`, or a restore that crushed another pane, is rolled back and the
+  marker re-stamped with the restored geometry, so it matches too.
 
 The marker must mean "tried and could not fix", never "fixed": the triggers
 are deterministic, so the same action can squeeze a restored carousel back to
 the identical geometry (same pane ids, 152/1 at 154), which a lingering marker
 would then suppress forever. So a successful restore — a resize that brings
-the carousel to `MIN_COLS` or more — clears the marker in the same tmux
-command list (`<pane>` is the carousel or the host, per "Restore target"):
+the carousel to `MIN_COLS` or more and leaves every other tiled pane at
+`MIN_COLS` or more — clears the marker in the same tmux command list as the
+resize (`<pane>` is the carousel or the host, per "Restore target"; the full
+list is under "Verify and roll back").
 
-```
-resize-pane -t <pane> -x <cols> \; if -F -t <carousel> '#{e|>=|:#{pane_width},20}' { set -wu -t <window> @carousel_guard_sig }
-```
-
-One option write per successful restore, which is rare. A declined restore, a
-resize tmux could not honour, or a partial grow below 20 leaves the marker as
-the gate wrote it, so termination above still holds. A marker left behind by a
+One option write per successful restore, which is rare. A declined restore
+leaves the marker as the gate wrote it; a rolled-back one re-stamps it with the
+restored geometry, so termination above still holds. A marker left behind by a
 run killed before acting suppresses only that exact geometry until anything
 moves.
 
@@ -212,14 +237,19 @@ that logs each fork, then execs the real script.
    (`[A 100 | [H 15 / C 15] | X 37]`): one fork, geometry unchanged.
    Donor rules: a middle carousel shrinks its host (`H | C | X`, X untouched);
    a right-edge carousel beside a nested row (`[[K | H] / Y] | C`) takes its
-   columns from its left.
+   columns from its left. A restore that would crush a neighbour
+   (even-horizontal `38/38/74/1`) is rolled back: one fork, the pre-event
+   layout, the marker equal to the live signature, and the layout-change
+   counter flat afterwards. A window with `@carousel_guard_busy` set forks
+   nothing.
 5. Re-squeeze: restore, squeeze again to the identical geometry, restored
    again (red if the marker survives a successful restore).
 6. No ping-pong: after one restore, further resizes and an idle settle fork
    nothing more and the layout stays put; with dwindle armed (`@dwindle on`,
    `TMUX_OG_CONF` only), closing a pane next to a squeezed carousel settles.
 7. Gate/script threshold literals agree (the gate's `20`/`61` vs the script's
-   constants), and both hook bodies are byte-identical.
+   constants), the script's `SIG_FMT` equals the gate's SIG, and both hook
+   bodies are byte-identical.
 
 Wire a `carousel-guard-tests` flake check (pinned `mkTmux`, `TMUX_OG_CONF`) and
 extend `grid-conf-assertions`-style ordering checks for the two `[30]` setters.

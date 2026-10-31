@@ -11,15 +11,19 @@
 # at an unchanged geometry skip. The marker means "tried and could not fix":
 # it is cleared on a successful restore, in the same command list as the
 # resize, because the same action can squeeze a restored carousel back to the
-# identical geometry and a lingering marker would then suppress it. It is also
-# cleared when the window is or became zoomed; a mirror or grid window is
-# never written.
+# identical geometry and a lingering marker would then suppress it. A resize
+# that crushed another pane is rolled back in that list and the marker
+# re-stamped with the restored geometry. It is also cleared when the window is
+# or became zoomed; a mirror or grid window is never written.
 set -uo pipefail
 
 # The hook gate's `20` and `61` (MIN_COLS + 1 + MAIN_MIN_COLS) are literals.
 MIN_COLS=20
 MAIN_MIN_COLS=40
 SHARE_PCT=40
+# Byte-identical to the hook gate's signature, so a rolled-back window matches
+# the marker and the gate does not fork again (tests/carousel-guard.bats pins it).
+SIG_FMT='#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}'
 
 target=${1:-}
 [[ -z $target ]] && exit 0
@@ -27,7 +31,8 @@ target=${1:-}
 declare -A left top width height
 carousels=()
 wwidth=0
-while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src; do
+snapshot=
+while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src layout; do
 	# The window can change between the gate and this backgrounded run. Only a
 	# zoom needs the marker cleared, so an unzoom back to this same geometry is
 	# restored instead of suppressed; a mirror window is daemon-owned and never
@@ -37,13 +42,14 @@ while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src; do
 		exit 0
 	fi
 	wwidth=$ww
+	snapshot=$layout
 	[[ $floating == 1 ]] && continue
 	left[$pane]=$pl
 	top[$pane]=$pt
 	width[$pane]=$pw
 	height[$pane]=$ph
 	[[ -n $src ]] && ((pw < MIN_COLS)) && carousels+=("$pane|$src")
-done < <(tmux list-panes -t "$target" -F '#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@claude_img_src}' 2>/dev/null)
+done < <(tmux list-panes -t "$target" -F '#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@claude_img_src}|#{window_layout}' 2>/dev/null)
 
 # Re-checked inside the apply list: resize-pane unzooms a zoomed window, and a
 # zoom, mirror or grid flag can land between the read above and the resize.
@@ -52,10 +58,16 @@ still_tiled='#{&&:#{&&:#{!:#{window_zoomed_flag}},#{!:#{@bridge_win}}},#{!=:#{@c
 clear_marker="set -wu -t $target @carousel_guard_sig"
 clear_if_zoomed="if -F -t $target '#{&&:#{window_zoomed_flag},#{!:#{@bridge_win}}}' '$clear_marker'"
 
+# A restore is kept only when the carousel reached MIN_COLS and no other tiled
+# pane is under MIN_COLS; otherwise the window is rolled back to the snapshot
+# read above, which select-layout restores exactly.
+restored="#{&&:#{e|>=|:#{pane_width},$MIN_COLS},#{!:#{P:#{?#{&&:#{!:#{@claude_img_src}},#{&&:#{!:#{pane_floating_flag}},#{e|<|:#{pane_width},$MIN_COLS}}},x,}}}}"
+
 # resize-pane -x adjusts the pane's cell in its nearest left-right row and
 # takes the columns from the next cell, or from the previous one when the cell
-# is last in that row. Geometry cannot tell which pane of a nested row is
-# last, so only two moves are safe:
+# is last in that row. That sibling lives in the layout tree, which geometry
+# cannot see, so the donor rules below are a first guess that the restored
+# check backs, rolling back a resize that crushed another pane:
 #   - a carousel at the window's right edge is last at every level, so
 #     resizing it moves its left border and the columns come from its left;
 #   - a host directly left of the carousel with the same rows ends a cell
@@ -90,10 +102,15 @@ for entry in "${carousels[@]}"; do
 	[[ $resized == "$host" ]] && cols=$((space - 1 - tw))
 	# One carousel per run: the resize changes the geometry, so the gate fires
 	# again and the next run handles any other squeezed carousel against fresh
-	# widths rather than the ones read above.
+	# widths rather than the ones read above. The rollback re-stamps the
+	# marker with the restored geometry, so its own layout change forks
+	# nothing. @carousel_guard_busy keeps the gate from forking a peer
+	# mid-apply; it is set inside the branch and cleared by the outer list, so
+	# a failing resize or rollback, which skips the rest of its branch, cannot
+	# leave it set.
 	tmux if -F -t "$c" "$still_tiled" \
-		"resize-pane -t $resized -x $cols ; if -F -t $c '#{e|>=|:#{pane_width},$MIN_COLS}' '$clear_marker'" \
-		"$clear_if_zoomed" 2>/dev/null
+		"set -w -t $target @carousel_guard_busy 1 ; resize-pane -t $resized -x $cols ; if -F -t $c '$restored' { $clear_marker } { select-layout -t $target '$snapshot' ; set -wF -t $target @carousel_guard_sig '$SIG_FMT' }" \
+		"$clear_if_zoomed" \; set -wu -t "$target" @carousel_guard_busy 2>/dev/null
 	exit 0
 done
 exit 0
