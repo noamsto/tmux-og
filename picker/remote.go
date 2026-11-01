@@ -35,11 +35,12 @@ const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n ker
 
 // remoteSessionRowsFormat emits one `S|$N|created|name` row per listed tmux
 // session, except a session this host is itself mirroring: a session-scoped
-// @bridge_host with @bridge_placed unset emits a blank line instead, so a
-// remote's own mirror (a mirror of a mirror) never reaches the picker (#1060).
+// @bridge_host with @bridge_placed unset emits an `M|` marker instead of a
+// blank line, so a remote's own mirror (a mirror of a mirror) never reaches
+// the picker (#1060) while the probe still knows the server answered.
 // A native session holding placed mirror windows keeps @bridge_placed and
 // still lists. The name stays last so it may hold `|`.
-const remoteSessionRowsFormat = "#{?#{@bridge_placed},S|#{session_id}|#{session_created}|#{session_name},#{?#{@bridge_host},,S|#{session_id}|#{session_created}|#{session_name}}}"
+const remoteSessionRowsFormat = "#{?#{@bridge_placed},S|#{session_id}|#{session_created}|#{session_name},#{?#{@bridge_host},M|,S|#{session_id}|#{session_created}|#{session_name}}}"
 
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full
 // command begins with the identity preamble (machine-id line, username line),
@@ -193,6 +194,9 @@ type remoteProbeResult struct {
 	SessionIDs     map[string]string
 	SessionCreated map[string]string
 	Windows        []remoteWindow
+	// ServerAlive is set when a well-formed S, W or M row parsed — the server
+	// answered, even if every session/window row was filtered.
+	ServerAlive bool
 }
 
 // readLocalRemoteIdentity returns this machine's identity using the same
@@ -539,13 +543,15 @@ func probeStateOf(err error) remoteProbeState {
 // remoteSessionsForHost probes one host for live tmux session names. On
 // remoteProbeOK the returned list is the remote sessions not already bridged
 // locally (may be empty when every session is already open).
-// An empty list with no error means the remote has no server to list.
+// An empty list with no error is "no server" only when NO row parsed at all;
+// a server that answered with every row filtered stays remoteProbeOK (an
+// empty list).
 func remoteSessionsForHost(host string, bridges map[string]bool, probe func(string) (remoteProbeResult, error)) ([]string, remoteProbeState) {
 	result, err := probe(host)
 	if err != nil {
 		return nil, probeStateOf(err)
 	}
-	if len(result.Sessions) == 0 {
+	if len(result.Sessions) == 0 && !result.ServerAlive {
 		return nil, remoteProbeNoServer
 	}
 	out := make([]string, 0, len(result.Sessions))

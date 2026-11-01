@@ -518,6 +518,9 @@ func TestRemoteListSessionsCmdFishSafe(t *testing.T) {
 	if strings.Contains(remoteListSessionsCmd, "TMUX_TMPDIR=/tmp/tmux-") {
 		t.Fatalf("fallback must not double the tmux-<uid> segment: %q", remoteListSessionsCmd)
 	}
+	if !strings.Contains(remoteSessionRowsFormat, "S|#{session_id}|#{session_created}|#{session_name}") || !strings.Contains(remoteSessionRowsFormat, "M|") {
+		t.Fatalf("remoteSessionRowsFormat must keep the S row contract and the M marker: %q", remoteSessionRowsFormat)
+	}
 }
 
 func TestPendingRemoteItems(t *testing.T) {
@@ -1325,7 +1328,13 @@ func TestRemoteSessionRowsSkipDedicatedMirror(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not available")
 	}
-	dir := t.TempDir()
+	// A short socket dir: macOS sun_path is 104 bytes and t.TempDir() embeds
+	// the long test name (see picker/remotebridge/daemon/ctl_test.go).
+	dir, err := os.MkdirTemp("/tmp", "og-1060-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	t.Setenv("TMUX_TMPDIR", dir)
 	t.Setenv("TMUX", "")
 	tm := func(args ...string) {
@@ -1361,5 +1370,102 @@ func TestRemoteSessionRowsSkipDedicatedMirror(t *testing.T) {
 	}
 	if got["dedicated"] {
 		t.Errorf("Sessions = %q, must not include the dedicated mirror", res.Sessions)
+	}
+	if !res.ServerAlive {
+		t.Error("ServerAlive must be set: well-formed S and M rows parsed")
+	}
+	if !isDigits(res.SessionCreated["plain"]) {
+		t.Errorf("SessionCreated[plain] = %q, want digits", res.SessionCreated["plain"])
+	}
+	if !isTmuxID(res.SessionIDs["plain"], '$') {
+		t.Errorf("SessionIDs[plain] = %q, want a $N id", res.SessionIDs["plain"])
+	}
+}
+
+// A host whose tmux server is UP but whose every session is a dedicated mirror
+// must stay remoteProbeOK (an empty session list), not remoteProbeNoServer —
+// the M| marker is the "the server answered" signal (#1060).
+func TestRemoteAllMirrorSessionsStayServerAlive(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not available")
+	}
+	dir, err := os.MkdirTemp("/tmp", "og-1060-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", "")
+	tm := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, test-controlled argv
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+	}
+	tm("-f", "/dev/null", "new-session", "-d", "-s", "dedicated")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	tm("set-option", "-t", "dedicated", "@bridge_host", "lab")
+	tm("set-option", "-t", "dedicated", "@bridge_session", "work")
+
+	out, err := exec.Command("tmux", "list-sessions", "-F", remoteSessionRowsFormat).CombinedOutput() //nolint:gosec // G204: fixed binary, test-controlled argv
+	if err != nil {
+		t.Fatalf("tmux list-sessions: %v\n%s", err, out)
+	}
+	res := parseRemoteProbeOutput("machine\nuser\n" + string(out))
+	if len(res.Sessions) != 0 || !res.ServerAlive {
+		t.Fatalf("got Sessions=%v ServerAlive=%v, want an empty list and ServerAlive", res.Sessions, res.ServerAlive)
+	}
+	probe := func(string) (remoteProbeResult, error) { return res, nil }
+	sess, state := remoteSessionsForHost("lab", nil, probe)
+	if state != remoteProbeOK {
+		t.Fatalf("state = %v, want remoteProbeOK (server answered, every row filtered)", state)
+	}
+	if len(sess) != 0 {
+		t.Fatalf("sessions = %v, want none", sess)
+	}
+}
+
+// A native session holding a placed mirror window keeps @bridge_placed and
+// must still list even when it is no longer the current window — the format
+// must key off the window option, not the active window (#1060).
+func TestRemoteSessionRowsKeepPlacedWindowWhenNotCurrent(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not available")
+	}
+	dir, err := os.MkdirTemp("/tmp", "og-1060-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", "")
+	tm := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, test-controlled argv
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+	}
+	tm("-f", "/dev/null", "new-session", "-d", "-s", "native")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	tm("new-window", "-t", "native:", "-n", "placed")
+	tm("set-option", "-w", "-t", "native:placed", "@bridge_placed", "1")
+	tm("set-option", "-w", "-t", "native:placed", "@bridge_host", "lab")
+	tm("set-option", "-w", "-t", "native:placed", "@bridge_session", "other")
+	// A second window so `placed` is no longer the current one.
+	tm("new-window", "-t", "native:", "-n", "top")
+
+	out, err := exec.Command("tmux", "list-sessions", "-F", remoteSessionRowsFormat).CombinedOutput() //nolint:gosec // G204: fixed binary, test-controlled argv
+	if err != nil {
+		t.Fatalf("tmux list-sessions: %v\n%s", err, out)
+	}
+	res := parseRemoteProbeOutput("machine\nuser\n" + string(out))
+	found := false
+	for _, s := range res.Sessions {
+		if s == "native" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Sessions = %q, want native kept (its placed window is not current)", res.Sessions)
 	}
 }

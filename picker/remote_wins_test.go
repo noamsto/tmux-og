@@ -104,6 +104,9 @@ func TestRemoteListWindowsCmdFishSafe(t *testing.T) {
 	if !strings.Contains(cmd, `list-sessions -F '`+remoteSessionRowsFormat+`' \; list-windows -a -F '`+remoteWindowRowsFormat+`'`) {
 		t.Fatalf("cmd = %q, want list-sessions \\; list-windows -a", cmd)
 	}
+	if !strings.Contains(remoteWindowRowsFormat, "W|#{session_id}|#{window_id}|#{window_index}|#{window_name}") || !strings.Contains(remoteWindowRowsFormat, "M|") {
+		t.Fatalf("remoteWindowRowsFormat must keep the W row contract and the M marker: %q", remoteWindowRowsFormat)
+	}
 	if strings.Contains(cmd, "td=") || strings.Contains(cmd, "; t=") {
 		t.Fatalf("cmd = %q must not use shell assignments (fish-incompatible)", cmd)
 	}
@@ -115,7 +118,14 @@ func TestRemoteWindowRowsSkipMirrorWindows(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not available")
 	}
-	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	// A short socket dir: macOS sun_path is 104 bytes and t.TempDir() embeds
+	// the long test name (see picker/remotebridge/daemon/ctl_test.go).
+	dir, err := os.MkdirTemp("/tmp", "og-1060-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
 	t.Setenv("TMUX", "")
 	tm := func(args ...string) {
 		t.Helper()
@@ -142,6 +152,9 @@ func TestRemoteWindowRowsSkipMirrorWindows(t *testing.T) {
 
 	if len(res.Windows) != 1 {
 		t.Fatalf("Windows = %+v, want exactly one (the plain window)", res.Windows)
+	}
+	if !res.ServerAlive {
+		t.Error("ServerAlive must be set: well-formed S and M rows parsed")
 	}
 	if res.Windows[0].Name == "mirror" {
 		t.Errorf("Windows = %+v, must not include the mirror window", res.Windows)
