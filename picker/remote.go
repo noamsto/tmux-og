@@ -34,12 +34,15 @@ const remoteProbeTimeout = 3 * time.Second
 const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n kern.uuid 2>/dev/null || hostname; id -un`
 
 // remoteSessionRowsFormat emits one `S|$N|created|name` row per listed tmux
-// session, except a session this host is itself mirroring: a session-scoped
-// @bridge_host with @bridge_placed unset emits an `M|` marker instead of a
-// blank line, so a remote's own mirror (a mirror of a mirror) never reaches
-// the picker (#1060) while the probe still knows the server answered.
-// A native session holding placed mirror windows keeps @bridge_placed and
-// still lists. The name stays last so it may hold `|`.
+// session, except a session this host is itself mirroring (a session-scoped
+// @bridge_host set): that emits an `M|` marker instead of a row, so a
+// remote's own mirror (a mirror of a mirror) never reaches the picker
+// (#1060) while the probe still knows the server answered. @bridge_placed
+// lives on a placed mirror WINDOW; a list-sessions read sees it only while
+// that window is the session's current one, so the outer test keeps a
+// shared session whose placed window is current from reading as a
+// dedicated mirror, and one whose placed window is not current lists on
+// the else branch. The name stays last so it may hold `|`.
 const remoteSessionRowsFormat = "#{?#{@bridge_placed},S|#{session_id}|#{session_created}|#{session_name},#{?#{@bridge_host},M|,S|#{session_id}|#{session_created}|#{session_name}}}"
 
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full

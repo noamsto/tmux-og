@@ -461,6 +461,13 @@ func TestCollectRemoteWindowItemsNoServer(t *testing.T) {
 	if len(items) != 2 || !strings.Contains(items[1].plain, "no server") {
 		t.Errorf("an empty probe is no server, got %+v", items)
 	}
+
+	// A server that answered with every row filtered (ServerAlive, no rows)
+	// stays OK, not no-server (#1060).
+	items = collectRemoteWindowItems(opts, nil, winProbe(remoteProbeResult{ServerAlive: true}, nil))
+	if len(items) != 2 || !strings.Contains(items[1].plain, "(all open)") || strings.Contains(items[1].plain, "no server") {
+		t.Errorf("an all-filtered probe is OK, got %+v", items)
+	}
 }
 
 func TestCollectRemoteWindowItemsUnreachableKeepsCache(t *testing.T) {

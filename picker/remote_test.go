@@ -1425,9 +1425,10 @@ func TestRemoteAllMirrorSessionsStayServerAlive(t *testing.T) {
 	}
 }
 
-// A native session holding a placed mirror window keeps @bridge_placed and
-// must still list even when it is no longer the current window — the format
-// must key off the window option, not the active window (#1060).
+// A native session holding a placed mirror window is kept even when that
+// window is not current: a list-sessions read then resolves neither
+// @bridge_placed nor @bridge_host, so the session lists on the else
+// branch (#1060).
 func TestRemoteSessionRowsKeepPlacedWindowWhenNotCurrent(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is not available")

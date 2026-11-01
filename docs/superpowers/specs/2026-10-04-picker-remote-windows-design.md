@@ -76,6 +76,8 @@ rows in place of session rows:
   `S|$<n>|<name>` and `W|$<n>|@<n>|<n>|<name>` and drops a `W` line whose
   session id has no `S` line. No `S` lines at all is "no server", like an
   empty session list today.
+
+  > **Superseded by #1060.** Only a probe that parsed no row at all is "no server": a filtered row emits an `M|` marker and `remoteProbeResult.ServerAlive` is set on any well-formed `S`/`W`/`M` row, so a live host whose every row is filtered stays OK with an empty list (see `docs/agents/picker.md`).
 - **Why not extend `--remote-pick` to emit windows.** That path runs the picker
   on the remote inside an ssh pty (`^o`); it is a second interactive picker,
   not a listing. The in-list probe gives every host's windows in one popup,
