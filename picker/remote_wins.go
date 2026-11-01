@@ -22,12 +22,19 @@ type remoteWindow struct {
 	SessionCreated string `json:"session_created,omitempty"`
 }
 
+// remoteWindowRowsFormat emits one `W|$N|@N|idx|name` row per listed tmux
+// window, except a mirror window (@bridge_win), which emits an `M|` marker
+// instead of a blank line, so a remote's own mirror windows (a mirror of a
+// mirror) never reach the window picker (#1060) while the probe still knows
+// the server answered. The name stays last so it may hold `|`.
+const remoteWindowRowsFormat = "#{?#{@bridge_win},M|,W|#{session_id}|#{window_id}|#{window_index}|#{window_name}}"
+
 // remoteListWindowsBody lists sessions and every window in one chained tmux
 // command. Each free-text field sits last on its own line kind (S or W), so a
 // name may hold `|`; the window line joins its session by session_id, and the S
 // line carries #{session_created} for the same kill guard the session probe
 // uses. `\;` is a literal `;` argument under both fish and bash.
-var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`)
+var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `' \; list-windows -a -F '` + remoteWindowRowsFormat + `'`)
 
 var remoteListWindowsCmd = remoteIdentityPreamble + `; ` + remoteListWindowsBody
 
@@ -80,11 +87,14 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 	for _, line := range lines[2:] {
 		line = strings.TrimSuffix(line, "\r")
 		switch {
+		case strings.HasPrefix(line, "M|"):
+			res.ServerAlive = true
 		case strings.HasPrefix(line, "S|"):
 			f := strings.SplitN(line, "|", 4)
 			if len(f) != 4 || !isTmuxID(f[1], '$') || f[3] == "" {
 				continue
 			}
+			res.ServerAlive = true
 			// f[2] (session_created) is kept even when it is not digits — an
 			// old remote tmux must still list its sessions; the kill validation
 			// refuses a non-digits value instead of losing the row.
@@ -104,6 +114,7 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 			if len(f) != 5 || !isTmuxID(f[1], '$') || !isTmuxID(f[2], '@') || !isDigits(f[3]) {
 				continue
 			}
+			res.ServerAlive = true
 			sess, ok := names[f[1]]
 			if !ok {
 				continue
@@ -285,11 +296,14 @@ func pendingRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]boo
 
 // remoteWindowsForHost is remoteSessionsForHost for a window probe result:
 // the windows of sessions not already bridged locally, and the probe state.
+// As with remoteSessionsForHost, an empty list with no error is "no server"
+// only when NO row parsed at all; a server that answered with every row
+// filtered stays remoteProbeOK (an empty list).
 func remoteWindowsForHost(host string, bridges map[string]bool, result remoteProbeResult, err error) ([]remoteWindow, remoteProbeState) {
 	if err != nil {
 		return nil, probeStateOf(err)
 	}
-	if len(result.Sessions) == 0 {
+	if len(result.Sessions) == 0 && !result.ServerAlive {
 		return nil, remoteProbeNoServer
 	}
 	out := make([]remoteWindow, 0, len(result.Windows))

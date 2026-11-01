@@ -33,11 +33,23 @@ const remoteProbeTimeout = 3 * time.Second
 // identity rides the existing ssh probe with no extra round trip.
 const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n kern.uuid 2>/dev/null || hostname; id -un`
 
+// remoteSessionRowsFormat emits one `S|$N|created|name` row per listed tmux
+// session, except a session this host is itself mirroring (a session-scoped
+// @bridge_host set): that emits an `M|` marker instead of a row, so a
+// remote's own mirror (a mirror of a mirror) never reaches the picker
+// (#1060) while the probe still knows the server answered. @bridge_placed
+// lives on a placed mirror WINDOW; a list-sessions read sees it only while
+// that window is the session's current one, so the outer test keeps a
+// shared session whose placed window is current from reading as a
+// dedicated mirror, and one whose placed window is not current lists on
+// the else branch. The name stays last so it may hold `|`.
+const remoteSessionRowsFormat = "#{?#{@bridge_placed},S|#{session_id}|#{session_created}|#{session_name},#{?#{@bridge_host},M|,S|#{session_id}|#{session_created}|#{session_name}}}"
+
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full
 // command begins with the identity preamble (machine-id line, username line),
 // then one S|$N|created|name line per session — the id a kill targets and the
 // #{session_created} it re-checks first; the name comes last so it may hold `|`.
-var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}'`)
+var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `'`)
 
 // remoteTmuxBin resolves the remote's tmux without a shell assignment: PATH
 // first, then the nix per-user profile a non-interactive ssh does not see.
@@ -185,6 +197,9 @@ type remoteProbeResult struct {
 	SessionIDs     map[string]string
 	SessionCreated map[string]string
 	Windows        []remoteWindow
+	// ServerAlive is set when a well-formed S, W or M row parsed — the server
+	// answered, even if every session/window row was filtered.
+	ServerAlive bool
 }
 
 // readLocalRemoteIdentity returns this machine's identity using the same
@@ -531,13 +546,15 @@ func probeStateOf(err error) remoteProbeState {
 // remoteSessionsForHost probes one host for live tmux session names. On
 // remoteProbeOK the returned list is the remote sessions not already bridged
 // locally (may be empty when every session is already open).
-// An empty list with no error means the remote has no server to list.
+// An empty list with no error is "no server" only when NO row parsed at all;
+// a server that answered with every row filtered stays remoteProbeOK (an
+// empty list).
 func remoteSessionsForHost(host string, bridges map[string]bool, probe func(string) (remoteProbeResult, error)) ([]string, remoteProbeState) {
 	result, err := probe(host)
 	if err != nil {
 		return nil, probeStateOf(err)
 	}
-	if len(result.Sessions) == 0 {
+	if len(result.Sessions) == 0 && !result.ServerAlive {
 		return nil, remoteProbeNoServer
 	}
 	out := make([]string, 0, len(result.Sessions))
