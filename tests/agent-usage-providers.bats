@@ -6,8 +6,8 @@ bats_require_minimum_version 1.5.0 # run --separate-stderr
 # What's worth pinning is the normalization into the cache shape
 # tmux-statusline reads and cursor's `--print` object, pi's pct taken from
 # limit/limit_remaining whatever the reset period, and pi's auth.json key
-# resolution (literal/escaped/env, OAuth .access, and that a `!command` key
-# must never run).
+# resolution (literal/escaped/env, OAuth .access, a `!cat <absolute path>` key
+# read from the file, and that any other `!command` key must never run).
 #
 # Fakes: curl answers from $FIXTURES/<last URL segment>.json. pi's `-H
 # Authorization: Bearer` requests must carry $EXPECT_TOKEN (a `/credits` one
@@ -478,6 +478,86 @@ default_pi() {
 	run_pi
 	[ ! -e "$marker" ]
 	[ -e "$(pi_cache)" ]
+}
+
+pi_auth_key() { # KEY
+	mkdir -p "$HOME/.pi/agent"
+	jq -n --arg k "$1" '{openrouter:{key:$k}}' >"$HOME/.pi/agent/auth.json"
+}
+
+@test "pi key: !cat reads a secrets file (bare, '...', \"...\") without running it" {
+	pi_key_fixture '{"usage_monthly":1}'
+	f="$BATS_TEST_TMPDIR/secrets/openrouter_api_key"
+	mkdir -p "$BATS_TEST_TMPDIR/secrets"
+	printf '%s\n' sk-or-test-cat-not-a-key >"$f"
+	export EXPECT_TOKEN=sk-or-test-cat-not-a-key
+	for key in "!cat $f" "!cat '$f'" "!cat \"$f\""; do
+		echo "case: $key"
+		rm -f "$(pi_cache)" "$BATS_TEST_TMPDIR/curl-argv.log"
+		pi_auth_key "$key"
+		run --separate-stderr bash scripts/tmux-agent-usage-pi.sh
+		[ "$status" -eq 0 ]
+		[ -e "$(pi_cache)" ]
+		grep -qxF -- "-fsS --max-time 10 -H Authorization: Bearer sk-or-test-cat-not-a-key https://openrouter.ai/api/v1/key" "$BATS_TEST_TMPDIR/curl-argv.log"
+		[[ $output != *"$EXPECT_TOKEN"* ]]
+		[[ $stderr != *"$EXPECT_TOKEN"* ]]
+		run grep -F "$EXPECT_TOKEN" "$(pi_cache)"
+		[ "$status" -eq 1 ]
+	done
+}
+
+@test "pi key: !cat follows a symlinked secrets file" {
+	pi_key_fixture '{"usage_monthly":1}'
+	mkdir -p "$BATS_TEST_TMPDIR/secrets" "$BATS_TEST_TMPDIR/secrets.d/1"
+	printf '%s\n' sk-or-test-cat-not-a-key >"$BATS_TEST_TMPDIR/secrets.d/1/key"
+	ln -s "$BATS_TEST_TMPDIR/secrets.d/1/key" "$BATS_TEST_TMPDIR/secrets/link"
+	pi_auth_key "!cat $BATS_TEST_TMPDIR/secrets/link"
+	export EXPECT_TOKEN=sk-or-test-cat-not-a-key
+	run_pi
+	[ -e "$(pi_cache)" ]
+}
+
+@test "pi key: other !cat shapes are never run and resolve no token" {
+	pi_key_fixture '{"usage_monthly":1}'
+	marker="$BATS_TEST_TMPDIR/ran"
+	dir="$BATS_TEST_TMPDIR/secrets"
+	f="$dir/openrouter_api_key"
+	mkdir -p "$dir"
+	printf '%s\n' sk-or-test-cat-not-a-key >"$f"
+	: >"$dir/empty"
+	printf ' \n\n\t\n' >"$dir/ws"
+	keys=(
+		"!cat $f; touch $marker"
+		'!cat $(touch '"$marker"')'
+		'!cat `touch '"$marker"'`'
+		"!cat $f $f"
+		"!cat -A $f"
+		"!cat relative/path"
+		"!cat ~/x"
+		"!cat $dir/*"
+		"!sh -c 'touch $marker'"
+		"!cat '$f"
+		"!cat $dir/missing"
+		"!cat $dir"
+		"!cat $dir/empty"
+		"!cat $dir/ws"
+	)
+	for k in "${keys[@]}"; do
+		echo "case: $k"
+		pi_auth_key "$k"
+
+		rm -f "$(pi_cache)" "$BATS_TEST_TMPDIR/curl-argv.log"
+		export OPENROUTER_API_KEY=sk-or-test-fallback-not-a-key EXPECT_TOKEN=sk-or-test-fallback-not-a-key
+		run_pi
+		[ -e "$(pi_cache)" ]
+
+		rm -f "$(pi_cache)" "$BATS_TEST_TMPDIR/curl-argv.log"
+		unset OPENROUTER_API_KEY EXPECT_TOKEN
+		run_pi
+		[ ! -e "$(pi_cache)" ]
+
+		[ ! -e "$marker" ]
+	done
 }
 
 @test 'pi key: a composite ${A}_${B} key falls through to OPENROUTER_API_KEY' {
