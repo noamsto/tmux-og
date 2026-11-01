@@ -22,12 +22,18 @@ type remoteWindow struct {
 	SessionCreated string `json:"session_created,omitempty"`
 }
 
+// remoteWindowRowsFormat emits one `W|$N|@N|idx|name` row per listed tmux
+// window, except a mirror window (@bridge_win), which emits a blank line
+// instead, so a remote's own mirror windows (a mirror of a mirror) never
+// reach the window picker (#1060). The name stays last so it may hold `|`.
+const remoteWindowRowsFormat = "#{?#{@bridge_win},,W|#{session_id}|#{window_id}|#{window_index}|#{window_name}}"
+
 // remoteListWindowsBody lists sessions and every window in one chained tmux
 // command. Each free-text field sits last on its own line kind (S or W), so a
 // name may hold `|`; the window line joins its session by session_id, and the S
 // line carries #{session_created} for the same kill guard the session probe
 // uses. `\;` is a literal `;` argument under both fish and bash.
-var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`)
+var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `' \; list-windows -a -F '` + remoteWindowRowsFormat + `'`)
 
 var remoteListWindowsCmd = remoteIdentityPreamble + `; ` + remoteListWindowsBody
 

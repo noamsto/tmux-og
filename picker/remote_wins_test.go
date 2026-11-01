@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -100,11 +101,55 @@ func TestRemoteListWindowsCmdFishSafe(t *testing.T) {
 	if got := strings.Count(cmd, "env TMUX_TMPDIR="); got != 2 {
 		t.Fatalf("cmd = %q, want both remoteTmuxCmd legs (got %d)", cmd, got)
 	}
-	if !strings.Contains(cmd, `list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}' \; list-windows -a -F 'W|#{session_id}|#{window_id}|#{window_index}|#{window_name}'`) {
+	if !strings.Contains(cmd, `list-sessions -F '`+remoteSessionRowsFormat+`' \; list-windows -a -F '`+remoteWindowRowsFormat+`'`) {
 		t.Fatalf("cmd = %q, want list-sessions \\; list-windows -a", cmd)
 	}
 	if strings.Contains(cmd, "td=") || strings.Contains(cmd, "; t=") {
 		t.Fatalf("cmd = %q must not use shell assignments (fish-incompatible)", cmd)
+	}
+}
+
+// A remote that is itself bridging a third host carries @bridge_win mirror
+// windows that must not reach the window picker (#1060).
+func TestRemoteWindowRowsSkipMirrorWindows(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not available")
+	}
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	t.Setenv("TMUX", "")
+	tm := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, test-controlled argv
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+	}
+	tm("-f", "/dev/null", "new-session", "-d", "-s", "native")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	tm("new-window", "-t", "native:", "-n", "mirror")
+	// -f /dev/null starts window indices at 0 with renumber-windows off, so the
+	// second window is native:1; target it by its unique name to be safe.
+	tm("set-option", "-w", "-t", "native:mirror", "@bridge_win", "1")
+
+	sessionsOut, err := exec.Command("tmux", "list-sessions", "-F", remoteSessionRowsFormat).CombinedOutput() //nolint:gosec // G204: fixed binary, test-controlled argv
+	if err != nil {
+		t.Fatalf("tmux list-sessions: %v\n%s", err, sessionsOut)
+	}
+	windowsOut, err := exec.Command("tmux", "list-windows", "-a", "-F", remoteWindowRowsFormat).CombinedOutput() //nolint:gosec // G204: fixed binary, test-controlled argv
+	if err != nil {
+		t.Fatalf("tmux list-windows: %v\n%s", err, windowsOut)
+	}
+	res := parseRemoteWindowsOutput("machine\nuser\n" + string(sessionsOut) + string(windowsOut))
+
+	if len(res.Windows) != 1 {
+		t.Fatalf("Windows = %+v, want exactly one (the plain window)", res.Windows)
+	}
+	if res.Windows[0].Name == "mirror" {
+		t.Errorf("Windows = %+v, must not include the mirror window", res.Windows)
+	}
+	for _, w := range res.Windows {
+		if w.Name == "mirror" {
+			t.Errorf("Windows = %+v, must not include the mirror window", res.Windows)
+		}
 	}
 }
 

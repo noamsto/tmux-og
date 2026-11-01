@@ -506,7 +506,7 @@ func TestRemoteListSessionsCmdFishSafe(t *testing.T) {
 	if !strings.Contains(remoteListSessionsCmd, "env TMUX_TMPDIR=") {
 		t.Fatalf("probe should set TMUX_TMPDIR via env(1): %q", remoteListSessionsCmd)
 	}
-	if !strings.Contains(remoteListSessionsCmd, "list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}'") {
+	if !strings.Contains(remoteListSessionsCmd, "list-sessions -F '"+remoteSessionRowsFormat+"'") {
 		t.Fatalf("probe should list sessions with their ids and created: %q", remoteListSessionsCmd)
 	}
 	// macOS remotes keep their server at tmux's default /tmp/tmux-<uid>, which
@@ -1312,5 +1312,54 @@ func TestBridgeCollectorsSkipPlacedSession(t *testing.T) {
 	names := bridgeSessionNames()
 	if len(names) != 1 || names["dedicated"] != "work" {
 		t.Errorf("bridgeSessionNames() = %+v, want only dedicated -> work", names)
+	}
+}
+
+// A remote host can itself mirror a third host through the bridge; those
+// dedicated mirror sessions carry a session-scoped @bridge_host and must not
+// surface in the picker as if they were real sessions (#1060). A native
+// session holding placed mirror windows keeps @bridge_placed and still lists.
+// Real tmux: the filter is a format conditional, so only the server can say
+// what it yields.
+func TestRemoteSessionRowsSkipDedicatedMirror(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is not available")
+	}
+	dir := t.TempDir()
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX", "")
+	tm := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed binary, test-controlled argv
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+	}
+	tm("-f", "/dev/null", "new-session", "-d", "-s", "plain")
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	tm("new-session", "-d", "-s", "dedicated")
+	tm("set-option", "-t", "dedicated", "@bridge_host", "lab")
+	tm("set-option", "-t", "dedicated", "@bridge_session", "work")
+	tm("new-session", "-d", "-s", "placed")
+	tm("set-option", "-w", "-t", "placed:", "@bridge_placed", "1")
+	tm("set-option", "-w", "-t", "placed:", "@bridge_host", "lab")
+	tm("set-option", "-w", "-t", "placed:", "@bridge_session", "other")
+
+	out, err := exec.Command("tmux", "list-sessions", "-F", remoteSessionRowsFormat).CombinedOutput() //nolint:gosec // G204: fixed binary, test-controlled argv
+	if err != nil {
+		t.Fatalf("tmux list-sessions: %v\n%s", err, out)
+	}
+	res := parseRemoteProbeOutput("machine\nuser\n" + string(out))
+	if len(res.Sessions) != 2 {
+		t.Fatalf("Sessions = %q, want exactly [plain placed]", res.Sessions)
+	}
+	got := make(map[string]bool, len(res.Sessions))
+	for _, s := range res.Sessions {
+		got[s] = true
+	}
+	if !got["plain"] || !got["placed"] {
+		t.Errorf("Sessions = %q, want plain and placed", res.Sessions)
+	}
+	if got["dedicated"] {
+		t.Errorf("Sessions = %q, must not include the dedicated mirror", res.Sessions)
 	}
 }

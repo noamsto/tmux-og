@@ -33,11 +33,19 @@ const remoteProbeTimeout = 3 * time.Second
 // identity rides the existing ssh probe with no extra round trip.
 const remoteIdentityPreamble = `cat /etc/machine-id 2>/dev/null || sysctl -n kern.uuid 2>/dev/null || hostname; id -un`
 
+// remoteSessionRowsFormat emits one `S|$N|created|name` row per listed tmux
+// session, except a session this host is itself mirroring: a session-scoped
+// @bridge_host with @bridge_placed unset emits a blank line instead, so a
+// remote's own mirror (a mirror of a mirror) never reaches the picker (#1060).
+// A native session holding placed mirror windows keeps @bridge_placed and
+// still lists. The name stays last so it may hold `|`.
+const remoteSessionRowsFormat = "#{?#{@bridge_placed},S|#{session_id}|#{session_created}|#{session_name},#{?#{@bridge_host},,S|#{session_id}|#{session_created}|#{session_name}}}"
+
 // remoteListSessionsBody lists the remote's tmux sessions. Stdout of the full
 // command begins with the identity preamble (machine-id line, username line),
 // then one S|$N|created|name line per session — the id a kill targets and the
 // #{session_created} it re-checks first; the name comes last so it may hold `|`.
-var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F 'S|#{session_id}|#{session_created}|#{session_name}'`)
+var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `'`)
 
 // remoteTmuxBin resolves the remote's tmux without a shell assignment: PATH
 // first, then the nix per-user profile a non-interactive ssh does not see.
