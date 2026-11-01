@@ -262,8 +262,14 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   `!cmd` (run a shell command), `$VAR`/`${VAR}` (env interpolation), `$$`/`$!`
   (escape a literal leading `$`/`!`), anything else literal — and the
   provider implements only the parts safe for a background status tick:
-  `!cmd` is deliberately never executed (a tick must not run commands from a
-  config file, so that case resolves to an empty token and falls through),
+  `!cat <absolute path>` — the form a sops/agenix secrets file takes, e.g.
+  `!cat '/run/secrets/openrouter_api_key'` — is parsed, never run: a bare path
+  with no whitespace or shell metacharacters, or one `'…'`/`"…"` pair with no
+  quote, `$`, backtick or backslash inside; the provider reads that regular,
+  readable file with bash, strips trailing whitespace, and an empty result
+  falls through; every other `!cmd` (pipes, `;`, flags, several args, relative
+  or `~` paths, other commands) is never executed (a tick must not run commands
+  from a config file) and resolves to an empty token that falls through,
   `$$`/`$!` unescape correctly, and `$VAR`/`${VAR}` resolves only a
   whole-value variable name (`^[A-Za-z_][A-Za-z0-9_]*$`) via `${!var}` —
   a composite like `${A}_${B}` is left unresolved rather than risk expanding

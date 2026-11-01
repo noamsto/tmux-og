@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # pi usage provider: query OpenRouter's key-info endpoint with pi's own
 # OpenRouter key and atomically rewrite $CACHE_DIR/pi.json for tmux-statusline.
-# The key comes from auth.json's `.openrouter.key`, else the OAuth-minted
-# `.openrouter.access`, else $OPENROUTER_API_KEY. A failed fetch (offline,
-# revoked key, non-JSON) leaves the previous cache untouched.
+# The key comes from auth.json's `.openrouter.key` (a `!cat <absolute path>`
+# key is read from that file), else the OAuth-minted `.openrouter.access`, else
+# $OPENROUTER_API_KEY. A failed fetch (offline, revoked key, non-JSON) leaves
+# the previous cache untouched.
 #
 # OpenRouter has no short rate-limit windows. `spend` is usage_monthly (USD,
 # current UTC calendar month), always written. `monthly` is a pct only when the
@@ -42,14 +43,32 @@ AUTH="${PI_AUTH:-$HOME/.pi/agent/auth.json}"
 # `.key` then. Try it after `.key` and before the env, mirroring pi's own
 # credential precedence.
 #
-# pi's key syntax: `!cmd` runs a shell command (never executed here — a
-# background status tick must not run commands from a config file), `$VAR` /
-# `${VAR}` interpolates the environment, `$$` / `$!` escape a literal leading
-# `$` / `!`, anything else is literal. pi also consults the credential's own
-# `.openrouter.env` object before the process environment; that is not read
-# here, so such a key falls through to OPENROUTER_API_KEY.
+# pi's key syntax: `!cmd` runs a shell command. A background status tick must
+# not run commands from a config file, so only the `!cat <absolute path>` shape
+# (the secrets-file form) is parsed and the file read with bash, never
+# executed; every other `!cmd` never runs. `$VAR` / `${VAR}` interpolates the
+# environment, `$$` / `$!` escape a literal leading `$` / `!`, anything else is
+# literal. pi also consults the credential's own `.openrouter.env` object
+# before the process environment; that is not read here, so such a key falls
+# through to OPENROUTER_API_KEY.
+#
+# The path must be a single argument with nothing a shell could expand: bare,
+# or one matching '…' / "…" pair. `]` leads each bracket expression.
+cat_bare_re='^!cat[[:blank:]]+(/[^][:space:][:cntrl:]'"'"'"$`\;&|<>(){}*?~#!]*)[[:blank:]]*$'
+cat_sq_re="^!cat[[:blank:]]+'(/[^][:cntrl:]'\"\$\`\\\\]*)'[[:blank:]]*\$"
+cat_dq_re='^!cat[[:blank:]]+"(/[^][:cntrl:]'"'"'"$`\]*)"[[:blank:]]*$'
 raw=$(jq -r '.openrouter.key // empty' "$AUTH" 2>/dev/null)
 case "$raw" in
+'!cat'[[:blank:]]*)
+	token=''
+	if [[ $raw =~ $cat_bare_re || $raw =~ $cat_sq_re || $raw =~ $cat_dq_re ]]; then
+		path=${BASH_REMATCH[1]}
+		if [[ -f $path && -r $path ]]; then
+			token=$(<"$path")
+			token=${token%"${token##*[![:space:]]}"}
+		fi
+	fi
+	;;
 '!'*) token='' ;;
 '$$'*) token="\$${raw#\$\$}" ;;
 '$!'*) token="!${raw#\$!}" ;;
