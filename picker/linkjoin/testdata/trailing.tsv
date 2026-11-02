@@ -1,0 +1,22 @@
+# input<TAB>expected: the first link Extract returns for the input as one line at width 200 ("-" = no link). Shared with the fingers-pattern test of #1067.
+see https://x.io/a.	https://x.io/a
+see https://x.io/a,	https://x.io/a
+see https://x.io/a;	https://x.io/a
+see https://x.io/a:	https://x.io/a
+see https://x.io/a!	https://x.io/a
+see https://x.io/a?	https://x.io/a
+see https://x.io/a)	https://x.io/a
+see https://x.io/a]	https://x.io/a
+see https://x.io/a>	https://x.io/a
+see https://x.io/a`	https://x.io/a
+see https://x.io/a'	https://x.io/a
+see https://x.io/a"	https://x.io/a
+(https://x.io/a)	https://x.io/a
+`https://x.io/a`	https://x.io/a
+https://x.io/a?b=1&c=2#frag.	https://x.io/a?b=1&c=2#frag
+https://en.wikipedia.org/wiki/Foo_(bar)	https://en.wikipedia.org/wiki/Foo_(bar)
+file:///tmp/x.txt.	file:///tmp/x.txt
+edit foo/bar.go.	foo/bar.go
+./a/b.go:12:3	./a/b.go
+~/x/y	~/x/y
+a/b.tar.gz	a/b.tar.gz
