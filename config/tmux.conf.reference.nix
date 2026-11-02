@@ -1440,9 +1440,18 @@
     set -g @fingers-pattern-7 "arn:[a-z0-9-]+:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:[a-zA-Z0-9_/.:-]+"
     set -g @fingers-pattern-8 "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
     set -g @fingers-pattern-9 "([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}"
+    # Replace the url and path built-ins: those keep trailing punctuation, so
+    # "see https://x.io/a." copies a dead link. The closing lookbehind makes PCRE
+    # backtrack off it; (...) stays balanced inside a URL. Hex escapes: \x22 ",
+    # \x27 ', \x60 `, \x24 $.
+    # fingers tries user patterns in option-name order: "url" and "path" sort after
+    # the digits, so patterns 2-9 (e.g. sha256-...+/...=) still win at a shared start.
+    set -g @fingers-pattern-url "(?:https?://|git@|git://|ssh://|ftp://|file:///)(?:[^\\s()\\x22\\x27\\x60]|\\([^\\s()\\x22\\x27\\x60]*\\))+(?<![.,;:!?>\\]}])"
+    set -g @fingers-pattern-path "(?:[.\\w\\-~\\x24@]+)?(?:/[.\\w\\-@]+)+/?(?<![.])"
     # Only scan built-ins we actually use. Dropped: digit (too noisy — matches
-    # any 4+ digit run), git-status, git-status-branch, diff (niche).
-    set -g @fingers-enabled-builtin-patterns "url,path,ip,uuid,sha,hex,kubernetes"
+    # any 4+ digit run), git-status, git-status-branch, diff (niche); url and path
+    # are replaced by the url and path patterns above.
+    set -g @fingers-enabled-builtin-patterns "ip,uuid,sha,hex,kubernetes"
 
     # fingers opens its hint overlay as a window and closes it again, so every
     # invocation left a close in tmux-remux's undo list that nobody made and

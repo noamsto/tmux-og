@@ -298,6 +298,16 @@
               touch $out
             '';
 
+          fingers-patterns-tests =
+            pkgs.runCommand "fingers-patterns-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.bash];
+            } ''
+              cp -r ${./tests} tests
+              cp -r ${./config} config
+              bats tests/fingers-patterns.bats
+              touch $out
+            '';
+
           og-open-tests =
             pkgs.runCommand "og-open-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.bash];
