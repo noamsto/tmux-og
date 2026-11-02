@@ -29,7 +29,6 @@ fi
 
 BORDER_FG=$(tmux display -p '#{@thm_overlay_1}' 2>/dev/null || true)
 [[ -n $BORDER_FG ]] || BORDER_FG="#7f849c"
-# Pin the client and its window; see tmux-which-key.sh.
 POPUP_CLIENT=()
 [[ -n $CLIENT ]] && POPUP_CLIENT=(-c "$CLIENT" -t "$CLIENT:")
 POPUP_ENV=(-e "OG_PICKER_ORIGIN_PANE=$ORIGIN")

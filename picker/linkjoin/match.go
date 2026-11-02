@@ -73,9 +73,9 @@ func overlapsAny(spans []span, start, end int) bool {
 }
 
 // TrimTrailing repeatedly strips a final rune the lookbehind of #1067's
-// patterns rejects, which is what PCRE backtracking off it amounts to. No
-// bracket balancing: urlRe admits only a balanced (…) and pathRe holds none
-// of these but '.'. The vectors are testdata/trailing.tsv.
+// patterns rejects, which is what PCRE backtracking off it amounts to. ')' is
+// not in the set: urlRe admits only a balanced (…). The vectors are
+// testdata/trailing.tsv.
 func TrimTrailing(s string) string {
 	return strings.TrimRight(s, ".,;:!?>]}")
 }
