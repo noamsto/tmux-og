@@ -30,7 +30,7 @@ not do multi-line matching (Morantron/tmux-fingers#163).
   `…/scratchpad/` ends at column 62 and the next row is `(verdict.json …`, which
   was a space break. The continuation-start rule (below) is what keeps that row out.
 - **OSC 8 is partly available.** `capture-pane -e` keeps OSC 8 on this tmux
-  (`terminal-features *:hyperlinks`). Claude Code emitted one for a markdown link
+  (`terminal-features *:hyperlinks`). Claude Code emitted one for the PR link in its status line
   (`%384`/`%385`: `ESC]8;id=…;https://github.com/noamsto/hookyard/pull/267`), none
   for bare paths or for `%761`/`%788`. So hyperlinks are a supplementary source,
   never the primary one.

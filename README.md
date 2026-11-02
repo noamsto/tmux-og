@@ -178,6 +178,7 @@ Press <kbd>prefix</kbd> then <kbd>C-Space</kbd> for the in-terminal cheatsheet.
 | <kbd>W</kbd> | Window wall — tiled live-preview grid of the same window list |
 | <kbd>a</kbd> | Claude-window picker (only windows with a running agent) |
 | <kbd>?</kbd> | Which-key popup — every binding, grouped and filterable |
+| <kbd>O</kbd> | Link picker — URLs and paths in the pane, hard-wrapped ones rejoined |
 | <kbd>n</kbd> | Notification history |
 | <kbd>i</kbd> | Issue / PR enrich card (Linear/GitHub + PR state) |
 | <kbd>p</kbd> | PR dashboard (prdash) |
