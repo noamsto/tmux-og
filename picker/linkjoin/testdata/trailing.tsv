@@ -20,3 +20,4 @@ edit foo/bar.go.	foo/bar.go
 ./a/b.go:12:3	./a/b.go
 ~/x/y	~/x/y
 a/b.tar.gz	a/b.tar.gz
+plain prose without links	-

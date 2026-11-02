@@ -1,0 +1,4 @@
+# width=40
+● See https://github.com/noamsto/tmux-og
+  /blob/main/docs/agents/bridge-daemon.m
+  d. and more prose.

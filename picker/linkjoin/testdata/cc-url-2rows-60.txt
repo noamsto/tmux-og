@@ -1,0 +1,3 @@
+# width=60
+● Read https://github.com/noamsto/tmux-og/blob/main/docs/age
+  nts/bridge-shipped-state.md. and more prose.
