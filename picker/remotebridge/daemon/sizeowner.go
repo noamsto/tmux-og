@@ -554,8 +554,9 @@ func (o ownerCtl) claimWith(st ownerRead) {
 
 // catchUp republishes when the view moved while a claim or release was in
 // flight: the change watcher's guarded write is skipped while the record is
-// still foreign, so the new owner must catch up. The write is guarded and
-// lands because the record is now ours.
+// still foreign, so the new owner must catch up. The write is guarded like
+// any publish: it lands while the record is ours or unset, and is skipped if a
+// newer claim took it.
 func (o ownerCtl) catchUp(relay, cell string) {
 	if o.view.Relay.Load().String() == relay && o.view.Cell() == cell {
 		return
@@ -683,8 +684,8 @@ func (o ownerCtl) releaseDue(now time.Time) {
 }
 
 // envTeardown unsets the relay and cell env when this daemon leaves, unless
-// another attached controller still depends on the values (#1035). With one
-// attached, it instead relinquishes: relay empty and cell unset, guarded on
+// another attached controller still depends on the values (#1035). With
+// another control client attached, it instead relinquishes: relay empty and cell unset, guarded on
 // this daemon's own token, so a survivor never inherits a capability its
 // terminal lacks from an owner that is gone. The count is tmux's own
 // session_attached, which skips the suspended and exiting clients

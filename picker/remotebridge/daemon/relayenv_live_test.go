@@ -164,7 +164,6 @@ func (s liveEnvSlot) env(name string) (value string, set bool) {
 	return v, true
 }
 
-// assertValues checks that the slot holds exactly relay and cell.
 func (s liveEnvSlot) assertValues(when, relay, cell string) {
 	s.t.Helper()
 	if v, set := s.env(RelayEnvVar); !set || v != relay {

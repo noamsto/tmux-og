@@ -160,7 +160,7 @@ option.
   (`ownerReleaseCmd`); only the survivor whose release cleared the record
   writes, and the release-branch writes need no guard (the branch's own unset
   just cleared the record). A claim or release whose view moved while it was in
-  flight republishes once it lands (`catchUp`), since the change watcher's
+  flight republishes once it is sent (`catchUp`), since the change watcher's
   guarded write was skipped while the record was foreign.
   Teardown (`owner.envTeardown`, `relayEnvTeardownCmd`) reads the session's
   clients and unsets, guarded by the `session_attached` it read, only when no

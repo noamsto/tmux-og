@@ -491,7 +491,7 @@ func TestOwnerCtlEnvTeardown(t *testing.T) {
 
 // TestOwnerCtlCatchesUpWhenTheViewMoves: the change watcher's guarded write is
 // skipped while the record is foreign, so a claim or release that sent the old
-// snapshot republishes the new view once it lands, and sends nothing extra when
+// snapshot republishes the new view once it is sent, and sends nothing extra when
 // the view held still.
 func TestOwnerCtlCatchesUpWhenTheViewMoves(t *testing.T) {
 	cases := []struct {

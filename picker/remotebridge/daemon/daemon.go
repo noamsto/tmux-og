@@ -469,11 +469,10 @@ const resizeFallbackInterval = 30 * time.Second
 // undone the same way the converger's is above: a write that never reached
 // the remote must not be recorded as current, or the next still-different
 // resolve would read as already-published and never retry. A guarded write
-// (env) the remote skips because another controller owns the session still
-// counts as sent: the view keeps the value and the next claim publishes it.
-// This watcher must
-// NEVER write Advertised — only a publish site does that (see Viewing's State
-// model).
+// the remote skips because another controller owns the session still counts
+// as sent: the view keeps the value and the next claim publishes it. This
+// watcher must NEVER write Advertised — only a publish site does that (see
+// Viewing's State model).
 func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), activeWin func() string, resolveView func() (ViewIdentity, bool), view *Viewing, env relayEnv, reg *registry, cv *converger, send func(...string) bool, stop <-chan struct{}, tick <-chan time.Time) {
 	var lastNudge time.Time
 	lastCheck := time.Now()
@@ -1371,9 +1370,9 @@ func runMirror(cfg Config) error {
 		// unconditional RelayEnvCmd write above; a direct attach in that gap
 		// can still read the stale value. The cell size is the same kind of
 		// residue and gets the same treatment. With size ownership on, it is
-		// never cleared while another controller is attached (#1035): the
-		// survivors replace a departed owner's values when they release its
-		// record.
+		// unset only when no other control client is attached (#1035);
+		// otherwise an exiting owner neutralises its own values until a
+		// survivor's release republishes.
 		if ownerOn {
 			owner.envTeardown()
 		} else {
