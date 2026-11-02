@@ -468,10 +468,13 @@ const resizeFallbackInterval = 30 * time.Second
 // (a size that became unknown unsets the variable). A failed send is
 // undone the same way the converger's is above: a write that never reached
 // the remote must not be recorded as current, or the next still-different
-// resolve would read as already-published and never retry. This watcher must
+// resolve would read as already-published and never retry. A guarded write
+// (env) the remote skips because another controller owns the session still
+// counts as sent: the view keeps the value and the next claim publishes it.
+// This watcher must
 // NEVER write Advertised — only a publish site does that (see Viewing's State
 // model).
-func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), activeWin func() string, resolveView func() (ViewIdentity, bool), view *Viewing, remoteSession string, reg *registry, cv *converger, send func(...string) bool, stop <-chan struct{}, tick <-chan time.Time) {
+func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), activeWin func() string, resolveView func() (ViewIdentity, bool), view *Viewing, env relayEnv, reg *registry, cv *converger, send func(...string) bool, stop <-chan struct{}, tick <-chan time.Time) {
 	var lastNudge time.Time
 	lastCheck := time.Now()
 	for {
@@ -510,12 +513,12 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 				view.SetDesired(id.Term)
 				prev := view.Relay.Load()
 				view.Relay.Store(id.Relay)
-				if id.Relay.Sixel() != prev.Sixel() && !send(RelayEnvCmd(remoteSession, id.Relay.String())) {
+				if id.Relay.Sixel() != prev.Sixel() && !send(env.relay(id.Relay.String())) {
 					view.Relay.Store(prev)
 				}
 				if prevCell := view.Cell(); id.Cell != prevCell {
 					view.SetCell(id.Cell)
-					if !send(CellEnvSyncCmd(remoteSession, id.Cell)) {
+					if !send(env.cell(id.Cell)) {
 						view.SetCell(prevCell)
 					}
 				}
@@ -1054,7 +1057,11 @@ func runMirror(cfg Config) error {
 
 	// Size ownership needs the pinned session id to target the owner record.
 	ownerOn := cfg.own != nil && pin.id != ""
-	owner := ownerCtl{own: cfg.own, sessID: pin.id, rt: rt, send: sendCtl, cv: cv}
+	owner := ownerCtl{own: cfg.own, sessID: pin.id, rt: rt, send: sendCtl, cv: cv, view: cfg.View}
+	env := relayEnv{target: cfg.RemoteSession}
+	if ownerOn {
+		env = owner.relayEnv()
+	}
 	// Ahead of every size assert on this client, which then recalculate with the
 	// flags already in place. A process start is the user acting on this
 	// controller; a re-open is not, nobody is at the keyboard.
@@ -1151,8 +1158,10 @@ func runMirror(cfg Config) error {
 	// one has nothing to say would leave that stale value standing and make
 	// the remote emit graphics this proxy only drops. The cell size goes in
 	// the same batch and is likewise unconditional: an unknown size unsets a
-	// value an earlier bridge left behind.
-	sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()), CellEnvSyncCmd(cfg.RemoteSession, cfg.View.Cell()))
+	// value an earlier bridge left behind. Both writes are guarded by the
+	// size-owner record, so a controller that does not own the session leaves
+	// the owner's values standing (#1035).
+	sendCtl(env.publish(cfg.View)...)
 
 	_ = os.Remove(cfg.SockPath)
 	listener, err := net.Listen("unix", cfg.SockPath)
@@ -1361,8 +1370,15 @@ func runMirror(cfg Config) error {
 		// SIGKILL or a lost race is corrected by the next bridge's
 		// unconditional RelayEnvCmd write above; a direct attach in that gap
 		// can still read the stale value. The cell size is the same kind of
-		// residue and gets the same treatment.
-		sendCtl(RelayEnvUnsetCmd(cfg.RemoteSession), CellEnvUnsetCmd(cfg.RemoteSession))
+		// residue and gets the same treatment. With size ownership on, it is
+		// never cleared while another controller is attached (#1035): the
+		// survivors replace a departed owner's values when they release its
+		// record.
+		if ownerOn {
+			owner.envTeardown()
+		} else {
+			sendCtl(RelayEnvUnsetCmd(cfg.RemoteSession), CellEnvUnsetCmd(cfg.RemoteSession))
+		}
 		// Whichever connection is current, which after a reconnect is no longer
 		// the one cfg.Ctl named.
 		hold.close()
@@ -1447,7 +1463,7 @@ func runMirror(cfg Config) error {
 	ticker := time.NewTicker(resizePollInterval)
 	go func() {
 		defer ticker.Stop()
-		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, cfg.RemoteSession, reg, cv, sendCtl, stopWatch, ticker.C)
+		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, env, reg, cv, sendCtl, stopWatch, ticker.C)
 	}()
 
 	// Re-seed mirror panes a local client starts displaying (see watchReveal).
@@ -1889,7 +1905,9 @@ func runMirror(cfg Config) error {
 		// — watchLocalClient's own immediate publish had no live connection to
 		// send it on. Re-sent unconditionally, same as the one-shot at Run()'s
 		// own startup and for the same reason: a stale value must not stand.
-		sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()), CellEnvSyncCmd(cfg.RemoteSession, cfg.View.Cell()))
+		// Guarded by the size-owner record like the startup publish, so a
+		// non-owner's write does not land (#1035).
+		sendCtl(env.publish(cfg.View)...)
 		syncThemeOnConnect(rt, cfg, shouldSyncTheme(themeAvailable, themeChecked))
 		return true
 	}

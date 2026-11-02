@@ -110,10 +110,8 @@ func ownerClaimCmd(sessID, token, client string) string {
 // the branch's own unset just cleared the record (#1035).
 func ownerReleaseCmd(sessID, token, client string, then ...string) string {
 	cond := "#{==:#{" + bridgeOwnerOption + "}," + token + "|" + client + "}"
-	branch := "set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption
-	for _, cmd := range then {
-		branch += " ; " + cmd
-	}
+	unset := "set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption
+	branch := strings.Join(append([]string{unset}, then...), " ; ")
 	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(branch)
 }
 

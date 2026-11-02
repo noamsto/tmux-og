@@ -720,7 +720,7 @@ func TestWatchLocalClientReconvergesOnChange(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, "sess", reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -791,7 +791,7 @@ func TestWatchLocalClientConvergesActiveWindowFirst(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "@102" }, noResolveView, view, "sess", reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() string { return "@102" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -835,7 +835,7 @@ func TestWatchLocalClientDoesNotRecordAWriteThatDidNotHappen(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, "sess", reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -881,6 +881,13 @@ func runWatchLocalClientView(t *testing.T, seedRelay graphics.Relay, seedTerm, s
 // success under the test's control; sent records the attempts either way.
 func runWatchLocalClientViewSend(t *testing.T, seedRelay graphics.Relay, seedTerm, seedCell string, id ViewIdentity, ok, sendOK bool) ([]string, *Viewing) {
 	t.Helper()
+	return runWatchLocalClientViewEnv(t, relayEnv{target: "sess"}, seedRelay, seedTerm, seedCell, id, ok, sendOK)
+}
+
+// runWatchLocalClientViewEnv is runWatchLocalClientViewSend with the publish
+// env under the test's control.
+func runWatchLocalClientViewEnv(t *testing.T, env relayEnv, seedRelay graphics.Relay, seedTerm, seedCell string, id ViewIdentity, ok, sendOK bool) ([]string, *Viewing) {
+	t.Helper()
 	tick := make(chan time.Time)
 	stop := make(chan struct{})
 	nudgeCh := make(chan nudgeResult)
@@ -899,7 +906,7 @@ func runWatchLocalClientViewSend(t *testing.T, seedRelay graphics.Relay, seedTer
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, resolveView, view, "sess", reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() string { return "" }, resolveView, view, env, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -913,6 +920,22 @@ func runWatchLocalClientViewSend(t *testing.T, seedRelay graphics.Relay, seedTer
 		t.Fatal("watchLocalClient did not return after stop was closed")
 	}
 	return sent, view
+}
+
+// TestWatchLocalClientGuardedEnvSendsGuardedWrite: with a size-owner token the
+// capability change goes out as the owner-guarded write, and is stored.
+func TestWatchLocalClientGuardedEnvSendsGuardedWrite(t *testing.T) {
+	env := relayEnv{target: "$1", token: "0123456789abcdef"}
+	sent, view := runWatchLocalClientViewEnv(t, env, graphics.Relay{}, "foot", "",
+		ViewIdentity{Term: "foot", Relay: graphics.NewRelayFromClient(true, "sixel")}, true, true)
+
+	want := []string{env.relay("sixel")}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent = %v, want %v", sent, want)
+	}
+	if !view.Relay.Load().Sixel() {
+		t.Error("the resolved capability was not stored")
+	}
 }
 
 // TestWatchLocalClientPublishesOnCapabilityChange is R5: a resolve whose
