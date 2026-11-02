@@ -221,3 +221,16 @@ width_of() { sed -n 's/.*-w \([0-9]*%\).*/\1/p' "$ARGS_LOG"; }
 	bash "$launcher"
 	run ! grep -Eq -- '(^| )-e OG_PICKER_CURRENT_WINDOW' "$ARGS_LOG"
 }
+
+@test "link picker: the origin pane reaches the popup's env" {
+	launcher="$(mk_launcher tmux-link-picker.sh)"
+	TMUX_PANE=%7 bash "$launcher"
+	grep -Eq -- '(^| )-e OG_PICKER_ORIGIN_PANE=%7( |$)' "$ARGS_LOG"
+}
+
+@test "link picker: no origin pane exits 1 without opening a popup" {
+	launcher="$(mk_launcher tmux-link-picker.sh)"
+	run env -u TMUX_PANE bash "$launcher"
+	[ "$status" -eq 1 ]
+	[ ! -e "$ARGS_LOG" ]
+}

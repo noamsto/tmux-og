@@ -365,7 +365,7 @@ func (m linksModel) renderRow(l linkjoin.Link, selected bool) string {
 		marker = " +" + strconv.Itoa(l.Rows)
 	}
 	linkW := max(m.width-1-4-1-visibleWidth(marker), 0)
-	line := " " + tag + " " + truncateVisibleWidth(sanitizeStatusText(elideLeft(l.Text, linkW)), linkW)
+	line := " " + tag + " " + truncateVisibleWidth(sanitizeStatusText(elideLeft(l.Text, min(linkW, statusTextMaxRunes))), linkW)
 	if marker != "" {
 		line += overlay.Render(marker)
 	}

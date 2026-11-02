@@ -263,6 +263,30 @@ func TestLinksLongLinkKeepsTail(t *testing.T) {
 	}
 }
 
+func TestLinksLongLinkKeepsTailOnWidePopup(t *testing.T) {
+	dir := "/" + strings.Repeat("segment/", 40)
+	m := testLinksModel(
+		linkjoin.Link{Text: dir + "alpha.go", Kind: linkjoin.Path, Rows: 1},
+		linkjoin.Link{Text: dir + "bravo.go", Kind: linkjoin.Path, Rows: 1},
+	)
+	m.width = 240
+	rows := m.renderBody()
+	seen := map[string]bool{}
+	for i, wantTail := range []string{"alpha.go", "bravo.go"} {
+		plain := stripANSI(rows[i])
+		if w := visibleWidth(rows[i]); w > m.width {
+			t.Errorf("row %d is %d cells, wider than %d", i, w, m.width)
+		}
+		if !strings.HasSuffix(strings.TrimRight(plain, " "), wantTail) {
+			t.Errorf("row %d = %q does not end in %q", i, plain, wantTail)
+		}
+		seen[plain] = true
+	}
+	if len(seen) != 2 {
+		t.Error("sibling links render identically")
+	}
+}
+
 func TestRunLinksCmdDoesNotWaitForLongRunner(t *testing.T) {
 	start := time.Now()
 	detail, err := runLinksCmd(exec.Command("sleep", "5"), 100*time.Millisecond)
