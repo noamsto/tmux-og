@@ -17,7 +17,7 @@ source and on a scratch server built from it (`tmux next-3.9`):
 | --- | --- | --- |
 | `pane-resized` hook/event | yes | `window_pane_resize` returns early when `sx == wp->sx && sy == wp->sy`, so it fires only on a real size change, never on the #793 same-size `refresh-client -C` storm. Payload: `pane`, `window`, `width`, `height`, `old_width`, `old_height`. |
 | `pane-moved`, `window-zoomed`, `window-unzoomed`, `window-closed`, `client-closed` | yes | No polling site watches for any of these (below). |
-| `wait-for -E name [-F fmt]` | yes | Blocks the calling client until event `name` fires with `fmt` true. Payload keys are bare format names (`#{pane}`, not `#{hook_pane}`). Flags must precede the name: `wait-for -E pane-resized -F …` is a parse error (`too many arguments`). Probed: the waiter is not an attached client (absent from `list-clients` and `#{C:}`), and killing the waiting client with TERM or KILL removes its sink (`wait-for -l -E` drops to 0) and a later event does not touch it. In a command list `display -p … ; wait-for -E …`, the `display` line reaches stdout before the wait blocks. |
+| `wait-for -E name [-F fmt]` | yes | Blocks the calling client until event `name` fires with `fmt` true. Payload keys are bare format names (`#{pane}`, not `#{hook_pane}`). Flags must precede the name: `wait-for -E pane-resized -F …` is a parse error (`too many arguments`). Probed: the waiter is not an attached client (absent from `list-clients` and `#{L:}`), and killing the waiting client with TERM or KILL removes its sink (`wait-for -l -E` drops to 0) and a later event does not touch it. In a command list `display -p … ; wait-for -E …`, the `display` line reaches stdout before the wait blocks. |
 | `set-hook -E @name` | yes | No consumer needs a user event. |
 | `#{pane_last_output_time}` | yes | `time_t`, one-second resolution, set in `input.c` when the pane produces output. |
 | `#{pane_output_generation}` | yes | Already used by `tmux-agent-repaint`. |
@@ -92,8 +92,11 @@ tmux display -p -t %N '#{pane_width} #{pane_height}' \; \
   blocks but never matches on some build, which the parse-rejection fallback
   cannot detect. Idle cost: one fork per agent pane per minute instead of
   twelve.
-- The child is started with a context cancelled when the watcher returns, so
-  a superseded or EOF'd watcher kills its waiter; killing the waiting client
+- The child is started with a context; the watcher cancels it and then waits
+  for the round to return (child killed and reaped) before it exits, because
+  `exec.CommandContext` kills from its own goroutine, which a returning `main`
+  would not wait for (a review found the first version leaked a waiter per
+  normal exit). Killing the waiting client
   removes its sink cleanly (probed). Residual: a watcher killed with SIGKILL
   leaves its waiter blocked until that pane next resizes or the server exits
   (`cmd_wait_for_flush` wakes waiters on shutdown).

@@ -60,6 +60,7 @@ start_server() {
 pane_size() { tmux display-message -p -t "$PANE" '#{pane_width}x#{pane_height}'; }
 resizes() { tmux show -gqv @resizes; }
 resized_twice() { [[ "$(resizes)" == 2 ]]; }
+has_output() { [[ -n "$(tmux display-message -p -t "$PANE" '#{pane_last_output_time}')" ]]; }
 
 # wait_for <cmd...> — poll until the predicate holds, then report its verdict.
 wait_for() {
@@ -75,7 +76,7 @@ wait_for() {
 	start_server "sh -c 'printf hi; exec sleep 600'"
 	local before
 	before="$(pane_size)"
-	[ -n "$(tmux display-message -p -t "$PANE" '#{pane_last_output_time}')" ]
+	wait_for has_output
 	: >"$CALLS"
 
 	run bash "$SCRIPT" "$PANE" 1x1
@@ -110,6 +111,27 @@ wait_for() {
 		return 1
 	fi
 	wait_for resized_twice
+	[ "$(resizes)" = 2 ]
+	wait "$pid"
+}
+
+@test "busy-forever pane is nudged at the 12 s cap" {
+	start_server "sh -c 'i=0; while [ \$i -lt 120 ]; do echo x; sleep 0.5; i=\$((i + 1)); done; exec sleep 600'"
+
+	bash "$SCRIPT" "$PANE" 1x1 3>&- &
+	local pid=$!
+	sleep 10
+	# The worker must not outlive a failed assertion.
+	if [[ -n "$(resizes)" ]]; then
+		kill "$pid" 2>/dev/null || true
+		printf '@resizes=%s at 10 s, before the 12 s cap\n' "$(resizes)" >&2
+		return 1
+	fi
+	local i
+	for ((i = 0; i < 60; i++)); do
+		resized_twice && break
+		sleep 0.1
+	done
 	[ "$(resizes)" = 2 ]
 	wait "$pid"
 }

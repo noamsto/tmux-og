@@ -23,7 +23,12 @@ DRAG="${DRAG:-3}"
 # The wrapper loads the full config; resolve the raw binary it execs so the
 # server runs with -f /dev/null, and put it first on PATH, where agent-detect
 # finds its own `tmux`.
-RAW="$(PATH="$(sed -n "s/^PATH='\([^']*\)'.*/\1/p" "$TMUX_BIN" | head -1):$PATH" command -v tmux)"
+WRAP_PATH="$(sed -n "s/^PATH='\([^']*\)'.*/\1/p" "$TMUX_BIN" | head -1)"
+if [[ -n $WRAP_PATH ]]; then
+	RAW="$(PATH="$WRAP_PATH:$PATH" command -v tmux)"
+else
+	RAW="$TMUX_BIN"
+fi
 [[ -x $RAW ]] || RAW="$TMUX_BIN"
 
 W="$(mktemp -d /tmp/og-adf.XXXX)"

@@ -32,7 +32,12 @@ while :; do
 	[[ $last =~ ^[0-9]+$ ]] || last=0
 	quiet_at=$((last + 2))
 	((EPOCHSECONDS >= quiet_at || SECONDS - start >= 12)) && break
-	sleep $((quiet_at - EPOCHSECONDS))
+	# A backwards clock step leaves the stamp ahead of EPOCHSECONDS: never sleep
+	# the skew, or past the cap (still >= 1 s here, the break above ran first).
+	nap=$((quiet_at - EPOCHSECONDS))
+	((nap > 2)) && nap=2
+	((nap > 12 - (SECONDS - start))) && nap=$((12 - (SECONDS - start)))
+	sleep "$nap"
 done
 
 [[ ${pw}x$ph == "$birth" ]] && exit 0

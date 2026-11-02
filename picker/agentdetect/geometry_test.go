@@ -266,10 +266,11 @@ func eventually(timeout time.Duration, cond func() bool) bool {
 	}
 }
 
-// TestGeometryWaitFiresWithoutClients is the client-less proof: pane-resized
-// fires on resize-window with no client ever attached, and the waiter is a
-// command client, not an attached one, that goes away with its context.
-func TestGeometryWaitFiresWithoutClients(t *testing.T) {
+// scratchServer starts a private tmux server on the default socket of a fresh
+// TMUX_TMPDIR, with TMUX unset so every bare tmux call (and every child
+// process) targets it, and returns its one pane (sans '%') and window.
+func scratchServer(t *testing.T) (paneID, winID string) {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		// OG_REQUIRE_TMUX is set by pickerChecked's checkPhase in flake.nix.
 		if os.Getenv("OG_REQUIRE_TMUX") != "" {
@@ -307,7 +308,14 @@ func TestGeometryWaitFiresWithoutClients(t *testing.T) {
 	if len(fields) != 2 {
 		t.Fatalf("list-panes = %q, want one pane", out)
 	}
-	paneID, winID := strings.TrimPrefix(fields[0], "%"), fields[1]
+	return strings.TrimPrefix(fields[0], "%"), fields[1]
+}
+
+// TestGeometryWaitFiresWithoutClients is the client-less proof: pane-resized
+// fires on resize-window with no client ever attached, and the waiter is a
+// command client, not an attached one, that goes away with its context.
+func TestGeometryWaitFiresWithoutClients(t *testing.T) {
+	paneID, winID := scratchServer(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -372,4 +380,48 @@ func TestGeometryWaitFiresWithoutClients(t *testing.T) {
 		t.Fatalf("pane-resized waiters after cancel = %q, want none", lines)
 	}
 	noClients()
+}
+
+const geometryHelperEnv = "OG_GEOMETRY_HELPER_PANE"
+
+// TestGeometryWatchHelper is the child process of
+// TestGeometryWatchStopReapsOnExit, not a test of its own: it runs main's
+// geometry lifecycle — start, first geometry, deferred stop, process exit.
+func TestGeometryWatchHelper(t *testing.T) {
+	paneID := os.Getenv(geometryHelperEnv)
+	if paneID == "" {
+		t.Skip("helper process only")
+	}
+	geomC, _, stop := startGeometryWatch(paneID)
+	select {
+	case <-geomC:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no geometry within 5s")
+	}
+	stop()
+	os.Exit(0)
+}
+
+// TestGeometryWatchStopReapsOnExit runs the watch in a real process that exits
+// right after stop, as main does: a stop that only cancels leaves the blocked
+// tmux client orphaned and its waiter on the server for good, because the
+// process exits before exec.CommandContext's goroutine kills the child.
+func TestGeometryWatchStopReapsOnExit(t *testing.T) {
+	paneID, _ := scratchServer(t)
+
+	for i := range 3 {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestGeometryWatchHelper$") //nolint:gosec // re-execs this test binary
+		// The race runtime otherwise sleeps a second at every exit.
+		cmd.Env = append(os.Environ(), geometryHelperEnv+"="+paneID, "GORACE=atexit_sleep_ms=0")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("helper run %d: %v\n%s", i, err, out)
+		}
+	}
+
+	// The server drops a lost client's waiter asynchronously; a leaked one
+	// stays until the pane resizes, so a short bound still separates the two.
+	var lines []string
+	if !eventually(time.Second, func() bool { lines = waiterLines(t); return len(lines) == 0 }) {
+		t.Fatalf("pane-resized waiters after 3 helper exits = %q, want none", lines)
+	}
 }

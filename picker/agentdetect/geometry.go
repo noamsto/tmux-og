@@ -69,9 +69,10 @@ func runGeometryRound(paneID string) geometryRound {
 // `wait-for -E` (#407) rejects the command list at parse time, so the live
 // server's own parser is probed, never `tmux -V`.
 //
-// Residuals: a watcher killed with SIGKILL leaves its waiter blocked until
-// that pane next resizes or the server exits. And a resident server built
-// between upstream d29aa121 (`wait-for -E` added) and 0e1f6ed8
+// Residuals: a watcher killed with SIGKILL never reaps its client, so the
+// waiter stays blocked until that pane next resizes or the server exits (a
+// normal exit runs startGeometryWatch's stop, which does). And a resident
+// server built between upstream d29aa121 (`wait-for -E` added) and 0e1f6ed8
 // (`cmd_wait_for_client_lost`) keeps a killed waiter's wait item and client
 // struct until that pane next resizes or the server restarts; the parser
 // cannot tell those builds apart (all report next-3.x), so it is not gated.
@@ -107,5 +108,29 @@ func watchGeometry(ctx context.Context, round geometryRound, out chan<- geom, se
 			return false
 		case <-timer.C:
 		}
+	}
+}
+
+// startGeometryWatch runs watchGeometry for paneID in the background;
+// fallbackC closes when the server rejected the wait. stop cancels the watch
+// and returns only once its goroutine has: a round returns after cmd.Wait, so
+// the blocked tmux client is killed and reaped and its waiter leaves the
+// server. Cancelling alone does not survive the return from main:
+// exec.CommandContext kills the child from its own goroutine, which the
+// process exit outruns.
+func startGeometryWatch(paneID string) (geomC <-chan geom, fallbackC <-chan struct{}, stop func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan geom)
+	fallback := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if watchGeometry(ctx, runGeometryRound(paneID), out, geometrySettle) {
+			close(fallback)
+		}
+	}()
+	return out, fallback, func() {
+		cancel()
+		<-done
 	}
 }

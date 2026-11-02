@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,17 +85,11 @@ func main() {
 	if !registerWatcher(watcherRegDir, paneID, myPID, server) {
 		return
 	}
-	// Cancelled on every return, so a superseded or EOF'd watcher kills its
-	// blocked tmux client instead of leaving the waiter on the server.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	geomC := make(chan geom)
-	fallbackC := make(chan struct{})
-	go func() {
-		if watchGeometry(ctx, runGeometryRound(paneID), geomC, geometrySettle) {
-			close(fallbackC)
-		}
-	}()
+	// Stopped on every return, so a superseded or EOF'd watcher kills and
+	// reaps its blocked tmux client before exiting instead of leaving the
+	// waiter on the server.
+	geomC, fallbackC, stopGeometry := startGeometryWatch(paneID)
+	defer stopGeometry()
 
 	scr, curCols, curRows := seededScreen(paneID)
 	deb := debounce.New(debounceWindow, sampleCeiling)

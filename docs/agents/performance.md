@@ -701,14 +701,13 @@ in `docs/superpowers/specs/2026-11-02-event-hooks-design.md`. The kept sites:
 - In event mode the 5 s ticker still runs the `stillOwner` file check and, every
   12th tick (60 s), the old `display` comparison. It covers a waiter that blocks
   but never matches, which the parse rejection cannot detect.
-- The waiter is a command client, not an attached one: absent from
-  `list-clients` and `#{C:}`. No hook is installed, so nothing shadows a global
-  hook (#647), and it works with no client attached.
-- The child runs under a context cancelled when the watcher exits; killing it
-  removes its sink. Residuals: a SIGKILLed watcher leaves its waiter blocked
-  until that pane next resizes or the server exits; a resident server built
-  between upstream d29aa121 (`wait-for -E` added) and 0e1f6ed8
-  (`cmd_wait_for_client_lost`) keeps a killed waiter's wait item likewise.
+- No hook is installed, so nothing shadows a global hook (#647), and it works
+  with no client attached. The waiter is a command client; the tmux-side
+  behaviour (kill removes its sink, the leaking builds) is in
+  `tmux-gotchas.md`'s `wait-for -E` bullet.
+- On exit the watcher stops its waiter and waits for it to exit before the
+  process does. Residual: a SIGKILLed watcher's waiter stays blocked until that
+  pane next resizes or the server exits.
 
 `tests/perf/agent-detect-forks.sh`: 8 panes running a manifest agent, no client,
 no config; two rounds per build, alternating; host load 6-12 (shared). Counts
