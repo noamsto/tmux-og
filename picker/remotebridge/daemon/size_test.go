@@ -138,7 +138,7 @@ func TestFilteredSizePassCapsOnlySelectedWindows(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, "rem", reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, relayEnv{target: "rem"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 	tick <- time.Now()

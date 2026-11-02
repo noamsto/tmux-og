@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,15 +103,26 @@ func ownerClaimCmd(sessID, token, client string) string {
 // concurrent survivors are harmless and a newer claim survives. if-shell expands
 // its format against -t; without it the target defaults to the issuing client's
 // current session, which for a moved stray is not the pinned one.
-func ownerReleaseCmd(sessID, token, client string) string {
+//
+// then runs after the unset, inside the same branch. Only the survivor whose
+// release actually cleared the record writes its values, because every later
+// survivor's condition is already false. Those writes need no ownership guard:
+// the branch's own unset just cleared the record (#1035).
+func ownerReleaseCmd(sessID, token, client string, then ...string) string {
 	cond := "#{==:#{" + bridgeOwnerOption + "}," + token + "|" + client + "}"
 	unset := "set-option -u -t " + tmuxQuote(sessID) + " " + bridgeOwnerOption
-	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(unset)
+	branch := strings.Join(append([]string{unset}, then...), " ; ")
+	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote(cond) + " " + tmuxQuote(branch)
 }
 
 // ownerReadCmd answers "<own client>|<owner record>" in one reply.
 func ownerReadCmd(sessID string) string {
 	return "display-message -p -t " + tmuxQuote(sessID) + " " + tmuxQuote(ctlSafe("#{client_name}|#{"+bridgeOwnerOption+"}"))
+}
+
+// envTeardownReadCmd answers "<own client>|<session_attached>" in one reply.
+func envTeardownReadCmd(sessID string) string {
+	return "display-message -p -t " + tmuxQuote(sessID) + " " + tmuxQuote(ctlSafe("#{client_name}|#{session_attached}"))
 }
 
 func sessionClientsCmd(sessID string) string {
@@ -444,6 +456,13 @@ type ownerCtl struct {
 	rt     roundTrip
 	send   func(cmds ...string) bool
 	cv     *converger
+	view   *Viewing
+}
+
+// relayEnv is the one guarded construction: the guard's token and target come
+// from the owner itself, so they cannot drift apart.
+func (o ownerCtl) relayEnv() relayEnv {
+	return relayEnv{target: o.sessID, token: o.own.token}
 }
 
 func (o ownerCtl) logf(format string, args ...any) {
@@ -513,18 +532,36 @@ func selfFlagged(st ownerRead) bool {
 
 // claimWith writes the record before unflagging this client, and flags every
 // other control client, so the takeover needs nothing from the previous owner,
-// which may be asleep.
+// which may be asleep. The relay/cell env slot moves with ownership (#1035):
+// the publish follows the record write in the same batch, still guarded, so a
+// claim that lost a race to a later one does not overwrite its values.
 func (o ownerCtl) claimWith(st ownerRead) {
 	targets := enforceTargets(st.clients, st.self)
-	cmds := []string{ownerClaimCmd(o.sessID, o.own.token, st.self), ignoreSizeCmd("", false)}
+	relay, cell := o.view.Relay.Load().String(), o.view.Cell()
+	cmds := []string{ownerClaimCmd(o.sessID, o.own.token, st.self)}
+	cmds = append(cmds, o.relayEnv().publishValues(relay, cell)...)
+	cmds = append(cmds, ignoreSizeCmd("", false))
 	for _, name := range targets {
 		cmds = append(cmds, ignoreSizeCmd(name, true))
 	}
 	if !o.send(o.withRecalc(cmds)...) {
 		return
 	}
+	o.catchUp(relay, cell)
 	o.own.noteClaim(st.self)
 	o.logf("claimed as %s; flagged %v", st.self, targets)
+}
+
+// catchUp republishes when the view moved while a claim or release was in
+// flight: the change watcher's guarded write is skipped while the record is
+// still foreign, so the new owner must catch up. The write is guarded like
+// any publish: it lands while the record is ours or unset, and is skipped if a
+// newer claim took it.
+func (o ownerCtl) catchUp(relay, cell string) {
+	if o.view.Relay.Load().String() == relay && o.view.Cell() == cell {
+		return
+	}
+	o.send(o.relayEnv().publish(o.view)...)
 }
 
 // enforce flags every control client on the session that is neither ours nor
@@ -635,11 +672,55 @@ func (o ownerCtl) releaseDue(now time.Time) {
 	if st.ownerToken != r.token || st.ownerClient != r.client {
 		return
 	}
-	if !o.send(ownerReleaseCmd(o.sessID, r.token, r.client)) {
+	relay, cell := o.view.Relay.Load().String(), o.view.Cell()
+	release := ownerReleaseCmd(o.sessID, r.token, r.client,
+		RelayEnvCmd(o.sessID, relay), CellEnvSyncCmd(o.sessID, cell))
+	if !o.send(release) {
 		o.own.rehold(r, now.Add(ownerReleaseRetry))
 		return
 	}
+	o.catchUp(relay, cell)
 	o.logf("released %s's record (client %s detached)", r.token, r.client)
+}
+
+// envTeardown unsets the relay and cell env when this daemon leaves, unless
+// another attached controller still depends on the values (#1035). With
+// another control client attached, it instead relinquishes: relay empty and cell unset, guarded on
+// this daemon's own token, so a survivor never inherits a capability its
+// terminal lacks from an owner that is gone. The count is tmux's own
+// session_attached, which skips the suspended and exiting clients
+// list-clients still lists, and the unset is conditional on it, so a client
+// attaching between this read and the write makes the write not land.
+// A tty client does not block the unset: a later direct attach from a
+// non-sixel terminal must never inherit a stale sixel. The read is bounded by
+// the connection's reply deadline, and a closed connection fails it at once;
+// either way nothing is sent. It does not use read(), which rewrites the
+// owner state.
+func (o ownerCtl) envTeardown() {
+	next := o.rt(envTeardownReadCmd(o.sessID), sessionClientsCmd(o.sessID))
+	head, okHead := next()
+	cl, okCl := next()
+	if !okHead || !okCl || head.Kind == controlmode.Error || cl.Kind == controlmode.Error {
+		o.logf("env teardown skipped: read failed (head ok=%v clients ok=%v)", okHead, okCl)
+		return
+	}
+	self, count, found := strings.Cut(strings.TrimSpace(string(head.Data)), "|")
+	attached, err := strconv.Atoi(count)
+	if !found || self == "" || err != nil {
+		o.logf("env teardown skipped: malformed read %q", head.Data)
+		return
+	}
+	for _, c := range parseSessionClients(string(cl.Data)) {
+		if c.name != self && c.control {
+			if o.send(relayEnvRelinquishCmd(o.sessID, o.own.token)) {
+				o.logf("relinquished relay and cell env: control client %s still attached", c.name)
+			}
+			return
+		}
+	}
+	if o.send(relayEnvTeardownCmd(o.sessID, attached)) {
+		o.logf("unset relay and cell env (%d attached)", attached)
+	}
 }
 
 // sessionChanged handles %client-session-changed, which names only the new

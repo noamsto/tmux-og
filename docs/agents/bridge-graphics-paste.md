@@ -144,12 +144,41 @@ option.
   rather than computed once at launch, so the remote can never emit what
   we'd drop nor withhold what we'd relay. A capability change re-publishes
   immediately with no re-dial and no attach; `repair()` also re-sends it
-  unconditionally on every reconnect, since the outage window is the one
+  on every reconnect, changed or not (still owner-guarded), since the outage window is the one
   stretch in which a capability change had no live connection to publish on.
-  Unset on teardown, but the dominant teardown path is
-  SIGTERM, where the transport is already gone and the unset does not land —
-  a stale value is then corrected only by the next bridge's unconditional
-  write, and a direct attach to that remote session in the gap can read it.
+  **With two or more controllers on one session the slot holds the size
+  owner's values** (`@og_bridge_owner`, #979; design:
+  `docs/superpowers/specs/2026-11-02-relay-env-follows-owner-design.md`,
+  #1035), not whichever daemon wrote last. Every publish (startup,
+  `repair()`, `watchLocalClient`, claim) is one
+  `if-shell -F -t '$N'` guarded by
+  `#{?#{@og_bridge_owner},#{m:<token>|*,#{@og_bridge_owner}},1}` (record unset
+  or ours), evaluated remote-side so racing claims cannot leave a stale write
+  (`relayOwnedCond`). A claim publishes in the same batch as its record write
+  (`claimWith`); a survivor's release of a departed owner's record carries
+  the releaser's own values inside the same `if-shell` branch
+  (`ownerReleaseCmd`); only the survivor whose release cleared the record
+  writes, and the release-branch writes need no guard (the branch's own unset
+  just cleared the record). A claim or release whose view moved while it was in
+  flight republishes once it is sent (`catchUp`), since the change watcher's
+  guarded write was skipped while the record was foreign.
+  Teardown (`owner.envTeardown`, `relayEnvTeardownCmd`) reads the session's
+  clients and unsets, guarded by the `session_attached` it read, only when no
+  other control client is attached; a tty client does not block it. With other
+  controllers attached, a departing owner instead sets relay empty and unsets
+  the cell, guarded on its own token (`relayEnvRelinquishCmd`), so a survivor
+  never inherits a capability its terminal lacks. Unpinned
+  (identity read failed, size ownership off) keeps the old unguarded writes
+  and the unconditional unset. The unset still lands only on a clean exit:
+  the dominant teardown path is SIGTERM, where the transport is already gone
+  and nothing is sent, so a stale value is then corrected only by the next
+  bridge's write, and a direct attach to that remote session in the gap can
+  read it. **Mixed capability:** a carousel launched while the user is on
+  the sixel controller relays sixel, and the non-sixel controller's own
+  `Proxy.Filter` drops it; one launched after the user moves (which claims)
+  takes the kitty/carousel path; an already-running `aeye` keeps its
+  launch-time env. Edge, accepted: a carousel opened within the reveal tick
+  after switching controllers can launch with the previous owner's values.
 - **The local cell size is published beside it as `AEYE_CELL_PX=<w>x<h>`**
   (`CellEnvVar`; cross-repo contract with aeye's `cellsize.go`, which cuts
   carousel crops to the preview box's shape). A control-mode client has no
@@ -159,8 +188,10 @@ option.
   client must agree** (same rule as the sixel AND): a disagreement, or any
   client reporting empty, zero, non-canonical or >512, leaves it **unset**,
   never a guess. Same publish sites as `OG_RELAY_GRAPHICS` (startup, `repair()`,
-  `watchLocalClient` on change; teardown unsets), via `CellEnvSyncCmd`, so an
-  unknown size also clears a value an earlier bridge left. Until a client is
+  `watchLocalClient` on change, claim, release; teardown under the rule above), via `CellEnvSyncCmd`, so an
+  unknown size also clears a value an earlier bridge left. It follows the
+  same owner guard, claim and release batching and teardown rule as
+  `OG_RELAY_GRAPHICS` above (`relayEnv`). Until a client is
   attached the launcher's `--cell-w`/`--cell-h` (`OG_BRIDGE_CELL_W/H`, read from
   the launching client) seed it. The carousel launch needs no change: `ctl.go`
   runs it through the remote `run-shell`, which inherits the session

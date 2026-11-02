@@ -2,10 +2,27 @@ package daemon
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
 )
+
+// testViewing is a view with a sixel relay and a known cell size, so a claim or
+// release has both env values to carry.
+func testViewing() *Viewing {
+	view := &Viewing{Relay: graphics.NewRelaySource(graphics.NewRelayFromClient(true, ""))}
+	view.SetCell("15x28")
+	return view
+}
+
+// releaseWant is the release a survivor holding view sends for token|client.
+func releaseWant(sessID string, view *Viewing, token, client string) string {
+	return ownerReleaseCmd(sessID, token, client,
+		RelayEnvCmd(sessID, view.Relay.Load().String()), CellEnvSyncCmd(sessID, view.Cell()))
+}
 
 // ownerReadReply is the two-reply batch ownerCtl.read and claim ask for: the
 // owner read, then the session's clients.
@@ -18,7 +35,7 @@ func ownerReadReply(self, record, clients string) string {
 func testOwnerCtl(script string, own *sizeOwner, cv *converger) (ownerCtl, *[]string) {
 	rt, _ := scriptedRT(script)
 	sent := &[]string{}
-	return ownerCtl{own: own, sessID: "$1", rt: rt, cv: cv, send: func(cmds ...string) bool {
+	return ownerCtl{own: own, sessID: "$1", rt: rt, cv: cv, view: testViewing(), send: func(cmds ...string) bool {
 		*sent = append(*sent, cmds...)
 		return true
 	}}, sent
@@ -118,12 +135,12 @@ func TestOwnerCtlClaimOrder(t *testing.T) {
 	own := newSizeOwner(tokA)
 	o, sent := testOwnerCtl(ownerReadReply("client-me", tokB+"|client-b", sessionClientRows), own, recordedCV())
 	o.claim()
-	want := []string{
-		ownerClaimCmd("$1", tokA, "client-me"),
+	want := append([]string{ownerClaimCmd("$1", tokA, "client-me")}, o.relayEnv().publish(o.view)...)
+	want = append(want,
 		ignoreSizeCmd("", false),
 		ignoreSizeCmd("client-b", true),
 		ClientSizeCmd(100, 40),
-	}
+	)
 	if !reflect.DeepEqual(*sent, want) {
 		t.Errorf("claim sent %q, want %q", *sent, want)
 	}
@@ -135,29 +152,28 @@ func TestOwnerCtlClaimOrder(t *testing.T) {
 func TestOwnerCtlClaimIfStale(t *testing.T) {
 	const flaggedSelf = "client-me|1|attached,control-mode,ignore-size\n" +
 		"client-b|1|attached,control-mode"
-	claimWant := []string{
-		ownerClaimCmd("$1", tokA, "client-me"),
-		ignoreSizeCmd("", false),
-		ignoreSizeCmd("client-b", true),
-		ClientSizeCmd(100, 40),
-	}
 	cases := []struct {
 		name    string
 		record  string
 		clients string
-		want    []string
+		claims  bool
 	}{
-		{"ours and unflagged sends nothing", tokA + "|client-me", sessionClientRows, nil},
-		{"ours but self flagged claims", tokA + "|client-me", flaggedSelf, claimWant},
-		{"foreign owner claims", tokB + "|client-b", sessionClientRows, claimWant},
-		{"unset claims", "", sessionClientRows, claimWant},
+		{"ours and unflagged sends nothing", tokA + "|client-me", sessionClientRows, false},
+		{"ours but self flagged claims", tokA + "|client-me", flaggedSelf, true},
+		{"foreign owner claims", tokB + "|client-b", sessionClientRows, true},
+		{"unset claims", "", sessionClientRows, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			o, sent := testOwnerCtl(ownerReadReply("client-me", c.record, c.clients), newSizeOwner(tokA), recordedCV())
+			var want []string
+			if c.claims {
+				want = append([]string{ownerClaimCmd("$1", tokA, "client-me")}, o.relayEnv().publish(o.view)...)
+				want = append(want, ignoreSizeCmd("", false), ignoreSizeCmd("client-b", true), ClientSizeCmd(100, 40))
+			}
 			o.claimIfStale()
-			if !reflect.DeepEqual(*sent, c.want) && (len(*sent) != 0 || len(c.want) != 0) {
-				t.Errorf("sent %q, want %q", *sent, c.want)
+			if !reflect.DeepEqual(*sent, want) && (len(*sent) != 0 || len(want) != 0) {
+				t.Errorf("sent %q, want %q", *sent, want)
 			}
 		})
 	}
@@ -235,7 +251,7 @@ func TestOwnerCtlReleaseWaitsOutTheGrace(t *testing.T) {
 		t.Fatalf("release went out before its grace: %q", *sent)
 	}
 	o.releaseDue(time.Now().Add(ownerReleaseGrace + time.Second))
-	if want := []string{ownerReleaseCmd("$1", tokB, "client-b")}; !reflect.DeepEqual(*sent, want) {
+	if want := []string{releaseWant("$1", o.view, tokB, "client-b")}; !reflect.DeepEqual(*sent, want) {
 		t.Errorf("due release sent %q, want %q", *sent, want)
 	}
 	*sent = nil
@@ -274,7 +290,7 @@ func TestOwnerCtlReleaseDroppedWhenTheRecordChanged(t *testing.T) {
 // moment keeps the release pending, so it goes out once the retry delay passes.
 func TestOwnerCtlReleaseRetriedAfterAFailure(t *testing.T) {
 	due := time.Now().Add(ownerReleaseGrace + time.Second)
-	want := []string{ownerReleaseCmd("$1", tokB, "client-b")}
+	want := []string{releaseWant("$1", testViewing(), tokB, "client-b")}
 	okRead := ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows)
 	cases := []struct {
 		name        string
@@ -401,5 +417,125 @@ func TestOwnerCtlApplyReportReconciles(t *testing.T) {
 	}
 	if own.selfName() != "client-me" {
 		t.Errorf("self = %q, want the report's client", own.selfName())
+	}
+}
+
+// TestOwnerCtlClaimPublishesRightAfterTheRecord: the env slot moves with
+// ownership, guarded, in the same batch and ahead of the flag commands.
+func TestOwnerCtlClaimPublishesRightAfterTheRecord(t *testing.T) {
+	o, sent := testOwnerCtl(ownerReadReply("client-me", "", sessionClientRows), newSizeOwner(tokA), recordedCV())
+	o.claim()
+	publish := o.relayEnv().publish(o.view)
+	if len(*sent) < 1+len(publish) || (*sent)[0] != ownerClaimCmd("$1", tokA, "client-me") ||
+		!reflect.DeepEqual((*sent)[1:1+len(publish)], publish) {
+		t.Fatalf("claim sent %q, want the record write then %q", *sent, publish)
+	}
+	for _, cmd := range publish {
+		if !strings.HasPrefix(cmd, "if-shell -F -t '$1' ") || !strings.Contains(cmd, relayOwnedCond(tokA)) {
+			t.Errorf("publish %q is not guarded by the owner record", cmd)
+		}
+	}
+}
+
+// TestOwnerCtlReleaseCarriesTheReleasersValues: the release writes the
+// releaser's own view, and an unknown cell unsets.
+func TestOwnerCtlReleaseCarriesTheReleasersValues(t *testing.T) {
+	o, sent := testOwnerCtl(ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows), detachedOwner(), recordedCV())
+	o.view = &Viewing{Relay: graphics.NewRelaySource(graphics.NewRelayFromClient(false, ""))}
+	o.detached("client-b")
+	o.releaseDue(time.Now().Add(ownerReleaseGrace + time.Second))
+	want := ownerReleaseCmd("$1", tokB, "client-b", RelayEnvCmd("$1", ""), CellEnvUnsetCmd("$1"))
+	if !reflect.DeepEqual(*sent, []string{want}) {
+		t.Errorf("release sent %q, want %q", *sent, want)
+	}
+}
+
+// teardownReply is envTeardown's two-reply batch: "<own client>|<attached>",
+// then the session's clients.
+func teardownReply(self string, attached int, clients string) string {
+	return ownerReadReply(self, strconv.Itoa(attached), clients)
+}
+
+func TestOwnerCtlEnvTeardown(t *testing.T) {
+	const errorReply = "%begin 1 1 1\nboom\n%error 1 1 1\n%begin 1 2 1\nx\n%end 1 2 1\n"
+	cases := []struct {
+		name   string
+		script string
+		want   []string
+	}{
+		{"another control client", teardownReply("client-me", 3, sessionClientRows),
+			[]string{relayEnvRelinquishCmd("$1", tokA)}},
+		{"only tty clients", teardownReply("client-me", 2, "client-me|1|attached,control-mode\n/dev/pts/3|0|attached"),
+			[]string{relayEnvTeardownCmd("$1", 2)}},
+		{"no others", teardownReply("client-me", 1, "client-me|1|attached,control-mode"),
+			[]string{relayEnvTeardownCmd("$1", 1)}},
+		{"count is session_attached, not rows", teardownReply("client-me", 2,
+			"client-me|1|attached,control-mode\n/dev/pts/3|0|attached\n/dev/pts/4|0|attached"),
+			[]string{relayEnvTeardownCmd("$1", 2)}},
+		{"error reply", errorReply, nil},
+		{"lost reply", "", nil},
+		{"malformed head", "%begin 1 1 1\nnonsense\n%end 1 1 1\n%begin 1 2 1\nclient-me|1|attached\n%end 1 2 1\n", nil},
+		{"empty name", teardownReply("", 1, "client-me|1|attached"), nil},
+		{"non-integer count", "%begin 1 1 1\nclient-me|x\n%end 1 1 1\n%begin 1 2 1\nclient-me|1|attached\n%end 1 2 1\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o, sent := testOwnerCtl(tc.script, newSizeOwner(tokA), recordedCV())
+			o.envTeardown()
+			if !reflect.DeepEqual(*sent, tc.want) && (len(*sent) != 0 || len(tc.want) != 0) {
+				t.Errorf("sent %q, want %q", *sent, tc.want)
+			}
+		})
+	}
+}
+
+// TestOwnerCtlCatchesUpWhenTheViewMoves: the change watcher's guarded write is
+// skipped while the record is foreign, so a claim or release that sent the old
+// snapshot republishes the new view once it is sent, and sends nothing extra when
+// the view held still.
+func TestOwnerCtlCatchesUpWhenTheViewMoves(t *testing.T) {
+	cases := []struct {
+		name   string
+		run    func(o ownerCtl)
+		script string
+		own    func() *sizeOwner
+	}{
+		{"claim", func(o ownerCtl) { o.claim() },
+			ownerReadReply("client-me", "", sessionClientRows), func() *sizeOwner { return newSizeOwner(tokA) }},
+		{"release", func(o ownerCtl) {
+			o.detached("client-b")
+			o.releaseDue(time.Now().Add(ownerReleaseGrace + time.Second))
+		}, ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows), detachedOwner},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, moves := range []bool{false, true} {
+				o, sent := testOwnerCtl(tc.script, tc.own(), recordedCV())
+				batches := 0
+				o.send = func(cmds ...string) bool {
+					batches++
+					*sent = append(*sent, cmds...)
+					if batches == 1 && moves {
+						o.view.SetCell("20x40")
+					}
+					return true
+				}
+				tc.run(o)
+				wantBatches := 1
+				if moves {
+					wantBatches = 2
+				}
+				if batches != wantBatches {
+					t.Fatalf("moves=%v: %d batches sent, want %d: %q", moves, batches, wantBatches, *sent)
+				}
+				if !moves {
+					continue
+				}
+				want := o.relayEnv().publishValues("sixel", "20x40")
+				if got := (*sent)[len(*sent)-len(want):]; !reflect.DeepEqual(got, want) {
+					t.Errorf("catch-up sent %q, want %q", got, want)
+				}
+			}
+		})
 	}
 }
