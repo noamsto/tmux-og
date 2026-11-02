@@ -52,6 +52,7 @@ var RequiredScripts = []string{
 	"tmux-issue-stamp",
 	"tmux-kill-pane-guard",
 	"tmux-pr-enrich",
+	"tmux-fingers-prune",
 	"tmux-reap-pane",
 	"tmux-reconcile-window",
 	"tmux-reflow-windows",

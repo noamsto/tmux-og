@@ -13,6 +13,7 @@ setup() {
 
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
 	export CLAUDE_STATUS_DIR="$TDIR/claude-status"

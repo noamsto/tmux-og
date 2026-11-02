@@ -19,6 +19,7 @@ setup() {
 	export OG_ENRICH_CACHE_DIR="$BATS_TEST_TMPDIR/og-pr"
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$BATS_TEST_TMPDIR/og-enrich-lock"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	mkdir -p "$CLAUDE_STATUS_DIR"
 
 	export HOME="$BATS_TEST_TMPDIR/home"

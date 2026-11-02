@@ -1776,11 +1776,21 @@
           # files under CLAUDE_STATUS_DIR, OG_ENRICH_CACHE_DIR,
           # OG_AGENT_USAGE_DIR and OG_ENRICH_LOCK_DIR — whose defaults are the
           # developer's real /tmp trees (CLAUDE_STATUS_DIR: /tmp/claude-status-<uid>,
-          # #850). A bats suite that sets TMUX_BIN loads that config, so it must
-          # export all four in its own setup() or a future one added without
+          # #850). XDG_DATA_HOME is the fifth: tmux-fingers writes, and
+          # tmux-fingers-prune deletes, tmux-<pid> dirs under
+          # $XDG_DATA_HOME/tmux-fingers (#1066). A bats suite that sets TMUX_BIN
+          # loads that config, so it must
+          # export all five in its own setup() or a future one added without
           # isolation is destructive the moment it runs locally, while nix flake
           # check stays green (the sandbox's own per-uid dir is empty, and the
           # build user's uid there is never the developer's).
+          #
+          # The second loop covers suites that start a server with the bare PATH
+          # `tmux` (the wrapper on a dev box) without a TMUX_BIN reference: they
+          # still load tmux-fingers, so they must export XDG_DATA_HOME. It matches
+          # real invocations only (a line that starts with a tmux command word and
+          # names new-session/start-server), so string fixtures and log greps in
+          # remote-picker and conf-shell-quoting do not trip it.
           wrapped-tmux-suite-isolation-assertions =
             pkgs.runCommand "wrapped-tmux-suite-isolation-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];
@@ -1788,12 +1798,19 @@
               fail=0
               for f in ${./tests}/*.bats; do
                 grep -q 'TMUX_BIN' "$f" || continue
-                for var in CLAUDE_STATUS_DIR OG_ENRICH_CACHE_DIR OG_AGENT_USAGE_DIR OG_ENRICH_LOCK_DIR; do
+                for var in CLAUDE_STATUS_DIR OG_ENRICH_CACHE_DIR OG_AGENT_USAGE_DIR OG_ENRICH_LOCK_DIR XDG_DATA_HOME; do
                   grep -q "export $var=" "$f" || {
                     echo "$(basename "$f") references TMUX_BIN but does not export $var" >&2
                     fail=1
                   }
                 done
+              done
+              for f in ${./tests}/*.bats; do
+                grep -qE '^[[:space:]]*(tmux|probe_tmux|"\$\{TM\[@\]\}"|"\$real_tmux"|\$SRC|\$DST)[[:space:]].*(new-session|start-server)' "$f" || continue
+                grep -q 'export XDG_DATA_HOME=' "$f" || {
+                  echo "$(basename "$f") starts a tmux server but does not export XDG_DATA_HOME" >&2
+                  fail=1
+                }
               done
               [ "$fail" -eq 0 ]
               touch $out
@@ -2720,6 +2737,36 @@
               export HOME=$TMPDIR/home
               mkdir -p "$HOME"
               bats tests/agent-repaint-integration.bats
+              touch $out
+            '';
+
+          # #1066: tmux-fingers leaks a tmux-<pid> state dir per config load;
+          # the real wrapped config's prune removes a dead server's. procps for
+          # the recycled-pid case (`ps` itself is not in procps-ng on darwin).
+          fingers-prune-tests = let
+            fingersPruneTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "fingers-prune-tests" {
+              nativeBuildInputs =
+                [pkgs.bash pkgs.bats pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.procps]
+                ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
+              TMUX_BIN = "${fingersPruneTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              cp -r ${./scripts} scripts
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/fingers-prune.bats
               touch $out
             '';
 

@@ -13,6 +13,7 @@ setup() {
 	export GH_LOG="$BATS_TEST_TMPDIR/gh.log"
 	export OG_ENRICH_CACHE_DIR="$BATS_TEST_TMPDIR/cache"
 	export TMUX_TMPDIR="$BATS_TEST_TMPDIR/tmux"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/status"
 	mkdir -p "$TMUX_TMPDIR" "$CLAUDE_STATUS_DIR"
 	unset TMUX TMUX_PANE

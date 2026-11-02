@@ -1474,6 +1474,7 @@
     set-hook -g 'client-dark-theme[40]' { set -g @og_client_theme_want dark ; set -gF @og_client_theme_client "#{hook_client}" ; run-shell -b "${script.tmux-client-theme}/bin/tmux-client-theme #{q:hook_client}" }
 
     run-shell ${tmuxPlugins.fingers}/share/tmux-plugins/tmux-fingers/tmux-fingers.tmux
+    run-shell -b "${script.tmux-fingers-prune}/bin/tmux-fingers-prune #{q:pid}"
 
     # Synchronous init on config load so icons + window bar are ready before the user sees it
     run-shell "${script.tmux-update-icons}/bin/tmux-update-icons #{qs:session_name}"

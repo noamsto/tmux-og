@@ -41,6 +41,7 @@ write_dst_conf() {
 setup() {
 	OG_TMUX_DIR="/tmp/og-m2-bats-$$"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	# DST sets global pane-base-index 1, matching the real host's render

@@ -659,6 +659,10 @@ not a mirror, not a grid and not zoomed, and the tiled geometry differs from
   pins the fork counts, the rollback's quiet settle, and that the gate's
   `20`/`61` literals and signature format match the script.
 
+## Fingers state prune (#1066)
+
+`tmux-fingers-prune` is one background fork (`run-shell -b`) per server start, rate-limited to one sweep per 10 minutes; the first sweep over a large `tmux-<pid>` backlog is a one-off cost.
+
 ## Regression guards
 
 - `tests/grid-refit.bats` (`grid-refit-tests`, part of `nix flake check`)

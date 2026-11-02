@@ -18,6 +18,7 @@ setup() {
 	mkdir -p "$FAKEBIN"
 	export USAGE_LOG="$BATS_TEST_TMPDIR/usage.log"
 	export OG_AGENT_USAGE_DIR="$BATS_TEST_TMPDIR/cache"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	export TMUX_SET_LOG="$BATS_TEST_TMPDIR/tmux-set.log"
 	unset TMUX TMUX_PANE OPENROUTER_API_KEY
 
