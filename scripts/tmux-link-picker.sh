@@ -21,6 +21,12 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+ORIGIN=${ORIGIN:-${TMUX_PANE:-}}
+if [[ -z $ORIGIN ]]; then
+	tmux display-message "link picker: no origin pane"
+	exit 1
+fi
+
 BORDER_FG=$(tmux display -p '#{@thm_overlay_1}' 2>/dev/null || true)
 [[ -n $BORDER_FG ]] || BORDER_FG="#7f849c"
 # Pin the client and its window; see tmux-which-key.sh.

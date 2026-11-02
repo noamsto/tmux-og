@@ -3,9 +3,11 @@ package main
 import (
 	"os/exec"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -211,5 +213,73 @@ func TestLinksFailArgv(t *testing.T) {
 	}
 	if got := linksFailArgv("", "copy", "boom"); !reflect.DeepEqual(got, []string{"display-message", "links: copy failed: boom"}) {
 		t.Errorf("linksFailArgv without client = %q", got)
+	}
+	got = linksFailArgv("client0", "open", "no such file /a%20%Y")
+	want = []string{"display-message", "-c", "client0", "links: open failed: no such file /a%%20%%Y"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("linksFailArgv with %%: got %q, want %q", got, want)
+	}
+}
+
+func TestLinksSelectedRowKeepsBackground(t *testing.T) {
+	m := testLinksModel(linkjoin.Link{Text: "/tmp/a", Kind: linkjoin.Path, Rows: 2})
+	row := m.renderRow(m.links[0], true)
+	bg := ansiBg(m.colorHex("@thm_surface_2", "#45475a", "#acb0be"))
+	resets := regexp.MustCompile(`\x1b\[0?m`).FindAllStringIndex(row, -1)
+	if len(resets) == 0 {
+		t.Fatalf("row %q has no reset", row)
+	}
+	for _, loc := range resets[:len(resets)-1] {
+		if !strings.HasPrefix(row[loc[1]:], bg) {
+			t.Errorf("reset at %d is not followed by the background escape: %q", loc[0], row)
+		}
+	}
+}
+
+func TestLinksLongLinkKeepsTail(t *testing.T) {
+	dir := "/home/user/projects/some/deeply/nested/directory/structure/"
+	m := testLinksModel(
+		linkjoin.Link{Text: dir + "alpha.go", Kind: linkjoin.Path, Rows: 1},
+		linkjoin.Link{Text: dir + "bravo.go", Kind: linkjoin.Path, Rows: 1},
+	)
+	m.width = 50
+	rows := m.renderBody()
+	seen := map[string]bool{}
+	for i, wantTail := range []string{"alpha.go", "bravo.go"} {
+		plain := stripANSI(rows[i])
+		if w := visibleWidth(rows[i]); w > m.width {
+			t.Errorf("row %d is %d cells, wider than %d", i, w, m.width)
+		}
+		if !strings.HasPrefix(plain, " path …") {
+			t.Errorf("row %d = %q, want the link to start with an ellipsis", i, plain)
+		}
+		if !strings.Contains(plain, wantTail) {
+			t.Errorf("row %d = %q lacks the tail %q", i, plain, wantTail)
+		}
+		seen[plain] = true
+	}
+	if len(seen) != 2 {
+		t.Error("sibling links render identically")
+	}
+}
+
+func TestRunLinksCmdDoesNotWaitForLongRunner(t *testing.T) {
+	start := time.Now()
+	detail, err := runLinksCmd(exec.Command("sleep", "5"), 100*time.Millisecond)
+	if err != nil || detail != "" {
+		t.Errorf("runLinksCmd(sleep) = %q, %v; want success on timeout", detail, err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("runLinksCmd waited %v for a command outliving the timeout", elapsed)
+	}
+}
+
+func TestRunLinksCmdReportsEarlyFailure(t *testing.T) {
+	if _, err := runLinksCmd(exec.Command("false"), 5*time.Second); err == nil {
+		t.Error("runLinksCmd(false) succeeded, want an error")
+	}
+	detail, err := runLinksCmd(exec.Command("sh", "-c", "echo boom >&2; exit 3"), 5*time.Second)
+	if err == nil || detail != "boom" {
+		t.Errorf("runLinksCmd = %q, %v; want stderr boom and an error", detail, err)
 	}
 }

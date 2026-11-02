@@ -5,8 +5,10 @@ package main
 // leave inside a long token rejoined by linkjoin. Like which-key it shares no
 // state with tuiModel and reuses only its package-level helpers.
 //
-// The model never executes: RunLinks performs the picked action once the popup
-// has closed, so a cold-started browser is not tied to the popup's pty.
+// The model never executes: RunLinks performs the picked action after the
+// program returns but before the process exits, which is what closes the
+// popup. The opener runs in its own session so a cold-started browser outlives
+// the popup's pty.
 
 import (
 	"errors"
@@ -18,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -35,6 +38,11 @@ const (
 
 // linksScrollback is how many history rows above the screen are scanned.
 const linksScrollback = "-2000"
+
+// linksOpenWait bounds how long the popup waits on the opener: xdg-open's
+// generic path runs the browser in the foreground, so waiting for its exit
+// would hold the popup open for as long as the browser lives.
+const linksOpenWait = 2 * time.Second
 
 type linksModel struct {
 	links   []linkjoin.Link
@@ -86,11 +94,11 @@ func RunLinks() error {
 	if cmd == nil {
 		return nil
 	}
-	if detail, err := runLinksCmd(cmd); err != nil {
+	if detail, err := runLinksCmd(cmd, linksOpenWait); err != nil {
 		if detail == "" {
 			detail = err.Error()
 		}
-		// The popup has closed, so the flash on the client is the report.
+		// The popup is about to close, so the flash on the client is the report.
 		_ = exec.Command("tmux", linksFailArgv(client, verb, detail)...).Run() //nolint:gosec // G204: fixed binary, argv passed without a shell
 	}
 	return nil
@@ -142,20 +150,24 @@ func linksActionCmd(action linksAction, text, origin, client string) (cmd *exec.
 }
 
 // linksFailArgv is the tmux argv flashing a failed action. The detail is
-// sanitized and its '#' doubled so tmux does not expand it as a format.
+// sanitized, with '#' and '%' doubled so tmux expands neither as a format nor
+// through strftime.
 func linksFailArgv(client, verb, detail string) []string {
 	msg := "links: " + verb + " failed: " + sanitizeStatusText(detail)
 	argv := []string{"display-message"}
 	if client != "" {
 		argv = append(argv, "-c", client)
 	}
-	return append(argv, strings.ReplaceAll(msg, "#", "##"))
+	return append(argv, linksFlashEscaper.Replace(msg))
 }
 
-// runLinksCmd runs cmd and returns its stderr. Stderr goes to a file, not a
-// pipe: a browser the opener leaves running would hold a pipe open and block
-// Run until it exits.
-func runLinksCmd(cmd *exec.Cmd) (string, error) {
+var linksFlashEscaper = strings.NewReplacer("#", "##", "%", "%%")
+
+// runLinksCmd starts cmd and waits up to wait for it. A command still running
+// then is left to finish on its own and reported as success. On an early
+// failure it returns the command's stderr. Stderr goes to a file, not a pipe:
+// a browser the opener leaves running would hold a pipe open.
+func runLinksCmd(cmd *exec.Cmd, wait time.Duration) (string, error) {
 	f, err := os.CreateTemp("", "og-links-*")
 	if err != nil {
 		return "", err
@@ -165,12 +177,21 @@ func runLinksCmd(cmd *exec.Cmd) (string, error) {
 		_ = os.Remove(f.Name())
 	}()
 	cmd.Stderr = f
-	runErr := cmd.Run()
-	if runErr == nil {
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case runErr := <-done:
+		if runErr == nil {
+			return "", nil
+		}
+		detail, _ := os.ReadFile(f.Name())
+		return strings.TrimSpace(string(detail)), runErr
+	case <-time.After(wait):
 		return "", nil
 	}
-	detail, _ := os.ReadFile(f.Name())
-	return strings.TrimSpace(string(detail)), runErr
 }
 
 // --- Model ---
@@ -344,17 +365,39 @@ func (m linksModel) renderRow(l linkjoin.Link, selected bool) string {
 		marker = " +" + strconv.Itoa(l.Rows)
 	}
 	linkW := max(m.width-1-4-1-visibleWidth(marker), 0)
-	line := " " + tag + " " + truncateVisibleWidth(sanitizeStatusText(l.Text), linkW)
+	line := " " + tag + " " + truncateVisibleWidth(sanitizeStatusText(elideLeft(l.Text, linkW)), linkW)
 	if marker != "" {
 		line += overlay.Render(marker)
 	}
 
+	fitted := fitVisibleWidth(line, m.width)
 	if !selected {
-		return fitVisibleWidth(line, m.width)
+		return fitted
 	}
+	// Every reset, lipgloss's "\033[m" and fitVisibleWidth's "\033[0m" alike,
+	// would drop the background for the text after it, padding included.
 	selBgHex := m.colorHex("@thm_surface_2", "#45475a", "#acb0be")
-	patched := strings.ReplaceAll(line, "\033[0m", "\033[39m"+ansiBg(selBgHex))
-	return lipgloss.NewStyle().Background(lipgloss.Color(selBgHex)).Render(fitVisibleWidth(patched, m.width))
+	restore := "\033[39m" + ansiBg(selBgHex)
+	keepBg := strings.NewReplacer("\033[m", restore, "\033[0m", restore)
+	return lipgloss.NewStyle().Background(lipgloss.Color(selBgHex)).Render(keepBg.Replace(fitted))
+}
+
+// elideLeft keeps the rightmost cells-1 cells of s behind a "…" when s is wider
+// than cells: the tail is what tells sibling paths apart. s carries no escapes.
+func elideLeft(s string, cells int) string {
+	if visibleWidth(s) <= cells {
+		return s
+	}
+	if cells < 1 {
+		return ""
+	}
+	runes := []rune(s)
+	w, i := 0, len(runes)
+	for i > 0 && w+runeCellWidth(runes[i-1]) <= cells-1 {
+		i--
+		w += runeCellWidth(runes[i])
+	}
+	return "…" + string(runes[i:])
 }
 
 func (m linksModel) renderSearch() string {
