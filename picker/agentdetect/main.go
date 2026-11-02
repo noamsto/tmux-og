@@ -85,9 +85,6 @@ func main() {
 	if !registerWatcher(watcherRegDir, paneID, myPID, server) {
 		return
 	}
-	// Stopped on every return, so a superseded or EOF'd watcher kills and
-	// reaps its blocked tmux client before exiting instead of leaving the
-	// waiter on the server.
 	geomC, fallbackC, stopGeometry := startGeometryWatch(paneID)
 	defer stopGeometry()
 

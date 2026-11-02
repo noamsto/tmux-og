@@ -20,10 +20,9 @@ SLOT='#{&&:#{&&:#{!:#{window_zoomed_flag}},#{!:#{P:#{?pane_floating_flag,1,}}}},
 
 # Ready: past startup, then output-quiet, capped. One read per pass returns
 # the pane's last-output stamp (whole seconds) with the geometry fields. Two
-# seconds past the stamp guarantees at least one fully quiet second, so
-# sleep to that instant instead of sampling twice. An empty or non-numeric
-# stamp (a resident server predating the format, or a pane that never wrote)
-# counts as 0, so it is quiet at once.
+# seconds past the stamp guarantees at least one fully quiet second. An empty
+# or non-numeric stamp (a resident server predating the format, or a pane that
+# never wrote) counts as 0, so it is quiet at once.
 start=$SECONDS
 sleep 3
 while :; do
