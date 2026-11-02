@@ -1,6 +1,11 @@
 package daemon
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
+)
 
 func TestRelayEnvCmd(t *testing.T) {
 	want := "set-environment -t 'mysession' OG_RELAY_GRAPHICS 'sixel'"
@@ -94,5 +99,78 @@ func TestCellEnvSyncCmd(t *testing.T) {
 	}
 	if got, want := CellEnvSyncCmd("mysession", ""), CellEnvUnsetCmd("mysession"); got != want {
 		t.Errorf("CellEnvSyncCmd with no size = %q, want %q", got, want)
+	}
+}
+
+func TestRelayOwnedCond(t *testing.T) {
+	want := "#{?#{@og_bridge_owner},#{m:tok1|*,#{@og_bridge_owner}},1}"
+	if got := relayOwnedCond("tok1"); got != want {
+		t.Errorf("relayOwnedCond = %q, want %q", got, want)
+	}
+}
+
+func TestRelayEnvBuilders(t *testing.T) {
+	const cond = "'#{?#{@og_bridge_owner},#{m:tok1|*,#{@og_bridge_owner}},1}'"
+	tests := []struct {
+		name string
+		env  relayEnv
+		got  func(relayEnv) string
+		want string
+	}{
+		{"unguarded relay", relayEnv{target: "$3"}, func(e relayEnv) string { return e.relay("sixel") },
+			"set-environment -t '$3' OG_RELAY_GRAPHICS 'sixel'"},
+		{"unguarded relay empty", relayEnv{target: "$3"}, func(e relayEnv) string { return e.relay("") },
+			"set-environment -t '$3' OG_RELAY_GRAPHICS ''"},
+		{"unguarded cell", relayEnv{target: "$3"}, func(e relayEnv) string { return e.cell("15x28") },
+			"set-environment -t '$3' AEYE_CELL_PX '15x28'"},
+		{"unguarded cell empty unsets", relayEnv{target: "$3"}, func(e relayEnv) string { return e.cell("") },
+			"set-environment -u -t '$3' AEYE_CELL_PX"},
+		{"guarded relay", relayEnv{target: "$3", token: "tok1"}, func(e relayEnv) string { return e.relay("sixel") },
+			"if-shell -F -t '$3' " + cond + " 'set-environment -t '\\''$3'\\'' OG_RELAY_GRAPHICS '\\''sixel'\\'''"},
+		{"guarded cell", relayEnv{target: "$3", token: "tok1"}, func(e relayEnv) string { return e.cell("15x28") },
+			"if-shell -F -t '$3' " + cond + " 'set-environment -t '\\''$3'\\'' AEYE_CELL_PX '\\''15x28'\\'''"},
+		{"guarded cell empty unsets", relayEnv{target: "$3", token: "tok1"}, func(e relayEnv) string { return e.cell("") },
+			"if-shell -F -t '$3' " + cond + " 'set-environment -u -t '\\''$3'\\'' AEYE_CELL_PX'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.got(tt.env); got != tt.want {
+				t.Errorf("got  %q\nwant %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRelayEnvPublish(t *testing.T) {
+	view := &Viewing{Relay: graphics.NewRelaySource(graphics.NewRelayFromClient(true, ""))}
+	view.SetCell("15x28")
+
+	tests := []struct {
+		name string
+		env  relayEnv
+		want []string
+	}{
+		{"unguarded", relayEnv{target: "$3"}, []string{
+			"set-environment -t '$3' OG_RELAY_GRAPHICS 'sixel'",
+			"set-environment -t '$3' AEYE_CELL_PX '15x28'",
+		}},
+		{"guarded", relayEnv{target: "$3", token: "tok1"}, []string{
+			"if-shell -F -t '$3' '#{?#{@og_bridge_owner},#{m:tok1|*,#{@og_bridge_owner}},1}' 'set-environment -t '\\''$3'\\'' OG_RELAY_GRAPHICS '\\''sixel'\\'''",
+			"if-shell -F -t '$3' '#{?#{@og_bridge_owner},#{m:tok1|*,#{@og_bridge_owner}},1}' 'set-environment -t '\\''$3'\\'' AEYE_CELL_PX '\\''15x28'\\'''",
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.env.publish(view); !slices.Equal(got, tt.want) {
+				t.Errorf("publish = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRelayEnvTeardownCmd(t *testing.T) {
+	want := "if-shell -F -t '$3' '#{==:#{session_attached},2}' 'set-environment -u -t '\\''$3'\\'' OG_RELAY_GRAPHICS ; set-environment -u -t '\\''$3'\\'' AEYE_CELL_PX'"
+	if got := relayEnvTeardownCmd("$3", 2); got != want {
+		t.Errorf("relayEnvTeardownCmd = %q, want %q", got, want)
 	}
 }

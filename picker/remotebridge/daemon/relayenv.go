@@ -99,3 +99,41 @@ func CellEnvSyncCmd(session, cell string) string {
 	}
 	return CellEnvCmd(session, cell)
 }
+
+// relayOwnedCond is the format that is true when no controller owns the
+// session's size record or the record names token. The size-owner record is
+// the arbiter between two controllers' daemons (#979, #1035), so an env write
+// from the one that lost it must not land.
+func relayOwnedCond(token string) string {
+	return "#{?#{" + bridgeOwnerOption + "},#{m:" + token + "|*,#{" + bridgeOwnerOption + "}},1}"
+}
+
+// relayEnv builds the env writes for one remote session. The condition on a
+// guarded write is evaluated by the remote tmux when the command runs, so
+// racing claims cannot interleave a stale write. An empty token means size
+// ownership is off (session pinning off) and writes stay unconditional.
+type relayEnv struct{ target, token string }
+
+func (e relayEnv) guard(cmd string) string {
+	if e.token == "" {
+		return cmd
+	}
+	return "if-shell -F -t " + tmuxQuote(e.target) + " " + tmuxQuote(relayOwnedCond(e.token)) + " " + tmuxQuote(cmd)
+}
+
+func (e relayEnv) relay(v string) string { return e.guard(RelayEnvCmd(e.target, v)) }
+
+func (e relayEnv) cell(c string) string { return e.guard(CellEnvSyncCmd(e.target, c)) }
+
+// publish returns the writes that make the remote session's env match view.
+func (e relayEnv) publish(view *Viewing) []string {
+	return []string{e.relay(view.Relay.Load().String()), e.cell(view.Cell())}
+}
+
+// relayEnvTeardownCmd unsets both variables only while the session still has
+// exactly attached clients. attached is the session_attached the caller just
+// read, so a client attaching between that read and this write makes it not
+// land.
+func relayEnvTeardownCmd(sessID string, attached int) string {
+	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote("#{==:#{session_attached},"+strconv.Itoa(attached)+"}") + " " + tmuxQuote(RelayEnvUnsetCmd(sessID)+" ; "+CellEnvUnsetCmd(sessID))
+}
