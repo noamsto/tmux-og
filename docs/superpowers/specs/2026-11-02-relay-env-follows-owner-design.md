@@ -19,7 +19,8 @@ daemon writes its own values unconditionally (Run startup, `repair()`,
 ## Invariants
 
 - **I1 (teardown):** a daemon's teardown never removes the variables while
-  another client is still attached to the session.
+  another client is still attached to the session; a departing owner only
+  neutralises its own values (relay empty, cell unknown).
 - **I2 (one writer):** while the size-owner record `@og_bridge_owner` names a
   daemon, only that daemon's values are written to the slot; a non-owner's
   write never lands.
@@ -97,7 +98,11 @@ tmux when the command runs, so no read-then-write race between daemons exists.
    conditional write. The departing daemon reads the session's clients
    (`list-clients -t $N` with `client_control_mode`, plus its own name and
    `#{session_attached}` in the same batch). If another control client is
-   attached, it sends nothing. Otherwise it sends
+   attached, it sends one `if-shell -F -t '$N'` guarded on its own token only
+   (`#{m:<token>|*,#{@og_bridge_owner}}`, never the unset case, so it cannot
+   clear values a survivor published) that sets `OG_RELAY_GRAPHICS` empty and
+   unsets `AEYE_CELL_PX`: the values that are safe for whichever controller the
+   user is on (`relayEnvRelinquishCmd`). Otherwise it sends
    `if-shell -F -t '$N' '#{==:#{session_attached},<n>}' '<unset both>'`, where
    `<n>` is the `session_attached` it just read (tmux's own count, which skips
    suspended or exiting clients that `list-clients` still lists). The count closes the read-to-write
@@ -105,8 +110,8 @@ tmux when the command runs, so no read-then-write race between daemons exists.
    land. A human tty client does not block the unset. A later or concurrent
    direct attach from a non-sixel terminal still does not inherit a stale
    `sixel`, which is why the unset exists. A departing owner with other
-   controllers attached leaves its values, and step 3 replaces them after the
-   grace. A failed read (dead transport) sends nothing, because the unset could
+   controllers attached neutralises its values as above, and step 3 replaces
+   them after the grace. A failed read (dead transport) sends nothing, because the unset could
    not have landed anyway. `session_attached` alone cannot express this rule,
    because tmux formats cannot filter it by `client_control_mode`.
 
@@ -135,7 +140,7 @@ The local drop is untouched: each daemon's `Proxy.Filter` keeps reading its own
 | producer: claim | `ownerCtl.claimWith`, `sizeowner.go` | changed: also publishes (new) |
 | owner rename on replace | `primeClient`, `conn.go` (`ownerClaimCmd` on the replacement connection) | unchanged, no publish: it only renames our own record, it is not an ownership move, and its per-command reply count would break on an `if-shell` branch block; `repair`'s claim publishes |
 | producer: release | `ownerCtl.releaseDue` / `ownerReleaseCmd`, `sizeowner.go` | changed: branch also publishes the releaser's values (new) |
-| producer: teardown unset | Run teardown closure, `daemon.go` → `ownerCtl` | changed: read clients, unset only with no other control client, guarded by the read count |
+| producer: teardown unset | Run teardown closure, `daemon.go` → `ownerCtl` | changed: read clients; unset, guarded by the read count, only with no other control client, else the owner-token-guarded relinquish (relay empty, cell unset) |
 | transport | `stream.stampAll` per-command `og-fanout` barrier | compatible: absorbs the `if-shell` branch's extra reply blocks, as it already does for `ownerReleaseCmd` |
 | persistence | remote session env table; survives reconnect (same server) | compatible; replaced server → `reopened()` claim publishes |
 | consumer: carousel | `ctl.go` `carousel` verb, remote `run-shell` inherits session env | compatible: grammar unchanged |
@@ -181,9 +186,11 @@ The local drop is untouched: each daemon's `Proxy.Filter` keeps reading its own
   launches with the previous owner's values. Fixing it means the `carousel`
   verb carrying its own values into the `run-shell` environment, a separate
   change.
-- **Clean exit of the owner with survivors attached.** Values persist until
-  the release (step 3). The owner does not release its own record on clean
-  exit, so size ownership behaviour is unchanged.
+- **Clean exit of the owner with survivors attached.** The owner neutralises
+  its values (relay empty, cell unknown), so survivors fall back to the
+  kitty/carousel path and an unknown crop size until the release (step 3)
+  republishes. The owner does not release its own record on clean exit, so
+  size ownership behaviour is unchanged.
 
 ## Tests
 
@@ -199,13 +206,17 @@ The local drop is untouched: each daemon's `Proxy.Filter` keeps reading its own
 - **Live tmux, departed owner (I3, the SIGTERM path).** A claims and
   publishes. A's control client is killed, so its transport drops and no
   teardown runs. B's release of A's record lands B's values.
+- **Live tmux, owner exit (I1).** A (sixel) owns the record and B stays
+  attached. A's teardown leaves `OG_RELAY_GRAPHICS` present-empty and
+  `AEYE_CELL_PX` unset, and the record unchanged. When B owns instead, A's
+  teardown writes nothing.
 - **Live tmux, mixed capability (acceptance 2, I2/I3).** A claims and
   publishes `sixel` and `15x28`. B's guarded publish (`""`, unknown cell) does
   not land. B claims, and the slot becomes B's (relay empty, cell unset). A's
   guarded publish does not land. A release by B of A's record carries B's values.
   The claim, publish and release commands are the production builders.
 - **Unit.** `claimWith` and `releaseDue` batches carry the publish. The
-  teardown sends nothing while another control client is attached, and sends
-  the count-guarded unset otherwise.
+  teardown sends only the relinquish while another control client is attached,
+  and sends the count-guarded unset otherwise.
   `watchLocalClient` sends the guarded form when guarded and today's form when
   unpinned. Builder strings for the guard and teardown.

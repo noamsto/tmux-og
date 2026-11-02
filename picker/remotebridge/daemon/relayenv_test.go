@@ -174,3 +174,10 @@ func TestRelayEnvTeardownCmd(t *testing.T) {
 		t.Errorf("relayEnvTeardownCmd = %q, want %q", got, want)
 	}
 }
+
+func TestRelayEnvRelinquishCmd(t *testing.T) {
+	want := "if-shell -F -t '$3' '#{m:tok1|*,#{@og_bridge_owner}}' 'set-environment -t '\\''$3'\\'' OG_RELAY_GRAPHICS '\\'''\\'' ; set-environment -u -t '\\''$3'\\'' AEYE_CELL_PX'"
+	if got := relayEnvRelinquishCmd("$3", "tok1"); got != want {
+		t.Errorf("relayEnvRelinquishCmd = %q, want %q", got, want)
+	}
+}

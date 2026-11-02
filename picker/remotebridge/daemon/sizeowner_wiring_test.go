@@ -463,7 +463,8 @@ func TestOwnerCtlEnvTeardown(t *testing.T) {
 		script string
 		want   []string
 	}{
-		{"another control client", teardownReply("client-me", 3, sessionClientRows), nil},
+		{"another control client", teardownReply("client-me", 3, sessionClientRows),
+			[]string{relayEnvRelinquishCmd("$1", tokA)}},
 		{"only tty clients", teardownReply("client-me", 2, "client-me|1|attached,control-mode\n/dev/pts/3|0|attached"),
 			[]string{relayEnvTeardownCmd("$1", 2)}},
 		{"no others", teardownReply("client-me", 1, "client-me|1|attached,control-mode"),
@@ -483,6 +484,57 @@ func TestOwnerCtlEnvTeardown(t *testing.T) {
 			o.envTeardown()
 			if !reflect.DeepEqual(*sent, tc.want) && (len(*sent) != 0 || len(tc.want) != 0) {
 				t.Errorf("sent %q, want %q", *sent, tc.want)
+			}
+		})
+	}
+}
+
+// TestOwnerCtlCatchesUpWhenTheViewMoves: the change watcher's guarded write is
+// skipped while the record is foreign, so a claim or release that sent the old
+// snapshot republishes the new view once it lands, and sends nothing extra when
+// the view held still.
+func TestOwnerCtlCatchesUpWhenTheViewMoves(t *testing.T) {
+	cases := []struct {
+		name   string
+		run    func(o ownerCtl)
+		script string
+		own    func() *sizeOwner
+	}{
+		{"claim", func(o ownerCtl) { o.claim() },
+			ownerReadReply("client-me", "", sessionClientRows), func() *sizeOwner { return newSizeOwner(tokA) }},
+		{"release", func(o ownerCtl) {
+			o.detached("client-b")
+			o.releaseDue(time.Now().Add(ownerReleaseGrace + time.Second))
+		}, ownerReadReply("client-me", tokB+"|client-b", flaggedSurvivorRows), detachedOwner},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, moves := range []bool{false, true} {
+				o, sent := testOwnerCtl(tc.script, tc.own(), recordedCV())
+				batches := 0
+				o.send = func(cmds ...string) bool {
+					batches++
+					*sent = append(*sent, cmds...)
+					if batches == 1 && moves {
+						o.view.SetCell("20x40")
+					}
+					return true
+				}
+				tc.run(o)
+				wantBatches := 1
+				if moves {
+					wantBatches = 2
+				}
+				if batches != wantBatches {
+					t.Fatalf("moves=%v: %d batches sent, want %d: %q", moves, batches, wantBatches, *sent)
+				}
+				if !moves {
+					continue
+				}
+				want := o.relayEnv().publishValues("sixel", "20x40")
+				if got := (*sent)[len(*sent)-len(want):]; !reflect.DeepEqual(got, want) {
+					t.Errorf("catch-up sent %q, want %q", got, want)
+				}
 			}
 		})
 	}

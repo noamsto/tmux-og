@@ -280,3 +280,36 @@ func TestRelayEnvReleaseCarriesSurvivorValues(t *testing.T) {
 	}
 	slot.assertValues("after B releases A's record", "", "9x18")
 }
+
+// TestRelayEnvOwnerExitNeutralisesItsValues: an owner leaving while another
+// controller stays attached sets relay empty and unsets the cell, so the
+// survivor never inherits a capability its terminal lacks, and leaves the
+// owner record to the survivor's release.
+func TestRelayEnvOwnerExitNeutralisesItsValues(t *testing.T) {
+	slot := startLiveEnvSlot(t)
+	sessID := slot.sessionID()
+	a := startLiveController(t, slot.tmux, sessID, true, "15x28")
+	b := startLiveController(t, slot.tmux, sessID, false, "9x18")
+
+	b.claim()
+	a.claim()
+	slot.assertValues("after A claims", "sixel", "15x28")
+	record := slot.ownerRecord()
+	if tok, _ := parseOwnerValue(record); tok != a.ctl.own.token {
+		t.Fatalf("%s = %q, want A's token %s", bridgeOwnerOption, record, a.ctl.own.token)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	a.envTeardown()
+	if v, set := slot.env(RelayEnvVar); !set || v != "" {
+		t.Errorf("%s = %q (set=%v) after the owner exits, want present-empty", RelayEnvVar, v, set)
+	}
+	if v, set := slot.env(CellEnvVar); set {
+		t.Errorf("%s = %q after the owner exits, want unset", CellEnvVar, v)
+	}
+	if got := slot.ownerRecord(); got != record {
+		t.Errorf("%s = %q after the owner exits, want it unchanged (%q)", bridgeOwnerOption, got, record)
+	}
+}

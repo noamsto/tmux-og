@@ -127,7 +127,13 @@ func (e relayEnv) cell(c string) string { return e.guard(CellEnvSyncCmd(e.target
 
 // publish returns the writes that make the remote session's env match view.
 func (e relayEnv) publish(view *Viewing) []string {
-	return []string{e.relay(view.Relay.Load().String()), e.cell(view.Cell())}
+	return e.publishValues(view.Relay.Load().String(), view.Cell())
+}
+
+// publishValues is publish for values the caller already snapshotted, so a
+// batch and the check that it is still current read the same view.
+func (e relayEnv) publishValues(relay, cell string) []string {
+	return []string{e.relay(relay), e.cell(cell)}
 }
 
 // relayEnvTeardownCmd unsets both variables only while the session still has
@@ -136,4 +142,14 @@ func (e relayEnv) publish(view *Viewing) []string {
 // land.
 func relayEnvTeardownCmd(sessID string, attached int) string {
 	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote("#{==:#{session_attached},"+strconv.Itoa(attached)+"}") + " " + tmuxQuote(RelayEnvUnsetCmd(sessID)+" ; "+CellEnvUnsetCmd(sessID))
+}
+
+// relayEnvRelinquishCmd is a departing owner's write while other controllers
+// stay attached: relay empty and cell unknown are the values that are always
+// safe for whichever controller the user is on, so the survivors fall back to
+// the kitty/carousel path and an unknown crop size until a claim or release
+// republishes. It lands only while the record names token, never while it is
+// unset, so it cannot clear values a survivor already published.
+func relayEnvRelinquishCmd(sessID, token string) string {
+	return "if-shell -F -t " + tmuxQuote(sessID) + " " + tmuxQuote("#{m:"+token+"|*,#{"+bridgeOwnerOption+"}}") + " " + tmuxQuote(RelayEnvCmd(sessID, "")+" ; "+CellEnvUnsetCmd(sessID))
 }

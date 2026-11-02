@@ -537,8 +537,9 @@ func selfFlagged(st ownerRead) bool {
 // claim that lost a race to a later one does not overwrite its values.
 func (o ownerCtl) claimWith(st ownerRead) {
 	targets := enforceTargets(st.clients, st.self)
+	relay, cell := o.view.Relay.Load().String(), o.view.Cell()
 	cmds := []string{ownerClaimCmd(o.sessID, o.own.token, st.self)}
-	cmds = append(cmds, o.relayEnv().publish(o.view)...)
+	cmds = append(cmds, o.relayEnv().publishValues(relay, cell)...)
 	cmds = append(cmds, ignoreSizeCmd("", false))
 	for _, name := range targets {
 		cmds = append(cmds, ignoreSizeCmd(name, true))
@@ -546,8 +547,20 @@ func (o ownerCtl) claimWith(st ownerRead) {
 	if !o.send(o.withRecalc(cmds)...) {
 		return
 	}
+	o.catchUp(relay, cell)
 	o.own.noteClaim(st.self)
 	o.logf("claimed as %s; flagged %v", st.self, targets)
+}
+
+// catchUp republishes when the view moved while a claim or release was in
+// flight: the change watcher's guarded write is skipped while the record is
+// still foreign, so the new owner must catch up. The write is guarded and
+// lands because the record is now ours.
+func (o ownerCtl) catchUp(relay, cell string) {
+	if o.view.Relay.Load().String() == relay && o.view.Cell() == cell {
+		return
+	}
+	o.send(o.relayEnv().publish(o.view)...)
 }
 
 // enforce flags every control client on the session that is neither ours nor
@@ -658,20 +671,25 @@ func (o ownerCtl) releaseDue(now time.Time) {
 	if st.ownerToken != r.token || st.ownerClient != r.client {
 		return
 	}
+	relay, cell := o.view.Relay.Load().String(), o.view.Cell()
 	release := ownerReleaseCmd(o.sessID, r.token, r.client,
-		RelayEnvCmd(o.sessID, o.view.Relay.Load().String()), CellEnvSyncCmd(o.sessID, o.view.Cell()))
+		RelayEnvCmd(o.sessID, relay), CellEnvSyncCmd(o.sessID, cell))
 	if !o.send(release) {
 		o.own.rehold(r, now.Add(ownerReleaseRetry))
 		return
 	}
+	o.catchUp(relay, cell)
 	o.logf("released %s's record (client %s detached)", r.token, r.client)
 }
 
 // envTeardown unsets the relay and cell env when this daemon leaves, unless
-// another attached controller still depends on the values (#1035). The count
-// is tmux's own session_attached, which skips the suspended and exiting
-// clients list-clients still lists, and the unset is conditional on it, so a
-// client attaching between this read and the write makes the write not land.
+// another attached controller still depends on the values (#1035). With one
+// attached, it instead relinquishes: relay empty and cell unset, guarded on
+// this daemon's own token, so a survivor never inherits a capability its
+// terminal lacks from an owner that is gone. The count is tmux's own
+// session_attached, which skips the suspended and exiting clients
+// list-clients still lists, and the unset is conditional on it, so a client
+// attaching between this read and the write makes the write not land.
 // A tty client does not block the unset: a later direct attach from a
 // non-sixel terminal must never inherit a stale sixel. The read is bounded by
 // the connection's reply deadline, and a closed connection fails it at once;
@@ -693,7 +711,9 @@ func (o ownerCtl) envTeardown() {
 	}
 	for _, c := range parseSessionClients(string(cl.Data)) {
 		if c.name != self && c.control {
-			o.logf("env teardown skipped: control client %s still attached", c.name)
+			if o.send(relayEnvRelinquishCmd(o.sessID, o.own.token)) {
+				o.logf("relinquished relay and cell env: control client %s still attached", c.name)
+			}
 			return
 		}
 	}

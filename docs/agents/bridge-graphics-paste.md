@@ -144,12 +144,13 @@ option.
   rather than computed once at launch, so the remote can never emit what
   we'd drop nor withhold what we'd relay. A capability change re-publishes
   immediately with no re-dial and no attach; `repair()` also re-sends it
-  unconditionally on every reconnect, since the outage window is the one
+  on every reconnect, changed or not (still owner-guarded), since the outage window is the one
   stretch in which a capability change had no live connection to publish on.
   **With two or more controllers on one session the slot holds the size
   owner's values** (`@og_bridge_owner`, #979; design:
   `docs/superpowers/specs/2026-11-02-relay-env-follows-owner-design.md`,
-  #1035), not whichever daemon wrote last. Every write is one
+  #1035), not whichever daemon wrote last. Every publish (startup,
+  `repair()`, `watchLocalClient`, claim) is one
   `if-shell -F -t '$N'` guarded by
   `#{?#{@og_bridge_owner},#{m:<token>|*,#{@og_bridge_owner}},1}` (record unset
   or ours), evaluated remote-side so racing claims cannot leave a stale write
@@ -157,10 +158,16 @@ option.
   (`claimWith`); a survivor's release of a departed owner's record carries
   the releaser's own values inside the same `if-shell` branch
   (`ownerReleaseCmd`); only the survivor whose release cleared the record
-  writes.
+  writes, and the release-branch writes need no guard (the branch's own unset
+  just cleared the record). A claim or release whose view moved while it was in
+  flight republishes once it lands (`catchUp`), since the change watcher's
+  guarded write was skipped while the record was foreign.
   Teardown (`owner.envTeardown`, `relayEnvTeardownCmd`) reads the session's
   clients and unsets, guarded by the `session_attached` it read, only when no
-  other control client is attached; a tty client does not block it. Unpinned
+  other control client is attached; a tty client does not block it. With other
+  controllers attached, a departing owner instead sets relay empty and unsets
+  the cell, guarded on its own token (`relayEnvRelinquishCmd`), so a survivor
+  never inherits a capability its terminal lacks. Unpinned
   (identity read failed, size ownership off) keeps the old unguarded writes
   and the unconditional unset. The unset still lands only on a clean exit:
   the dominant teardown path is SIGTERM, where the transport is already gone
@@ -181,7 +188,7 @@ option.
   client must agree** (same rule as the sixel AND): a disagreement, or any
   client reporting empty, zero, non-canonical or >512, leaves it **unset**,
   never a guess. Same publish sites as `OG_RELAY_GRAPHICS` (startup, `repair()`,
-  `watchLocalClient` on change; teardown unsets), via `CellEnvSyncCmd`, so an
+  `watchLocalClient` on change, claim, release; teardown under the rule above), via `CellEnvSyncCmd`, so an
   unknown size also clears a value an earlier bridge left. It follows the
   same owner guard, claim and release batching and teardown rule as
   `OG_RELAY_GRAPHICS` above (`relayEnv`). Until a client is
