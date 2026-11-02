@@ -1116,9 +1116,11 @@ func runMirror(cfg Config) error {
 	// One-shot, here rather than in repair: Run() runs exactly once per bridge,
 	// so this is what makes the report "once per bridge connect" (#545) with no
 	// state of its own to track.
-	if available, checked := themeToggleAvailable(rt, cfg.RemoteSession); checked && !available {
+	themeAvailable, themeChecked := themeToggleAvailable(rt, cfg.RemoteSession)
+	if themeChecked && !themeAvailable {
 		notifyThemeMissing(cfg)
 	}
+	syncThemeOnConnect(rt, cfg, shouldSyncTheme(themeAvailable, themeChecked))
 	// Once per bridge, like the probe above: tmux sets session_path at creation
 	// and nothing a mirror follows changes it afterwards.
 	sessionPath := readSessionPath(rt, cfg.RemoteSession)
@@ -1127,7 +1129,7 @@ func runMirror(cfg Config) error {
 	// this daemon as dead and recreated the session under a daemon of its own:
 	// this run must neither remove that daemon's socket nor stamp and respawn
 	// into a session that is no longer the one it was launched into. The check
-	// sits after the two remote reads above — each is a window in which
+	// sits after the three remote reads above — each is a window in which
 	// og-remote-open can recreate the session — and everything below it touches
 	// the local session or its files.
 	if cfg.reopened && !ownsLocalSession(cfg) {
@@ -1888,6 +1890,7 @@ func runMirror(cfg Config) error {
 		// send it on. Re-sent unconditionally, same as the one-shot at Run()'s
 		// own startup and for the same reason: a stale value must not stand.
 		sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()), CellEnvSyncCmd(cfg.RemoteSession, cfg.View.Cell()))
+		syncThemeOnConnect(rt, cfg, shouldSyncTheme(themeAvailable, themeChecked))
 		return true
 	}
 

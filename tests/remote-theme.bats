@@ -33,6 +33,7 @@ setup() {
 	cat >"$FAKEBIN/og-remote-bridge-ctl" <<-'EOF'
 		#!/bin/sh
 		echo "$*" >>"$CTL_LOG"
+		case "$*" in *"--sock ${FAKE_CTL_FAIL_SOCK:-/nonexistent-never}"*) exit 1 ;; esac
 		exit "${FAKE_CTL_RC:-0}"
 	EOF
 
@@ -106,16 +107,46 @@ setup() {
 	run bash "$FANOUT"
 	[ "$status" -eq 0 ]
 	[ "$(wc -l <"$CTL_LOG")" -eq 2 ]
+	[ ! -s "$STAMP" ]
 }
 
-@test "the stamp advances before the fan-out, so a failed host is not retried forever" {
+@test "one host failing keeps the stamp empty until every host is reached" {
+	export FAKE_FLAVOR="latte"
+	export FAKE_CTL_FAIL_SOCK=/run/sock-a
+	FAKE_PANES="$(printf '/run/sock-a|%%7\n/run/sock-b|%%9\n')"
+	export FAKE_PANES
+	run bash "$FANOUT"
+	[ "$status" -eq 0 ]
+	[ ! -s "$STAMP" ]
+	[ "$(wc -l <"$CTL_LOG")" -eq 2 ]
+
+	unset FAKE_CTL_FAIL_SOCK
+	: >"$CTL_LOG"
+	run bash "$FANOUT"
+	[ "$status" -eq 0 ]
+	[ "$(cat "$STAMP")" = light ]
+	[ "$(wc -l <"$CTL_LOG")" -eq 2 ]
+
+	: >"$CTL_LOG"
+	run bash "$FANOUT"
+	[ "$status" -eq 0 ]
+	[ ! -s "$CTL_LOG" ]
+}
+
+@test "a failed send leaves the stamp empty, so the next run re-sends" {
 	export FAKE_FLAVOR="latte"
 	export FAKE_CTL_RC=1
 	FAKE_PANES="$(printf '/run/sock-a|%%7\n')"
 	export FAKE_PANES
 	run bash "$FANOUT"
 	[ "$status" -eq 0 ]
-	[ "$(cat "$STAMP")" = "light" ]
+	[ ! -s "$STAMP" ]
+	[ "$(wc -l <"$CTL_LOG")" -eq 1 ]
+
+	run bash "$FANOUT"
+	[ "$status" -eq 0 ]
+	[ ! -s "$STAMP" ]
+	[ "$(wc -l <"$CTL_LOG")" -eq 2 ]
 }
 
 @test "a socket path holding the delimiter keeps its pane" {

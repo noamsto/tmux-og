@@ -69,13 +69,17 @@ func TestReopenedRunLosesOwnershipDuringTheRemoteReads(t *testing.T) {
 		},
 	}
 	// One reply block per runMirror command: the identity batch (proven by
-	// identityMatch), the remote window list, the theme probe and the session
-	// path. The script ends at EOF so a run that wrongly proceeds past the
-	// check fails out of its post-listen setup rather than blocking here.
+	// identityMatch), the remote window list, the theme probe, the flavor read
+	// syncThemeOnConnect sends when the probe replies yes, its run-shell apply,
+	// and the session path. The script ends at EOF so a run that wrongly
+	// proceeds past the check fails out of its post-listen setup rather than
+	// blocking here.
 	script := identityMatch +
 		"%begin 1 2 1\n@1 1 1 main\n%end 1 2 1\n" +
 		"%begin 1 3 1\nyes\n%end 1 3 1\n" +
-		"%begin 1 4 1\n/remote/api\n%end 1 4 1\n"
+		"%begin 1 4 1\nlatte\n%end 1 4 1\n" +
+		"%begin 1 5 1\n\n%end 1 5 1\n" +
+		"%begin 1 6 1\n/remote/api\n%end 1 6 1\n"
 	conn := &flipThemeConn{eofScriptConn: newEOFScriptConn(withBarriers(script)), flipped: &recreated}
 	cfg.Dial = func() (io.ReadWriteCloser, error) { return conn, nil }
 
