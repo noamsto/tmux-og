@@ -2,6 +2,7 @@ package linkjoin
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -19,9 +20,13 @@ var (
 	continuationStart = regexp.MustCompile(`^[A-Za-z0-9/_.~%?#&=+@$:,;!-]`)
 	listItem          = regexp.MustCompile(`^(\d+[.)]|[-*+•])\s`)
 	bareSegment       = regexp.MustCompile(`^[.\w~$@-]+$`)
-	plainWord         = regexp.MustCompile(`^[A-Za-z]+$`)
+	wordToken         = regexp.MustCompile(`^[A-Za-z0-9'-]+$`)
 	schemes           = []string{"https://", "http://", "git@", "git://", "ssh://", "ftp://", "file:///"}
 )
+
+// maxEdgeToken stops rejoining an unspaced blob: each join rescans the edge
+// token, so an unbounded one makes rejoining quadratic in the capture.
+const maxEdgeToken = 8192
 
 // row is one captured line: its text without escapes or trailing spaces,
 // the OSC 8 hrefs it carried, and the cell width of its last physical row.
@@ -33,10 +38,19 @@ type row struct {
 
 // virtual is a run of rows rejoined into one logical line.
 type virtual struct {
-	text      string
-	joins     []int // byte offsets in text where a continuation row begins
+	text  string
+	joins []join
+	rows  []row
+	// cand is the last join's token+next and candSpans its matches.
+	cand      string
+	candSpans []span
+}
+
+// join is the byte offset in a virtual line's text where a continuation row
+// begins; ambiguous when the break may also be a link ending at the edge.
+type join struct {
+	at        int
 	ambiguous bool
-	rows      []row
 }
 
 // Extract returns the URLs and paths in capture (a `capture-pane -p -J [-e]`
@@ -127,9 +141,8 @@ func rejoin(rows []row, width int) []virtual {
 		if n := len(out); n > 0 {
 			if next, ok, ambiguous := out[n-1].continues(r, width); ok {
 				v := &out[n-1]
-				v.joins = append(v.joins, len(v.text))
+				v.joins = append(v.joins, join{len(v.text), ambiguous})
 				v.text += next
-				v.ambiguous = v.ambiguous || ambiguous
 				v.rows = append(v.rows, r)
 				continue
 			}
@@ -151,11 +164,21 @@ func (v *virtual) continues(r row, width int) (next string, ok, ambiguous bool) 
 		return "", false, false
 	}
 	token := edgeToken(v.text)
-	byMatch, byScheme, bySegment := linkHead(v.text, token, next)
+	if len(token) > maxEdgeToken {
+		return "", false, false
+	}
+	cand := token + next
+	spans := matches(cand)
+	byMatch, byScheme, bySegment := v.linkHead(token, next, spans)
 	if !byMatch && !byScheme && !bySegment {
 		return "", false, false
 	}
-	return next, true, endsInPunct(token) || startsWithWord(next) || (bySegment && !byMatch && !byScheme)
+	v.cand, v.candSpans = cand, spans
+	ambiguous = endsInPunct(token) ||
+		opensWithWord(next, r.tail >= width-1) ||
+		(bySegment && !byMatch && !byScheme) ||
+		(byMatch && next[0] == '/')
+	return next, true, ambiguous
 }
 
 func edgeToken(text string) string {
@@ -164,19 +187,31 @@ func edgeToken(text string) string {
 
 // linkHead reports by which spec rule (3a match, 3b scheme prefix, 3c bare
 // segment before a '/') the edge token heads a link crossing into next.
-func linkHead(text, token, next string) (byMatch, byScheme, bySegment bool) {
-	cand := text + next
-	byMatch = endsInMatch(token) && crossing(cand, len(text), 0, false)
+// spans are the matches of token+next: a crossing match cannot start before
+// the token (no pattern spans whitespace), so each join's work is O(token).
+func (v *virtual) linkHead(token, next string, spans []span) (byMatch, byScheme, bySegment bool) {
+	at := len(token)
+	crosses := crossing(spans, at, 0, false)
+	byMatch = crosses && endsInMatch(v.tokenSpans(token), at)
 	if suffix := schemePrefixSuffix(token); suffix != "" {
-		byScheme = crossing(cand, len(text), len(text)-len(suffix), true)
+		byScheme = crossing(spans, at, at-len(suffix), true)
 	}
-	bySegment = bareSegment.MatchString(token) && next[0] == '/' && crossing(cand, len(text), 0, false)
+	bySegment = crosses && next[0] == '/' && bareSegment.MatchString(token)
 	return byMatch, byScheme, bySegment
 }
 
-func endsInMatch(token string) bool {
-	for _, sp := range matches(token) {
-		if sp.end == len(token) {
+// tokenSpans returns matches(token), reusing the last join's token+next when
+// that join made its whole row part of token: a long token is not rescanned.
+func (v *virtual) tokenSpans(token string) []span {
+	if token == v.cand {
+		return v.candSpans
+	}
+	return matches(token)
+}
+
+func endsInMatch(spans []span, end int) bool {
+	for _, sp := range spans {
+		if sp.end == end {
 			return true
 		}
 	}
@@ -186,7 +221,7 @@ func endsInMatch(token string) bool {
 // schemePrefixSuffix returns the longest suffix of token that is a non-empty
 // prefix of an allowed scheme, or "".
 func schemePrefixSuffix(token string) string {
-	for i := range len(token) {
+	for i := max(0, len(token)-len("file:///")); i < len(token); i++ {
 		suffix := token[i:]
 		for _, s := range schemes {
 			if strings.HasPrefix(s, suffix) {
@@ -197,11 +232,11 @@ func schemePrefixSuffix(token string) string {
 	return ""
 }
 
-// crossing reports whether cand has a match starting at or after from and
-// before join that ends after join; urlOnly restricts it to URL matches.
-func crossing(cand string, join, from int, urlOnly bool) bool {
-	for _, sp := range matches(cand) {
-		if sp.start >= from && sp.start < join && sp.end > join && (!urlOnly || sp.kind == URL) {
+// crossing reports whether spans has a match starting at or after from and
+// before at that ends after at; urlOnly restricts it to URL matches.
+func crossing(spans []span, at, from int, urlOnly bool) bool {
+	for _, sp := range spans {
+		if sp.start >= from && sp.start < at && sp.end > at && (!urlOnly || sp.kind == URL) {
 			return true
 		}
 	}
@@ -212,21 +247,27 @@ func endsInPunct(token string) bool {
 	return token != "" && strings.IndexByte(".,;:!?", token[len(token)-1]) >= 0
 }
 
-// startsWithWord reports whether next opens with a plain word, which a
-// word-wrapped row does as often as a mid-token continuation does.
-func startsWithWord(next string) bool {
-	first, _, _ := strings.Cut(next, " ")
-	return plainWord.MatchString(first)
+// opensWithWord reports whether next opens with a word, number, contraction
+// or hyphenated word, which a word-wrapped row does as often as a mid-token
+// continuation does. A row that is that one token running to the edge is
+// itself a mid-token break, so it does not count.
+func opensWithWord(next string, rowAtEdge bool) bool {
+	first := next
+	if i := strings.IndexFunc(next, unicode.IsSpace); i >= 0 {
+		first = next[:i]
+	} else if rowAtEdge {
+		return false
+	}
+	return wordToken.MatchString(strings.TrimRight(first, ".,;:!?"))
 }
 
 // links lists v's links in reading order: the joined readings, then for an
-// ambiguous join each row's own, then the OSC 8 hrefs.
+// ambiguous join the readings with only the ambiguous joins broken, then the
+// OSC 8 hrefs.
 func (v *virtual) links() []Link {
 	out := spanLinks(v.text, v.joins)
-	if v.ambiguous {
-		for _, r := range v.rows {
-			out = append(out, spanLinks(r.plain, nil)...)
-		}
+	if slices.ContainsFunc(v.joins, func(j join) bool { return j.ambiguous }) {
+		out = append(out, v.splitLinks()...)
 	}
 	for _, r := range v.rows {
 		for _, h := range r.hrefs {
@@ -236,7 +277,24 @@ func (v *virtual) links() []Link {
 	return out
 }
 
-func spanLinks(text string, joins []int) []Link {
+// splitLinks reads v as broken at each ambiguous join: the links of every
+// segment between them, the certain joins inside a segment kept.
+func (v *virtual) splitLinks() []Link {
+	var out []Link
+	var certain []join
+	start := 0
+	for _, j := range v.joins {
+		if !j.ambiguous {
+			certain = append(certain, join{at: j.at - start})
+			continue
+		}
+		out = append(out, spanLinks(v.text[start:j.at], certain)...)
+		start, certain = j.at, nil
+	}
+	return append(out, spanLinks(v.text[start:], certain)...)
+}
+
+func spanLinks(text string, joins []join) []Link {
 	var out []Link
 	for _, sp := range matches(text) {
 		t := TrimTrailing(text[sp.start:sp.end])
@@ -245,7 +303,7 @@ func spanLinks(text string, joins []int) []Link {
 		}
 		rows := 1
 		for _, j := range joins {
-			if sp.start < j && j < sp.start+len(t) {
+			if sp.start < j.at && j.at < sp.start+len(t) {
 				rows++
 			}
 		}

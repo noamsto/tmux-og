@@ -23,13 +23,18 @@ func (k Kind) String() string {
 	return "path"
 }
 
-// The patterns mirror tmux-fingers' built-ins so the picker and fingers
-// select the same text (#1067). \w is ASCII-only in RE2, so a path stops
-// before the ':' of path:line:col.
+// The patterns port #1067's @fingers-pattern-url/path (its replacements for
+// tmux-fingers' url and path built-ins), so the picker and fingers select the
+// same text. RE2 has no lookbehind: their trailing (?<![…]) is TrimTrailing.
+// \w is ASCII-only in RE2, so a path stops before the ':' of path:line:col.
 var (
-	urlRe  = regexp.MustCompile(`(?:https?://|git@|git://|ssh://|ftp://|file:///)[^\s\x00-\x1f\x7f"'<>` + "`" + `]+`)
+	urlRe  = regexp.MustCompile(`(?:https?://|git@|git://|ssh://|ftp://|file:///)(?:` + urlChar + `|\(` + urlChar + `*\))+`)
 	pathRe = regexp.MustCompile(`(?:[.\w\-~$@]+)?(?:/[.\w\-@]+)+/?`)
 )
+
+// urlChar adds control bytes to #1067's exclusions, so no escape byte from a
+// capture can reach the opener inside a URL.
+const urlChar = `[^\s()"'` + "`" + `\x00-\x1f\x7f]`
 
 // span is the greedy, untrimmed byte range of one match in a line.
 type span struct {
@@ -41,8 +46,12 @@ type span struct {
 // overlap one, ordered by start. A URL's own path part is not offered again.
 func matches(s string) []span {
 	var urls []span
-	for _, m := range urlRe.FindAllStringIndex(s, -1) {
-		urls = append(urls, span{m[0], m[1], URL})
+	// Every scheme holds "://" or "git@"; skipping urlRe, by far the slower
+	// pattern, when neither occurs keeps a long path-only line cheap.
+	if strings.Contains(s, "://") || strings.Contains(s, "git@") {
+		for _, m := range urlRe.FindAllStringIndex(s, -1) {
+			urls = append(urls, span{m[0], m[1], URL})
+		}
 	}
 	out := urls
 	for _, m := range pathRe.FindAllStringIndex(s, -1) {
@@ -63,30 +72,12 @@ func overlapsAny(spans []span, start, end int) bool {
 	return false
 }
 
-// TrimTrailing strips the sentence punctuation and unbalanced closers a
-// greedy match picks up. A closer survives when its opener is inside the
-// match (so Foo_(bar) stays whole); a quote is stripped when its count is
-// odd. The shared vectors are testdata/trailing.tsv.
+// TrimTrailing repeatedly strips a final rune the lookbehind of #1067's
+// patterns rejects, which is what PCRE backtracking off it amounts to. No
+// bracket balancing: urlRe admits only a balanced (…) and pathRe holds none
+// of these but '.'. The vectors are testdata/trailing.tsv.
 func TrimTrailing(s string) string {
-	for s != "" {
-		last := s[len(s)-1]
-		switch {
-		case strings.IndexByte(".,;:!?", last) >= 0:
-		case last == ')' && unbalanced(s, '(', ')'):
-		case last == ']' && unbalanced(s, '[', ']'):
-		case last == '}' && unbalanced(s, '{', '}'):
-		case last == '>' && unbalanced(s, '<', '>'):
-		case (last == '\'' || last == '"' || last == '`') && strings.Count(s, string(last))%2 == 1:
-		default:
-			return s
-		}
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-func unbalanced(s string, open, closer byte) bool {
-	return strings.Count(s, string(closer)) > strings.Count(s, string(open))
+	return strings.TrimRight(s, ".,;:!?>]}")
 }
 
 // Openable reports whether the picker may hand s to the platform opener.

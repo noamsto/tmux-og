@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -117,8 +118,12 @@ func TestExtractClaudeCodeURL2Rows(t *testing.T) {
 func TestExtractClaudeCodeURL3Rows(t *testing.T) {
 	capture, width := loadFixture(t, "cc-url-3rows-40.txt")
 	assertEdgeRows(t, capture, width, 2)
+	// Both joins are ambiguous: a whole URL meets a '/' row, then `d.` opens
+	// a row like a word would.
 	assertLinks(t, Extract(capture, width), []Link{
 		{"https://github.com/noamsto/tmux-og/blob/main/docs/agents/bridge-daemon.md", URL, 3},
+		{"https://github.com/noamsto/tmux-og", URL, 1},
+		{"/blob/main/docs/agents/bridge-daemon.m", Path, 1},
 	})
 }
 
@@ -147,8 +152,11 @@ func TestExtractPiTrailingPad(t *testing.T) {
 func TestExtractMirrorSeed(t *testing.T) {
 	capture, width := loadFixture(t, "mirror-seed-30.txt")
 	assertEdgeRows(t, capture, width, 1)
+	// A whole URL at the edge meeting a '/' row reads as one link or two.
 	assertLinks(t, Extract(capture, width), []Link{
 		{"https://example.com/a/very/long/path/to/page.html", URL, 2},
+		{"https://example.com/a/very", URL, 1},
+		{"/long/path/to/page.html", Path, 1},
 	})
 }
 
@@ -197,7 +205,68 @@ func TestExtractAmbiguous(t *testing.T) {
 		{"edge punctuation", []string{"see https://x.io/a.", "  Then x"}, []Link{{"https://x.io/a.Then", URL, 2}, {"https://x.io/a", URL, 1}}},
 		{"plain word continuation", []string{"in /tmp/x/scratchpad", "  and then"}, []Link{{"/tmp/x/scratchpadand", Path, 2}, {"/tmp/x/scratchpad", Path, 1}}},
 		{"bare segment head", []string{"saved to", "  /tmp/x"}, []Link{{"to/tmp/x", Path, 2}, {"/tmp/x", Path, 1}}},
+		{"word continuation with trailing punctuation", []string{"see https://x.io/pull/12", "  here. more"}, []Link{{"https://x.io/pull/12here", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
+		{"number continuation", []string{"see https://x.io/pull/12", "  3 files changed"}, []Link{{"https://x.io/pull/123", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
+		{"contraction continuation", []string{"see https://x.io/pull/12", "  it's merged"}, []Link{{"https://x.io/pull/12it", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
+		{"hyphenated continuation", []string{"see https://x.io/pull/12", "  follow-up later"}, []Link{{"https://x.io/pull/12follow-up", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
 	})
+}
+
+// TestExtractAmbiguityPerJoin pins that only the ambiguous join is broken in
+// the fallback reading: the certain join above it stays joined.
+func TestExtractAmbiguityPerJoin(t *testing.T) {
+	tests := []struct {
+		name string
+		rows []string
+		want []Link
+	}{
+		{
+			"word after a rejoined URL",
+			[]string{"see https://x.io/docs/shar", "  ed-state.md/aaaaaaaaaaaa", "  And more"},
+			[]Link{{"https://x.io/docs/shared-state.md/aaaaaaaaaaaaAnd", URL, 3}, {"https://x.io/docs/shared-state.md/aaaaaaaaaaaa", URL, 2}},
+		},
+		{
+			"slash row after a rejoined URL",
+			[]string{"see https://x.io/docs/sh", "  aredstateabcdefghijklm", "  /tmp/x"},
+			[]Link{{"https://x.io/docs/sharedstateabcdefghijklm/tmp/x", URL, 3}, {"https://x.io/docs/sharedstateabcdefghijklm", URL, 2}, {"/tmp/x", Path, 1}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			width := ansi.StringWidth(tt.rows[0])
+			capture := lines(tt.rows...)
+			assertEdgeRows(t, capture, width, 2)
+			assertLinks(t, Extract(capture, width), tt.want)
+		})
+	}
+}
+
+// blobBudget is TestExtractUnspacedBlobBounded's wall-clock limit;
+// race_test.go widens it under the race detector.
+var blobBudget = 2 * time.Second
+
+// TestExtractUnspacedBlobBounded pins that rejoining stays near-linear: a
+// blob of edge-filling rows used to rescan the whole growing line per join.
+func TestExtractUnspacedBlobBounded(t *testing.T) {
+	const width, n = 200, 2000
+	row := strings.Repeat("aaaa/", width/5)
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = row
+	}
+	start := time.Now()
+	links := Extract(lines(rows...), width)
+	if d := time.Since(start); d > blobBudget {
+		t.Fatalf("Extract took %v on %d rows of width %d", d, n, width)
+	}
+	if len(links) == 0 {
+		t.Fatal("Extract found no links in the blob")
+	}
+	for _, l := range links {
+		if len(l.Text) > maxEdgeToken+width {
+			t.Errorf("link of %d bytes joined past the %d-byte cap", len(l.Text), maxEdgeToken)
+		}
+	}
 }
 
 func TestExtractUnambiguousOffersOnlyJoined(t *testing.T) {
