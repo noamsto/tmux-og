@@ -2,6 +2,7 @@
 
 setup() {
 	SOCK="$BATS_TEST_TMPDIR/t.sock"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	# BRIDGE points at the prebuilt og-remote-bridge binary; the nix check
 	# sets it to a store path, fall back to building from source for local runs.
 	if [[ -z ${BRIDGE:-} ]]; then

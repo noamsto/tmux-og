@@ -15,6 +15,7 @@ setup() {
 
 	OG_TMUX_DIR="/tmp/og-fn-$$-${BATS_TEST_NUMBER}"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX

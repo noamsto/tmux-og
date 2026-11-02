@@ -1776,11 +1776,21 @@
           # files under CLAUDE_STATUS_DIR, OG_ENRICH_CACHE_DIR,
           # OG_AGENT_USAGE_DIR and OG_ENRICH_LOCK_DIR — whose defaults are the
           # developer's real /tmp trees (CLAUDE_STATUS_DIR: /tmp/claude-status-<uid>,
-          # #850). A bats suite that sets TMUX_BIN loads that config, so it must
-          # export all four in its own setup() or a future one added without
+          # #850). XDG_DATA_HOME is the fifth: tmux-fingers writes, and
+          # tmux-fingers-prune deletes, tmux-<pid> dirs under
+          # $XDG_DATA_HOME/tmux-fingers (#1066). A bats suite that sets TMUX_BIN
+          # loads that config, so it must
+          # export all five in its own setup() or a future one added without
           # isolation is destructive the moment it runs locally, while nix flake
           # check stays green (the sandbox's own per-uid dir is empty, and the
           # build user's uid there is never the developer's).
+          #
+          # The second loop covers suites that start a server with the bare PATH
+          # `tmux` (the wrapper on a dev box) without a TMUX_BIN reference: they
+          # still load tmux-fingers, so they must export XDG_DATA_HOME. It matches
+          # real invocations only (a line that starts with a tmux command word and
+          # names new-session/start-server), so string fixtures and log greps in
+          # remote-picker and conf-shell-quoting do not trip it.
           wrapped-tmux-suite-isolation-assertions =
             pkgs.runCommand "wrapped-tmux-suite-isolation-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];
@@ -1794,6 +1804,13 @@
                     fail=1
                   }
                 done
+              done
+              for f in ${./tests}/*.bats; do
+                grep -qE '^[[:space:]]*(tmux|probe_tmux|"\$\{TM\[@\]\}"|"\$real_tmux"|\$SRC|\$DST)[[:space:]].*(new-session|start-server)' "$f" || continue
+                grep -q 'export XDG_DATA_HOME=' "$f" || {
+                  echo "$(basename "$f") starts a tmux server but does not export XDG_DATA_HOME" >&2
+                  fail=1
+                }
               done
               [ "$fail" -eq 0 ]
               touch $out

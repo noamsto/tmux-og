@@ -28,6 +28,7 @@ setup() {
 	export OG_REMOTE_TMPDIR="/run/user/1000"
 	# Keeps the daemon socket + log inside the test tmpdir.
 	export TMUX_TMPDIR="$BATS_TEST_TMPDIR"
+	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 
 	cat >"$FAKEBIN/ssh" <<-'EOF'
 		#!/bin/sh
