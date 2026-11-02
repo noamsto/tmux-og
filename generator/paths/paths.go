@@ -51,6 +51,7 @@ var RequiredScripts = []string{
 	"tmux-grid-refit",
 	"tmux-issue-stamp",
 	"tmux-kill-pane-guard",
+	"tmux-link-picker",
 	"tmux-pr-enrich",
 	"tmux-fingers-prune",
 	"tmux-reap-pane",

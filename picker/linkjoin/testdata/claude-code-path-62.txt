@@ -1,0 +1,12 @@
+# width=62
+  - Variable scan: the scan for BASH_CMDS/PATH only reads the
+    raw text. I confirmed in bash that quote-split
+    declare/printf -v writes to BASH_CMDS take effect even
+    though the literal name never appears.
+
+  All four verdicts are in /tmp/claude-1000/-home-noams-git--w
+  orktrees-git-hookyard-feat-264-priors-write-guard-false-posi
+  tives-on-re/f9266e70-b330-463b-b41f-50721c09f72e/scratchpad/
+  (verdict.json through verdict4.json).
+
+✻ Sautéed for 12s · done 11:56 PM

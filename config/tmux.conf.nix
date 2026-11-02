@@ -316,6 +316,7 @@
     "tmux-window-picker"
     "tmux-window-wall"
     "tmux-which-key"
+    "tmux-link-picker"
     "tmux-update-icons"
     "tmux-branch-display"
     "tmux-dir-display"
@@ -534,7 +535,7 @@
   # scriptsWithIcons' icon-map/library placeholders — its own minimal builder
   # rather than folding into mkScriptFull for a script that uses one of its
   # six substitutions.
-  scriptsWithPickerBin = ["tmux-which-key"];
+  scriptsWithPickerBin = ["tmux-which-key" "tmux-link-picker"];
   mkScriptPickerBin = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings ["@picker_generate@"] [picker-generate-bin]
@@ -709,6 +710,10 @@
     "pick which-key" = {
       script = "tmux-which-key";
       summary = "Which-key popup: every bind, grouped and filterable";
+    };
+    "pick links" = {
+      script = "tmux-link-picker";
+      summary = "Link picker: URLs and paths in this pane, hard wraps rejoined";
     };
     "issue stamp" = {
       script = "tmux-issue-stamp";

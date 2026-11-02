@@ -1,0 +1,39 @@
+# input<TAB>expected: the first link Extract returns for the input as one line at width 200 ("-" = no link).
+# These vectors mirror tests/fingers-patterns.bats of #1067 by hand; keep the two in step.
+see https://x.io/a.	https://x.io/a
+see https://x.io/a,	https://x.io/a
+see https://x.io/a;	https://x.io/a
+see https://x.io/a:	https://x.io/a
+see https://x.io/a!	https://x.io/a
+see https://x.io/a?	https://x.io/a
+see https://x.io/a)	https://x.io/a
+see https://x.io/a]	https://x.io/a
+see https://x.io/a>	https://x.io/a
+see https://x.io/a`	https://x.io/a
+see https://x.io/a'	https://x.io/a
+see https://x.io/a"	https://x.io/a
+(https://x.io/a)	https://x.io/a
+`https://x.io/a`	https://x.io/a
+https://x.io/a?b=1&c=2#frag.	https://x.io/a?b=1&c=2#frag
+https://en.wikipedia.org/wiki/Foo_(bar)	https://en.wikipedia.org/wiki/Foo_(bar)
+file:///tmp/x.txt.	file:///tmp/x.txt
+edit foo/bar.go.	foo/bar.go
+./a/b.go:12:3	./a/b.go
+~/x/y	~/x/y
+a/b.tar.gz	a/b.tar.gz
+plain prose without links	-
+go to https://x.io/a.),	https://x.io/a
+see (https://x.io/a).	https://x.io/a
+(see https://en.wikipedia.org/wiki/Foo_(bar))	https://en.wikipedia.org/wiki/Foo_(bar)
+https://en.wikipedia.org/wiki/Foo_(bar).	https://en.wikipedia.org/wiki/Foo_(bar)
+ssh://host/repo.git,	ssh://host/repo.git
+see https://x.io/a}	https://x.io/a
+see https://x.io/a/b.go.	https://x.io/a/b.go
+see /a/b.	/a/b
+in a/b.tar.gz,	a/b.tar.gz
+cd ../x/y/	../x/y/
+$HOME/x/y.	$HOME/x/y
+# Divergences from a balance-aware trim, pinned so a change to either side is deliberate.
+https://x.io/a(b	https://x.io/a
+https://x.io/a[1]	https://x.io/a[1
+https://x.io/a}	https://x.io/a

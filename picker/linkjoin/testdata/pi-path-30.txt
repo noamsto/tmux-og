@@ -1,0 +1,4 @@
+# width=30
+ Wrote it to the directory
+ /home/noams/git/.worktrees/g
+ it/disp/x. done
