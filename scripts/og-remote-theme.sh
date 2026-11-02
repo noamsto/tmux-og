@@ -8,7 +8,9 @@
 #
 # The toggle already re-sources the config, so the config's tail calls this and
 # the change detection lives here: the flavour is compared against the stamp
-# from the last fan-out, making `prefix + r` and an activation reload no-ops.
+# of the last fully delivered fan-out, making `prefix + r` and an activation
+# reload no-ops. A fan-out that failed on any host leaves the stamp alone, so
+# the next reload tries again.
 set -uo pipefail
 
 # Pinned at build time for the reason og-remote-open spells out: the tmux
@@ -24,21 +26,24 @@ else
 fi
 
 [[ $(tmux show-options -gv @og_theme_applied 2>/dev/null) == "$theme" ]] && exit 0
-tmux set-option -g @og_theme_applied "$theme"
 
 # One verb per daemon socket: a host session may carry several placed mirrors,
 # each with its own daemon. The verb is daemon-wide, and the pane only rides
 # along because every verb takes one, so the first mirrored pane of a socket is
 # enough. Split on the last | (a socket path may hold one, a pane id never does).
 declare -A sent
+failed=0
 while IFS= read -r row; do
 	sock="${row%|*}"
 	pane="${row##*|}"
 	[[ -n $sock && -n $pane && -z ${sent[$sock]:-} ]] || continue
 	sent[$sock]=1
-	"$ctl" --sock "$sock" theme "$pane" "$theme" >/dev/null 2>&1
+	"$ctl" --sock "$sock" theme "$pane" "$theme" >/dev/null 2>&1 || failed=1
 done < <(tmux list-panes -a -F '#{@bridge_sock}|#{@bridge_pane}' 2>/dev/null)
 
-# An unreachable daemon leaves one mirror in the old flavour; it does not make
-# the reload that called this a failure.
+# Stamp only once every host took the verb: a failed send must not suppress the
+# next reload's attempt. Repeats are harmless (the verb is idempotent) and a
+# stale socket fails fast, so retrying costs no wait. An unreachable daemon
+# never makes the reload that called this a failure.
+((failed)) || tmux set-option -g @og_theme_applied "$theme"
 exit 0

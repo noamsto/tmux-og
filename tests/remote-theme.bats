@@ -106,16 +106,23 @@ setup() {
 	run bash "$FANOUT"
 	[ "$status" -eq 0 ]
 	[ "$(wc -l <"$CTL_LOG")" -eq 2 ]
+	[ ! -s "$STAMP" ]
 }
 
-@test "the stamp advances before the fan-out, so a failed host is not retried forever" {
+@test "a failed send leaves the stamp empty, so the next run re-sends" {
 	export FAKE_FLAVOR="latte"
 	export FAKE_CTL_RC=1
 	FAKE_PANES="$(printf '/run/sock-a|%%7\n')"
 	export FAKE_PANES
 	run bash "$FANOUT"
 	[ "$status" -eq 0 ]
-	[ "$(cat "$STAMP")" = "light" ]
+	[ ! -s "$STAMP" ]
+	[ "$(wc -l <"$CTL_LOG")" -eq 1 ]
+
+	run bash "$FANOUT"
+	[ "$status" -eq 0 ]
+	[ ! -s "$STAMP" ]
+	[ "$(wc -l <"$CTL_LOG")" -eq 2 ]
 }
 
 @test "a socket path holding the delimiter keeps its pane" {
