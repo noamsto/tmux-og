@@ -64,6 +64,11 @@ regression guards.
   slow sample's timestamp. Count `job_run` lines (two per job) and
   `hooks_insert_event: hook=` lines to see what forked and which hooks
   fired.
+- **`tests/perf/agent-detect-forks.sh <agent-detect binary>`** (env `TMUX_BIN`,
+  `PANES`, `IDLE`, `RESIZES`, `DRAG`) counts the command-client connections a
+  client-less scratch server accepts from idle `agent-detect` watchers, across
+  a resize series and a drag, from its `-v` log (#1000). It also reports the
+  waiter clients' memory. Run it once per build's `agent-detect` binary.
 
 ## What dominated: the resize-hook fork storm (#793)
 
@@ -663,8 +668,108 @@ not a mirror, not a grid and not zoomed, and the tiled geometry differs from
 
 `tmux-fingers-prune` is one background fork (`run-shell -b`) per server start, rate-limited to one sweep per 10 minutes; the first sweep over a large `tmux-<pid>` backlog is a one-off cost.
 
+## Polling vs events (#1000)
+
+#1000 surveyed every polling site (a `-B` tick, a `#()` job, a daemon ticker, a
+sleep loop) for work a tmux event could remove. Two sites changed: the
+agent-detect geometry poll and the `tmux-agent-repaint` readiness wait. Every
+other site was kept; the full table, with the pinned tmux's event surface, is
+in `docs/superpowers/specs/2026-11-02-event-hooks-design.md`. The kept sites:
+
+| Site | Why it stays |
+| --- | --- |
+| `-B` ticks (`@og-sweep-tick`, `-pr-`, `-backfill-`, `-usage-`, `-res-`) | The client-independent floor a control-only bridge host needs (#603). Their "anything to do?" tests read disk state a monitor format cannot see. |
+| `status-format[0]` `#()` jobs | Their cadence is the redraw. Pushing the same text from hooks costs an option write per event, and each write runs `recalculate_sizes()` plus a redraw of every client (#1026). |
+| Bridge resize watcher | Already event-driven (hook-touched `@bridge_nudge`); steady state is a `stat`. |
+| Bridge reveal watcher | Also samples `#{client_activity}` each tick for controller ownership, which no event reports. |
+| agent-detect 30 s liveness probe | Backstop for a lost EOF (dead server, pipe that never closed); no event reports "server gone". |
+| Bounded waits (reflow debounce, lock spins, fold animation, restore retry, socket waits) | One-shot and capped at seconds, not periodic. |
+
+### agent-detect geometry: pane-resized wait
+
+- Each watcher runs one command list per round:
+  `display -p … ; wait-for -E -F '#{==:#{pane},%N}' pane-resized`. The read and
+  the wait run back to back on the server thread, so no resize lands between
+  them.
+- After each wake the goroutine waits 1 s (settle) before the next round, so a
+  drag's per-step events coalesce; the next read sees the size the steps left.
+  A changed size re-seeds the emulator as the poll did.
+- Three consecutive rounds that fail without printing a geometry switch the
+  watcher to the old 5 s `display` poll for its life. A parse rejection is the
+  version gate: a resident server predating `wait-for -E` rejects the list, so
+  the live server's own parser is probed, never `tmux -V` (#407).
+- In event mode the 5 s ticker still runs the `stillOwner` file check and, every
+  12th tick (60 s), the old `display` comparison. It covers a waiter that blocks
+  but never matches, which the parse rejection cannot detect.
+- No hook is installed, so nothing shadows a global hook (#647), and it works
+  with no client attached. The waiter is a command client; the tmux-side
+  behaviour (kill removes its sink, the leaking builds) is in
+  `tmux-gotchas.md`'s `wait-for -E` bullet.
+- On exit the watcher stops its waiter and waits for it to exit before the
+  process does. Residual: a SIGKILLed watcher's waiter stays blocked until that
+  pane next resizes or the server exits.
+
+`tests/perf/agent-detect-forks.sh`: 8 panes running a manifest agent, no client,
+no config; two rounds per build, alternating; host load 6-12 (shared). Counts
+are tmux command-client connections in the server's `-v` log. Before is `main`
+at 390dc11b, after is this branch.
+
+| | Before | After |
+| --- | --- | --- |
+| idle 60 s, tmux calls | 112 / 112 (1.87/s) | 24 / 24 (0.40/s) |
+| 10 resizes, 1 s apart | 48 / 48 | 240 / 240 |
+| 3 s drag at 10 Hz (+2 s settle) | 8 / 24 | 96 / 32 |
+| waiter clients | 0 | 8 |
+
+- Idle before is 96 geometry polls plus 16 liveness probes. After is 16
+  liveness plus 8 backstop comparisons: geometry forks per idle agent pane drop
+  from 12/min to 1/min.
+- Resize and drag cost more. Every real resize is now followed within about 1 s
+  by a round (1 call) and a re-seed (`display` plus `capture-pane`, 2 calls):
+  3 calls per pane per resize. The 5 s poll saw only the size standing at its
+  tick and missed the rest, so the old desync window of up to 5 s is now about
+  1 s. A burst costs only what the settle allows: at most one round per second
+  per pane. Drag numbers are noisy; they depend on where the 1 s settle falls.
+- Waiter memory: each blocked tmux client is RSS 5.3-5.8 MB but PSS about
+  0.74 MB (about 0.62 MB private dirty), from `/proc/<pid>/smaps_rollup`. 12
+  agent panes cost about 9 MB PSS.
+
+### tmux-agent-repaint readiness: pane_last_output_time
+
+- Each readiness check is one `display` returning `#{pane_last_output_time}`
+  with the nudge's info fields. The pane is quiet once `EPOCHSECONDS >= stamp + 2`;
+  the stamp has one-second resolution, so that is at least one quiet second.
+- An empty stamp counts as quiet: a resident server predating the format, or a
+  pane that never produced output.
+- tmux calls before the nudge on a quiet pane: 3 reads before (two
+  `pane_output_generation` samples a second apart plus the info read), 1 after.
+  The minimum time to ready is 4 s after the claim before, 3 s after; the
+  readiness bar is 1-2 s of quiet instead of exactly 1 s.
+
+### Keystroke latency
+
+`SAMPLES=400 tests/perf/keystroke-latency.sh quiet busy`, two rounds per build,
+alternating; load 4.3-5.7. Before is `main` at 390dc11b. Times are ms.
+
+| Scenario | Before p50 | Before p95 | Before p99 | Before max | After p50 | After p95 | After p99 | After max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| quiet | 0.5 | 1.0-1.1 | 2.6-2.8 | 3.2-5.0 | 0.5-0.6 | 1.1-2.2 | 3.5-6.0 | 4.0-15.2 |
+| busy | 0.5-0.7 | 7.5-11.8 | 19.1-32.7 | 56.4-112.3 | 0.5-0.6 | 7.3-8.8 | 16.3-18.6 | 40.7-78.8 |
+
+Within noise, as expected: the harness's synthetic agents run as
+`exec -a claude bash`, so their `pane_current_command` is `bash` and the sweep
+never arms agent-detect there. The fork table above is the measurement of the
+change; this one shows it costs the keystroke path nothing.
+
 ## Regression guards
 
+- `TestGeometryWaitFiresWithoutClients` (`picker/agentdetect`, in
+  `picker-go-tests`) runs a client-less scratch server: a resize reaches the
+  watcher within 2 s, the waiter is not an attached client, and its sink is
+  gone after cancel. Fatal, not skipped, under `OG_REQUIRE_TMUX`.
+- `tests/agent-repaint-ready.bats` (`agent-repaint-ready-tests`) is client-less:
+  exactly one readiness read before the nudge, and a busy pane waits for
+  quiet. It sits alongside the end-to-end `agent-repaint-integration-tests`.
 - `tests/grid-refit.bats` (`grid-refit-tests`, part of `nix flake check`)
   sources the production refit hook lines into a `tmux -v` server. It drives
   a same-size storm (per-window `refresh-client -C` from a control client)

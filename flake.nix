@@ -2397,6 +2397,19 @@
               touch $out
             '';
 
+          agent-repaint-ready-tests =
+            pkgs.runCommand "agent-repaint-ready-tests" {
+              # mkTmux, not pkgs.tmux: the readiness read needs
+              # #{pane_last_output_time}, which nixpkgs' stock tmux lacks.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              export HOME=$TMPDIR
+              bats tests/agent-repaint-ready.bats
+              touch $out
+            '';
+
           pane-border-format-tests =
             pkgs.runCommand "pane-border-format-tests" {
               # mkTmux, not pkgs.tmux: this test creates a real -O/-K/-C

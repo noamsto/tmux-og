@@ -261,7 +261,9 @@ attach_client() {
 	wait_for 20 claimed "$role" || fail "sweep never claimed the role pane"
 	t_s=$SECONDS
 
-	# The worker is in its slot wait from t_s+4 s to at least t_s+12 s.
+	# The worker reaches its slot wait 3-5 s after the claim (3 s, then two
+	# seconds past the pane's last-output stamp) and stays there until at least
+	# t_s+11 s (readiness + 8 s).
 	while ((SECONDS < t_s + 6)); do sleep 0.2; done
 	wait_for 10 settled "$role_log" "$role" || fail "role never settled"
 	win="$(zoom_size "$wid")"
