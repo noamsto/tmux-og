@@ -16,6 +16,10 @@ func themeForFlavor(flavor string) string {
 	return "dark"
 }
 
+// shouldSyncTheme: an inconclusive probe still syncs, since the apply script is
+// a no-op without theme-toggle.
+func shouldSyncTheme(available, checked bool) bool { return available || !checked }
+
 // syncThemeOnConnect applies the local tmux's theme to the remote on a bridge
 // connect or reconnect, so a mirror opened after a toggle (or one that missed
 // the og-remote-theme fan-out) does not keep the remote's old theme. The remote

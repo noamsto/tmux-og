@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+func TestShouldSyncTheme(t *testing.T) {
+	for _, c := range []struct{ available, checked, want bool }{
+		{false, false, true},
+		{true, true, true},
+		{true, false, true},
+		{false, true, false},
+	} {
+		if got := shouldSyncTheme(c.available, c.checked); got != c.want {
+			t.Errorf("shouldSyncTheme(%v, %v) = %v, want %v", c.available, c.checked, got, c.want)
+		}
+	}
+}
+
 func TestThemeSyncOnConnect(t *testing.T) {
 	reply := func(s string) string { return "%begin 1 1 1\n" + s + "%end 1 1 1\n" }
 	local := func(flavor string) func(...string) (string, error) {
