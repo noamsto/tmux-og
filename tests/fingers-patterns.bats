@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The tmux-og replacements for tmux-fingers' url and path built-ins
-# (@fingers-pattern-10/11) must stop before trailing punctuation. The patterns
+# (@fingers-pattern-url/path) must stop before trailing punctuation. The patterns
 # are read out of the conf template, so the test pins what ships. Fingers
 # compiles patterns with PCRE2; grep -P is the compatible engine here.
 # Run from repo root: bats tests/fingers-patterns.bats
@@ -15,10 +15,19 @@ conf_pattern() {
 OLD_URL='((https?://|git@|git://|ssh://|ftp://|file:///)[^\s()"'"'"']+)'
 OLD_PATH='(([.\w\-~\$@]+)?(/[.\w\-@]+)+/?)'
 
+# fingers joins its user patterns with | in option-name (strcmp) order
+joined_patterns() {
+	local name out=""
+	while read -r name; do
+		out="${out:+$out|}(?:$(conf_pattern "$name"))"
+	done < <(sed -n 's/^set -g @fingers-pattern-\([^ ]*\) .*/\1/p' config/tmux.conf.tmpl | LC_ALL=C sort)
+	printf '(%s)' "$out"
+}
+
 setup() {
-	URL="$(conf_pattern 10)"
-	PATH_RE="$(conf_pattern 11)"
-	EMAIL="$(conf_pattern 6)"
+	URL="$(conf_pattern url)"
+	PATH_RE="$(conf_pattern path)"
+	JOINED="$(joined_patterns)"
 	[ -n "$URL" ] && [ -n "$PATH_RE" ]
 }
 
@@ -92,7 +101,11 @@ expect_match() {
 }
 
 @test "joined alternation: a url is not re-matched as a path" {
-	expect_match "($EMAIL|$URL|$PATH_RE)" "see https://x.io/a/b.go." "https://x.io/a/b.go"
+	expect_match "$JOINED" "see https://x.io/a/b.go." "https://x.io/a/b.go"
+}
+
+@test "joined alternation: sha256 SRI hashes are not cut short by the path pattern" {
+	expect_match "$JOINED" 'hash = "sha256-47DEQpj8HBSa/TImW+5JCeuQeRkm5NMpJWZG3hSuFU0=";' "sha256-47DEQpj8HBSa/TImW+5JCeuQeRkm5NMpJWZG3hSuFU0="
 }
 
 @test "old url built-in keeps trailing punctuation (control)" {

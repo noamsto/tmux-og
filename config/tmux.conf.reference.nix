@@ -1444,11 +1444,13 @@
     # "see https://x.io/a." copies a dead link. The closing lookbehind makes PCRE
     # backtrack off it; (...) stays balanced inside a URL. Hex escapes: \x22 ",
     # \x27 ', \x60 `, \x24 $.
-    set -g @fingers-pattern-10 "(?:https?://|git@|git://|ssh://|ftp://|file:///)(?:[^\\s()\\x22\\x27\\x60]|\\([^\\s()\\x22\\x27\\x60]*\\))+(?<![.,;:!?>\\]}])"
-    set -g @fingers-pattern-11 "(?:[.\\w\\-~\\x24@]+)?(?:/[.\\w\\-@]+)+/?(?<![.])"
+    # fingers tries user patterns in option-name order: "url" and "path" sort after
+    # the digits, so patterns 2-9 (e.g. sha256-...+/...=) still win at a shared start.
+    set -g @fingers-pattern-url "(?:https?://|git@|git://|ssh://|ftp://|file:///)(?:[^\\s()\\x22\\x27\\x60]|\\([^\\s()\\x22\\x27\\x60]*\\))+(?<![.,;:!?>\\]}])"
+    set -g @fingers-pattern-path "(?:[.\\w\\-~\\x24@]+)?(?:/[.\\w\\-@]+)+/?(?<![.])"
     # Only scan built-ins we actually use. Dropped: digit (too noisy — matches
     # any 4+ digit run), git-status, git-status-branch, diff (niche); url and path
-    # are replaced by patterns 10 and 11.
+    # are replaced by the url and path patterns above.
     set -g @fingers-enabled-builtin-patterns "ip,uuid,sha,hex,kubernetes"
 
     # fingers opens its hint overlay as a window and closes it again, so every
