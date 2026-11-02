@@ -18,21 +18,23 @@ birth=${2:-}
 # `if -F` together with the nudge, so no sibling can slot in between.
 SLOT='#{&&:#{&&:#{!:#{window_zoomed_flag}},#{!:#{P:#{?pane_floating_flag,1,}}}},#{||:#{==:#{window_panes},1},#{||:#{pane_active},#{==:#{window_active_clients},0}}}}'
 
-# Ready: past startup, then output-quiet for 1 s, capped. An empty
-# pane_output_generation (a resident server predating the format) compares
-# equal, so it counts as quiet.
+# Ready: past startup, then output-quiet, capped. One read per pass returns
+# the pane's last-output stamp (whole seconds) with the geometry fields. Two
+# seconds past the stamp guarantees at least one fully quiet second, so
+# sleep to that instant instead of sampling twice. An empty or non-numeric
+# stamp (a resident server predating the format, or a pane that never wrote)
+# counts as 0, so it is quiet at once.
 start=$SECONDS
 sleep 3
 while :; do
-	g1=$(tmux display -p -t "$pane" '#{pane_output_generation}' 2>/dev/null) || exit 0
-	sleep 1
-	g2=$(tmux display -p -t "$pane" '#{pane_output_generation}' 2>/dev/null) || exit 0
-	[[ $g1 == "$g2" ]] && break
-	((SECONDS - start >= 12)) && break
+	info=$(tmux display -p -t "$pane" '#{pane_last_output_time}|#{pane_width}|#{pane_height}|#{window_id}|#{window_width}|#{window_height}|#{window_panes}|#{pane_floating_flag}|#{@bridge_win}|#{P:#{?pane_floating_flag,1,}}' 2>/dev/null) || exit 0
+	IFS='|' read -r last pw ph wid ww wh np floating bridge floats <<<"$info"
+	[[ $last =~ ^[0-9]+$ ]] || last=0
+	quiet_at=$((last + 2))
+	((EPOCHSECONDS >= quiet_at || SECONDS - start >= 12)) && break
+	sleep $((quiet_at - EPOCHSECONDS))
 done
 
-info=$(tmux display -p -t "$pane" '#{pane_width}|#{pane_height}|#{window_id}|#{window_width}|#{window_height}|#{window_panes}|#{pane_floating_flag}|#{@bridge_win}|#{P:#{?pane_floating_flag,1,}}' 2>/dev/null) || exit 0
-IFS='|' read -r pw ph wid ww wh np floating bridge floats <<<"$info"
 [[ ${pw}x$ph == "$birth" ]] && exit 0
 [[ $floating == 1 || -n $bridge || -n $floats ]] && exit 0
 [[ $wid =~ ^@[0-9]+$ && $ww =~ ^[0-9]+$ && $wh =~ ^[0-9]+$ ]] || exit 0

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,12 +38,18 @@ const (
 	// of seconds is fine for a backstop that only exists to bound the worst
 	// case.
 	livenessInterval = 30 * time.Second
-	// Geometry poll: cheap enough (one display-message fork per watcher per
-	// tick) and bounds how long a pane resize can desync the emulator — the
-	// emulator never resizes itself, and a grown pane's repaint either panics
-	// the parser (feedSafe re-seeds) or silently clamps the rows where the
-	// idle signal lives (#251).
-	geometryInterval = 5 * time.Second
+	// A pane resize must reach the emulator — it never resizes itself, and a
+	// grown pane's repaint either panics the parser (feedSafe re-seeds) or
+	// silently clamps the rows where the idle signal lives (#251). The
+	// pane-resized wait (watchGeometry) is the primary path; this tick checks
+	// ownership, and polls the geometry with one display-message fork: every
+	// tick once the server rejected the wait, else every geometryBackstopTicks
+	// ticks, against a waiter that blocks but never matches on some build.
+	geometryInterval      = 5 * time.Second
+	geometryBackstopTicks = 12
+	// Delay after each wake before the next read-and-wait, so a drag's
+	// per-step events coalesce into about one re-seed a second.
+	geometrySettle = time.Second
 	// One watcher runs per agent pane, each with a handful of goroutines.
 	// Left at NumCPU, every watcher gets a P, GC worker and thread per core;
 	// 4 matches NumCPU's throughput on the replay benchmark at less total
@@ -79,6 +86,17 @@ func main() {
 	if !registerWatcher(watcherRegDir, paneID, myPID, server) {
 		return
 	}
+	// Cancelled on every return, so a superseded or EOF'd watcher kills its
+	// blocked tmux client instead of leaving the waiter on the server.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	geomC := make(chan geom)
+	fallbackC := make(chan struct{})
+	go func() {
+		if watchGeometry(ctx, runGeometryRound(paneID), geomC, geometrySettle) {
+			close(fallbackC)
+		}
+	}()
 
 	scr, curCols, curRows := seededScreen(paneID)
 	deb := debounce.New(debounceWindow, sampleCeiling)
@@ -104,6 +122,8 @@ func main() {
 		scr.Close()
 		scr, curCols, curRows = seededScreen(paneID)
 	}
+	polling := false
+	backstopTicks := 0
 
 	for {
 		select {
@@ -146,13 +166,25 @@ func main() {
 				ticker.Stop()
 				tickC = nil
 			}
+		case g := <-geomC:
+			if g.cols != curCols || g.rows != curRows {
+				reseed()
+				emit(scr, m, w)
+			}
+		case <-fallbackC:
+			polling = true
+			fallbackC = nil
 		case <-geometry.C:
 			if !stillOwner(watcherRegDir, paneID, myPID) {
 				return
 			}
-			if c, r, _, ok := paneInfo(paneID); ok && (c != curCols || r != curRows) {
-				reseed()
-				emit(scr, m, w)
+			backstopTicks++
+			if polling || backstopTicks >= geometryBackstopTicks {
+				backstopTicks = 0
+				if c, r, _, ok := paneInfo(paneID); ok && (c != curCols || r != curRows) {
+					reseed()
+					emit(scr, m, w)
+				}
 			}
 		case <-liveness.C:
 			// Backstop for the case EOF never arrives: dead pane, or the
