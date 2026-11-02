@@ -110,20 +110,23 @@ func TestExtractOSC8(t *testing.T) {
 func TestExtractClaudeCodeURL2Rows(t *testing.T) {
 	capture, width := loadFixture(t, "cc-url-2rows-60.txt")
 	assertEdgeRows(t, capture, width, 1)
+	// The continuation row holds prose after the link, so the head alone is
+	// offered too.
 	assertLinks(t, Extract(capture, width), []Link{
 		{"https://github.com/noamsto/tmux-og/blob/main/docs/agents/bridge-shipped-state.md", URL, 2},
+		{"https://github.com/noamsto/tmux-og/blob/main/docs/age", URL, 1},
+		{"nts/bridge-shipped-state.md", Path, 1},
 	})
 }
 
 func TestExtractClaudeCodeURL3Rows(t *testing.T) {
 	capture, width := loadFixture(t, "cc-url-3rows-40.txt")
 	assertEdgeRows(t, capture, width, 2)
-	// Both joins are ambiguous: a whole URL meets a '/' row, then `d.` opens
-	// a row like a word would.
+	// The middle row is one token at the edge, so the first join is certain;
+	// the last row holds prose, so the second is ambiguous.
 	assertLinks(t, Extract(capture, width), []Link{
 		{"https://github.com/noamsto/tmux-og/blob/main/docs/agents/bridge-daemon.md", URL, 3},
-		{"https://github.com/noamsto/tmux-og", URL, 1},
-		{"/blob/main/docs/agents/bridge-daemon.m", Path, 1},
+		{"https://github.com/noamsto/tmux-og/blob/main/docs/agents/bridge-daemon.m", URL, 2},
 	})
 }
 
@@ -132,6 +135,8 @@ func TestExtractPiMargin(t *testing.T) {
 	assertEdgeRows(t, capture, width, 1)
 	assertLinks(t, Extract(capture, width), []Link{
 		{"/home/noams/git/.worktrees/git/disp/x", Path, 2},
+		{"/home/noams/git/.worktrees/g", Path, 1},
+		{"it/disp/x", Path, 1},
 	})
 }
 
@@ -146,6 +151,8 @@ func TestExtractPiTrailingPad(t *testing.T) {
 	)
 	assertLinks(t, Extract(capture, 30), []Link{
 		{"/home/noams/git/.worktrees/git/disp/x", Path, 2},
+		{"/home/noams/git/.worktrees/g", Path, 1},
+		{"it/disp/x", Path, 1},
 	})
 }
 
@@ -196,7 +203,7 @@ func TestExtractSchemeBreaks(t *testing.T) {
 		{"right after the scheme", []string{"https://", "  x.io/a b"}, []Link{{"https://x.io/a", URL, 2}}},
 		{"right after git@", []string{"git@", "  github.com:o/r.git b"}, []Link{{"git@github.com:o/r.git", URL, 2}}},
 		{"after an opener", []string{"(htt", "  ps://x.io/a) b"}, []Link{{"https://x.io/a", URL, 2}}},
-		{"before a port", []string{"https://h", "  :8080/a b"}, []Link{{"https://h:8080/a", URL, 2}}},
+		{"before a port", []string{"https://h", "  :8080/a b"}, []Link{{"https://h:8080/a", URL, 2}, {"https://h", URL, 1}, {"8080/a", Path, 1}}},
 	})
 }
 
@@ -204,11 +211,24 @@ func TestExtractAmbiguous(t *testing.T) {
 	runEdgeCases(t, []edgeCase{
 		{"edge punctuation", []string{"see https://x.io/a.", "  Then x"}, []Link{{"https://x.io/a.Then", URL, 2}, {"https://x.io/a", URL, 1}}},
 		{"plain word continuation", []string{"in /tmp/x/scratchpad", "  and then"}, []Link{{"/tmp/x/scratchpadand", Path, 2}, {"/tmp/x/scratchpad", Path, 1}}},
-		{"bare segment head", []string{"saved to", "  /tmp/x"}, []Link{{"to/tmp/x", Path, 2}, {"/tmp/x", Path, 1}}},
+		{"bare segment head", []string{"it was saved to", "  /tmp/x"}, []Link{{"to/tmp/x", Path, 2}, {"/tmp/x", Path, 1}}},
+		{"bare segment head, path row at the edge", []string{"saved to", "  /tmp/x"}, []Link{{"to/tmp/x", Path, 2}, {"/tmp/x", Path, 1}}},
 		{"word continuation with trailing punctuation", []string{"see https://x.io/pull/12", "  here. more"}, []Link{{"https://x.io/pull/12here", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
 		{"number continuation", []string{"see https://x.io/pull/12", "  3 files changed"}, []Link{{"https://x.io/pull/123", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
 		{"contraction continuation", []string{"see https://x.io/pull/12", "  it's merged"}, []Link{{"https://x.io/pull/12it", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
 		{"hyphenated continuation", []string{"see https://x.io/pull/12", "  follow-up later"}, []Link{{"https://x.io/pull/12follow-up", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
+		{"abbreviation continuation", []string{"see https://x.io/pull/12", "  e.g. this"}, []Link{{"https://x.io/pull/12e.g", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
+		{"issue-ref continuation", []string{"see https://x.io/pull/12", "  #1068 also"}, []Link{{"https://x.io/pull/12#1068", URL, 2}, {"https://x.io/pull/12", URL, 1}}},
+	})
+}
+
+// TestExtractOpenGroupBreak pins rule 3a's open-group case: an unclosed '('
+// ends the head's own URL match before the edge, yet the join closes it.
+func TestExtractOpenGroupBreak(t *testing.T) {
+	const want = "https://en.wikipedia.org/wiki/Mercury_(planet)"
+	runEdgeCases(t, []edgeCase{
+		{"inside the group", []string{"see https://en.wikipedia.org/wiki/Mercury_(pl", "  anet) is the first planet"}, []Link{{want, URL, 2}, {"https://en.wikipedia.org/wiki/Mercury_", URL, 1}}},
+		{"right after the paren", []string{"see https://en.wikipedia.org/wiki/Mercury_(", "  planet) is the first planet"}, []Link{{want, URL, 2}, {"https://en.wikipedia.org/wiki/Mercury_", URL, 1}}},
 	})
 }
 
@@ -269,9 +289,11 @@ func TestExtractUnspacedBlobBounded(t *testing.T) {
 	}
 }
 
-func TestExtractUnambiguousOffersOnlyJoined(t *testing.T) {
+// TestExtractEdgeTokenRowOffersOnlyJoined pins the one certain join after a
+// link-match head: a continuation row that is one token running to the edge.
+func TestExtractEdgeTokenRowOffersOnlyJoined(t *testing.T) {
 	runEdgeCases(t, []edgeCase{
-		{"mid-token break", []string{"see https://x.io/docs/sh", "  ared-state.md and more"}, []Link{{"https://x.io/docs/shared-state.md", URL, 2}}},
+		{"mid-token break", []string{"see https://x.io/docs/sh", "  ared-state.md/abcdefgh", "  (and more)"}, []Link{{"https://x.io/docs/shared-state.md/abcdefgh", URL, 2}}},
 	})
 }
 
@@ -282,7 +304,7 @@ func TestExtractSoftWrappedLongLine(t *testing.T) {
 	if len(long) != 2*width {
 		t.Fatalf("long line is %d cells, want %d", len(long), 2*width)
 	}
-	assertLinks(t, Extract(lines(long, "  cd.html more"), width), []Link{{"https://x.io/abcd.html", URL, 2}})
+	assertLinks(t, Extract(lines(long, "  cd.html more"), width), []Link{{"https://x.io/abcd.html", URL, 2}, {"https://x.io/ab", URL, 1}})
 }
 
 func TestExtractDedupNewestFirst(t *testing.T) {

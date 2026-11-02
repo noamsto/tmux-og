@@ -20,7 +20,7 @@ var (
 	continuationStart = regexp.MustCompile(`^[A-Za-z0-9/_.~%?#&=+@$:,;!-]`)
 	listItem          = regexp.MustCompile(`^(\d+[.)]|[-*+•])\s`)
 	bareSegment       = regexp.MustCompile(`^[.\w~$@-]+$`)
-	wordToken         = regexp.MustCompile(`^[A-Za-z0-9'-]+$`)
+	openGroupTail     = regexp.MustCompile(`\(` + urlChar + `*$`)
 	schemes           = []string{"https://", "http://", "git@", "git://", "ssh://", "ftp://", "file:///"}
 )
 
@@ -47,7 +47,7 @@ type virtual struct {
 }
 
 // join is the byte offset in a virtual line's text where a continuation row
-// begins; ambiguous when the break may also be a link ending at the edge.
+// begins; ambiguous when the head alone may also be the whole link.
 type join struct {
 	at        int
 	ambiguous bool
@@ -174,11 +174,12 @@ func (v *virtual) continues(r row, width int) (next string, ok, ambiguous bool) 
 		return "", false, false
 	}
 	v.cand, v.candSpans = cand, spans
-	ambiguous = endsInPunct(token) ||
-		opensWithWord(next, r.tail >= width-1) ||
-		(bySegment && !byMatch && !byScheme) ||
-		(byMatch && next[0] == '/')
-	return next, true, ambiguous
+	// After a link head, a row that is one token running to the edge is itself
+	// a mid-token break; any other row may have been word-wrapped after a link.
+	// A 3c head stays ambiguous: its other reading is the continuation itself,
+	// and a path longer than a row always opens with such a row.
+	midToken := !strings.ContainsFunc(next, unicode.IsSpace) && r.tail >= width-1
+	return next, true, (byMatch && !midToken) || (bySegment && !byMatch && !byScheme)
 }
 
 func edgeToken(text string) string {
@@ -192,7 +193,8 @@ func edgeToken(text string) string {
 func (v *virtual) linkHead(token, next string, spans []span) (byMatch, byScheme, bySegment bool) {
 	at := len(token)
 	crosses := crossing(spans, at, 0, false)
-	byMatch = crosses && endsInMatch(v.tokenSpans(token), at)
+	tokenSpans := v.tokenSpans(token)
+	byMatch = crosses && (endsInMatch(tokenSpans, at) || closesGroup(token, tokenSpans, spans))
 	if suffix := schemePrefixSuffix(token); suffix != "" {
 		byScheme = crossing(spans, at, at-len(suffix), true)
 	}
@@ -207,6 +209,22 @@ func (v *virtual) tokenSpans(token string) []span {
 		return v.candSpans
 	}
 	return matches(token)
+}
+
+// closesGroup reports whether token ends in an unclosed '(' group, at which
+// urlRe cut token's URL match short, and a URL of token+next runs from that
+// match's start across the join.
+func closesGroup(token string, tokenSpans, spans []span) bool {
+	loc := openGroupTail.FindStringIndex(token)
+	if loc == nil {
+		return false
+	}
+	for _, t := range tokenSpans {
+		if t.kind == URL && t.end == loc[0] {
+			return crossing(spans, len(token), t.start, true)
+		}
+	}
+	return false
 }
 
 func endsInMatch(spans []span, end int) bool {
@@ -241,24 +259,6 @@ func crossing(spans []span, at, from int, urlOnly bool) bool {
 		}
 	}
 	return false
-}
-
-func endsInPunct(token string) bool {
-	return token != "" && strings.IndexByte(".,;:!?", token[len(token)-1]) >= 0
-}
-
-// opensWithWord reports whether next opens with a word, number, contraction
-// or hyphenated word, which a word-wrapped row does as often as a mid-token
-// continuation does. A row that is that one token running to the edge is
-// itself a mid-token break, so it does not count.
-func opensWithWord(next string, rowAtEdge bool) bool {
-	first := next
-	if i := strings.IndexFunc(next, unicode.IsSpace); i >= 0 {
-		first = next[:i]
-	} else if rowAtEdge {
-		return false
-	}
-	return wordToken.MatchString(strings.TrimRight(first, ".,;:!?"))
 }
 
 // links lists v's links in reading order: the joined readings, then for an

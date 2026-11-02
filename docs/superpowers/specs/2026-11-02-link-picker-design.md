@@ -85,7 +85,10 @@ history included). Output: an ordered, de-duplicated list of links
    non-whitespace characters. Line `i` continues into line `i+1` when all hold:
    - `tail(i) >= W - 1` (the margin: Claude Code fills to `W`, pi to `W-1`);
    - the edge token is a *link head*: (a) it contains a URL or path match whose
-     greedy (pre-trim) end is the token's end — a link runs to the edge; or (b)
+     greedy (pre-trim) end is the token's end — a link runs to the edge — or
+     whose URL match ends where an unclosed `(` group ending the token begins
+     (`…/wiki/Mercury_(pl` / `  anet) …`: the unbalanced `(` cuts the token's own
+     match short), and a URL from that match's start crosses the join; or (b)
      some suffix of it is a non-empty prefix of an allowed scheme, the full
      scheme included (`h`…`https://`, `g`…`git@`/`git://`, `s`…`ssh://`,
      `f`…`ftp://`/`file:///`), so a break inside or right after the scheme
@@ -117,27 +120,24 @@ history included). Output: an ordered, de-duplicated list of links
    it are still found once.
 4. **Ambiguous joins offer both readings.** Geometry cannot tell a mid-token
    break from a link that ended exactly at the edge followed by a word-wrapped
-   row. Ambiguity is decided per join. A join is *ambiguous* when any holds:
-   - the edge token ends in trailing punctuation (`.,;:!?`) — a sentence that
-     ended at the edge looks like a mid-token break after a dot;
-   - the continuation's first whitespace-delimited token, with trailing
-     `.,;:!?` trimmed, is a word, number, contraction or hyphenated word
-     (`^[A-Za-z0-9'-]+$`: `…/pull/12` / `  here.`, `  3 files`, `  it's`,
-     `  follow-up`) — except when that token is the whole continuation row and
-     the row itself reaches the edge: a one-token row running to the edge is a
-     mid-token break, not a wrapped word;
-   - the head is a bare segment only (rule 3c: `saved to` / `  /tmp/x` reads as
-     both `to/tmp/x` and `/tmp/x`);
-   - the continuation starts with `/` and the head qualified by rule 3a: a
-     complete link at the edge followed by a `/` row reads both as one link and
-     as two (`…/tmux-og` / `  /blob/main/…`).
-   The links of the fully joined virtual line come first. When any join is
-   ambiguous, the virtual line is then read again split at its ambiguous joins
+   row. Ambiguity is decided per join. A join is *ambiguous* when the head is a
+   link on its own (it qualified by rule 3a, or by 3c alone). For a 3a head,
+   which is itself a link match, a continuation row that is a single token
+   reaching the edge (`tail >= W-1`) is the exception: such a row is itself a
+   mid-token break, while any other row may as well be prose word-wrapped after
+   a link that ended at the edge (`…/pull/12` / `  3 files`, `  e.g. this`,
+   `  #1068 also`). A 3c-only head has no exception: its other reading is the
+   continuation itself (`saved to` / `  /tmp/x`), and a path longer than a row
+   always opens with a single-token edge row.
+   A 3b-only head (`htt`) is never ambiguous: it is no link alone. So every
+   rejoined link whose last continuation row holds other text also offers its
+   head-only reading. The links of the fully joined virtual line come first.
+   When any join is ambiguous, the virtual line is read again split at its ambiguous joins
    only: each segment between them keeps its certain joins (and counts `Rows`
    within the segment), so a URL rejoined across a certain break is offered whole
    even when a word row follows it. Results are de-duplicated. An unambiguous
-   join (a URL head continuing with `ared-state.md and more`) offers only the
-   joined link, so a correctly rejoined URL is not shadowed by its truncated head.
+   join (a URL head continuing with a one-token edge row `ared-state.md/abcdefgh`)
+   offers only the joined link.
 5. **Match** each virtual line with the URL and path rules; trim trailing
    punctuation; drop empty results; de-duplicate by text (keep the newest);
    add OSC 8 hrefs (also de-duplicated against the text matches).
@@ -204,11 +204,12 @@ replacements for fingers' url and path built-ins), so both pick the same text:
   between (not joined); trailing punctuation excluded; a break inside the scheme
   (`htt` / `ps://…`, rejoined), right after it (`https://` / `github.com/…`,
   `git@` / `github.com:…`, rejoined) and after an opener (`(htt` / `ps://…`,
-  rejoined); a URL continuing with `:8080/…` (rejoined); each ambiguous-join
-  trigger offering both readings, joined first (`saved to` / `/tmp/x` gives
+  rejoined); a URL continuing with `:8080/…` (rejoined); a break inside or right
+  after an unclosed `(` group (`…Mercury_(pl` / `anet) …`, rejoined); ambiguous
+  joins offering both readings, joined first (`it was saved to` / `/tmp/x` gives
   `to/tmp/x` then `/tmp/x`); ambiguity per join (a URL rejoined across a certain
-  break, then a word row, offers the URL whole as its fallback); an unambiguous
-  join offering only the joined link; an unspaced blob of 2000 edge-filling rows
+  break, then a word row, offers the URL whole as its fallback); a one-token
+  edge-row join offering only the joined link; an unspaced blob of 2000 edge-filling rows
   at width 200 extracted within a wall-clock budget (the 8192-byte token cap);
   a prose word at the edge followed by a row not starting with `/` (`data` /
   `files/x` and `logs` / `files/x`, not joined); OSC 8 href collected and de-duplicated;
