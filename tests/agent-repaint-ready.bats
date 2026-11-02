@@ -31,6 +31,7 @@ setup() {
 	rm -rf "$TMUX_TMPDIR"
 	mkdir -p "$TMUX_TMPDIR"
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
+	export XDG_DATA_HOME="$TMUX_TMPDIR/data"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 

@@ -34,6 +34,7 @@ fi
 W="$(mktemp -d /tmp/og-adf.XXXX)"
 export TMUX_TMPDIR="$W"
 export CLAUDE_STATUS_DIR="$W/status"
+export XDG_DATA_HOME="$W/data"
 unset TMUX
 # shellcheck disable=SC2174  # only the root itself must be owner-only
 mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
