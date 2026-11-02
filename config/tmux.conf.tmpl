@@ -81,6 +81,11 @@ bind -N 'Reload tmux config' r source-file ~/.config/tmux/tmux.conf \; display "
 # picker/whichkey.go) in place.
 bind-key -N 'Show keybindings' ? run-shell '{{index .Paths.Scripts "tmux-which-key"}} #{?client_name,--client #{q:client_name},} --origin-pane #{q:pane_id}'
 
+# Link picker (#1068): URLs and paths in this pane, with Claude Code's hard
+# line breaks rejoined (fingers sees only one row at a time). Enter opens a
+# URL via og-open, ^y copies. See docs/agents/picker.md.
+bind-key -N 'Pick a link to open or copy' O run-shell '{{index .Paths.Scripts "tmux-link-picker"}} #{?client_name,--client #{q:client_name},} --origin-pane #{q:pane_id}'
+
 # Vi copy mode
 setw -g mode-keys vi
 set -g status-keys vi

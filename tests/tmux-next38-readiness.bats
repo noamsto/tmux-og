@@ -603,6 +603,16 @@ wait_for_client() {
 
 	which_key="$(store_path '/nix/store/[[:alnum:]]*-tmux-which-key/bin/tmux-which-key')"
 	[[ -x $which_key ]]
+
+	# #1068: O launches the link picker the same way.
+	run t list-keys -T prefix O
+	[ "$status" -eq 0 ]
+	[[ $output == *'run-shell'* ]]
+	[[ $output == *'tmux-link-picker'* ]]
+	[[ $output == *'--origin-pane'* ]]
+
+	link_picker="$(store_path '/nix/store/[[:alnum:]]*-tmux-link-picker/bin/tmux-link-picker')"
+	[[ -x $link_picker ]]
 }
 
 # tmux 3.8 added auto-hide as a pane-scrollbars CHOICE value (replacing the
