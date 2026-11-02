@@ -6,6 +6,7 @@
 //	tmux-picker-generate --tui --windows    # window picker (add --agent to filter)
 //	tmux-picker-generate --tui --wall       # same, as a grid of live pane captures
 //	tmux-picker-generate --which-key        # which-key keybind popup (#629)
+//	tmux-picker-generate --links            # link picker popup (#1068)
 //	tmux-picker-generate --dump-first-frame # headless: print the first list frame as plain text (add --windows)
 package main
 
@@ -145,6 +146,8 @@ func main() {
 	var err error
 	if flags["--which-key"] {
 		err = RunWhichKey()
+	} else if flags["--links"] {
+		err = RunLinks()
 	} else if flags["--dump-first-frame"] {
 		err = dumpFirstFrame(os.Stdout, flags["--windows"], flags["--agent"], flags["--wall"])
 	} else {

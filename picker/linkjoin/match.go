@@ -40,13 +40,13 @@ type span struct {
 // matches returns every URL match in s plus the path matches that do not
 // overlap one, ordered by start. A URL's own path part is not offered again.
 func matches(s string) []span {
-	var out []span
+	var urls []span
 	for _, m := range urlRe.FindAllStringIndex(s, -1) {
-		out = append(out, span{m[0], m[1], URL})
+		urls = append(urls, span{m[0], m[1], URL})
 	}
-	urls := len(out)
+	out := urls
 	for _, m := range pathRe.FindAllStringIndex(s, -1) {
-		if !overlapsAny(out[:urls], m[0], m[1]) {
+		if !overlapsAny(urls, m[0], m[1]) {
 			out = append(out, span{m[0], m[1], Path})
 		}
 	}

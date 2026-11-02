@@ -130,6 +130,20 @@ func TestExtractPiMargin(t *testing.T) {
 	})
 }
 
+// TestExtractPiTrailingPad pins pi's capture shape inline: every row carries
+// one trailing pad space (text ends at width-1, the pad fills the last
+// column). The trim-trailing-whitespace hook strips that pad from testdata.
+func TestExtractPiTrailingPad(t *testing.T) {
+	capture := lines(
+		" Wrote it to the directory ",
+		" /home/noams/git/.worktrees/g ",
+		" it/disp/x. done ",
+	)
+	assertLinks(t, Extract(capture, 30), []Link{
+		{"/home/noams/git/.worktrees/git/disp/x", Path, 2},
+	})
+}
+
 func TestExtractMirrorSeed(t *testing.T) {
 	capture, width := loadFixture(t, "mirror-seed-30.txt")
 	assertEdgeRows(t, capture, width, 1)
