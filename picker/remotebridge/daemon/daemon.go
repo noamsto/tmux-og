@@ -1120,9 +1120,8 @@ func runMirror(cfg Config) error {
 	if themeChecked && !themeAvailable {
 		notifyThemeMissing(cfg)
 	}
-	if themeChecked {
-		syncThemeOnConnect(rt, cfg, themeAvailable)
-	}
+	// An inconclusive probe still syncs: the apply script is a no-op without theme-toggle.
+	syncThemeOnConnect(rt, cfg, themeAvailable || !themeChecked)
 	// Once per bridge, like the probe above: tmux sets session_path at creation
 	// and nothing a mirror follows changes it afterwards.
 	sessionPath := readSessionPath(rt, cfg.RemoteSession)
@@ -1892,9 +1891,7 @@ func runMirror(cfg Config) error {
 		// send it on. Re-sent unconditionally, same as the one-shot at Run()'s
 		// own startup and for the same reason: a stale value must not stand.
 		sendCtl(RelayEnvCmd(cfg.RemoteSession, cfg.View.Relay.Load().String()), CellEnvSyncCmd(cfg.RemoteSession, cfg.View.Cell()))
-		if themeChecked {
-			syncThemeOnConnect(rt, cfg, themeAvailable)
-		}
+		syncThemeOnConnect(rt, cfg, themeAvailable || !themeChecked)
 		return true
 	}
 
