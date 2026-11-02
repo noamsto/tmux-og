@@ -32,6 +32,7 @@ setup() {
 	export OG_ENRICH_CACHE_DIR="$TMUX_TMPDIR/og-pr"
 	export OG_AGENT_USAGE_DIR="$TMUX_TMPDIR/og-agent-usage"
 	export OG_ENRICH_LOCK_DIR="$TMUX_TMPDIR/og-enrich-lock"
+	export XDG_DATA_HOME="$TMUX_TMPDIR/data"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$OG_ENRICH_CACHE_DIR" "$OG_ENRICH_LOCK_DIR"

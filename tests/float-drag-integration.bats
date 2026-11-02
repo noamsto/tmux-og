@@ -39,6 +39,7 @@ setup() {
 	export XDG_CACHE_HOME="$TEST_HOME/.cache"
 	export XDG_CONFIG_HOME="$TEST_HOME/.config"
 	export XDG_STATE_HOME="$TEST_HOME/.local/state"
+	export XDG_DATA_HOME="$TEST_HOME/.local/share"
 	export TERM=xterm-256color
 	# The emitted conf's monitor hooks sweep these dirs; keep them private (#603).
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/claude-status"

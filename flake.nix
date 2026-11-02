@@ -1788,7 +1788,7 @@
               fail=0
               for f in ${./tests}/*.bats; do
                 grep -q 'TMUX_BIN' "$f" || continue
-                for var in CLAUDE_STATUS_DIR OG_ENRICH_CACHE_DIR OG_AGENT_USAGE_DIR OG_ENRICH_LOCK_DIR; do
+                for var in CLAUDE_STATUS_DIR OG_ENRICH_CACHE_DIR OG_AGENT_USAGE_DIR OG_ENRICH_LOCK_DIR XDG_DATA_HOME; do
                   grep -q "export $var=" "$f" || {
                     echo "$(basename "$f") references TMUX_BIN but does not export $var" >&2
                     fail=1
@@ -2720,6 +2720,36 @@
               export HOME=$TMPDIR/home
               mkdir -p "$HOME"
               bats tests/agent-repaint-integration.bats
+              touch $out
+            '';
+
+          # #1066: tmux-fingers leaks a tmux-<pid> state dir per config load;
+          # the real wrapped config's prune removes a dead server's. procps for
+          # the recycled-pid case (`ps` itself is not in procps-ng on darwin).
+          fingers-prune-tests = let
+            fingersPruneTmuxConfig = import ./config/tmux.conf.nix {
+              inherit pkgs lib;
+              tmuxPkg = mkTmux pkgs;
+              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+              enrichEnable = false;
+              agentUsageEnable = false;
+            };
+          in
+            pkgs.runCommand "fingers-prune-tests" {
+              nativeBuildInputs =
+                [pkgs.bash pkgs.bats pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.procps]
+                ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
+              TMUX_BIN = "${fingersPruneTmuxConfig.tmux-wrapped}/bin/tmux";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./tests} tests
+              cp -r ${./scripts} scripts
+              export HOME=$TMPDIR/home
+              mkdir -p "$HOME"
+              bats tests/fingers-prune.bats
               touch $out
             '';
 

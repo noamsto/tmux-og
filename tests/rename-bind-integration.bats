@@ -39,6 +39,7 @@ setup() {
 	export XDG_CACHE_HOME="$TEST_HOME/.cache"
 	export XDG_CONFIG_HOME="$TEST_HOME/.config"
 	export XDG_STATE_HOME="$TEST_HOME/.local/state"
+	export XDG_DATA_HOME="$TEST_HOME/.local/share"
 	export TERM=xterm-256color
 	# tmux takes default-shell from $SHELL, and `#(...)` jobs run under it. Pin it
 	# to a shell that certainly exists in the sandbox so the security test and its

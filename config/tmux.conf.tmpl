@@ -799,6 +799,7 @@ set-hook -g 'client-light-theme[40]' { set -g @og_client_theme_want light ; set 
 set-hook -g 'client-dark-theme[40]' { set -g @og_client_theme_want dark ; set -gF @og_client_theme_client "#{hook_client}" ; run-shell -b "{{index .Paths.Scripts "tmux-client-theme"}} #{q:hook_client}" }
 
 run-shell {{index .Paths.Plugins "fingers"}}
+run-shell -b "{{index .Paths.Scripts "tmux-fingers-prune"}} #{q:pid}"
 
 # Synchronous init on config load so icons + window bar are ready before the user sees it
 run-shell "{{index .Paths.Scripts "tmux-update-icons"}} #{qs:session_name}"

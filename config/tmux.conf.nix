@@ -322,6 +322,7 @@
     "tmux-window-nav"
     "tmux-kill-pane-guard"
     "tmux-reap-pane"
+    "tmux-fingers-prune"
     "tmux-shell-prompt"
     "tmux-smart-nav"
     "tmux-reconcile-window"
@@ -633,6 +634,8 @@
     then mkScriptWithLibs name
     else if name == "tmux-reap-pane"
     then mkScriptWithLibs name
+    else if name == "tmux-fingers-prune"
+    then mkScriptWithLibs name
     else if name == "tmux-shell-prompt"
     then mkScriptShellPrompt name
     else if name == "tmux-splash-maybe"
@@ -803,6 +806,7 @@
     "tmux-grid-refit"
     "tmux-kill-pane-guard"
     "tmux-reap-pane"
+    "tmux-fingers-prune"
     "tmux-reconcile-window"
     "tmux-reflow-windows"
     "tmux-scratchpad"
