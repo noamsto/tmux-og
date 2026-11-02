@@ -116,7 +116,7 @@ wait_for() {
 }
 
 @test "busy-forever pane is nudged at the 12 s cap" {
-	start_server "sh -c 'i=0; while [ \$i -lt 120 ]; do echo x; sleep 0.5; i=\$((i + 1)); done; exec sleep 600'"
+	start_server "sh -c 'i=0; while [ \$i -lt 300 ]; do echo x; sleep 0.2; i=\$((i + 1)); done; exec sleep 600'"
 
 	bash "$SCRIPT" "$PANE" 1x1 3>&- &
 	local pid=$!
