@@ -903,10 +903,13 @@ func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected, showTable bool)
 		return fitVisibleWidth("  "+line, w)
 	}
 
+	// Fit before patching: fitVisibleWidth's padding reset would otherwise
+	// land after the patch and drop the background from the padding.
 	selBgHex := m.colorHex("@thm_surface_2", "#45475a", "#acb0be")
 	selStyle := lipgloss.NewStyle().Background(lipgloss.Color(selBgHex))
-	patched := strings.ReplaceAll(line, "\033[0m", "\033[39m"+ansiBg(selBgHex))
-	return selStyle.Render(fitVisibleWidth("▶ "+patched, w))
+	restore := "\033[39m" + ansiBg(selBgHex)
+	keepBg := strings.NewReplacer("\033[m", restore, "\033[0m", restore)
+	return selStyle.Render(keepBg.Replace(fitVisibleWidth("▶ "+line, w)))
 }
 
 func (m whichKeyModel) renderSearch() string {
