@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
@@ -172,6 +173,76 @@ func TestRelayEnvTeardownCmd(t *testing.T) {
 	want := "if-shell -F -t '$3' '#{==:#{session_attached},2}' 'set-environment -u -t '\\''$3'\\'' OG_RELAY_GRAPHICS ; set-environment -u -t '\\''$3'\\'' AEYE_CELL_PX'"
 	if got := relayEnvTeardownCmd("$3", 2); got != want {
 		t.Errorf("relayEnvTeardownCmd = %q, want %q", got, want)
+	}
+}
+
+func pressView(sixel bool, cell string) *Viewing {
+	view := &Viewing{Relay: graphics.NewRelaySource(graphics.NewRelayFromClient(sixel, ""))}
+	view.SetCell(cell)
+	return view
+}
+
+func TestPressEnvCmds(t *testing.T) {
+	relayOnly := []string{"set-environment -t 'S' OG_RELAY_GRAPHICS 'sixel'"}
+	tests := []struct {
+		name   string
+		target string
+		view   *Viewing
+		want   []string
+	}{
+		{
+			name: "sixel with a cell", target: "S", view: pressView(true, "15x28"),
+			want: []string{
+				"set-environment -t 'S' OG_RELAY_GRAPHICS 'sixel'",
+				"set-environment -t 'S' AEYE_CELL_PX '15x28'",
+			},
+		},
+		{
+			name: "non-sixel clears the relay", target: "S", view: pressView(false, "9x18"),
+			want: []string{
+				"set-environment -t 'S' OG_RELAY_GRAPHICS ''",
+				"set-environment -t 'S' AEYE_CELL_PX '9x18'",
+			},
+		},
+		{name: "empty cell", target: "S", view: pressView(true, ""), want: relayOnly},
+		{name: "zero width", target: "S", view: pressView(true, "0x28"), want: relayOnly},
+		{name: "missing height", target: "S", view: pressView(true, "15x"), want: relayOnly},
+		{name: "oversize width", target: "S", view: pressView(true, "513x1"), want: relayOnly},
+		{name: "three axes", target: "S", view: pressView(true, "1x2x3"), want: relayOnly},
+		{name: "command separator", target: "S", view: pressView(true, "15x28;x"), want: relayOnly},
+		{name: "substitution", target: "S", view: pressView(true, "$(id)x1"), want: relayOnly},
+		{name: "single quote", target: "S", view: pressView(true, `a'b`), want: relayOnly},
+		{name: "nil view", target: "S", view: nil, want: nil},
+		{
+			name: "target is quoted", target: "it's a #(touch x)", view: pressView(true, "15x28"),
+			want: []string{
+				`set-environment -t 'it'\''s a #(touch x)' OG_RELAY_GRAPHICS 'sixel'`,
+				`set-environment -t 'it'\''s a #(touch x)' AEYE_CELL_PX '15x28'`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pressEnvCmds(tt.target, tt.view)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("pressEnvCmds = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The target is the one free-form string in the batch, so it must come out as
+// exactly tmuxQuote(target), with no raw occurrence outside the quoted token.
+func TestPressEnvCmdsQuotesTheTarget(t *testing.T) {
+	const target = "it's a #(touch x)"
+	quoted := tmuxQuote(target)
+	for _, cmd := range pressEnvCmds(target, pressView(true, "15x28")) {
+		if !strings.Contains(cmd, quoted) {
+			t.Errorf("%q does not carry %q", cmd, quoted)
+		}
+		if rest := strings.Replace(cmd, quoted, "", 1); strings.Contains(rest, "#(") || strings.Contains(rest, "touch") {
+			t.Errorf("%q leaks the raw target outside %q", cmd, quoted)
+		}
 	}
 }
 

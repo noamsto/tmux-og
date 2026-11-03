@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2229,6 +2230,117 @@ func TestHandleCtlRaisesAgainAfterAFailedReplacement(t *testing.T) {
 	}
 	if len(*sent) != 0 {
 		t.Errorf("sent = %q, want nothing submitted", *sent)
+	}
+}
+
+// pressViewCst is a mirrored window whose controller has a sixel viewer and a
+// known cell, as runMirror records it before the ctl socket accepts.
+func pressViewCst() *ctlState {
+	cst := newCtlStateWith("@1", "%3")
+	cst.view = pressView(true, "15x28")
+	cst.relayTarget = "S"
+	return cst
+}
+
+func TestParseCtlCarouselPublishesPressEnvFirst(t *testing.T) {
+	plain, err := verbs["carousel"].build("%3", "@1", "rem", nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(plain) != 1 {
+		t.Fatalf("carousel build = %q, want the one run-shell command", plain)
+	}
+
+	t.Run("with a view", func(t *testing.T) {
+		cst := pressViewCst()
+		req, err := cst.parseCtl(carouselPress(), "rem")
+		if err != nil {
+			t.Fatalf("parseCtl: %v", err)
+		}
+		env := pressEnvCmds("S", cst.view)
+		if len(env) != 2 {
+			t.Fatalf("pressEnvCmds = %q, want relay and cell writes", env)
+		}
+		want := append(slices.Clone(env), plain...)
+		if !slices.Equal(req.cmds, want) {
+			t.Errorf("cmds = %q, want %q", req.cmds, want)
+		}
+		last := req.cmds[len(req.cmds)-1]
+		if last != plain[0] {
+			t.Errorf("last cmd = %q, want the plain run-shell %q", last, plain[0])
+		}
+		for _, leak := range []string{"sixel", "15x28", "AEYE_CELL_PX", "OG_RELAY_GRAPHICS"} {
+			if strings.Contains(last, leak) {
+				t.Errorf("run-shell %q carries local value %q", last, leak)
+			}
+		}
+		if !req.queueClaim {
+			t.Error("queueClaim = false, want true")
+		}
+	})
+
+	t.Run("without a view", func(t *testing.T) {
+		cst := newCtlStateWith("@1", "%3")
+		req, err := cst.parseCtl(carouselPress(), "rem")
+		if err != nil {
+			t.Fatalf("parseCtl: %v", err)
+		}
+		if !slices.Equal(req.cmds, plain) {
+			t.Errorf("cmds = %q, want %q", req.cmds, plain)
+		}
+	})
+
+	t.Run("other verb", func(t *testing.T) {
+		argv := []string{wire.CtlProtocolVersion, "layout", "%3", "tiled"}
+		want, err := verbs["layout"].build("%3", "@1", "rem", []string{"tiled"})
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		req, err := pressViewCst().parseCtl(argv, "rem")
+		if err != nil {
+			t.Fatalf("parseCtl: %v", err)
+		}
+		if !slices.Equal(req.cmds, want) {
+			t.Errorf("cmds = %q, want the unchanged %q", req.cmds, want)
+		}
+		if req.queueClaim {
+			t.Error("queueClaim = true for a verb that publishes no env")
+		}
+	})
+}
+
+func TestHandleCtlCarouselQueuesClaim(t *testing.T) {
+	layoutPress := []string{wire.CtlProtocolVersion, "layout", "%3", "tiled"}
+	tests := []struct {
+		name        string
+		adv, viewer string
+		argv        []string
+		sendOK      bool
+		wantClaims  int
+		wantErr     bool
+	}{
+		{name: "carousel press", adv: "foot", viewer: "foot", argv: carouselPress(), sendOK: true, wantClaims: 1},
+		{name: "other verb", adv: "foot", viewer: "foot", argv: layoutPress, sendOK: true},
+		{name: "viewer mismatch nack", adv: "xterm-kitty", viewer: "foot", argv: carouselPress(), sendOK: true, wantErr: true},
+		{name: "failed send", adv: "foot", viewer: "foot", argv: carouselPress(), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cst, rep, _, sent := handlerFixture(t, tt.adv, tt.viewer)
+			claims := 0
+			cst.claimNow = func() { claims++ }
+			send := sender(sent)
+			if !tt.sendOK {
+				send = func(...string) bool { return false }
+			}
+			err := handleCtl(cst, rep, newCarouselProbe(), tt.argv, "rem", nil, send)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if claims != tt.wantClaims {
+				t.Errorf("claims = %d, want %d", claims, tt.wantClaims)
+			}
+		})
 	}
 }
 

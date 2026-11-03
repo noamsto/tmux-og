@@ -1183,6 +1183,11 @@ func runMirror(cfg Config) error {
 	}
 	connCh := make(chan helloConn, 64)
 	cst := newCtlState()
+	cst.view = cfg.View
+	cst.relayTarget = env.target
+	if ownerOn {
+		cst.claimNow = cfg.own.requestClaim
+	}
 	// One query construction for the viewing identity, shared by the ctl
 	// handler's raise below, watchLocalClient's re-resolve (R10) and the
 	// startup seed in cmd/daemon/main.go, rather than building the

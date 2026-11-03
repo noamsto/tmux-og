@@ -333,6 +333,20 @@ func (o *sizeOwner) noteActivity(rows []activityRow, now int64) {
 	if !o.mark.advance(rows, now) {
 		return
 	}
+	o.wakeClaimLocked()
+}
+
+// requestClaim queues a claim for a gesture that acts on this controller
+// without advancing any client's activity counter in time.
+func (o *sizeOwner) requestClaim() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.wakeClaimLocked()
+}
+
+// wakeClaimLocked flags a wanted claim and nudges the main loop without
+// blocking. The caller holds o.mu.
+func (o *sizeOwner) wakeClaimLocked() {
 	o.claimWanted = true
 	select {
 	case o.wake <- struct{}{}:

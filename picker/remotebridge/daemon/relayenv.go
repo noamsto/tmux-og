@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // RelayEnvVar is the environment variable the daemon publishes the local
@@ -134,6 +135,29 @@ func (e relayEnv) publish(view *Viewing) []string {
 // batch and the check that it is still current read the same view.
 func (e relayEnv) publishValues(relay, cell string) []string {
 	return []string{e.relay(relay), e.cell(cell)}
+}
+
+// pressEnvCmds returns the unguarded writes a gesture on this controller
+// sends ahead of the remote command it launches, so the process (and any pane
+// it opens) inherits this controller's values rather than the previous
+// owner's.
+//
+// Unguarded because the owner guard is the lag being fixed: the record still
+// names the previous controller until this daemon's claim lands. Written to the
+// session slot rather than onto the launched command's env because aeye's
+// toggle forwards AEYE_BRIDGED and AEYE_CELL_PX to the viewer pane with -e but
+// never OG_RELAY_GRAPHICS, so the pane reads the session slot. An unknown cell
+// writes nothing, leaving the session's value to be inherited.
+func pressEnvCmds(target string, view *Viewing) []string {
+	if view == nil {
+		return nil
+	}
+	cmds := []string{relayEnv{target: target}.relay(view.Relay.Load().String())}
+	cell := view.Cell()
+	if w, h, ok := strings.Cut(cell, "x"); ok && CellPx(w, h) == cell {
+		cmds = append(cmds, CellEnvCmd(target, cell))
+	}
+	return cmds
 }
 
 // relayEnvTeardownCmd unsets both variables only while the session still has

@@ -61,6 +61,13 @@ type ctlState struct {
 	// keeps the window's FIRST pane, which is not necessarily the active pane
 	// the ctl request carried, so no pane id is trustworthy at command time.
 	wantReseed map[string]bool
+
+	// view, relayTarget and claimNow are written once before acceptConns starts
+	// and only read afterwards, so they need no lock. claimNow is nil when size
+	// ownership is off.
+	view        *Viewing
+	relayTarget string
+	claimNow    func()
 }
 
 func newCtlState() *ctlState {
@@ -160,6 +167,9 @@ type ctlRequest struct {
 	// probePane is the remote pane whose verdict stamp the handler must wait
 	// on, or "" for a verb that reports nothing back (carouselprobe.go).
 	probePane string
+	// queueClaim asks the handler to queue a size-owner claim once the request
+	// is submitted.
+	queueClaim bool
 }
 
 // verb is one entry of the fixed translation table. The daemon builds every
@@ -193,6 +203,10 @@ type verb struct {
 	// (#593). A field here for needsView's reason: the table stays the only
 	// thing that knows what a verb means.
 	probe bool
+	// publishesEnv marks a verb that launches a process reading the session's
+	// relay and cell env, so the press first writes this controller's values
+	// there (pressEnvCmds) and queues an owner claim.
+	publishesEnv bool
 	// localLayout marks a verb whose one argument is a tiled layout the local
 	// window already shows, so the reconcile it schedules must not trust a
 	// dedup key recorded before it (mirrorWindow.noteLocalLayout).
@@ -522,7 +536,7 @@ var verbs = map[string]verb{
 	// for a display-message to land on. So neither a missing binary nor an
 	// empty manifest opens anything there — the script stamps a verdict and
 	// carouselProbe reads it back into a local message (#593).
-	"carousel": {layout: true, moves: true, needsView: true, probe: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
+	"carousel": {layout: true, moves: true, needsView: true, probe: true, publishesEnv: true, build: func(pane, _, _ string, _ []string) ([]string, error) {
 		// show-options (not display-message -F "#{@…}"): run-shell expands #{}
 		// before /bin/sh runs. Case arms omit an '' empty alternative — that
 		// becomes a dense '\'' stack after double tmuxQuote and is not portable.
@@ -969,6 +983,10 @@ func (c *ctlState) parseCtl(argv []string, sess string) (ctlRequest, error) {
 		return ctlRequest{}, err
 	}
 	req := ctlRequest{cmds: cmds, wantWindows: v.windows, needsView: v.needsView}
+	if v.publishesEnv {
+		req.cmds = append(pressEnvCmds(c.relayTarget, c.view), cmds...)
+		req.queueClaim = true
+	}
 	if v.buildLocal != nil {
 		if req.local, err = v.buildLocal(args); err != nil {
 			return ctlRequest{}, err
@@ -1096,6 +1114,9 @@ func handleCtl(cst *ctlState, rep *viewReplacer, probe *carouselProbe, argv []st
 	// budget reading an option nothing is going to stamp.
 	if req.probePane != "" {
 		probe.arm(req.probePane)
+	}
+	if req.queueClaim && cst.claimNow != nil {
+		cst.claimNow()
 	}
 	return nil
 }
