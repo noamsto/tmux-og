@@ -179,9 +179,7 @@ type ctlRequest struct {
 	needsView bool
 	// probePane is the remote pane whose verdict stamp the handler must wait
 	// on, or "" for a verb that reports nothing back (carouselprobe.go).
-	probePane string
-	// queueClaim asks the handler to queue a size-owner claim once the request
-	// is submitted.
+	probePane  string
 	queueClaim bool
 }
 

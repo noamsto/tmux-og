@@ -336,8 +336,8 @@ func (o *sizeOwner) noteActivity(rows []activityRow, now int64) {
 	o.wakeClaimLocked()
 }
 
-// requestClaim queues a claim for a gesture that acts on this controller
-// without advancing any client's activity counter in time.
+// requestClaim queues a claim without waiting for the next activity poll to
+// see the keypress that prompted it.
 func (o *sizeOwner) requestClaim() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
