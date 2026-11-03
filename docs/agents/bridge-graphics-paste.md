@@ -150,7 +150,8 @@ option.
   owner's values** (`@og_bridge_owner`, #979; design:
   `docs/superpowers/specs/2026-11-02-relay-env-follows-owner-design.md`,
   #1035), not whichever daemon wrote last. Every publish (startup,
-  `repair()`, `watchLocalClient`, claim) is one
+  `repair()`, `watchLocalClient`, claim; the carousel press, below, is the one
+  deliberate unguarded write) is one
   `if-shell -F -t '$N'` guarded by
   `#{?#{@og_bridge_owner},#{m:<token>|*,#{@og_bridge_owner}},1}` (record unset
   or ours), evaluated remote-side so racing claims cannot leave a stale write
@@ -175,10 +176,35 @@ option.
   bridge's write, and a direct attach to that remote session in the gap can
   read it. **Mixed capability:** a carousel launched while the user is on
   the sixel controller relays sixel, and the non-sixel controller's own
-  `Proxy.Filter` drops it; one launched after the user moves (which claims)
-  takes the kitty/carousel path; an already-running `aeye` keeps its
-  launch-time env. Edge, accepted: a carousel opened within the reveal tick
-  after switching controllers can launch with the previous owner's values.
+  `Proxy.Filter` drops it; one launched from the non-sixel controller takes
+  the kitty/carousel path, whether or not its activity claim has landed yet
+  (the press publishes, below); an already-running `aeye` keeps its
+  launch-time env. **The carousel press carries its own controller's values**
+  (#1071): the `carousel` verb (`publishesEnv`) sends, in the same ordered
+  control-mode batch and before the `run-shell`, unguarded `set-environment`
+  writes of the pressing daemon's own relay (always; empty means no
+  capability) and cell (only when `<w>x<h>` is canonical and <= 512; unknown
+  writes nothing, so the launch inherits the slot), via `pressEnvCmds`
+  (`relayenv.go`), and queues an owner claim (`sizeOwner.requestClaim`, one
+  flag per press, nothing per keystroke). Unguarded because the owner guard
+  is the lag being fixed: the record still names the previous controller
+  until this daemon's claim lands (<= 1s reveal tick). Written to the session
+  slot, not onto the launched command's env, because aeye's toggle
+  (`tmux-claude-images`) opens the viewer with `new-pane`/`split-window -e
+  AEYE_BRIDGED -e AEYE_CELL_PX` and never forwards `OG_RELAY_GRAPHICS`, so the
+  viewer pane reads the session slot. Pinned by
+  `TestCarouselPressCarriesPressingControllerEnv` (`relayenv_live_test.go`).
+  Residual edges: an already-running `aeye` keeps its launch-time env; a
+  controller with an unknown cell size inherits the previous owner's cell
+  until its claim lands; a late publish from the previous owner (view change,
+  `repair()`, or an activity claim queued just before the switch) can
+  overwrite the slot between the press's write and the launch; and if the
+  queued claim's read or send then fails, the slot keeps the pressing
+  controller's values while the record still names the previous owner, until
+  the pressing controller's next activity claim (the press keystroke queues
+  one itself, so this needs a failure in that window and no further typing).
+  The record write is not folded into the press batch: an unconditional
+  `ownerClaimCmd` there would bypass the claim's enforce/flag steps (#979).
 - **The local cell size is published beside it as `AEYE_CELL_PX=<w>x<h>`**
   (`CellEnvVar`; cross-repo contract with aeye's `cellsize.go`, which cuts
   carousel crops to the preview box's shape). A control-mode client has no
@@ -193,9 +219,8 @@ option.
   same owner guard, claim and release batching and teardown rule as
   `OG_RELAY_GRAPHICS` above (`relayEnv`). Until a client is
   attached the launcher's `--cell-w`/`--cell-h` (`OG_BRIDGE_CELL_W/H`, read from
-  the launching client) seed it. The carousel launch needs no change: `ctl.go`
-  runs it through the remote `run-shell`, which inherits the session
-  environment.
+  the launching client) seed it. The carousel launch inherits the session
+  slot through the remote `run-shell`, after the press's own writes above.
 - **OSC 1337's inline-image verb (`\x1b]1337;File=`) is recognised and
   dropped, whole or partial — never relayed.** Structurally impossible: tmux
   has no inline-image handling, so the only route out is a passthrough, and

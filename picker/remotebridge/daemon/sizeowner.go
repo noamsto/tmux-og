@@ -333,6 +333,20 @@ func (o *sizeOwner) noteActivity(rows []activityRow, now int64) {
 	if !o.mark.advance(rows, now) {
 		return
 	}
+	o.wakeClaimLocked()
+}
+
+// requestClaim queues a claim without waiting for the next activity poll to
+// see the keypress that prompted it.
+func (o *sizeOwner) requestClaim() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.wakeClaimLocked()
+}
+
+// wakeClaimLocked flags a wanted claim and nudges the main loop without
+// blocking. The caller holds o.mu.
+func (o *sizeOwner) wakeClaimLocked() {
 	o.claimWanted = true
 	select {
 	case o.wake <- struct{}{}:

@@ -143,7 +143,7 @@ The local drop is untouched: each daemon's `Proxy.Filter` keeps reading its own
 | producer: teardown unset | Run teardown closure, `daemon.go` → `ownerCtl` | changed: read clients; unset, guarded by the read count, only with no other control client, else the owner-token-guarded relinquish (relay empty, cell unset) |
 | transport | `stream.stampAll` per-command `og-fanout` barrier | compatible: absorbs the `if-shell` branch's extra reply blocks, as it already does for `ownerReleaseCmd` |
 | persistence | remote session env table; survives reconnect (same server) | compatible; replaced server → `reopened()` claim publishes |
-| consumer: carousel | `ctl.go` `carousel` verb, remote `run-shell` inherits session env | compatible: grammar unchanged |
+| consumer: carousel | `ctl.go` `carousel` verb, remote `run-shell` inherits session env | changed by #1071: the press first writes its controller's relay and cell (`pressEnvCmds`) and queues a claim; grammar unchanged |
 | consumer: `aeye` (noamsto/aeye `cellsize.go`, relay reader) | process env | compatible: grammar unchanged, values now the owner's |
 | consumer: `og-open.sh` | reads `@og_bridge_owner` (glob `*\|<client>`) | compatible: record format and writers unchanged |
 | consumer: local drop | `Proxy.Filter` ← `graphics.RelaySource` | unchanged |
@@ -180,12 +180,15 @@ The local drop is untouched: each daemon's `Proxy.Filter` keeps reading its own
   control client, so it blocks the teardown unset just as a bridge does. Its
   panes then inherit the departed bridge's values. tmux cannot tell a bridge's
   control client from another (size-ownership edge (2), #979).
-- **Carousel opened right after switching controllers.** `prefix + I` launches
-  through the pressing controller's daemon at once, while its activity claim
-  lands on the next reveal tick (≤ 1s). A carousel opened inside that window
-  launches with the previous owner's values. Fixing it means the `carousel`
-  verb carrying its own values into the `run-shell` environment, a separate
-  change.
+- **Carousel opened right after switching controllers.** Resolved by #1071.
+  `prefix + I` launches through the pressing controller's daemon at once, while
+  its activity claim lands on the next reveal tick (≤ 1s), so the `carousel`
+  verb now sends unguarded writes of its own relay and cell to the session slot
+  ahead of the `run-shell` and queues a claim (`pressEnvCmds`,
+  `sizeOwner.requestClaim`). Residual: a controller with an unknown cell size
+  inherits the previous owner's cell until its claim lands, and a late publish
+  from the previous owner can overwrite the slot between the write and the
+  launch.
 - **Clean exit of the owner with survivors attached.** The owner neutralises
   its values (relay empty, cell unknown), so survivors fall back to the
   kitty/carousel path and an unknown crop size until the release (step 3)

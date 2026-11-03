@@ -1182,7 +1182,7 @@ func runMirror(cfg Config) error {
 		fmt.Fprintf(os.Stderr, "daemon: write pidfile %s: %v\n", pidFile, err)
 	}
 	connCh := make(chan helloConn, 64)
-	cst := newCtlState()
+	cst := newMirrorCtlState(cfg.View, env.target, cfg.own, ownerOn)
 	// One query construction for the viewing identity, shared by the ctl
 	// handler's raise below, watchLocalClient's re-resolve (R10) and the
 	// startup seed in cmd/daemon/main.go, rather than building the

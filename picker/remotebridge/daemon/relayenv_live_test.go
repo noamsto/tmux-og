@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/graphics"
+	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
 // liveReplyTimeout bounds every reply wait on a live controller's connection,
@@ -310,5 +313,81 @@ func TestRelayEnvOwnerExitNeutralisesItsValues(t *testing.T) {
 	}
 	if got := slot.ownerRecord(); got != record {
 		t.Errorf("%s = %q after the owner exits, want it unchanged (%q)", bridgeOwnerOption, got, record)
+	}
+}
+
+// TestCarouselPressCarriesPressingControllerEnv: a carousel press on a
+// controller that has not yet claimed ownership still opens the viewer pane
+// with that controller's relay and cell values, not the record owner's. The
+// stub toggle mimics aeye's: it forwards AEYE_BRIDGED and a non-empty
+// AEYE_CELL_PX to the new pane with -e and never OG_RELAY_GRAPHICS, so the
+// pane can only get the relay value from the session environment.
+func TestCarouselPressCarriesPressingControllerEnv(t *testing.T) {
+	requireLiveTmux(t)
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "manifest.jsonl")
+	if err := os.WriteFile(manifest, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	viewLog := filepath.Join(dir, "viewer.log")
+	viewer := filepath.Join(dir, "viewer.sh")
+	writeStub(t, viewer, `#!/bin/sh
+printf '%s|%s\n' "$OG_RELAY_GRAPHICS" "$AEYE_CELL_PX" >>"`+viewLog+`"
+`)
+	toggle := filepath.Join(dir, "tmux-claude-images")
+	writeStub(t, toggle, `#!/bin/sh
+if [ "$1" = --resolve ]; then
+	printf 'tmux\tkey\t`+manifest+`\n'
+	exit 0
+fi
+if [ -n "$AEYE_CELL_PX" ]; then
+	tmux split-window -d -t "$TMUX_PANE" -e AEYE_BRIDGED="$AEYE_BRIDGED" -e AEYE_CELL_PX="$AEYE_CELL_PX" "`+viewer+`"
+else
+	tmux split-window -d -t "$TMUX_PANE" -e AEYE_BRIDGED="$AEYE_BRIDGED" "`+viewer+`"
+fi
+`)
+
+	tmux := startIsolatedTmux(t, "CLAUDE_STATUS_DIR="+privateDir(t))
+	slot := liveEnvSlot{t: t, tmux: tmux}
+	// The option wins over PATH, which the tmux wrapper rewrites inside
+	// run-shell.
+	slot.run("set-option", "-g", "@carousel_bin", toggle)
+	sessID := slot.sessionID()
+	pane := slot.run("display-message", "-p", "-t", "w", "#{pane_id}")
+
+	a := startLiveController(t, tmux, sessID, true, "15x28")
+	b := startLiveController(t, tmux, sessID, false, "9x18")
+	a.claim()
+	slot.assertValues("after A claims", "sixel", "15x28")
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	cst := newMirrorCtlState(b.ctl.view, sessID, b.ctl.own, true)
+	cst.setWindowPanes("@1", []string{pane})
+	rep, _, _ := replacerFixture("foot", true)
+	argv := []string{wire.CtlProtocolVersion, "carousel", pane}
+	if err := handleCtl(cst, rep, newCarouselProbe(), argv, "w", nil, b.ctl.send); err != nil {
+		t.Fatalf("handleCtl: %v", err)
+	}
+	b.sync()
+	if tok, _ := parseOwnerValue(slot.ownerRecord()); tok != a.ctl.own.token {
+		t.Errorf("%s = %q, want A's token %s: the press must not have claimed", bridgeOwnerOption, slot.ownerRecord(), a.ctl.own.token)
+	}
+	if !b.ctl.own.takeClaim() {
+		t.Error("takeClaim = false after the press, want the claim queued for the main loop")
+	}
+
+	var got string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if out, _ := os.ReadFile(viewLog); len(out) > 0 {
+			got = strings.TrimSpace(string(out))
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got != "|9x18" {
+		t.Errorf("viewer pane env = %q (relay|cell), want %q: B's values, not A's %q", got, "|9x18", "sixel|15x28")
 	}
 }
