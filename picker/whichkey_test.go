@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -387,6 +388,28 @@ func TestWhichKeyTableGloss(t *testing.T) {
 	for _, c := range cases {
 		if got := whichKeyTableGloss(c.table, c.prefixKey); got != c.want {
 			t.Errorf("whichKeyTableGloss(%q, %q) = %q, want %q", c.table, c.prefixKey, got, c.want)
+		}
+	}
+}
+
+func TestWhichKeySelectedRowKeepsBackground(t *testing.T) {
+	m := newWhichKeyModel(nil, map[string]string{}, "mocha", "%0")
+	m.keyColWidth = 6
+	m.tblColWidth = 6
+	row := whichKeyRow{table: "prefix", keyString: "c", key: "C-a c", note: "New window", described: true}
+	const w = 60
+	got := m.renderRow(row, w, true, true)
+	bg := ansiBg(m.colorHex("@thm_surface_2", "#45475a", "#acb0be"))
+	if cells := visibleWidth(got); cells != w {
+		t.Errorf("selected row is %d cells, want %d: %q", cells, w, got)
+	}
+	resets := regexp.MustCompile(`\x1b\[0?m`).FindAllStringIndex(got, -1)
+	if len(resets) == 0 {
+		t.Fatalf("row %q has no reset", got)
+	}
+	for _, loc := range resets[:len(resets)-1] {
+		if !strings.HasPrefix(got[loc[1]:], bg) {
+			t.Errorf("reset at %d is not followed by the background escape: %q", loc[0], got)
 		}
 	}
 }
