@@ -2242,6 +2242,52 @@ func pressViewCst() *ctlState {
 	return cst
 }
 
+// TestNewMirrorCtlStateWiresThePress pins what runMirror hands the ctl socket:
+// a carousel press carries the pressing controller's env writes and, with size
+// ownership on, queues the claim.
+func TestNewMirrorCtlStateWiresThePress(t *testing.T) {
+	plain, err := verbs["carousel"].build("%3", "@1", "rem", nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	view := pressView(true, "15x28")
+	wantCmds := append(pressEnvCmds("S", view), plain...)
+
+	press := func(t *testing.T, cst *ctlState) []string {
+		t.Helper()
+		cst.setWindowPanes("@1", []string{"%3"})
+		_, rep, _, sent := handlerFixture(t, "foot", "foot")
+		if err := handleCtl(cst, rep, newCarouselProbe(), carouselPress(), "rem", nil, sender(sent)); err != nil {
+			t.Fatalf("handleCtl: %v", err)
+		}
+		return *sent
+	}
+
+	t.Run("owner on", func(t *testing.T) {
+		own := newSizeOwner(newOwnerToken())
+		cst := newMirrorCtlState(view, "S", own, true)
+		if own.takeClaim() {
+			t.Fatal("claim queued before any press")
+		}
+		if got := press(t, cst); !slices.Equal(got, wantCmds) {
+			t.Errorf("sent = %q, want %q", got, wantCmds)
+		}
+		if !own.takeClaim() {
+			t.Error("takeClaim = false after the press, want the claim queued")
+		}
+	})
+
+	t.Run("owner off", func(t *testing.T) {
+		cst := newMirrorCtlState(view, "S", nil, false)
+		if cst.claimNow != nil {
+			t.Fatal("claimNow set with size ownership off")
+		}
+		if got := press(t, cst); !slices.Equal(got, wantCmds) {
+			t.Errorf("sent = %q, want %q", got, wantCmds)
+		}
+	})
+}
+
 func TestParseCtlCarouselPublishesPressEnvFirst(t *testing.T) {
 	plain, err := verbs["carousel"].build("%3", "@1", "rem", nil)
 	if err != nil {

@@ -79,6 +79,19 @@ func newCtlState() *ctlState {
 	}
 }
 
+// newMirrorCtlState is the state runMirror hands the ctl socket: the press
+// identity (view, relayTarget) and, only when size ownership is on, the claim
+// a press queues. own is read only when ownerOn.
+func newMirrorCtlState(view *Viewing, target string, own *sizeOwner, ownerOn bool) *ctlState {
+	c := newCtlState()
+	c.view = view
+	c.relayTarget = target
+	if ownerOn {
+		c.claimNow = own.requestClaim
+	}
+	return c
+}
+
 // setWindowPanes records a window's remote pane order. The main loop calls it
 // wherever it changes mirrorWindow.remotePanes, so the ctl side always has a
 // snapshot it may read without touching mirrorWindow.

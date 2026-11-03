@@ -363,10 +363,8 @@ fi
 		t.FailNow()
 	}
 
-	cst := newCtlStateWith("@1", pane)
-	cst.view = b.ctl.view
-	cst.relayTarget = sessID
-	cst.claimNow = func() {}
+	cst := newMirrorCtlState(b.ctl.view, sessID, b.ctl.own, true)
+	cst.setWindowPanes("@1", []string{pane})
 	rep, _, _ := replacerFixture("foot", true)
 	argv := []string{wire.CtlProtocolVersion, "carousel", pane}
 	if err := handleCtl(cst, rep, newCarouselProbe(), argv, "w", nil, b.ctl.send); err != nil {
@@ -375,6 +373,9 @@ fi
 	b.sync()
 	if tok, _ := parseOwnerValue(slot.ownerRecord()); tok != a.ctl.own.token {
 		t.Errorf("%s = %q, want A's token %s: the press must not have claimed", bridgeOwnerOption, slot.ownerRecord(), a.ctl.own.token)
+	}
+	if !b.ctl.own.takeClaim() {
+		t.Error("takeClaim = false after the press, want the claim queued for the main loop")
 	}
 
 	var got string

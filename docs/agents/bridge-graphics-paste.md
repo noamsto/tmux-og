@@ -150,7 +150,8 @@ option.
   owner's values** (`@og_bridge_owner`, #979; design:
   `docs/superpowers/specs/2026-11-02-relay-env-follows-owner-design.md`,
   #1035), not whichever daemon wrote last. Every publish (startup,
-  `repair()`, `watchLocalClient`, claim) is one
+  `repair()`, `watchLocalClient`, claim; the carousel press, below, is the one
+  deliberate unguarded write) is one
   `if-shell -F -t '$N'` guarded by
   `#{?#{@og_bridge_owner},#{m:<token>|*,#{@og_bridge_owner}},1}` (record unset
   or ours), evaluated remote-side so racing claims cannot leave a stale write
@@ -197,7 +198,13 @@ option.
   controller with an unknown cell size inherits the previous owner's cell
   until its claim lands; a late publish from the previous owner (view change,
   `repair()`, or an activity claim queued just before the switch) can
-  overwrite the slot between the press's write and the launch.
+  overwrite the slot between the press's write and the launch; and if the
+  queued claim's read or send then fails, the slot keeps the pressing
+  controller's values while the record still names the previous owner, until
+  the pressing controller's next activity claim (the press keystroke queues
+  one itself, so this needs a failure in that window and no further typing).
+  The record write is not folded into the press batch: an unconditional
+  `ownerClaimCmd` there would bypass the claim's enforce/flag steps (#979).
 - **The local cell size is published beside it as `AEYE_CELL_PX=<w>x<h>`**
   (`CellEnvVar`; cross-repo contract with aeye's `cellsize.go`, which cuts
   carousel crops to the preview box's shape). A control-mode client has no
