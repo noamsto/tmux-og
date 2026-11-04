@@ -782,6 +782,12 @@ set -g @fingers-pattern-path "(?:[.\\w\\-~\\x24@]+)?(?:/[.\\w\\-@]+)+/?(?<![.])"
 # any 4+ digit run), git-status, git-status-branch, diff (niche); url and path
 # are replaced by the url and path patterns above.
 set -g @fingers-enabled-builtin-patterns "ip,uuid,sha,hex,kubernetes"
+# Right, so hints for matches sharing a long prefix (e.g. `ls --absolute`
+# output) sit at the distinguishing tail rather than a common left column.
+# `dim` is an SGR attribute, not a colour, so it is flavour-independent. Both
+# must be set before the plugin loads: it snapshots @fingers-* at load.
+set -g @fingers-hint-position right
+set -g @fingers-backdrop-style "dim"
 
 # fingers opens its hint overlay as a window and closes it again, so every
 # invocation left a close in tmux-remux's undo list that nobody made and

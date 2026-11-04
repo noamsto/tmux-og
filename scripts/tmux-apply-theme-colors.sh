@@ -43,7 +43,7 @@ thm_overlay_1=$(tmux show -gv @thm_overlay_1 2>/dev/null | tr -d '"')
 thm_mauve=$(tmux show -gv @thm_mauve 2>/dev/null | tr -d '"')
 thm_green=$(tmux show -gv @thm_green 2>/dev/null | tr -d '"')
 thm_teal=$(tmux show -gv @thm_teal 2>/dev/null | tr -d '"')
-thm_yellow=$(tmux show -gv @thm_yellow 2>/dev/null | tr -d '"')
+thm_blue=$(tmux show -gv @thm_blue 2>/dev/null | tr -d '"')
 thm_surface_1=$(tmux show -gv @thm_surface_1 2>/dev/null | tr -d '"')
 thm_peach=$(tmux show -gv @thm_peach 2>/dev/null | tr -d '"')
 thm_red=$(tmux show -gv @thm_red 2>/dev/null | tr -d '"')
@@ -131,6 +131,9 @@ tmux setw -g pane-border-style \
 
 # --- tmux-fingers hints (requires colourN format, not hex) ---
 tmux set -g @fingers-hint-style "fg=colour$(hex_to_256 "$thm_crust"),bg=colour$(hex_to_256 "$thm_mauve"),bold"
-tmux set -g @fingers-highlight-style "fg=colour$(hex_to_256 "$thm_yellow"),bg=colour$(hex_to_256 "$thm_surface_1")"
+# Blue, no bg: a per-row bg merges every match into one uniform block, and
+# blue quantizes to ~5:1 contrast on latte and mocha alike (latte yellow is
+# ~2.5:1).
+tmux set -g @fingers-highlight-style "fg=colour$(hex_to_256 "$thm_blue")"
 tmux set -g @fingers-selected-hint-style "fg=colour$(hex_to_256 "$thm_crust"),bg=colour$(hex_to_256 "$thm_green"),bold"
 tmux set -g @fingers-selected-highlight-style "fg=colour$(hex_to_256 "$thm_teal"),bg=colour$(hex_to_256 "$thm_surface_1")"
