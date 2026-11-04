@@ -2084,6 +2084,19 @@
               touch $out
             '';
 
+          update-icons-dispatcher-tests =
+            pkgs.runCommand "update-icons-dispatcher-tests" {
+              # tmux: drives a private, config-less server (like update-icons-all-windows-tests);
+              # git: builds a real repo so unseeded @branch seeding has a cwd.
+              # bash: copied to a binary named `claude` so pane_current_command is literal.
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/update-icons-dispatcher.bats
+              touch $out
+            '';
+
           # #725: the modal-skip / EFF_ACTIVE chrome rule (docs/agents/floats.md
           # "Popups are modal floats") needs a server that actually has
           # pane_modal_flag/window_modal_pane, so this drives the pinned wrapper

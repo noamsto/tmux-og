@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,50 @@ func TestPaletteSelectsByTheme(t *testing.T) {
 	light := claudePalette("light")
 	if light.waiting != "#fe640b" {
 		t.Fatalf("light waiting = %q, want #fe640b", light.waiting)
+	}
+}
+
+func TestPaletteStandbyLiterals(t *testing.T) {
+	if got := claudePalette("dark").hue("standby"); got != "#b4befe" {
+		t.Fatalf("dark standby = %q, want #b4befe", got)
+	}
+	if got := claudePalette("light").hue("standby"); got != "#7287fd" {
+		t.Fatalf("light standby = %q, want #7287fd", got)
+	}
+}
+
+func TestDispatcherSegment(t *testing.T) {
+	const icon = "\U000F06A9"
+	p := claudePalette("dark")
+	for _, tc := range []struct {
+		name, states, hue string
+		n                 int
+	}{
+		{"waiting beats processing", "processing waiting idle", p.waiting, 3},
+		{"error beats waiting", "waiting error", p.errorC, 2},
+		{"waiting beats denied", "denied waiting", p.waiting, 2},
+		{"denied needs human", "idle denied standby", p.denied, 3},
+		{"processing beats standby", "standby processing idle", p.processing, 3},
+		{"compacting only is working", "compacting standby", p.compacting, 2},
+		{"processing beats compacting", "compacting processing", p.processing, 2},
+		{"standby beats idle", "idle standby done", p.standby, 3},
+		{"interrupted ranks idle", "interrupted", p.idle, 1},
+		{"done ranks idle", "done idle", p.idle, 2},
+		{"unknown counts as idle", "bogus", p.idle, 1},
+		{"single", "standby", p.standby, 1},
+	} {
+		want := "#[fg=" + tc.hue + "]" + icon + strconv.Itoa(tc.n) + "#[fg=default]"
+		if got := dispatcherSegment(tc.states, "dark"); got != want {
+			t.Errorf("%s: got %q want %q", tc.name, got, want)
+		}
+	}
+	for _, s := range []string{"", "   "} {
+		if got := dispatcherSegment(s, "dark"); got != "" {
+			t.Errorf("dispatcherSegment(%q) = %q, want empty", s, got)
+		}
+	}
+	if got := dispatcherSegment("standby", "light"); !strings.Contains(got, "#7287fd") {
+		t.Errorf("light theme segment %q lacks latte standby hue", got)
 	}
 }
 

@@ -18,8 +18,8 @@ func TestUnderModal(t *testing.T) {
 }
 
 func TestVolatileFieldsModalSwap(t *testing.T) {
-	if len(volatileFields) != 23 {
-		t.Fatalf("len = %d, want 23", len(volatileFields))
+	if len(volatileFields) != 24 {
+		t.Fatalf("len = %d, want 24", len(volatileFields))
 	}
 	for _, tc := range []struct {
 		idx  int
@@ -29,6 +29,7 @@ func TestVolatileFieldsModalSwap(t *testing.T) {
 		{9, underModal("#{pane_current_command}")},
 		{20, underModal("#{@bridge_proc}")},
 		{22, "#{@bridge_usage}"},
+		{23, "#{@og_dispatchers}"},
 	} {
 		if volatileFields[tc.idx] != tc.want {
 			t.Fatalf("volatileFields[%d] = %q, want %q", tc.idx, volatileFields[tc.idx], tc.want)
@@ -345,6 +346,30 @@ func TestRenderLineFull(t *testing.T) {
 // TestRenderLineUntrustedDirSuppressesAgentGlyph: a loose (0755) or planted
 // claude-status root must not feed the agent segment even when it holds
 // exactly the pane state that would otherwise render a glyph (#850).
+func TestRenderLineDispatchers(t *testing.T) {
+	dir := t.TempDir()
+	mustMkdirAll(t, dir+"/panes", 0o755)
+	a := args{
+		session: "work", branch: "feat/x", panePath: "/repo", gitRoot: "/repo",
+		iconSession: "S", iconBranch: "B", iconDir: "D",
+		thmBg: "#000", thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd",
+		thmSubtext0: "#9a8", thmOverlay1: "#777",
+		paneIcon: "I", paneCmd: ".nvim-wrapped",
+		dispatchers: "standby idle",
+	}
+	seg := dispatcherSegment("standby idle", "dark")
+	for _, trusted := range []bool{true, false} {
+		got := renderLine(a, dir, trusted, "dark", false, 9000, "", nil)
+		if !strings.Contains(got, seg+" #[align=right]") {
+			t.Fatalf("trusted=%v: %q lacks %q before align", trusted, got, seg)
+		}
+	}
+	a.dispatchers = ""
+	if got := renderLine(a, dir, false, "dark", false, 9000, "", nil); strings.Contains(got, "\U000F06A9") {
+		t.Fatalf("empty dispatchers rendered a segment: %q", got)
+	}
+}
+
 func TestRenderLineUntrustedDirSuppressesAgentGlyph(t *testing.T) {
 	dir := t.TempDir()
 	mustMkdirAll(t, dir+"/panes", 0o755)

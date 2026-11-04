@@ -327,7 +327,7 @@ main() {
 	# never set).
 	declare -A pane_to_win win_procs win_pane_path win_cur_branch win_active_pane win_cur_task win_cur_name pane_cur_relaunch pane_img_src pane_idx
 	declare -A win_cur_display win_cur_padded win_cur_ago win_cur_rename win_cur_crew win_cur_crew_seen win_cur_bridge
-	declare -A win_panes win_cur_has_agent win_cur_manual win_cur_naming_dirty
+	declare -A win_panes win_cur_has_agent win_cur_manual win_cur_naming_dirty win_cur_crew_id
 	declare -A all_sess sess_cur_active_icon sess_cur_session_fg sess_active_proc sess_active_win
 	# cwd-move re-stamp (#596): win_cwd/win_cwd_pane/win_worktree/win_cwd_seen are
 	# captured on the window's first NON-floating pane — a separate authority from
@@ -355,6 +355,9 @@ main() {
 	# @crew_name (harness-stamped codename) and @crew_seen (our shadow of it) are
 	# kebab tokens, so they sit safely before the free-form task; @bridge_win is
 	# "1" or empty and @bridge_proc is a command name, so both do too.
+	# @crew_id is a plain option, so it is s/[|]/ /-wrapped like the task's.
+	# @og_dispatchers is our own global write (space-joined state tokens, never
+	# '|') read back for change-gating; it repeats on every row.
 	# @claude_img_src is aeye's own pane option (a "<server pid>-<pane>" key, or
 	# empty) — no '|', so it too stays a fixed middle field before the task.
 	# @window_has_agent, @window_manual_name and @window_naming_dirty (#671/#692)
@@ -370,7 +373,7 @@ main() {
 	# '|' exposure pane_current_path already does, so both sit ahead of
 	# pane_active/window_active — a '|' in either then cannot shift the flags the
 	# rest of this script trusts as fixed-format.
-	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_task; do
+	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_crew_id cur_og_dispatchers cur_task; do
 		[[ -n $pane_id ]] || continue
 		# A mirror pane runs the bridge renderer; @bridge_proc carries what the
 		# remote pane is actually running, which is what the icons should show.
@@ -393,6 +396,7 @@ main() {
 		# Session options (same on every row of a session) must be copied here:
 		# the EOF read that ends the loop blanks the read variables themselves.
 		sess_cur_active_icon[$sess]="$opt_active_icon"
+		og_dispatchers_cur="$cur_og_dispatchers"
 		sess_cur_session_fg[$sess]="$opt_session_fg"
 		# First pane per window wins for path/branch/task — panes in a window share a
 		# cwd, and @window_task/@branch are window options (same for every pane).
@@ -411,6 +415,7 @@ main() {
 			win_cur_has_agent[$wkey]="$cur_has_agent"
 			win_cur_manual[$wkey]="$cur_manual"
 			win_cur_naming_dirty[$wkey]="$cur_naming_dirty"
+			win_cur_crew_id[$wkey]="$cur_crew_id"
 		fi
 		# cwd authority (#596): the FIRST NON-FLOATING pane, not the first pane full
 		# stop and not the active pane — a floating scratch pane commonly sits in a
@@ -441,7 +446,7 @@ main() {
 		# A modal float is chrome, not window content: excluded from this pass
 		# entirely, and the pane under it counts as active while it's open. See
 		# docs/agents/floats.md.
-	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{@window_task}')
+	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{s/[|]/ /:@crew_id}|#{@og_dispatchers}|#{@window_task}')
 
 	arm_agent_detect
 
@@ -558,6 +563,46 @@ main() {
 		win_claude_state[$win_idx]="$REPLY"
 		win_claude_fade[$win_idx]="${win_state_fade[$key]:-0}"
 		win_claude_unseen[$win_idx]="${win_state_unseen[$key]:-0}"
+	done
+
+	# Dispatcher standby overlay (display-only, never enters claude_priority_state).
+	# A dispatcher window (raw @crew_name dispatcher, @window_has_agent 1) whose
+	# state is idle/done while it has a live worker shows the standby glyph. A
+	# worker: non-empty @crew_id, name != dispatcher, @window_has_agent 1. Joined
+	# by @crew_id when the dispatcher has one, else by session. Reads the batched
+	# pre-tick @window_has_agent, like every other consumer of that option.
+	declare -A sess_workers crew_workers win_standby disp_tok_cnt
+	for wkey in "${!win_pane_path[@]}"; do
+		[[ ${win_cur_bridge[$wkey]:-} != 1 && ${win_cur_has_agent[$wkey]:-} == 1 ]] || continue
+		[[ -n ${win_cur_crew_id[$wkey]:-} && ${win_cur_crew[$wkey]%% *} != dispatcher ]] || continue
+		s="${wkey%:*}"
+		sess_workers[$s]=$((${sess_workers[$s]:-0} + 1))
+		cid="${win_cur_crew_id[$wkey]}"
+		crew_workers[$cid]=$((${crew_workers[$cid]:-0} + 1))
+	done
+	for wkey in "${!win_pane_path[@]}"; do
+		[[ ${win_cur_bridge[$wkey]:-} != 1 && ${win_cur_has_agent[$wkey]:-} == 1 ]] || continue
+		[[ ${win_cur_crew[$wkey]%% *} == dispatcher ]] || continue
+		s="${wkey%:*}"
+		cid="${win_cur_crew_id[$wkey]:-}"
+		if [[ -n $cid ]]; then
+			workers="${crew_workers[$cid]:-0}"
+		else
+			workers="${sess_workers[$s]:-0}"
+		fi
+		tok="${win_claude_state[$wkey]:-idle}"
+		if ((workers > 0)) && [[ $tok == idle || $tok == "done" ]]; then
+			win_standby[$wkey]=1
+			tok=standby
+		fi
+		disp_tok_cnt[$tok]=$((${disp_tok_cnt[$tok]:-0} + 1))
+	done
+	# Fixed order keeps the published string deterministic with no sort fork.
+	og_dispatchers_new=""
+	for tok in waiting denied error processing compacting standby idle "done" interrupted; do
+		for ((i = 0; i < ${disp_tok_cnt[$tok]:-0}; i++)); do
+			og_dispatchers_new+="${og_dispatchers_new:+ }$tok"
+		done
 	done
 
 	# Session-name color: tint with that session's aggregate claude state, faded
@@ -768,7 +813,9 @@ main() {
 		# Append colored claude status icon (shares the icon column)
 		c_state="${win_claude_state[$wkey]:-}"
 		display="${proc_icon_str}"
-		claude_colored_icon "$c_state" "${win_claude_fade[$wkey]:-0}" "${win_claude_unseen[$wkey]:-0}"
+		overlay_state="$c_state"
+		[[ -n ${win_standby[$wkey]:-} ]] && overlay_state=standby
+		claude_colored_icon "$overlay_state" "${win_claude_fade[$wkey]:-0}" "${win_claude_unseen[$wkey]:-0}"
 		if [[ -n $REPLY ]]; then
 			icon+="$REPLY"
 			((icon_dw += 2)) # 1-cell nerd font icon + 1 space
@@ -856,6 +903,10 @@ main() {
 			tmux_cmds+="set -qw -t '$target' @window_icon_padded '$REPLY'"$'\n'
 		fi
 	done
+
+	if [[ $og_dispatchers_new != "${og_dispatchers_cur:-}" ]]; then
+		tmux_cmds+="set -g @og_dispatchers '$og_dispatchers_new'"$'\n'
+	fi
 
 	# Batch the surviving set commands in one IPC call; a steady-state tick
 	# (no spinner, no minute rollover) emits nothing, so skip the fork.

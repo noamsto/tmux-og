@@ -80,6 +80,7 @@ CLAUDE_ICON_ERROR="󰅚"       # nerd: nf-md-close_circle_outline
 CLAUDE_ICON_DENIED="󰔟"      # same clock as waiting, different color
 CLAUDE_ICON_INTERRUPTED="󰜺" # nerd: nf-md-cancel — user-interrupted (Esc) turn
 CLAUDE_ICON_BG="󰅐"          # nerd: nf-md-timer_sand — background shells still running
+CLAUDE_ICON_STANDBY="󰏤"     # nerd: nf-md-pause — dispatcher idle/done with live workers (display-only overlay)
 
 # Timestamp cache (set once per script invocation). The env override is a test
 # seam, same shape as CLAUDE_ASSUME_DEAD_AFTER below: tmux-update-icons throttles
@@ -786,6 +787,7 @@ claude_state_icon() {
 	error) REPLY="$CLAUDE_ICON_ERROR" ;;
 	denied) REPLY="$CLAUDE_ICON_DENIED" ;;
 	interrupted) REPLY="$CLAUDE_ICON_INTERRUPTED" ;;
+	standby) REPLY="$CLAUDE_ICON_STANDBY" ;;
 	*) REPLY="" ;;
 	esac
 }
@@ -824,11 +826,11 @@ setup_claude_colors() {
 	fi
 
 	if [[ $theme == "light" ]]; then
-		H_W="#fe640b" H_K="#04a5e5" H_P="#179299" H_D="#40a02b" H_I="#6c6f85" H_E="#d20f39" H_DN="#df8e1d" H_INT="#8839ef"
+		H_W="#fe640b" H_K="#04a5e5" H_P="#179299" H_D="#40a02b" H_I="#6c6f85" H_E="#d20f39" H_DN="#df8e1d" H_INT="#8839ef" H_SB="#7287fd"
 	else
-		H_W="#fab387" H_K="#89dceb" H_P="#94e2d5" H_D="#a6e3a1" H_I="#6c7086" H_E="#f38ba8" H_DN="#f9e2af" H_INT="#cba6f7"
+		H_W="#fab387" H_K="#89dceb" H_P="#94e2d5" H_D="#a6e3a1" H_I="#6c7086" H_E="#f38ba8" H_DN="#f9e2af" H_INT="#cba6f7" H_SB="#b4befe"
 	fi
-	C_W="#[fg=$H_W]" C_K="#[fg=$H_K]" C_P="#[fg=$H_P]" C_D="#[fg=$H_D]" C_I="#[fg=$H_I]" C_E="#[fg=$H_E]" C_DN="#[fg=$H_DN]" C_INT="#[fg=$H_INT]"
+	C_W="#[fg=$H_W]" C_K="#[fg=$H_K]" C_P="#[fg=$H_P]" C_D="#[fg=$H_D]" C_I="#[fg=$H_I]" C_E="#[fg=$H_E]" C_DN="#[fg=$H_DN]" C_INT="#[fg=$H_INT]" C_SB="#[fg=$H_SB]"
 	C_R="#[fg=default]"
 }
 
@@ -859,6 +861,7 @@ claude_faded_hex() {
 	error) REPLY=$H_E ;;
 	denied) REPLY=$H_DN ;;
 	interrupted) REPLY=$H_INT ;;
+	standby) REPLY=$H_SB ;;
 	*)
 		REPLY=""
 		return
