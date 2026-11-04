@@ -5114,6 +5114,12 @@ wait_daemon_exit() {
 # value lost during the outage (cleared here, standing in for a change nobody
 # could publish) is back once the repair completes. Clearing it only AFTER the
 # drop is observed keeps the startup publish from satisfying the assertion.
+#
+# The clear runs under outage_start rather than a bare transport kill (#1080):
+# with SRC still reachable, the daemon's fast reconnect can land its repair
+# between the unset and the empty-check, failing the test though the bridge is
+# correct. Holding SRC unreachable keeps the repair from landing early, so the
+# test no longer depends on timing.
 @test "a control-connection drop is followed by the repair re-publishing AEYE_CELL_PX" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
@@ -5122,12 +5128,15 @@ wait_daemon_exit() {
 
 	old_transport="$(transport_child)"
 	[ -n "$old_transport" ]
-	kill -9 "$old_transport"
+	outage_start
 	wait_bridge_disconnected drcell "$BATS_TEST_TMPDIR/drcell.log"
 
-	$SRC set-environment -u -t rem AEYE_CELL_PX
-	[ -z "$(cell_env)" ]
+	# SRC is unreachable while the outage is up, so read and clear the
+	# still-live server through its moved-aside socket.
+	tmux -S "$src_sock.away" set-environment -u -t rem AEYE_CELL_PX
+	[ -z "$(tmux -S "$src_sock.away" show-environment -t rem AEYE_CELL_PX 2>/dev/null || true)" ]
 
+	outage_end
 	wait_cell_env "AEYE_CELL_PX=15x28"
 }
 
