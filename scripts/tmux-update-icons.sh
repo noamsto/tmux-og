@@ -590,8 +590,9 @@ main() {
 		else
 			workers="${sess_workers[$s]:-0}"
 		fi
-		tok="${win_claude_state[$wkey]:-idle}"
-		if ((workers > 0)) && [[ $tok == idle || $tok == "done" ]]; then
+		st="${win_claude_state[$wkey]:-}"
+		tok="${st:-idle}"
+		if ((workers > 0)) && [[ $st == idle || $st == "done" ]]; then
 			win_standby[$wkey]=1
 			tok=standby
 		fi
@@ -599,7 +600,7 @@ main() {
 	done
 	# Fixed order keeps the published string deterministic with no sort fork.
 	og_dispatchers_new=""
-	for tok in waiting denied error processing compacting standby idle "done" interrupted; do
+	for tok in error waiting denied compacting processing standby idle "done" interrupted; do
 		for ((i = 0; i < ${disp_tok_cnt[$tok]:-0}; i++)); do
 			og_dispatchers_new+="${og_dispatchers_new:+ }$tok"
 		done

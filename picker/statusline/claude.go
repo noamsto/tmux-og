@@ -72,7 +72,7 @@ func dispatcherSegment(states, theme string) string {
 		seen[s] = true
 	}
 	state := "idle"
-	for _, cand := range []string{"error", "waiting", "denied", "processing", "compacting", "standby"} {
+	for _, cand := range []string{"error", "waiting", "denied", "compacting", "processing", "standby"} {
 		if seen[cand] {
 			state = cand
 			break

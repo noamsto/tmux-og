@@ -212,6 +212,16 @@ dispatchers_opt() {
 	[ "$(dispatchers_opt)" = "processing" ]
 }
 
+@test "a stateless dispatcher with a live worker gets no overlay but counts as idle" {
+	mkwin S1 dispatcher "" 1 ""
+	local d="$WID"
+	mkwin S1 amber w1 1 processing
+	tick
+	[[ "$(display_of "$d")" != *SB* ]]
+	[[ "$(display_of "$d")" != *ID* ]]
+	[ "$(dispatchers_opt)" = "idle" ]
+}
+
 @test "@og_dispatchers lists tokens in fixed order and clears at zero" {
 	mkwin S1 dispatcher "" 1 idle
 	local standby="$WID"

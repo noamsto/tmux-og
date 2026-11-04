@@ -343,9 +343,8 @@ func TestRenderLineFull(t *testing.T) {
 	}
 }
 
-// TestRenderLineUntrustedDirSuppressesAgentGlyph: a loose (0755) or planted
-// claude-status root must not feed the agent segment even when it holds
-// exactly the pane state that would otherwise render a glyph (#850).
+// TestRenderLineDispatchers: the dispatcher segment renders before the right
+// align, trusted or not, and vanishes when @og_dispatchers is empty.
 func TestRenderLineDispatchers(t *testing.T) {
 	dir := t.TempDir()
 	mustMkdirAll(t, dir+"/panes", 0o755)
@@ -370,6 +369,9 @@ func TestRenderLineDispatchers(t *testing.T) {
 	}
 }
 
+// TestRenderLineUntrustedDirSuppressesAgentGlyph: a loose (0755) or planted
+// claude-status root must not feed the agent segment even when it holds
+// exactly the pane state that would otherwise render a glyph (#850).
 func TestRenderLineUntrustedDirSuppressesAgentGlyph(t *testing.T) {
 	dir := t.TempDir()
 	mustMkdirAll(t, dir+"/panes", 0o755)
