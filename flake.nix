@@ -170,7 +170,10 @@
         # store paths) is the largest fetch in the repo, and as a check it was
         # paid on both CI matrix legs. It moves to `packages.lint`, built once.
         # The devShell shellHook below still installs the hooks locally.
-        pre-commit.check.enable = false;
+        pre-commit = {
+          check.enable = false;
+          settings.package = pkgs.prek;
+        };
 
         pre-commit.settings.hooks = {
           # Nix
