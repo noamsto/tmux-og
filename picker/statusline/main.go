@@ -58,6 +58,7 @@ var volatileFields = []string{
 	underModal("#{@bridge_proc}"),
 	"#{@window_has_agent}",
 	"#{@bridge_usage}",
+	"#{@og_dispatchers}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message
@@ -88,6 +89,7 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	a.bridgeProc = f[20]
 	a.windowHasAgent = f[21]
 	a.bridgeUsage = f[22]
+	a.dispatchers = f[23]
 	return f[0] == "1", true
 }
 
@@ -162,7 +164,7 @@ type args struct {
 	bridgeWin, bridgeHost, bridgeState              string
 	bridgeCrewName, bridgeCrewColor                 string
 	bridgeLabelID, bridgeLabelRestLong              string
-	bridgeUsage                                     string
+	bridgeUsage, dispatchers                        string
 
 	// theme palette (passed pre-expanded from tmux @thm_* options)
 	thmBg, thmRed, thmMauve, thmBlue, thmText, thmSubtext0 string
@@ -408,6 +410,7 @@ func renderLine(a args, claudeDir string, claudeTrusted bool, theme string, pref
 		segment = claudeSegment(claudeDir, a.session, theme, now, liveIDs)
 	}
 	b.WriteString("  #[fg=" + a.thmOverlay1 + "]" + segment)
+	b.WriteString(dispatcherSegment(a.dispatchers, theme))
 	b.WriteString(" #[align=right]") // literal space mirrors `#(claude) #[align=right]` in the old format
 	b.WriteString(usage)
 	b.WriteString("#[fg=" + a.thmSubtext0 + "]" + paneSlot(a.paneIcon, paneCmdDisplay(a.paneCmd, a.bridgeProc), usage != "") + " ")

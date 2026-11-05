@@ -24,6 +24,7 @@ setup() {
 	[ "$H_E" = "#d20f39" ]
 	[ "$H_DN" = "#df8e1d" ]
 	[ "$H_INT" = "#8839ef" ]
+	[ "$H_SB" = "#7287fd" ]
 }
 
 @test "explicit mocha argument wins with no tmux or state file" {
@@ -37,6 +38,7 @@ setup() {
 	[ "$H_E" = "#f38ba8" ]
 	[ "$H_DN" = "#f9e2af" ]
 	[ "$H_INT" = "#cba6f7" ]
+	[ "$H_SB" = "#b4befe" ]
 }
 
 @test "no argument: live tmux flavor wins over a disagreeing state file" {

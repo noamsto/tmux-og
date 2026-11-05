@@ -14,20 +14,26 @@ import (
 // statePalette holds the per-state catppuccin hues for one theme, mirroring
 // the H_* values in lib-claude.sh setup_claude_colors.
 type statePalette struct {
-	waiting, compacting, processing, done, idle, errorC, denied string
+	waiting, compacting, processing, done, idle, errorC, denied, standby string
 }
+
+// iconDispatcher is the status-line dispatcher glyph. The standing-by tab glyph
+// is shell-only (CLAUDE_ICON_STANDBY); Go needs just its hue.
+const iconDispatcher = "\U000F06A9" // nerd: nf-md-robot
 
 func claudePalette(theme string) statePalette {
 	if theme == "light" { // Latte
 		return statePalette{
 			waiting: "#fe640b", compacting: "#04a5e5", processing: "#179299",
 			done: "#40a02b", idle: "#6c6f85", errorC: "#d20f39", denied: "#df8e1d",
+			standby: "#7287fd",
 		}
 	}
 	// Mocha (default)
 	return statePalette{
 		waiting: "#fab387", compacting: "#89dceb", processing: "#94e2d5",
 		done: "#a6e3a1", idle: "#6c7086", errorC: "#f38ba8", denied: "#f9e2af",
+		standby: "#b4befe",
 	}
 }
 
@@ -47,8 +53,32 @@ func (p statePalette) hue(state string) string {
 		return p.errorC
 	case "denied":
 		return p.denied
+	case "standby":
+		return p.standby
 	}
 	return ""
+}
+
+// dispatcherSegment renders the dispatcher count glyph from the space-separated
+// per-dispatcher states in @og_dispatchers, tinted by the most urgent one.
+// Unknown tokens count as idle. Empty input renders nothing.
+func dispatcherSegment(states, theme string) string {
+	fields := strings.Fields(states)
+	if len(fields) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	for _, s := range fields {
+		seen[s] = true
+	}
+	state := "idle"
+	for _, cand := range []string{"error", "waiting", "denied", "compacting", "processing", "standby"} {
+		if seen[cand] {
+			state = cand
+			break
+		}
+	}
+	return "#[fg=" + claudePalette(theme).hue(state) + "]" + iconDispatcher + strconv.Itoa(len(fields)) + "#[fg=default]"
 }
 
 // fadedHue eases a state's hue toward the dim idle hue by pct (0..100).
