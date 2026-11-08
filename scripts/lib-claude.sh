@@ -196,6 +196,41 @@ claude_pane_owned_elsewhere() {
 	return 1
 }
 
+# claude_pane_hosts_agent PANE_ID SERVER_PID
+# Succeeds when the pane hosts a live agent that pane_current_command cannot
+# name (#1091): a launcher shell (`bash …/dispatcher`) runs `claude` as a child
+# in the same foreground pgrp, so the pane reports `bash`. The positive evidence
+# is the hook-written panes/<id> `agent_pid=<N>` line with N alive under
+# `kill -0` (a crash leaves the file but kills N; a clean exit deletes the
+# file). When the file carries `server=`, it must equal SERVER_PID — pane ids
+# are per-server under a CLAUDE_STATUS_DIR shared by every tmux server of this
+# uid — and an empty SERVER_PID against a `server=` line fails closed. A file
+# with no `server=` (legacy) says nothing and is accepted. No file, no
+# agent_pid, or a non-numeric or zero pid (kill -0 0 signals the whole process
+# group) is "no evidence". Fork-free: one [[ -f ]] for the common no-file pane,
+# otherwise a read loop and the builtin kill. PANE_ID may carry the leading %.
+# Sets REPLY to the agent pid on success, empty otherwise.
+claude_pane_hosts_agent() {
+	local id=${1#%} srv=${2:-} key val pid="" owner="" has_server=""
+	REPLY=""
+	[[ -f $CLAUDE_PANES_DIR/$id ]] || return 1
+	while IFS='=' read -r key val || [[ -n $key ]]; do
+		case $key in
+		agent_pid) pid=$val ;;
+		server)
+			has_server=1
+			owner=$val
+			;;
+		esac
+	done <"$CLAUDE_PANES_DIR/$id"
+	[[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+	if [[ -n $has_server ]]; then
+		[[ -n $srv && $owner == "$srv" ]] || return 1
+	fi
+	kill -0 "$pid" 2>/dev/null || return 1
+	REPLY=$pid
+}
+
 # claude_prune_stale_state SERVER_START [SERVER_PID]
 # Drops pane-id-keyed status files left behind by a previous tmux server. tmux
 # restarts pane ids at %0 on server (re)start, so a restored pane can reuse a

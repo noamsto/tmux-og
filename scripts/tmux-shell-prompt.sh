@@ -67,6 +67,19 @@ case " $AGENT_COMMANDS " in
 *) : ;;
 esac
 
+# A launcher-hosted agent (#1091) reports its launcher shell, not the agent, so
+# a nested prompt inside it reads as "agent gone" above. A live hook-written
+# agent_pid in this pane's own panes/ file says otherwise: leave its state.
+# This server's pid comes from $TMUX (`sock,pid,idx`, inherited from the hook);
+# empty fails closed against a `server=` line, i.e. falls through to the clear.
+srv=${TMUX:-}
+srv=${srv#*,}
+srv=${srv%%,*}
+[[ $srv =~ ^[0-9]+$ ]] || srv=""
+if claude_pane_hosts_agent "${1:-}" "$srv"; then
+	exit 0
+fi
+
 # A @bridge_win mirror window is daemon-owned (#741): its panes run the bridge
 # renderer, and all pane state — panes/, screen/, interrupt/, @claude_status,
 # @agent_screen — is shipped by the bridge daemon under the LOCAL pane id. A
@@ -98,6 +111,11 @@ while IFS='|' read -r p_id p_cmd; do
 		break
 		;;
 	esac
+	# A sibling pane may host an agent under its launcher shell (#1091).
+	if claude_pane_hosts_agent "$p_id" "$srv"; then
+		still_has_agent=1
+		break
+	fi
 done < <(tmux list-panes -t "$window_id" -F '#{pane_id}|#{pane_current_command}')
 
 [[ -n $still_has_agent ]] && exit 0

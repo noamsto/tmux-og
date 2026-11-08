@@ -637,3 +637,62 @@ EOF
 	[ -e "$CLAUDE_SCREEN_DIR/9" ]
 	[ -e "$CLAUDE_INTERRUPT_DIR/9" ]
 }
+
+# --- launcher-hosted agent (#1091) ---------------------------------------------
+# A launcher shell hosting `claude` reports `bash`, so a nested OSC 133 prompt
+# inside it reads as "agent gone" by command alone. The hook-written
+# agent_pid=<N> line (live under kill -0, server= this server) is the positive
+# evidence that keeps the state; once N is dead the existing clear path runs.
+
+# hosted_state PANE_ID SESSION AGENT_PID — seed_shell_state plus the server= and
+# agent_pid= lines the writer records.
+hosted_state() {
+	seed_shell_state "$1" "$2"
+	printf 'server=%s\nagent_pid=%s\n' "$(t display-message -p '#{pid}')" "$3" \
+		>>"$CLAUDE_STATUS_DIR/panes/$(bare_id "$1")"
+}
+
+@test "launcher-hosted live agent at a nested prompt: state and window naming kept" {
+	t new-session -d -s host1 -x 80 -y 24 -c "$PWD" -- bash
+	local id bare
+	id="$(t list-panes -t host1 -F '#{pane_id}')"
+	bare="$(bare_id "$id")"
+	[ -n "$id" ]
+	sleep 600 &
+	local agent=$!
+	hosted_state "$id" host1 "$agent"
+	t set-option -w -t host1 @window_has_agent 1
+	t set-option -w -t host1 @window_ai_name "Hosted Title"
+	printf 'Hosted Title\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+
+	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
+	sleep 2
+
+	three_present "$id"
+	[ "$(wopt host1 @window_has_agent)" = 1 ]
+	[ "$(wopt host1 @window_ai_name)" = "Hosted Title" ]
+	[ -e "$CLAUDE_STATUS_DIR/names/$bare" ]
+	kill "$agent" 2>/dev/null || true
+}
+
+@test "launcher-hosted agent whose pid died: the existing clear path runs" {
+	t new-session -d -s host2 -x 80 -y 24 -c "$PWD" -- bash
+	local id bare
+	id="$(t list-panes -t host2 -F '#{pane_id}')"
+	bare="$(bare_id "$id")"
+	[ -n "$id" ]
+	sleep 600 &
+	local agent=$!
+	hosted_state "$id" host2 "$agent"
+	t set-option -w -t host2 @window_has_agent 1
+	t set-option -w -t host2 @window_ai_name "Hosted Title"
+	printf 'Hosted Title\n' >"$CLAUDE_STATUS_DIR/names/$bare"
+	kill "$agent"
+	wait "$agent" 2>/dev/null || true
+
+	t send-keys -t "$id" 'printf "\033]133;A\033\\"' Enter
+	wait_for 5 three_gone "$id"
+	wait_for 5 window_naming_options_cleared host2
+	update_icons_tick host2
+	window_naming_cleared host2 "$bare"
+}
