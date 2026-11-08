@@ -713,6 +713,18 @@ func TestPredictorFeedTimeBudget(t *testing.T) {
 			t.Fatal("model survived a non-ASCII payload over the cap, which vt would have fed as one write")
 		}
 		h.settled()
+		for name, payload := range map[string]string{
+			"ASCII byte only past the cap":       wide(predictFeedSliceMax+3) + "x",
+			"a cut slice, then a remainder over": strings.Repeat("x", predictFeedSlice) + wide(predictFeedSliceMax+3),
+		} {
+			h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+			h.confirm("a")
+			h.output(payload)
+			if h.p.model != nil {
+				t.Errorf("%s: model survived", name)
+			}
+			h.settled()
+		}
 	})
 	t.Run("a slice never splits a grapheme cluster", func(t *testing.T) {
 		// A cut right after the man would join man + ZWJ + woman in local tmux

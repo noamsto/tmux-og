@@ -28,7 +28,11 @@ const (
 	// in slices of at least predictFeedSlice bytes, so a stall is bounded by the
 	// budget plus one slice: up to about 60 ms of newlines on a 400x100 pane
 	// with the cursor on the last row. A payload with no ASCII byte to cut at
-	// within predictFeedSliceMax is not modelled.
+	// within predictFeedSliceMax is not modelled. Residual: a run of up to
+	// predictFeedSliceMax raw C1 bytes (0x84 IND, 0x8D RI, executed controls
+	// that scroll and are not below 0x80) has no cut point yet is fed whole,
+	// about 1 s on a 400x100 pane; that is about 16x better than the old 64 KiB
+	// byte cap allowed, and a vt-parser-aware guard would close it.
 	predictFeedBudget   = 20 * time.Millisecond
 	predictFeedSlice    = 256
 	predictFeedSliceMax = 4 << 10

@@ -318,7 +318,8 @@ func (p *predictor) onOutput(b []byte) []byte {
 // after an ASCII byte, which makes slicing equal to one Write. A payload with
 // no ASCII byte before predictFeedSliceMax has no cut point it can afford and
 // is not modelled (the model is dropped), so a remote cannot make one vt write
-// arbitrarily long; a shorter one is fed whole.
+// arbitrarily long; a shorter one is fed whole. Raw C1 bytes are not ASCII, so
+// a run of them up to that cap is fed whole too (see predictFeedBudget).
 func (p *predictor) feedTimed(m *predictModel, b []byte) bool {
 	for len(b) > 0 {
 		if p.fedCost > predictFeedBudget {
