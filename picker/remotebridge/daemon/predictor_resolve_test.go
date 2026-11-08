@@ -296,6 +296,24 @@ func TestPredictorExpireMispredictionResets(t *testing.T) {
 	}
 }
 
+// Output evidence is per prediction: unrelated output between a and BS proves
+// nothing about BS, so the a+BS run drawn on a silent prompt must still reset.
+func TestPredictorQuietExpiryEvidenceIsPerKey(t *testing.T) {
+	h := confirmedHarness(t)
+	e0 := h.p.epoch
+	h.keys("a")
+	h.output("\x1b[m")
+	h.keys("\x7f")
+	h.clock = h.clock.Add(predictExpiryMax)
+	h.expire()
+	if h.p.epoch == e0 || h.p.confirmed >= h.p.epoch {
+		t.Fatalf("epoch %d -> %d, confirmed %d: still confirmed though no output followed the backspace", e0, h.p.epoch, h.p.confirmed)
+	}
+	if out := h.keys("p"); out != nil {
+		t.Errorf("key after the expiry painted %q", out)
+	}
+}
+
 func TestPredictorBackspaceRespectsMaxPending(t *testing.T) {
 	h := newHarness(t, "$ ", 2, 0, harnessOpts{w: 300, h: 24})
 	h.confirm("g")

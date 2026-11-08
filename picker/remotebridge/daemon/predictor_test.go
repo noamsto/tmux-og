@@ -700,6 +700,20 @@ func TestPredictorFeedTimeBudget(t *testing.T) {
 			}
 		}
 	})
+	t.Run("a payload with no ASCII cut point is not fed whole past the cap", func(t *testing.T) {
+		wide := func(n int) string { return strings.Repeat("中", n/len("中")) }
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+		h.confirm("a")
+		h.output(wide(predictFeedSliceMax - 3)) // fits one slice
+		if h.p.model == nil {
+			t.Fatal("model dropped by a non-ASCII payload under the cap")
+		}
+		h.output(wide(predictFeedSliceMax + 3))
+		if h.p.model != nil {
+			t.Fatal("model survived a non-ASCII payload over the cap, which vt would have fed as one write")
+		}
+		h.settled()
+	})
 	t.Run("a slice never splits a grapheme cluster", func(t *testing.T) {
 		// A cut right after the man would join man + ZWJ + woman in local tmux
 		// but not in vt, whose grapheme buffer is flushed at the end of each Write.

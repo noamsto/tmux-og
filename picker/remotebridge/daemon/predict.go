@@ -26,9 +26,12 @@ const (
 	// since the last key: vt is too slow to run on bulk output, and its scroll
 	// and erase cost grows with pane area, so bytes say little. The feed is cut
 	// in slices of at least predictFeedSlice bytes, so a stall is bounded by the
-	// budget plus one slice (about 60 ms of newlines on a 400x100 pane).
-	predictFeedBudget = 20 * time.Millisecond
-	predictFeedSlice  = 256
+	// budget plus one slice: up to about 60 ms of newlines on a 400x100 pane
+	// with the cursor on the last row. A payload with no ASCII byte to cut at
+	// within predictFeedSliceMax is not modelled.
+	predictFeedBudget   = 20 * time.Millisecond
+	predictFeedSlice    = 256
+	predictFeedSliceMax = 4 << 10
 	// predictModelRetry rate-limits model seed requests per pane.
 	predictModelRetry = 2 * time.Second
 	// A prediction unresolved after clamp(4 x estimate) is dropped.

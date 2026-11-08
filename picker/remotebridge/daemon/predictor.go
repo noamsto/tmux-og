@@ -315,19 +315,24 @@ func (p *predictor) onOutput(b []byte) []byte {
 // bytes could not. A slice ends just after an ASCII byte: vt's grapheme
 // buffer is flushed at the end of every Write, so a cut inside a multi-rune
 // cluster would size it differently from local tmux; the buffer is empty
-// after an ASCII byte, which makes slicing equal to one Write. A run with no
-// ASCII byte after the slice size is fed whole: it can only wrap and scroll.
+// after an ASCII byte, which makes slicing equal to one Write. A payload with
+// no ASCII byte before predictFeedSliceMax has no cut point it can afford and
+// is not modelled (the model is dropped), so a remote cannot make one vt write
+// arbitrarily long; a shorter one is fed whole.
 func (p *predictor) feedTimed(m *predictModel, b []byte) bool {
 	for len(b) > 0 {
 		if p.fedCost > predictFeedBudget {
 			return false
 		}
-		n := len(b)
-		for i := predictFeedSlice - 1; i < len(b); i++ {
+		n, cut := len(b), false
+		for i := predictFeedSlice - 1; i < min(len(b), predictFeedSliceMax); i++ {
 			if b[i] < 0x80 {
-				n = i + 1
+				n, cut = i+1, true
 				break
 			}
+		}
+		if !cut && len(b) > predictFeedSliceMax {
+			return false
 		}
 		start := p.now()
 		ok := m.feed(b[:n])
