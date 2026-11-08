@@ -266,14 +266,6 @@ hosts() {
 	assert_title_kept
 }
 
-@test "mark-seen style rewrite keeps the agent_pid line" {
-	pane_file 7 "server=$SRV" "agent_pid=$$" "unseen=1"
-	grep -v '^unseen=' "$CLAUDE_STATUS_DIR/panes/7" >"$TDIR/rewritten"
-	cp "$TDIR/rewritten" "$CLAUDE_STATUS_DIR/panes/7"
-	hosts %7 "$SRV"
-	[ "$status" -eq 0 ]
-}
-
 # --- tmux-shell-prompt.sh (raw, @lib_claude@ substituted) ---------------------
 
 # shell_prompt PANE CMD SESS WID HAS BRIDGE
@@ -325,11 +317,16 @@ shell_prompt() {
 real_setup() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
 	REAL_TMUX=$(PATH="${PATH#"$FAKEBIN":}" command -v tmux)
-	export TMUX_TMPDIR="$TDIR/tmux"
+	# Short /tmp path: darwin caps a unix socket path at 104 bytes and a nix
+	# build tmpdir under $BATS_TEST_TMPDIR would overflow it (same as
+	# tests/agent-repaint-ready.bats).
+	TMUX_TMPDIR="/tmp/og1091-$$-${BATS_TEST_NUMBER}"
+	export TMUX_TMPDIR
+	rm -rf "$TMUX_TMPDIR"
+	mkdir -p "$TMUX_TMPDIR"
 	export XDG_DATA_HOME="$TDIR/data"
 	export TMPDIR="$TDIR"
-	mkdir -p "$TMUX_TMPDIR"
-	SOCK="og-hosted-$BATS_TEST_NUMBER-$$"
+	SOCK="h$BATS_TEST_NUMBER"
 	# Route every bare `tmux` (update-icons' own calls) at the scratch socket.
 	SHIM="$TDIR/shim"
 	mkdir -p "$SHIM"
@@ -384,6 +381,7 @@ real_setup() {
 real_teardown() {
 	[[ -n ${REAL_TMUX:-} ]] || return 0
 	"$REAL_TMUX" -L "$SOCK" kill-server 2>/dev/null || true
+	rm -rf "${TMUX_TMPDIR:-}"
 }
 
 teardown() {

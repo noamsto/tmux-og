@@ -107,15 +107,18 @@ is_agent_cmd() {
 # occupancy fails closed). Order: CLAUDE_AGENT_PID (numeric) wins; else the
 # stored pid while it is still alive (builtin kill -0, no fork); else walk the
 # hook's ancestors, nearest first, depth-capped. ps is forked only on that last
-# path — once per session, since a resume/relaunch brings a new pid.
+# path — once per session WHEN it resolves, since a resume/relaunch brings a new
+# pid. A pane where nothing resolves stores no agent_pid and so re-walks (up to
+# 16 ps forks) on every state write. Pids are [1-9][0-9]*: pid 0 would make
+# `kill -0 0` succeed forever on the caller's process group.
 resolve_agent_pid() {
 	REPLY=""
 	local p="${CLAUDE_AGENT_PID:-}" next comm args n=0
-	if [[ $p =~ ^[0-9]+$ ]]; then
+	if [[ $p =~ ^[1-9][0-9]*$ ]]; then
 		REPLY="$p"
 		return 0
 	fi
-	if [[ ${1:-} =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null; then
+	if [[ ${1:-} =~ ^[1-9][0-9]*$ ]] && kill -0 "$1" 2>/dev/null; then
 		REPLY="$1"
 		return 0
 	fi

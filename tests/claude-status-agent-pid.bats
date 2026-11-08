@@ -112,13 +112,37 @@ dead_pid() {
 	[ "$(ps_calls)" -eq 0 ]
 }
 
-@test "agent_pid: re-resolved when the stored pid is dead" {
-	dead=$(dead_pid)
+@test "agent_pid: CLAUDE_AGENT_PID overrides a stored pid" {
+	# A live stored pid that differs from the env pid: the env seam must win.
+	sleep 30 &
+	other=$!
 	mkdir -p "$CLAUDE_STATUS_DIR/panes"
-	printf 'state=idle\ntimestamp=1\nsession=sess\nserver=4242\nagent_pid=%s\n' "$dead" >"$(pane_file 7)"
+	printf 'state=idle\ntimestamp=1\nsession=sess\nserver=4242\nagent_pid=%s\n' "$other" >"$(pane_file 7)"
 	CLAUDE_AGENT_PID=$$ run bash "$CSU" processing --pane %7
+	kill "$other" 2>/dev/null || true
 	[ "$status" -eq 0 ]
 	[ "$(pane_val 7 agent_pid)" = "$$" ]
+	[ "$(ps_calls)" -eq 0 ]
+}
+
+@test "agent_pid: CLAUDE_AGENT_PID=0 is ignored and a stored 0 is not trusted" {
+	CLAUDE_AGENT_PID=0 run bash "$CSU" processing --pane %7
+	[ "$status" -eq 0 ]
+	[ -z "$(pane_val 7 agent_pid)" ]
+	# A stored 0 (kill -0 0 always succeeds) is re-resolved, never kept.
+	mkdir -p "$CLAUDE_STATUS_DIR/panes"
+	printf 'state=idle\ntimestamp=1\nsession=sess\nserver=4242\nagent_pid=0\n' >"$(pane_file 7)"
+	run bash "$CSU" processing --pane %7
+	[ "$status" -eq 0 ]
+	[ -z "$(pane_val 7 agent_pid)" ]
+	# With an agent ancestor available it resolves to that, not the stored 0.
+	printf '555 claude|claude\n' >"$PS_TABLE"
+	printf '0\n' >"$PS_COUNT"
+	printf 'state=idle\ntimestamp=1\nsession=sess\nserver=4242\nagent_pid=0\n' >"$(pane_file 7)"
+	run bash "$CSU" processing --pane %7
+	[ "$status" -eq 0 ]
+	[ -n "$(pane_val 7 agent_pid)" ]
+	[ "$(pane_val 7 agent_pid)" != "0" ]
 }
 
 @test "agent_pid: dead stored pid with no seam walks ancestors again" {
