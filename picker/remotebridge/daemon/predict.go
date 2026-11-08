@@ -31,8 +31,8 @@ const (
 	// within predictFeedSliceMax is not modelled. Residual: a run of up to
 	// predictFeedSliceMax raw C1 bytes (0x84 IND, 0x8D RI, executed controls
 	// that scroll and are not below 0x80) has no cut point yet is fed whole,
-	// about 1 s on a 400x100 pane; that is about 16x better than the old 64 KiB
-	// byte cap allowed, and a vt-parser-aware guard would close it.
+	// about 1 s on a 400x100 pane; only a guard that follows vt's parser state
+	// would close it.
 	predictFeedBudget   = 20 * time.Millisecond
 	predictFeedSlice    = 256
 	predictFeedSliceMax = 4 << 10
