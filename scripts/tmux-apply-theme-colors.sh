@@ -111,7 +111,9 @@ FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg
 AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ aeye ━━}"
 ROLE_BRANCH="━━ #[bold]${ROLE_NAME}#[nobold]#{?${STATE}, ${STATE_GLYPH} ${STATE},} ━━"
 ANCHOR_BRANCH="━━ ${NAME_SEG}${STATE_SEG}${TITLE_SEG} ━━"
-PLAIN_BRANCH="#{?#{&&:#{pane_active},#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}"
+# A sole or zoomed active pane gets no label, so its border stays one unbroken
+# line in the active colour; grey dashes there would break that line.
+PLAIN_BRANCH="#{?pane_active,#{?#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,},#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}"
 
 ROLE_COND="#{&&:#{!=:${ROLE_NAME},},#{!=:${ROLE_NAME},lead}}"
 ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_SHOWN},},#{||:#{!=:${CODENAME},},#{&&:#{!=:${TITLE_RAW},},#{!=:${LEAD_STATE},}}}}}"

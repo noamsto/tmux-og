@@ -216,10 +216,10 @@ style() {
 	[ "$out" = "━━ coral ━━" ]
 }
 
-@test "bridged crew name without @bridge_win renders the plain bar" {
+@test "bridged crew name without @bridge_win: sole active pane has no label" {
 	tmux setw -t "$WIN" @bridge_crew_name coral
 	out="$(render "$WIN")"
-	[ "$out" = "━━━━━" ]
+	[ -z "$out" ]
 }
 
 @test "a #(...) carried in a codename or title renders as text, never runs" {
@@ -316,10 +316,10 @@ style() {
 	[ "$(render "$WIN")" = "━━ coral · ○ idle ━━" ]
 }
 
-@test "unclipped, no codename or state: plain bar" {
+@test "unclipped, no codename or state: sole active pane has no label" {
 	tmux setw -t "$WIN" @window_label_id '#858 '
 	tmux setw -t "$WIN" @window_label_rest_long 'feat: full title'
-	[ "$(render "$WIN")" = "━━━━━" ]
+	[ -z "$(render "$WIN")" ]
 }
 
 @test "state-only anchor keeps its state whether or not the title is clipped" {
@@ -584,12 +584,22 @@ line1_has() {
 	[[ $out == *●* ]]
 }
 
-@test "true default (single pane, no label/bridge): dim bar, no garbage (regression)" {
+@test "true default (single pane, no label/bridge): no label, no garbage (regression, #1087)" {
 	out="$(tmux -u display-message -p -t "$WIN" -F "$FMT")"
-	[[ $out == *"━━━━━"* ]]
-
+	[ -z "$out" ]
 	broken="$(tmux -u display-message -p -t "$WIN" -F "$BROKEN_FMT")"
 	[[ -z $broken ]]
+
+	# The inactive pane of a split keeps the plain dashes.
+	tmux split-window -t "$WIN"
+	inactive="$(tmux list-panes -t "$WIN" -F "#{pane_id} #{pane_active}" | awk '$2==0{print $1}')"
+	[ "$(tmux -u display-message -p -t "$inactive" -F "$FMT" | plain)" = "━━━━━" ]
+
+	# A zoomed active pane (even in a split) has no label either.
+	active="$(tmux list-panes -t "$WIN" -F '#{pane_id} #{pane_active}' | awk '$2==1{print $1}')"
+	tmux resize-pane -Z -t "$active"
+	[ -z "$(tmux -u display-message -p -t "$active" -F "$FMT" | plain)" ]
+	tmux resize-pane -Z -t "$active"
 }
 
 @test "script never joins bg+fg into one comma-separated #[] block (regression, #648)" {
