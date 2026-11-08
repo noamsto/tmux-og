@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"testing"
+	"time"
 )
 
 // echoStep is keys typed, or a remote payload, and the number of predictions
@@ -229,6 +230,69 @@ func TestPredictorQuietExpiryNeedsOutput(t *testing.T) {
 	}
 	if out := h.keys("p"); out != nil {
 		t.Errorf("key after a no-output expiry painted %q", out)
+	}
+}
+
+// ab+BS echoed in one payload stays pending by design; a key typed about
+// expiry-minus-RTT later must not drag it into a reset of its own epoch.
+func TestPredictorExpireKeepsEpochAfterNetZeroTail(t *testing.T) {
+	setup := func(t *testing.T) *predHarness {
+		h := confirmedHarness(t)
+		h.keys("ab\x7f")
+		h.output("ab\b \b")
+		h.clock = h.clock.Add(400 * time.Millisecond)
+		h.keys("c")
+		h.clock = h.clock.Add(150 * time.Millisecond)
+		return h
+	}
+	t.Run("the typed key survives the tail's expiry", func(t *testing.T) {
+		h := setup(t)
+		e0 := h.p.epoch
+		h.expire()
+		if h.p.epoch != e0 {
+			t.Fatalf("epoch %d -> %d: the net-zero tail's expiry reset the predictor", e0, h.p.epoch)
+		}
+		if len(h.p.preds) != 1 || h.p.preds[0].ch != 'c' {
+			t.Fatalf("preds %+v, want only c outstanding", h.p.preds)
+		}
+		h.requireFaint(4, 0, "c")
+		h.output("c")
+		h.settled()
+		if len(h.p.preds) != 0 || h.p.epoch != e0 {
+			t.Errorf("after c's echo: epoch %d -> %d, preds %+v", e0, h.p.epoch, h.p.preds)
+		}
+	})
+	t.Run("the survivor expires on its own clock", func(t *testing.T) {
+		h := setup(t)
+		e0 := h.p.epoch
+		h.expire()
+		h.clock = h.clock.Add(predictExpiryMin - 150*time.Millisecond)
+		h.expire()
+		if h.p.epoch != e0+1 || len(h.p.preds) != 0 {
+			t.Errorf("unechoed c: epoch %d -> %d, preds %+v, want a reset", e0, h.p.epoch, h.p.preds)
+		}
+		h.settled()
+	})
+}
+
+// A tail the remote never drew is a real misprediction: expiry resets and bumps
+// the epoch even though output arrived.
+func TestPredictorExpireMispredictionResets(t *testing.T) {
+	h := confirmedHarness(t)
+	e0 := h.p.epoch
+	h.keys("xy")
+	h.output("\x1b[m")
+	if h.p.epoch != e0 || len(h.p.preds) != 2 {
+		t.Fatalf("after unrelated output: epoch %d -> %d, preds %+v", e0, h.p.epoch, h.p.preds)
+	}
+	h.clock = h.clock.Add(predictExpiryMax)
+	h.expire()
+	if h.p.epoch != e0+1 || len(h.p.preds) != 0 {
+		t.Fatalf("after expiry: epoch %d -> %d, preds %+v, want a reset", e0, h.p.epoch, h.p.preds)
+	}
+	h.settled()
+	if out := h.keys("z"); out != nil {
+		t.Errorf("key after the reset painted %q, want a tentative one", out)
 	}
 }
 

@@ -592,13 +592,14 @@ func TestPredictorPendingWrapNoPaint(t *testing.T) {
 
 func TestPredictorBudgetAndIdle(t *testing.T) {
 	t.Run("budget", func(t *testing.T) {
-		h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{w: 20, h: 5})
 		h.confirm("a")
 		h.keys("b")
 		model := h.model()
-		h.output(strings.Repeat("\x1b[H", predictOutputBudget/3+1))
+		h.tickClock(feedTick)
+		h.output(strings.Repeat("\n", 8<<10))
 		if h.p.model != nil {
-			t.Fatal("model survived the output budget")
+			t.Fatal("model survived the feed time budget")
 		}
 		requireDrained(t, model)
 		h.settled()
@@ -626,6 +627,87 @@ func TestPredictorBudgetAndIdle(t *testing.T) {
 		if h.requests != 1 {
 			t.Errorf("requests = %d, want 1", h.requests)
 		}
+	})
+}
+
+// feedTick is the fake time each p.now() call takes under tickClock: two calls
+// bracket every model feed, so each slice costs one tick.
+const feedTick = 5 * time.Millisecond
+
+// tickClock makes every p.now() call advance the clock by d, so the time a
+// feed "takes" is deterministic. Install it after setup.
+func (h *predHarness) tickClock(d time.Duration) {
+	h.p.now = func() time.Time {
+		t := h.clock
+		h.clock = h.clock.Add(d)
+		return t
+	}
+}
+
+func TestPredictorFeedTimeBudget(t *testing.T) {
+	t.Run("drops after the budget and stops feeding", func(t *testing.T) {
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{w: 20, h: 5})
+		h.confirm("a")
+		h.keys("b")
+		model := h.model()
+		h.tickClock(feedTick)
+		start := h.clock
+		h.output(strings.Repeat("\n", 8<<10)) // 32 slices, under the old 64 KiB byte budget
+		if h.p.model != nil {
+			t.Fatal("model survived the feed time budget")
+		}
+		requireDrained(t, model)
+		// Feeding stopped a few slices after the budget: a full feed would take 32 ticks.
+		if spent := h.clock.Sub(start); spent > 20*feedTick {
+			t.Errorf("fed for %v of fake time, want the feed cut off after the budget", spent)
+		}
+		h.settled()
+	})
+	t.Run("bytes alone do not drop it", func(t *testing.T) {
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+		h.confirm("a")
+		h.keys("b")
+		h.output(strings.Repeat("\x1b[H", 2*(64<<10)/3)) // 128 KiB, over the old 64 KiB byte budget
+		if h.p.model == nil {
+			t.Fatal("model dropped by bytes with no time spent")
+		}
+	})
+	t.Run("cost adds up across payloads and a key resets it", func(t *testing.T) {
+		payload := strings.Repeat("\n", 300) // two slices, 10 ms
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{w: 20, h: 5})
+		h.confirm("a")
+		h.keys("b")
+		h.tickClock(feedTick)
+		h.output(payload)
+		h.output(payload)
+		if h.p.model == nil {
+			t.Fatal("model dropped at the budget, not past it")
+		}
+		h.output(payload)
+		h.output(payload)
+		if h.p.model != nil {
+			t.Fatal("model survived 40 ms of feeds since the last key")
+		}
+
+		h = newHarness(t, "$ ", 2, 0, harnessOpts{w: 20, h: 5})
+		h.confirm("a")
+		h.tickClock(feedTick)
+		for i := range 8 {
+			h.keys("b")
+			h.output(payload)
+			if h.p.model == nil {
+				t.Fatalf("round %d: model dropped though a key reset the feed cost", i)
+			}
+		}
+	})
+	t.Run("a slice never splits a grapheme cluster", func(t *testing.T) {
+		// A cut right after the man would join man + ZWJ + woman in local tmux
+		// but not in vt, whose grapheme buffer is flushed at the end of each Write.
+		pad := strings.Repeat("x", predictFeedSlice-len("\U0001F468"))
+		h := newHarness(t, "$ ", 2, 0, harnessOpts{})
+		h.confirm("a")
+		h.output(pad + "\U0001F468\u200d\U0001F469yz")
+		screenEq(t, h.model().e, h.ref)
 	})
 }
 

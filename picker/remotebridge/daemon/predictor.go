@@ -17,6 +17,9 @@ type prediction struct {
 	curX, curY int
 	epoch      int
 	at         time.Time
+	// fed is the predictor's fedTotal when the key was typed: output "since
+	// the key" is fedTotal > fed.
+	fed int
 }
 
 type cellPos struct{ x, y int }
@@ -53,7 +56,11 @@ type predictor struct {
 	ground streamGround
 
 	keyAt, lastKey, lastRequest time.Time
-	fedSinceKey                 int
+	// fedCost is the time the model feed has taken since the last key; past
+	// predictFeedBudget the model is dropped. fedTotal counts every byte fed
+	// and is never reset.
+	fedCost  time.Duration
+	fedTotal int
 
 	timer *time.Timer
 
@@ -197,7 +204,7 @@ func (p *predictor) onKeys(b []byte) []byte {
 	}
 	t := p.now()
 	p.lastKey = t
-	p.fedSinceKey = 0
+	p.fedCost = 0
 	if p.keyAt.IsZero() {
 		p.keyAt = t
 	}
@@ -231,7 +238,7 @@ keys:
 				p.blocked = true
 				continue
 			}
-			p.preds = append(p.preds, prediction{x: x - 1, y: y, curX: x - 1, curY: y, epoch: p.epoch, at: t})
+			p.preds = append(p.preds, prediction{x: x - 1, y: y, curX: x - 1, curY: y, epoch: p.epoch, at: t, fed: p.fedTotal})
 			added = true
 		case c >= 0x20 && c <= 0x7e:
 			if p.blocked {
@@ -242,7 +249,7 @@ keys:
 				p.blocked = true
 				continue
 			}
-			p.preds = append(p.preds, prediction{x: x, y: y, ch: c, curX: x + 1, curY: y, epoch: p.epoch, at: t})
+			p.preds = append(p.preds, prediction{x: x, y: y, ch: c, curX: x + 1, curY: y, epoch: p.epoch, at: t, fed: p.fedTotal})
 			if p.runEpoch != p.epoch {
 				p.runEpoch, p.runX, p.runY = p.epoch, x, y
 			}
@@ -285,8 +292,8 @@ func (p *predictor) onOutput(b []byte) []byte {
 	}
 	pre := p.unpaint()
 	snap := p.snapshot(m)
-	p.fedSinceKey += len(b)
-	if p.fedSinceKey > predictOutputBudget || p.now().Sub(p.lastKey) > predictIdle || !m.feed(b) {
+	p.fedTotal += len(b)
+	if p.now().Sub(p.lastKey) > predictIdle || !p.feedTimed(m, b) {
 		p.reset()
 		p.dropModel()
 		return joinBytes(pre, b, nil)
@@ -300,6 +307,37 @@ func (p *predictor) onOutput(b []byte) []byte {
 	}
 	p.arm()
 	return joinBytes(pre, b, p.paint())
+}
+
+// feedTimed feeds b to the model in slices, adding each slice's time to
+// fedCost, and reports false once the budget is spent or a feed fails. vt's
+// scroll and erase cost grows with pane area, so time bounds the stall where
+// bytes could not. A slice ends just after an ASCII byte: vt's grapheme
+// buffer is flushed at the end of every Write, so a cut inside a multi-rune
+// cluster would size it differently from local tmux; the buffer is empty
+// after an ASCII byte, which makes slicing equal to one Write. A run with no
+// ASCII byte after the slice size is fed whole: it can only wrap and scroll.
+func (p *predictor) feedTimed(m *predictModel, b []byte) bool {
+	for len(b) > 0 {
+		if p.fedCost > predictFeedBudget {
+			return false
+		}
+		n := len(b)
+		for i := predictFeedSlice - 1; i < len(b); i++ {
+			if b[i] < 0x80 {
+				n = i + 1
+				break
+			}
+		}
+		start := p.now()
+		ok := m.feed(b[:n])
+		p.fedCost += p.now().Sub(start)
+		if !ok {
+			return false
+		}
+		b = b[n:]
+	}
+	return true
 }
 
 // resolve settles predictions against the payload just fed: the run it
@@ -513,38 +551,58 @@ func (p *predictor) onExpire() []byte {
 		return nil
 	}
 	if p.now().Sub(p.preds[0].at) >= p.expiry() {
-		// With no output since the last key, a model that draws the predictions
-		// is no evidence: a no-echo prompt looks the same.
-		if p.fedSinceKey == 0 || !p.drawsModel() {
-			return p.reset()
-		}
 		// Keys that net to nothing, echoed in one payload, look exactly like
 		// keys not yet echoed: nothing to repair and no evidence against the
-		// epoch, so they are dropped without a reset.
+		// epoch, so the longest such prefix is dropped without a reset. A key
+		// typed after it is not expired with it, and is judged on its own
+		// clock.
+		k := p.drawnPrefix()
+		if k < 0 {
+			return p.reset()
+		}
 		out := p.unpaint()
-		p.preds = nil
-		p.blocked = false
-		p.stopTimer()
+		p.preds = p.preds[k+1:]
+		if len(p.preds) == 0 {
+			p.blocked = false
+			p.stopTimer()
+			return out
+		}
+		out = append(out, p.paint()...)
+		p.arm()
 		return out
 	}
 	p.arm()
 	return nil
 }
 
-// drawsModel reports whether the outstanding predictions already show in the
-// model: the cursor is where the last leaves it and every char left standing
-// is in its cell.
-func (p *predictor) drawsModel() bool {
+// drawnPrefix returns the index of the last prediction of the longest prefix
+// that already shows in the model and that output arrived after, or -1. With
+// no output since the prefix's last key, a model that draws it is no evidence:
+// a no-echo prompt looks the same.
+func (p *predictor) drawnPrefix() int {
+	for k := range slices.Backward(p.preds) {
+		if p.fedTotal > p.preds[k].fed && p.drawsPrefix(k) {
+			return k
+		}
+	}
+	return -1
+}
+
+// drawsPrefix reports whether preds[:k+1] already show in the model: the
+// cursor is where the last leaves it and every char left standing is in its
+// cell.
+func (p *predictor) drawsPrefix(k int) bool {
 	m := p.model
-	if m == nil || len(p.preds) == 0 {
+	if m == nil {
 		return false
 	}
-	last := p.preds[len(p.preds)-1]
+	run := p.preds[:k+1]
+	last := run[k]
 	if cx, cy := m.cursor(); cx != last.curX || cy != last.curY {
 		return false
 	}
-	for i, pr := range p.preds {
-		if pr.ch != 0 && !overwritten(p.preds[i+1:], pr) && cellText(m.cell(pr.x, pr.y)) != string(pr.ch) {
+	for i, pr := range run {
+		if pr.ch != 0 && !overwritten(run[i+1:], pr) && cellText(m.cell(pr.x, pr.y)) != string(pr.ch) {
 			return false
 		}
 	}
