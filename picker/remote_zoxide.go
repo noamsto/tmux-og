@@ -125,20 +125,21 @@ func remoteZoxideCmd(host string) tea.Cmd {
 }
 
 // remoteZoxideRows is host's "── New session ──" section for a single-host
-// scope, or nil. The hide rule is name-based: the probe returns session
+// scope, or empty (never nil, so nilaway does not trace a nil through
+// scopedItems' append). The hide rule is name-based: the probe returns session
 // names, not their working dirs.
 func (m tuiModel) remoteZoxideRows(host string) []listItem {
 	dirs := m.remoteZoxide[host].dirs
 	if len(dirs) == 0 {
-		return nil
+		return []listItem{}
 	}
 	block, taken := m.remoteHostBlock(host)
 	if len(block) == 0 {
-		return nil
+		return []listItem{}
 	}
 	hostRow := block[0]
 	if hostRow.remoteInert || hostRow.remoteNeedsAuth || hostRow.remoteTailscaleCheck || hostRow.remoteUnreachable {
-		return nil
+		return []listItem{}
 	}
 	if taken == nil {
 		taken = map[string]bool{}
@@ -178,7 +179,7 @@ func (m tuiModel) remoteZoxideRows(host string) []listItem {
 		})
 	}
 	if len(rows) == 0 {
-		return nil
+		return []listItem{}
 	}
 
 	rule := "── New session " + strings.Repeat("─", 220)
