@@ -19,8 +19,9 @@ const maxRemoteDirCandidates = 100
 // fragments on this line-delimited wire, almost always the fragments too.
 // printf %s, not echo "$l": dash's echo expands backslashes. A host without
 // zoxide yields empty stdout and exit 0 (head's), the normal no-section case.
-// No quote or backslash: the remote login shell may be fish and shellQuote
-// only escapes quotes.
+// No single quote or backslash: the body rides inside shellQuote's single
+// quotes, where a fish login shell treats \ and \' as escapes (double quotes
+// are fine and needed, so a path with a space survives).
 const remoteZoxideScript = `z=$(command -v zoxide 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/zoxide); ` +
 	`"$z" query -l 2>/dev/null | while IFS= read -r l; do [ -d "$l" ] && printf %s "$l" && echo; done | head -n 300`
 
@@ -58,7 +59,8 @@ func sshRemoteZoxide(host string) ([]string, error) {
 }
 
 // splitRemoteZoxideOutput splits the script's stdout into entries. A path with
-// a newline arrives as separate fragments; filterRemoteDirs drops them.
+// a newline arrives as separate fragments; the script's remote-side `-d` filter
+// drops almost all of them, and one that happens to name a real dir stays.
 func splitRemoteZoxideOutput(out string) []string {
 	var entries []string
 	for line := range strings.SplitSeq(out, "\n") {

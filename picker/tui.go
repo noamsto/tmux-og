@@ -653,6 +653,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remoteZoxide = map[string]remoteZoxideEntry{}
 		}
 		if msg.err != nil {
+			// The UI stays silent (a host without zoxide shows no section either),
+			// but the log is the only way to tell "no zoxide" from "fetch failed".
+			logEvent("picker", "event", "remote_zoxide_failed", "host", msg.host, "err", msg.err.Error())
 			m.remoteZoxide[msg.host] = remoteZoxideEntry{}
 		} else {
 			m.remoteZoxide[msg.host] = remoteZoxideEntry{dirs: filterRemoteDirs(msg.entries), done: true}
