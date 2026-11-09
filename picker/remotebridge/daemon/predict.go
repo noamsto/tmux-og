@@ -22,9 +22,20 @@ const (
 	predictSampleWindow = 8
 	// predictIdle drops a pane's model when no key has been typed for this long.
 	predictIdle = 30 * time.Second
-	// predictOutputBudget drops the model once this much output has been fed
-	// since the last key: vt is too slow to run on bulk output.
-	predictOutputBudget = 64 << 10
+	// predictFeedBudget drops the model once feeding it has taken this long
+	// since the last key: vt is too slow to run on bulk output, and its scroll
+	// and erase cost grows with pane area, so bytes say little. The feed is cut
+	// in slices of at least predictFeedSlice bytes, so a stall is bounded by the
+	// budget plus one slice: up to about 60 ms of newlines on a 400x100 pane
+	// with the cursor on the last row. A payload with no ASCII byte to cut at
+	// within predictFeedSliceMax is not modelled. Residual: a run of up to
+	// predictFeedSliceMax raw C1 bytes (0x84 IND, 0x8D RI, executed controls
+	// that scroll and are not below 0x80) has no cut point yet is fed whole,
+	// about 1 s on a 400x100 pane; only a guard that follows vt's parser state
+	// would close it.
+	predictFeedBudget   = 20 * time.Millisecond
+	predictFeedSlice    = 256
+	predictFeedSliceMax = 4 << 10
 	// predictModelRetry rate-limits model seed requests per pane.
 	predictModelRetry = 2 * time.Second
 	// A prediction unresolved after clamp(4 x estimate) is dropped.
