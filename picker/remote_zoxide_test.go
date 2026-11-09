@@ -31,6 +31,9 @@ func TestFilterRemoteDirsSanitizes(t *testing.T) {
 	if want := []string{"proj", "ok"}; fmt.Sprint(names) != fmt.Sprint(want) {
 		t.Fatalf("names = %v, want %v", names, want)
 	}
+	if len(got) == 0 {
+		t.Fatal("no dirs survived the filter")
+	}
 	if got[0].path != "/srv/\x1b[31mred\x1b[0m/proj" {
 		t.Fatalf("raw path must be kept for the remote, got %q", got[0].path)
 	}
@@ -149,6 +152,9 @@ func TestScopedItemsHostScopeRemoteZoxide(t *testing.T) {
 	if fmt.Sprint(scopedTargets(m)) != fmt.Sprint(want) {
 		t.Fatalf("rows = %q, want %q", scopedTargets(m), want)
 	}
+	if len(got) < 7 {
+		t.Fatalf("rows = %d, want at least 7", len(got))
+	}
 	div := got[5]
 	if !div.isZoxideHeader || !div.isHeader || div.headerLabel != "New session" {
 		t.Fatalf("divider = %+v", div)
@@ -229,13 +235,16 @@ func TestRemoteZoxideRowsExclude(t *testing.T) {
 
 func TestRemoteZoxideRowsHideNameCollisions(t *testing.T) {
 	m := zoxideHostModel("/x/live", "/x/build", "/x/bridged", "/x/fresh", "/y/fresh", "/x/other")
+	if len(m.remoteItems) < 2 {
+		t.Fatal("fixture has no host row")
+	}
 	m.remoteItems[1].remoteHostSessionIDs = map[string]string{"bridged": "$7"}
 	rows := m.remoteZoxideRows("alpha")
 	// live: block child; build: mirror; bridged: live probe id; fresh: deduped, first wins.
 	if names := remoteDirNames(rows); fmt.Sprint(names) != "[fresh other]" {
 		t.Fatalf("names = %v, want [fresh other]", names)
 	}
-	if rows[1].remoteDirPath != "/x/fresh" {
+	if len(rows) < 2 || rows[1].remoteDirPath != "/x/fresh" {
 		t.Fatalf("dedupe kept %q, want first rank", rows[1].remoteDirPath)
 	}
 }

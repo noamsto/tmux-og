@@ -140,6 +140,9 @@ func (m tuiModel) remoteZoxideRows(host string) []listItem {
 	if hostRow.remoteInert || hostRow.remoteNeedsAuth || hostRow.remoteTailscaleCheck || hostRow.remoteUnreachable {
 		return nil
 	}
+	if taken == nil {
+		taken = map[string]bool{}
+	}
 	for name := range hostRow.remoteHostSessionIDs {
 		taken[name] = true
 	}
