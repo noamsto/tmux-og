@@ -146,7 +146,11 @@
         # golang.org/x/tools panics ("unexpected expr: *ast.KeyValueExpr" in
         # go/ssa) under the Go 1.27 standard library. Build upstream HEAD
         # instead; drop this once nixpkgs ships a Go-1.27-capable nilaway.
+        # Its upstream test suite is killed on CI runners when built from
+        # source (signal: killed, no assertion failure), so skip it here; it
+        # passed locally at this rev under Go 1.27.3. goLintGate still runs it.
         nilaway = pkgs.nilaway.overrideAttrs {
+          doCheck = false;
           version = "0-unstable-2026-09-18";
           src = pkgs.fetchFromGitHub {
             owner = "uber-go";
