@@ -594,10 +594,10 @@ setup_border_title() {
 	tmux set -wq -t S:0 @issue_id "#885"
 	tmux set -wq -t S:0 @issue_title "$TITLE130"
 
-	# (a) the row fits whole: no stamp, plain bar.
+	# (a) the row fits whole: no stamp, no border label.
 	bash "$REFLOW" S 400 --force >/dev/null 2>&1
 	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
-	[ "$(border_text)" = "━━━━━" ]
+	[ "$(border_text)" = "" ]
 
 	# (b) same title, narrower row: clipped, and the border holds the whole
 	# title, past the 50 chars the status label can keep here.
@@ -609,10 +609,10 @@ setup_border_title() {
 	[[ $border == *"${TITLE130:50}"* ]]
 	[ "${#border}" -gt "${#disp}" ]
 
-	# (c) back to a fitting width: stamp removed, plain bar again.
+	# (c) back to a fitting width: stamp removed, no border label again.
 	bash "$REFLOW" S 400 --force >/dev/null 2>&1
 	[ -z "$(tmux -u show -wv -t S:0 @window_label_clipped)" ]
-	[ "$(border_text)" = "━━━━━" ]
+	[ "$(border_text)" = "" ]
 
 	# (d) window-count flip at a constant width.
 	local i
