@@ -46,6 +46,9 @@ type listItem struct {
 	isScratch                bool              // scratch-* session
 	createPath               string            // zoxide suggestion: dir to create a session at ("" = normal row)
 	createName               string            // zoxide suggestion: derived session name
+	remoteDirHost            string            // remote zoxide dir row (single-host scope): the ssh host the session is created on
+	remoteDirPath            string            // remote zoxide dir row: raw dir path, exactly what the remote receives
+	remoteDirName            string            // remote zoxide dir row: derived, sanitized session name
 	isRemoteRow              bool              // belongs to the Remote section (set even when unselectable)
 	remoteHost               string            // remote bridge row: ssh host for og-remote-open
 	remoteSess               string            // remote bridge row: optional remote session name
@@ -57,7 +60,7 @@ type listItem struct {
 	remoteInert              bool              // remote host row: host key changed — Enter must refuse to act, never offer to connect
 	remoteTailscaleCheck     bool              // remote host row: a Tailscale ACL "check" blocked the probe — Enter must refuse to act, like remoteInert; og-remote-auth cannot clear this
 	remoteTailscaleURL       string            // remote host row: the login URL captured from the probe's stdout, if any — supplementary only, may be stale
-	remoteUnreachable        bool              // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it
+	remoteUnreachable        bool              // remote session row: cached rows of a host the probe just confirmed down — Enter still tries (unchanged), but markable refuses to mark it; also set on that host's row, where it withholds the zoxide section
 	remoteMirrorTarget       string            // remote session row: local mirror session name already open for this host+session (host/all scope only, synthesized by scopedItems from m.mirrors) — Enter switches here instead of opening a duplicate
 	remoteWindowID           string            // remote window row: tmux @N of the window on the remote
 	remoteWindowIndex        int               // remote window row: window index on the remote
@@ -102,7 +105,9 @@ type tuiModel struct {
 	remoteItems  []listItem     // remote host/session rows, loaded async after first paint
 	zoxideItems  []listItem     // zoxide suggestions, loaded async after first paint
 	mirrors      []bridgeMirror // local sessions mirroring a remote host+session, refreshed on the data-refresh tick
-	visible      []listItem     // after query + mode filter
+	// remoteZoxide caches each host's zoxide dirs for the popup's lifetime.
+	remoteZoxide map[string]remoteZoxideEntry
+	visible      []listItem // after query + mode filter
 	cursor       int
 
 	// scope is Tab's host-scope cycle (local -> hosts... -> all -> local).
@@ -642,6 +647,26 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case remoteZoxideMsg:
+		keep := m.currentTarget()
+		if m.remoteZoxide == nil {
+			m.remoteZoxide = map[string]remoteZoxideEntry{}
+		}
+		if msg.err != nil {
+			m.remoteZoxide[msg.host] = remoteZoxideEntry{}
+		} else {
+			m.remoteZoxide[msg.host] = remoteZoxideEntry{dirs: filterRemoteDirs(msg.entries), done: true}
+		}
+		m = m.recombine().withFilter()
+		m = m.restoreCursor(keep)
+		if m.cursor < 0 || m.cursor >= len(m.visible) || !m.isSelectable(m.visible[m.cursor]) {
+			m.cursor = m.firstSelectable(0)
+		}
+		if m.mode == modeWall {
+			m = m.snapWallTo(keep)
+		}
+		return m, nil
+
 	case remoteAuthDoneMsg:
 		if execErrorMessage, ok := remoteAuthStartFailure(msg.err); ok {
 			m.statusMsg = execErrorMessage
@@ -868,9 +893,15 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
+		if item.remoteDirPath != "" {
+			// A remote dir has no local zoxide entry to forget, and its
+			// "remotedir:<host>:<path>" target would reach the local
+			// kill-window below (it contains ':').
+			return m, nil
+		}
 		if item.createPath != "" {
 			logEvent("picker", "event", "zoxide_forget", "path", item.createPath)
-			if err := zoxideForget(item.createPath); err != nil {
+			if err := zoxideForgetFn(item.createPath); err != nil {
 				m.statusMsg = err.Error()
 				return m, nil
 			}
@@ -987,6 +1018,14 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scope = nextScope(m.scope, hosts)
 		m = m.recombine().withFilter()
 		m.cursor = m.firstSelectable(0)
+		if m.wantsRemoteZoxide() {
+			host := m.scope.host
+			if m.remoteZoxide == nil {
+				m.remoteZoxide = map[string]remoteZoxideEntry{}
+			}
+			m.remoteZoxide[host] = remoteZoxideEntry{fetching: true}
+			return m, tea.Batch(m.loadPreviewCmd(), remoteZoxideCmd(host))
+		}
 		return m, m.loadPreviewCmd()
 
 	case "ctrl+/", "ctrl+_":
@@ -1268,7 +1307,7 @@ func (m tuiModel) applyWallEsc() (tea.Model, tea.Cmd) {
 // exactly this boundary, so both are defined off the one predicate rather than
 // two copies of the same list of exclusions drifting apart.
 func relayable(item listItem) bool {
-	return item.target != "" && !item.isHeader && item.createPath == "" && !item.isRemoteRow && item.remoteHost == ""
+	return item.target != "" && !item.isHeader && item.createPath == "" && item.remoteDirPath == "" && !item.isRemoteRow && item.remoteHost == ""
 }
 
 // tileItems returns the indices into visible that are relayable.
@@ -1638,6 +1677,13 @@ func (m tuiModel) restoreCursor(keep string) tuiModel {
 	return m
 }
 
+// createSession and zoxideForgetFn are seams so tests can prove a remote dir
+// row never reaches the local create or forget.
+var (
+	createSession  = createAndSwitch
+	zoxideForgetFn = zoxideForget
+)
+
 // switchClient switches the attached client to target, seamed for tests.
 var switchClient = func(target string) error {
 	return exec.Command("tmux", "switch-client", "-t", target).Run() //nolint:gosec // G204: fixed binary, argv passed without a shell
@@ -1678,6 +1724,11 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	}
+	if item.remoteDirPath != "" {
+		// Not createPath's local create: the session is made on the host.
+		cmd := m.beginAttach(listItem{remoteHost: item.remoteDirHost, remoteSess: item.remoteDirName, remoteDirPath: item.remoteDirPath}, nil)
+		return m, cmd
+	}
 	if item.remoteHost != "" {
 		// A changed host key is a MITM signature as much as a reinstall, and
 		// only a human comparing fingerprints out of band can clear it. Acting
@@ -1706,7 +1757,7 @@ func (m tuiModel) activateCurrent() (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if item.createPath != "" {
-		if err := createAndSwitch(item.createName, item.createPath); err != nil {
+		if err := createSession(item.createName, item.createPath); err != nil {
 			m.statusMsg = err.Error()
 			return m, nil
 		}
@@ -1740,6 +1791,7 @@ func (m *tuiModel) beginAttach(first listItem, rest []listItem) tea.Cmd {
 		host:    first.remoteHost,
 		sess:    first.remoteSess,
 		restore: first.remoteRestore,
+		newDir:  first.remoteDirPath,
 	}
 	spec.window = first.remoteWindowID
 	run := newAttachRun(spec)
@@ -2196,12 +2248,17 @@ const (
 	rankZoxide
 )
 
+// isSuggestionRow is a row of the "── New session ──" block, local or remote.
+func isSuggestionRow(it listItem) bool {
+	return it.createPath != "" || it.remoteDirPath != ""
+}
+
 // matchRank classifies a listItem into one of the three match ranks above.
 // Hoisted out of withFilter's sort comparator so the post-pass that follows
 // it can reuse the same classification.
 func matchRank(it listItem) int {
 	switch {
-	case it.createPath != "":
+	case isSuggestionRow(it):
 		return rankZoxide
 	case it.isRemoteRow:
 		return rankRemote
@@ -2346,7 +2403,7 @@ func (m tuiModel) withFilter() tuiModel {
 		out := []listItem{}
 		for _, match := range matches {
 			out = remote.prefix(out, match.item)
-			if sugHeader != nil && match.item.createPath != "" {
+			if sugHeader != nil && isSuggestionRow(match.item) {
 				out = append(out, *sugHeader)
 				sugHeader = nil
 			}
@@ -2606,10 +2663,12 @@ func hostSet(hosts []string) map[string]bool {
 
 // scopedItems builds the list for a host scope: the local sessions that mirror
 // a matching host, then the Remote section assembled one host block at a time.
-// Zoxide rows are local-scope only — a "create a session here" suggestion has
-// no host to be scoped to. Window mode keeps every local header (withFilter
-// prunes the ones left childless) and skips the "(mirrored)" synthesis: the
-// mirror windows are already local rows.
+// The local zoxide rows never appear here — they create sessions on this
+// machine. A single-host scope in session mode ends with that host's own
+// remote zoxide dirs instead (remoteZoxideRows); all-hosts scope has none, a
+// merged list of every host's dirs being long and ambiguous. Window mode keeps
+// every local header (withFilter prunes the ones left childless) and skips the
+// "(mirrored)" synthesis: the mirror windows are already local rows.
 func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 	out := []listItem{}
 	for _, item := range m.sessionItems {
@@ -2654,6 +2713,9 @@ func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 			out = append(out, row)
 		}
 	}
+	if m.scope.kind == scopeHost && !m.windowMode && m.emitPath == "" {
+		out = append(out, m.remoteZoxideRows(m.scope.host)...)
+	}
 	return out
 }
 
@@ -2695,6 +2757,14 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 		return func() tea.Msg { return previewMsg{target: "", scrollTop: true} }
 	}
 	t := item.target
+	if item.remoteDirPath != "" {
+		// The path lives on the host; the local filesystem has nothing to show.
+		host, path := item.remoteDirHost, sanitizeStatusText(item.remoteDirPath)
+		return func() tea.Msg {
+			msg := "new session on " + host + "\n\n" + path + "\n\nEnter creates the session on " + host + " and opens it as a mirror"
+			return previewMsg{content: msg, target: t, scrollTop: true}
+		}
+	}
 	if cp := item.createPath; cp != "" {
 		return func() tea.Msg {
 			return previewMsg{content: listDir(cp), target: t, scrollTop: true}

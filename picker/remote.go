@@ -1282,7 +1282,9 @@ func remoteHostRowForState(tmuxOpts map[string]string, host string, state remote
 	case remoteProbeTailscaleCheck:
 		row.remoteTailscaleCheck = true
 		row.remoteTailscaleURL = tailscaleURL
-	case remoteProbeOK, remoteProbeNoServer, remoteProbeUnreachable:
+	case remoteProbeUnreachable:
+		row.remoteUnreachable = true
+	case remoteProbeOK, remoteProbeNoServer:
 	}
 	return row
 }

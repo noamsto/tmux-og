@@ -729,7 +729,8 @@ fi
 # is derived, so nothing by it exists yet. Creation lives here rather than in the
 # remote-side picker so there is one creator resolving one socket dir, and so the
 # session is made moments before the daemon attaches instead of having to survive
-# the whole interactive pick.
+# the whole interactive pick. The session picker's single-host scope sets the
+# same variable for its remote zoxide rows (#1099).
 if [[ -n ${OG_REMOTE_NEW_DIR:-} && -n $sess ]]; then
 	phase create
 	# shellcheck disable=SC2029 # intentional: expand client-side, resolved values ride in the remote command
