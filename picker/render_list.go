@@ -301,7 +301,7 @@ func (m tuiModel) renderHints() string {
 		hint("^jk/↑↓", "nav"),
 		hint("enter", enterLabel),
 	}
-	if m.emitPath == "" && !(hasItem && item.remoteDirPath != "") {
+	if m.emitPath == "" && (!hasItem || item.remoteDirPath == "") {
 		parts = append(parts, hint("^x", killLabel))
 	}
 	parts = append(parts,

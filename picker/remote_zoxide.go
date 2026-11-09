@@ -205,5 +205,5 @@ func (m tuiModel) wantsRemoteZoxide() bool {
 		return true
 	}
 	h := block[0]
-	return !(h.remoteInert || h.remoteNeedsAuth || h.remoteTailscaleCheck || h.remoteUnreachable)
+	return !h.remoteInert && !h.remoteNeedsAuth && !h.remoteTailscaleCheck && !h.remoteUnreachable
 }

@@ -269,7 +269,7 @@ func TestScopedItemsRemoteZoxideNotInWindowOrEmitMode(t *testing.T) {
 }
 
 func TestRemoteZoxideRowsRenderSanitized(t *testing.T) {
-	m := zoxideHostModel("/srv/\x1b]0;pwn\x07\x1b[31mred\x1b[0m/we‮ird\u009b2J")
+	m := zoxideHostModel("/srv/\x1b]0;pwn\x07\x1b[31mred\x1b[0m/we\u202eird\u009b2J")
 	rows := m.remoteZoxideRows("alpha")
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want divider + 1", len(rows))
@@ -279,7 +279,7 @@ func TestRemoteZoxideRowsRenderSanitized(t *testing.T) {
 		t.Fatalf("raw path must ride unmodified for the remote: %q", r.remoteDirPath)
 	}
 	for field, s := range map[string]string{"display": r.display, "plain": r.plain, "searchText": r.searchText} {
-		for _, bad := range []string{"pwn", "\x07", "\u009b", "‮", "\x1b[31m"} {
+		for _, bad := range []string{"pwn", "\x07", "\u009b", "\u202e", "\x1b[31m"} {
 			if strings.Contains(s, bad) {
 				t.Fatalf("%s leaks %q: %q", field, bad, s)
 			}
@@ -685,7 +685,7 @@ func TestFilterKeepsRemoteDirHeader(t *testing.T) {
 	if sessIdx < 0 || divIdx < 0 || dirIdx < 0 {
 		t.Fatalf("rows = %v", kinds)
 	}
-	if !(sessIdx < divIdx && divIdx+1 == dirIdx) {
+	if sessIdx >= divIdx || divIdx+1 != dirIdx {
 		t.Fatalf("want Remote block, then divider directly before the first dir row: %v", kinds)
 	}
 }
