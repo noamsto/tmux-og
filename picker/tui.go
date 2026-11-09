@@ -1680,8 +1680,7 @@ func (m tuiModel) restoreCursor(keep string) tuiModel {
 	return m
 }
 
-// createSession and zoxideForgetFn are seams so tests can prove a remote dir
-// row never reaches the local create or forget.
+// createSession and zoxideForgetFn are seamed for tests.
 var (
 	createSession  = createAndSwitch
 	zoxideForgetFn = zoxideForget
