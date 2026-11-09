@@ -75,6 +75,77 @@ bridge_stamp() {
 # placeholder was never substituted, and disables the forced reflow.
 REFLOW_BIN="@reflow@"
 
+# The agent manifest, compiled at build time — the same list tmux-update-icons'
+# sweep and tmux-shell-prompt use. A value still starting with '@' (raw script)
+# is no command name, so it matches nothing and the ancestor walk fails closed.
+AGENT_COMMANDS="${AGENT_COMMANDS:-@AGENT_COMMANDS@}"
+
+# normalize_wrapped_cmd CMD — strip makeWrapper's `.foo-wrapped` shape, exactly
+# as tmux-update-icons.sh does. return 0 keeps this safe under set -e (the
+# `[[ ]] && …` chain otherwise fails when the name isn't wrapped).
+normalize_wrapped_cmd() {
+	REPLY="$1"
+	[[ $REPLY == .*-wrapped ]] && REPLY="${REPLY#.}" && REPLY="${REPLY%-wrapped}"
+	return 0
+}
+
+# is_agent_cmd NAME_OR_PATH — 0 when its basename, unwrapped, is an agent
+# command. comm may be a full path (darwin) or cut at 15 chars (linux). REPLY
+# is local: normalize_wrapped_cmd would otherwise clobber the caller's result.
+is_agent_cmd() {
+	local REPLY c="${1##*/}"
+	[[ -n $c ]] || return 1
+	normalize_wrapped_cmd "$c"
+	case " $AGENT_COMMANDS " in
+	*" $REPLY "*) return 0 ;;
+	esac
+	return 1
+}
+
+# resolve_agent_pid STORED_PID — sets REPLY to the pid of the agent process
+# hosting this hook, or "" when unresolved (the caller then writes no line, so
+# occupancy fails closed). Order: CLAUDE_AGENT_PID (numeric) wins; else the
+# stored pid while it is still alive (builtin kill -0, no fork); else walk the
+# hook's ancestors, nearest first, depth-capped. ps is forked only on that last
+# path — once per session WHEN it resolves, since a resume/relaunch brings a new
+# pid. A pane where nothing resolves stores no agent_pid and so re-walks (up to
+# 16 ps forks) on every state write. Pids are [1-9][0-9]*: pid 0 would make
+# `kill -0 0` succeed forever on the caller's process group.
+resolve_agent_pid() {
+	REPLY=""
+	local p="${CLAUDE_AGENT_PID:-}" next comm args n=0
+	if [[ $p =~ ^[1-9][0-9]*$ ]]; then
+		REPLY="$p"
+		return 0
+	fi
+	if [[ ${1:-} =~ ^[1-9][0-9]*$ ]] && kill -0 "$1" 2>/dev/null; then
+		REPLY="$1"
+		return 0
+	fi
+	command -v ps >/dev/null 2>&1 || return 0
+	p="$PPID"
+	while ((n < 8)) && [[ $p =~ ^[0-9]+$ ]] && ((p > 1)); do
+		next=""
+		comm=""
+		read -r next comm <<<"$(ps -o ppid=,comm= -p "$p" 2>/dev/null || true)" || true
+		[[ -n $comm ]] || return 0
+		if is_agent_cmd "$comm"; then
+			REPLY="$p"
+			return 0
+		fi
+		args=$(ps -o args= -p "$p" 2>/dev/null || true)
+		args="${args#"${args%%[![:space:]]*}"}"
+		if is_agent_cmd "${args%% *}"; then
+			REPLY="$p"
+			return 0
+		fi
+		p="$next"
+		n=$((n + 1))
+	done
+	REPLY=""
+	return 0
+}
+
 # window_stamp OPTION VALUE
 # Mirrors a self-report into the WINDOW option tmux-update-icons would otherwise
 # write on its 1s tick, then forces the reflow that rebuilds @window_label_*
@@ -583,6 +654,20 @@ transcript_line=""
 server_line=""
 [[ -n $server_pid ]] && server_line=$'\n'"server=$server_pid"
 
+# Pid of the agent hosting this pane (#1091): positive evidence for window
+# occupancy when the pane's foreground command is a launcher shell, not the
+# agent. Reached only on this write path — mark-seen and clear exit above and
+# never fork ps. Stored pid read fork-free; unresolved writes no line.
+stored_agent_pid=""
+if [[ -f "$PANES_DIR/$pane_file" ]]; then
+	while IFS='=' read -r key val; do
+		[[ $key == "agent_pid" ]] && stored_agent_pid="$val"
+	done <"$PANES_DIR/$pane_file"
+fi
+resolve_agent_pid "$stored_agent_pid"
+agent_line=""
+[[ -n $REPLY ]] && agent_line=$'\n'"agent_pid=$REPLY"
+
 # Write pane state with timestamp. A passive idle write (idle_prompt, resume)
 # preserves the prior timestamp so the "last active" label reflects real work.
 printf -v _now '%(%s)T' -1
@@ -598,7 +683,7 @@ fi
 cat >"$PANES_DIR/$pane_file" <<EOF
 state=$state
 timestamp=$ts
-session=$session_name${server_line}${unseen_line}${transcript_line}
+session=$session_name${server_line}${agent_line}${unseen_line}${transcript_line}
 EOF
 
 # Space-separated triple (state, epoch, unseen) — all three are token-safe, so a

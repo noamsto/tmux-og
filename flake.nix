@@ -2214,6 +2214,19 @@
               touch $out
             '';
 
+          # #1091: launcher-hosted agent occupancy (reader side, real scratch tmux
+          # server) and the claude-status-update agent_pid writer.
+          launcher-hosted-agent-tests =
+            pkgs.runCommand "launcher-hosted-agent-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash pkgs.procps];
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/launcher-hosted-agent.bats
+              bats tests/claude-status-agent-pid.bats
+              touch $out
+            '';
+
           agent-detect-merge-tests =
             pkgs.runCommand "agent-detect-merge-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils];

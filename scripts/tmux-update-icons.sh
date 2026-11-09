@@ -146,6 +146,19 @@ arm_agent_detect() {
 	# caller can reconcile occupancy from the same rows.
 	local -A win_has=() win_cur=() win_manual=() win_bridge=() win_sess=() win_ai=() win_task=()
 	local pid cmd piped wid bridge ha manual birth seen ai task sname
+	# This server's pid for the launcher-hosted evidence check (#1091): $SERVER_PID
+	# on the per-tick path, else parsed out of $TMUX (`sock,pid,idx`), which the
+	# run-shell sweep inherits. Empty fails closed against a `server=` line.
+	local srv hosted_ok=0
+	srv=${SERVER_PID:-}
+	[[ -n $srv ]] || {
+		srv=${TMUX:-}
+		srv=${srv#*,}
+		srv=${srv%%,*}
+		[[ $srv =~ ^[0-9]+$ ]] || srv=""
+	}
+	# Guarded so a suite sourcing this script without lib-claude stays quiet.
+	declare -F claude_pane_hosts_agent >/dev/null && hosted_ok=1
 	while IFS='|' read -r pid cmd piped wid bridge ha manual birth seen ai task sname; do
 		# A here-string of an empty result still yields one blank line.
 		[[ -n $pid ]] || continue
@@ -163,6 +176,17 @@ arm_agent_detect() {
 		case " $AGENT_COMMANDS " in
 		*" $REPLY "*) ;;
 		*)
+			# Launcher-hosted agent (#1091): the pane reports its launcher shell,
+			# but a live hook-written agent_pid says an agent runs under it. It
+			# counts as occupancy and gets the live/ presence stamp only — no
+			# pipe-pane (agent-detect resolves its manifest from
+			# pane_current_command, so on this pane it would exit at once and
+			# every sweep would re-fork it), and no birth repaint or grace.
+			if ((hosted_ok)) && [[ $bridge != 1 ]] && claude_pane_hosts_agent "$pid" "$srv"; then
+				[[ $wid =~ ^@[0-9]+$ ]] && win_has[$wid]=1
+				((stamp)) && printf '%s\n' "$CLAUDE_NOW" >"$CLAUDE_LIVE_DIR/${pid#%}"
+				continue
+			fi
 			# Sweep only: a stamped pane seen running a non-agent command for
 			# BIRTH_GRACE_SWEEPS sweeps loses its stamp, so an agent started late
 			# in an old, resized pane is not nudged.
@@ -657,6 +681,18 @@ main() {
 					;;
 				esac
 			done
+			# Launcher-hosted agent (#1091): no pane reports an agent command, but a
+			# pane may host one under its launcher shell (live agent_pid in its
+			# panes/ file, claude_pane_hosts_agent). win_panes holds bare ids.
+			if [[ -z $has_agent ]]; then
+				# shellcheck disable=SC2086  # win_panes is a space-joined string of bare pane ids; word-split intentionally
+				for p in ${win_panes[$wkey]:-}; do
+					if claude_pane_hosts_agent "$p" "$SERVER_PID"; then
+						has_agent=1
+						break
+					fi
+				done
+			fi
 		fi
 		naming_read=1
 		if [[ -z $has_agent && ${win_cur_manual[$wkey]:-} != 1 && ${win_cur_bridge[$wkey]:-} != 1 ]]; then

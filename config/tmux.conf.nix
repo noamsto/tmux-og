@@ -258,8 +258,8 @@
     raw = builtins.readFile ../scripts/${name}.sh;
     patched =
       builtins.replaceStrings
-      ["@lib_log@" "@notify@" "@lib_claude@" "@reflow@"]
-      ["${lib-log}" notifyBin "${lib-claude}" "${script.tmux-reflow-windows}/bin/tmux-reflow-windows"]
+      ["@lib_log@" "@notify@" "@lib_claude@" "@reflow@" "@AGENT_COMMANDS@"]
+      ["${lib-log}" notifyBin "${lib-claude}" "${script.tmux-reflow-windows}/bin/tmux-reflow-windows" agentCommands]
       raw;
   in
     pkgs.writeShellScriptBin name patched;
