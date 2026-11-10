@@ -471,11 +471,11 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1794162055,
-        "narHash": "sha256-qHKr5PAsG3iXNpvccktadVSQJ+DTk3JZbXTdFnvuVcw=",
+        "lastModified": 1794226748,
+        "narHash": "sha256-RACPRGWtGfnNhORkf89vwbkak7Hpc+PPpBU4q7PEvEU=",
         "owner": "noamsto",
         "repo": "prdash",
-        "rev": "03c7383c77f94de4b4032ad783fe1dd6d42f2989",
+        "rev": "1d9966b2efa1c0dbf1456a83caaa50719b9b3973",
         "type": "github"
       },
       "original": {
