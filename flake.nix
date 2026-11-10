@@ -142,6 +142,25 @@
           '';
         });
 
+        # nixpkgs packages nilaway 0-unstable-2025-03-07, whose vendored
+        # golang.org/x/tools panics ("unexpected expr: *ast.KeyValueExpr" in
+        # go/ssa) under the Go 1.27 standard library. Build upstream HEAD
+        # instead; drop this once nixpkgs ships a Go-1.27-capable nilaway.
+        # Upstream's test suite is killed on CI runners when built from source
+        # (signal: killed, not a test failure), so it is skipped. goLintGate
+        # still runs nilaway over the modules.
+        nilaway = pkgs.nilaway.overrideAttrs {
+          doCheck = false;
+          version = "0-unstable-2026-09-18";
+          src = pkgs.fetchFromGitHub {
+            owner = "uber-go";
+            repo = "nilaway";
+            rev = "acb8859b9031bb9496be97e027df5573f9fb5340";
+            hash = "sha256-GvDZ5tlvOrTI93tYcIcLd45ZHdqwFopVtoBffD/kbuM=";
+          };
+          vendorHash = "sha256-qVmvDneq6V/q5UHZ/Cjjqd5/XPPNfvVGoxwg9nz4/Ds=";
+        };
+
         # golangci-lint (.golangci.yml) + nilaway over a Go module, offline
         # against the vendored deps buildGoModule already resolved. Reuses the
         # module's own derivation so no second vendorHash exists, but skips its
@@ -150,7 +169,7 @@
           pkg.overrideAttrs (old: {
             pname = "${old.pname}-lint";
             doCheck = true;
-            nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.golangci-lint pkgs.nilaway];
+            nativeBuildInputs = (old.nativeBuildInputs or []) ++ [pkgs.golangci-lint nilaway];
             buildPhase = "true";
             postInstall = "";
             checkPhase = ''
@@ -207,7 +226,7 @@
               pkgs.gopls
               pkgs.gotools
               pkgs.golangci-lint
-              pkgs.nilaway
+              nilaway
               pkgs.bats
               pkgs.jq
             ];
