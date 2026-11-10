@@ -97,6 +97,7 @@ type attachResult struct {
 type attachSpec struct {
 	bin, host, sess string
 	window          string // remote window id (@N) to focus; "" = none
+	newDir          string // OG_REMOTE_NEW_DIR: create the session at this remote path; "" = none
 	restore         bool
 }
 
@@ -167,6 +168,9 @@ func buildAttachCmd(spec attachSpec, grace time.Duration) *exec.Cmd {
 	cmd.Env = append(os.Environ(), "OG_REMOTE_OPEN_PROGRESS_FD=3", "SSH_ASKPASS_REQUIRE=never")
 	if spec.restore {
 		cmd.Env = append(cmd.Env, "OG_REMOTE_RESTORE=1")
+	}
+	if spec.newDir != "" && !spec.restore {
+		cmd.Env = append(cmd.Env, "OG_REMOTE_NEW_DIR="+spec.newDir)
 	}
 	cmd.SysProcAttr = attachSysProcAttr()
 	// A grandchild holding stderr must not stall Wait past a clean exit.

@@ -6,16 +6,39 @@ import (
 	"time"
 )
 
-// zoxide suggestions are local-scope-only: they have no host to be scoped to.
+// Local zoxide suggestions never reach a host scope; a single-host scope gets
+// that host's own remote dirs after its block instead, all-hosts scope none.
 func TestScopedItemsExcludesZoxideRows(t *testing.T) {
-	m := scopeModel()
+	m := zoxideHostModel("/srv/api")
 	m.zoxideItems = []listItem{
 		{target: "/git/alpha", createPath: "/git/alpha", createName: "alpha", searchText: "alpha"},
 	}
+	for _, scope := range []hostScope{{kind: scopeAll}, {kind: scopeHost, host: "alpha"}} {
+		m.scope = scope
+		for _, it := range m.scopedItems(func(h string) bool { return scope.kind == scopeAll || h == scope.host }) {
+			if it.createPath != "" {
+				t.Fatalf("local zoxide row leaked into scope %v: %+v", scope, it)
+			}
+			if scope.kind == scopeAll && it.remoteDirPath != "" {
+				t.Fatalf("remote dir row leaked into all-hosts scope: %+v", it)
+			}
+		}
+	}
+
+	m.scope = hostScope{kind: scopeHost, host: "alpha"}
 	got := m.scopedItems(func(h string) bool { return h == "alpha" })
-	for _, it := range got {
-		if it.createPath != "" {
-			t.Fatalf("zoxide row leaked into host scope: %+v", it)
+	last := got[len(got)-1]
+	if last.remoteDirPath != "/srv/api" || !got[len(got)-2].isZoxideHeader {
+		t.Fatalf("host scope must end with the New session divider and alpha's dir row, got %+v / %+v", got[len(got)-2], last)
+	}
+	if got[len(got)-3].remoteMirrorTarget == "" {
+		t.Fatalf("dir section must follow the (mirrored) rows: %+v", got[len(got)-3])
+	}
+
+	m.scope = hostScope{}
+	for _, it := range m.recombine().allItems {
+		if it.remoteDirPath != "" {
+			t.Fatalf("remote dir row leaked into local scope: %+v", it)
 		}
 	}
 }
