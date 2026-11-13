@@ -1583,7 +1583,7 @@ func envOrMap(envKey string, tmuxOpts map[string]string, tmuxOpt, fallback strin
 	return fallback
 }
 
-var hostColorsNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var hostColorsNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)
 
 // runHostColors prints "host name" per line for each requested host, using the
 // same slot assignment as the picker for the raw @remote_bridge_hosts value in

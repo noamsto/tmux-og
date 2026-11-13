@@ -716,11 +716,12 @@ func TestPaneMapReadsTwelveFieldRows(t *testing.T) {
 
 func TestRunHostColors(t *testing.T) {
 	var buf strings.Builder
-	runHostColors(&buf, []string{"lab mbp", "lab", "bad host", "x;y", "mbp", "other.h-1"})
+	runHostColors(&buf, []string{"lab mbp", "lab", "bad host", "x;y", "mbp", "other.h-1", "user@lab", "@bad", "a#b", "a(b"})
 	hosts := hostcolor.ParseHosts("lab mbp")
 	want := "lab " + hostcolor.Name(hosts, "lab") + "\n" +
 		"mbp " + hostcolor.Name(hosts, "mbp") + "\n" +
-		"other.h-1 " + hostcolor.Name(hosts, "other.h-1") + "\n"
+		"other.h-1 " + hostcolor.Name(hosts, "other.h-1") + "\n" +
+		"user@lab " + hostcolor.Name(hosts, "user@lab") + "\n"
 	if buf.String() != want {
 		t.Errorf("got %q, want %q", buf.String(), want)
 	}

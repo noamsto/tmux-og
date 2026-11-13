@@ -60,7 +60,7 @@ var volatileFields = []string{
 	"#{@window_has_agent}",
 	"#{@bridge_usage}",
 	"#{@og_dispatchers}",
-	"#{E:@session_host_marker}", "#{@remote_bridge_hosts}",
+	"#{E:@session_host_marker}", "#{s/[|]/ /:@remote_bridge_hosts}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message

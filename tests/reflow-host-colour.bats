@@ -159,6 +159,35 @@ picker_token() {
 	[[ "$(tmux show -v @session_host_marker)" == *'lab'* ]]
 }
 
+@test "a user@host name is coloured and listed in the marker" {
+	tmux set -g @remote_bridge_hosts "user@lab"
+	tmux new-window -d
+	stamp_placed 1 user@lab
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	local tok
+	tok="$(picker_token "user@lab" user@lab)"
+	[ -n "$tok" ]
+	[ "$(tmux show -wv -t S:1 @window_host_color)" = "$tok" ]
+	[[ "$(tmux show -v @session_host_marker)" == *"#[fg=${tok}]user@lab" ]]
+}
+
+@test "hosts with parens, spaces or a leading symbol are left out of the marker" {
+	tmux new-window -d
+	stamp_placed 1 'a(b'
+	tmux new-window -d
+	stamp_placed 2 'a b'
+	tmux new-window -d
+	stamp_placed 3 '@x'
+	tmux new-window -d
+	stamp_placed 4 lab
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	[ "$(tmux show -v @session_host_marker | sed 's/#\[[^]]*\]//g')" = "R lab" ]
+}
+
 @test "the folded line carries the marker after the session name" {
 	tmux set -g @remote_bridge_hosts "lab"
 	tmux new-window -d

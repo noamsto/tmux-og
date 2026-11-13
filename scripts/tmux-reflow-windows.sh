@@ -543,6 +543,19 @@ fi
 # --- Batch simple commands via tmux source, direct calls for complex formats ---
 declare -a tmux_cmds=()
 
+# Insertion sort of marker_hosts in the C collation, without a sort fork.
+sort_marker_hosts() {
+	local LC_COLLATE=C i j v
+	for ((i = 1; i < ${#marker_hosts[@]}; i++)); do
+		v=${marker_hosts[i]}
+		for ((j = i - 1; j >= 0; j--)); do
+			[[ ${marker_hosts[j]} > $v ]] || break
+			marker_hosts[j + 1]=${marker_hosts[j]}
+		done
+		marker_hosts[j + 1]=$v
+	done
+}
+
 # Per-host colour (#1102): one fork, only when a placed window exists. The Go
 # package behind it owns the slot assignment shared with the session picker, so
 # the algorithm is never copied into bash. A failed call (or an unresolved
@@ -555,7 +568,7 @@ if ((host_any)); then
 	declare -A seen_host=()
 	for idx in "${indices[@]}"; do
 		bh=${win_bhost[$idx]}
-		[[ $bh =~ ^[A-Za-z0-9._-]+$ ]] || continue
+		[[ $bh =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || continue
 		[[ -n ${seen_host[$bh]:-} ]] && continue
 		seen_host[$bh]=1
 		marker_hosts+=("$bh")
@@ -567,7 +580,7 @@ if ((host_any)); then
 				[[ $c =~ ^(peach|teal|pink|yellow|sky)$ ]] && host_color[$h]="#{@thm_$c}"
 			done < <("$picker_generate" host-colors "$BRIDGE_HOSTS" "${marker_hosts[@]}" 2>/dev/null)
 		fi
-		mapfile -t marker_hosts < <(printf '%s\n' "${marker_hosts[@]}" | LC_ALL=C sort)
+		sort_marker_hosts
 	fi
 fi
 
@@ -589,7 +602,7 @@ for idx in "${indices[@]}"; do
 		fi
 	fi
 	hcolor=""
-	[[ ${win_bhost[$idx]} =~ ^[A-Za-z0-9._-]+$ ]] && hcolor=${host_color[${win_bhost[$idx]}]:-}
+	[[ ${win_bhost[$idx]} =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] && hcolor=${host_color[${win_bhost[$idx]}]:-}
 	tmux \
 		set -w -t "$target" @window_label_short "${win_short[$idx]}" ';' \
 		set -w -t "$target" @window_label_id "${win_id[$idx]}" ';' \
@@ -622,7 +635,7 @@ if ((${#marker_hosts[@]})); then
 	done
 	tmux set -t "$SESSION" @session_host_marker "$marker"
 else
-	tmux set -u -t "$SESSION" @session_host_marker 2>/dev/null
+	tmux_cmds+=("set -u -t '$SESSION' @session_host_marker")
 fi
 
 # Split points and status line count
@@ -725,7 +738,7 @@ AGO=" #[fg=#{@thm_overlay_1}]#{p-3:@window_claude_ago}"
 # windows carry an empty @window_crew_disp and render a gapless full-width label.
 CREW=""
 ((crew_colw > 0)) && CREW="#{?${bopt[crew_color]},#[fg=${bopt[crew_color]}#,bg=#{@thm_bg}],}#{@window_crew_disp}${BASE}"
-# Host badge of a placed mirror window, peach, before the crew badge. Emitted only
+# Host badge of a placed mirror window, in its host colour (peach fallback), before the crew badge. Emitted only
 # when some window carries one (host_any), like the crew badge.
 HOST=""
 ((host_any)) && HOST="#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
