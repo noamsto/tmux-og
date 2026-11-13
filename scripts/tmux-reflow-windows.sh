@@ -80,12 +80,13 @@ fi
 # client without a UTF-8 locale, exactly as it does a tab (#373) — which
 # collapsed all three fields into win_count, so prev_key was always empty (cache
 # never hit) and HEIGHT always 0 (the 4th status row could never unlock).
-# @icon_remote (the placed-window host badge's glyph, read once per pass) sits
-# ahead of @bridge_nudge for the same reason; @bridge_nudge is last so a '|' in
-# the path stays inside that field.
+# @icon_remote (the placed-window host badge's glyph, read once per pass) and
+# @remote_bridge_hosts (the host-colour palette order, '|' squashed) sit ahead of
+# @bridge_nudge for the same reason; @bridge_nudge is last so a '|' in the path
+# stays inside that field.
 # @og_status_folded / @og_status_cap (prefix+Z, tmux-status-fold) are closed
 # tokens: the fold flag and the animation's temporary ceiling on `status`.
-IFS='|' read -r win_count ATTACHED prev_key HEIGHT FOLDED CAP ICON_REMOTE NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{session_attached}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@icon_remote}|#{@bridge_nudge}' 2>/dev/null)
+IFS='|' read -r win_count ATTACHED prev_key HEIGHT FOLDED CAP ICON_REMOTE BRIDGE_HOSTS NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{session_attached}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@icon_remote}|#{s/[|]/ /:@remote_bridge_hosts}|#{@bridge_nudge}' 2>/dev/null)
 # Height only gates the extra window row, so a size-neutral client (empty
 # client_height) falls back to the baseline cap instead of skipping the reflow
 # the way an empty width has to. Resolve it before it reaches the cache key so
@@ -193,7 +194,7 @@ FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
-declare -A win_host win_host_dw win_host_disp
+declare -A win_host win_host_dw win_host_disp win_bhost
 host_any=0         # 1 when some window is placed (gates the badge fragment in ENTRY)
 CREW_HOST_ICON='⇄' # plain Unicode (not a Nerd Font glyph); nerd alt: nf-md-remote
 crew_colw=0        # widest codename → shared agent-badge column (0 when no window is tagged)
@@ -314,12 +315,14 @@ while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum p
 	# totals, column floor) and dropped with it when a column overflows.
 	if [[ -n $bhost ]]; then
 		win_host[$idx]="${ICON_REMOTE} ${bhost} "
+		win_bhost[$idx]="$bhost"
 		measure_display_width "${win_host[$idx]}"
 		win_host_dw[$idx]=$REPLY_DW
 		host_any=1
 	else
 		win_host[$idx]=""
 		win_host_dw[$idx]=0
+		win_bhost[$idx]=""
 	fi
 
 	((total++))
@@ -540,6 +543,34 @@ fi
 # --- Batch simple commands via tmux source, direct calls for complex formats ---
 declare -a tmux_cmds=()
 
+# Per-host colour (#1102): one fork, only when a placed window exists. The Go
+# package behind it owns the slot assignment shared with the session picker, so
+# the algorithm is never copied into bash. A failed call (or an unresolved
+# placeholder in a suite without the binary) stamps no colour: tabs fall back to
+# today's peach and the marker renders uncoloured.
+# Hosts reach the marker's format-expanded text, so only a safe charset goes in.
+declare -A host_color
+declare -a marker_hosts=()
+if ((host_any)); then
+	declare -A seen_host=()
+	for idx in "${indices[@]}"; do
+		bh=${win_bhost[$idx]}
+		[[ $bh =~ ^[A-Za-z0-9._-]+$ ]] || continue
+		[[ -n ${seen_host[$bh]:-} ]] && continue
+		seen_host[$bh]=1
+		marker_hosts+=("$bh")
+	done
+	if ((${#marker_hosts[@]})); then
+		picker_generate="@picker_generate@"
+		if [[ $picker_generate != @* ]]; then
+			while read -r h c; do
+				[[ $c =~ ^(peach|teal|pink|yellow|sky)$ ]] && host_color[$h]="#{@thm_$c}"
+			done < <("$picker_generate" host-colors "$BRIDGE_HOSTS" "${marker_hosts[@]}" 2>/dev/null)
+		fi
+		mapfile -t marker_hosts < <(printf '%s\n' "${marker_hosts[@]}" | LC_ALL=C sort)
+	fi
+fi
+
 # Per-window vars use tmux's argv command-sequence form — one tmux exec per
 # window, the 11 sets joined by literal ';' arguments — instead of one exec per
 # set (9N execs before). Not `tmux source -`: source re-parses a text stream, so
@@ -557,6 +588,8 @@ for idx in "${indices[@]}"; do
 			clip_argv=(';' set -wu -t "$target" @window_label_clipped)
 		fi
 	fi
+	hcolor=""
+	[[ ${win_bhost[$idx]} =~ ^[A-Za-z0-9._-]+$ ]] && hcolor=${host_color[${win_bhost[$idx]}]:-}
 	tmux \
 		set -w -t "$target" @window_label_short "${win_short[$idx]}" ';' \
 		set -w -t "$target" @window_label_id "${win_id[$idx]}" ';' \
@@ -569,9 +602,28 @@ for idx in "${indices[@]}"; do
 		set -w -t "$target" @window_pr_num "${win_pr_num[$idx]}" ';' \
 		set -w -t "$target" @window_pr_pad "${win_pr_pad[$idx]}" ';' \
 		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" ';' \
-		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" \
+		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" ';' \
+		set -w -t "$target" @window_host_color "$hcolor" \
 		"${clip_argv[@]}"
 done
+
+# Session marker (#1102): "<icon> h1 · h2" in each host's colour, drawn on line 0
+# after the session name and on the folded line. Direct argv, not the `source -`
+# batch below: the value carries '#[' and '#{' that a re-parse would eat. Unset
+# when no placed window remains so a departed host's marker never lingers.
+if ((${#marker_hosts[@]})); then
+	marker="#[fg=#{@thm_overlay_1}]${ICON_REMOTE}"
+	marker_fallback='#{@thm_subtext_0}'
+	sep=" "
+	for h in "${marker_hosts[@]}"; do
+		hc=${host_color[$h]:-$marker_fallback}
+		marker+="${sep}#[fg=${hc}]${h}"
+		sep="#[fg=#{@thm_overlay_1}] · "
+	done
+	tmux set -t "$SESSION" @session_host_marker "$marker"
+else
+	tmux set -u -t "$SESSION" @session_host_marker 2>/dev/null
+fi
 
 # Split points and status line count
 tmux_cmds+=("set -t '$SESSION' @window_split '$split1'")
@@ -676,8 +728,12 @@ CREW=""
 # Host badge of a placed mirror window, peach, before the crew badge. Emitted only
 # when some window carries one (host_any), like the crew badge.
 HOST=""
-((host_any)) && HOST="#[fg=#{@thm_peach}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
-ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDX}: ${HOST}${CREW}${LABEL_Z}${ICONFG} ${ICON}${PRCOLOR}#{@window_pr_glyph}${PRNUM}#{@window_pr_num}#[nounderscore]#{@window_pr_pad}${AGO}#[norange]"
+((host_any)) && HOST="#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
+# A placed tab's index takes the same colour as its badge; non-placed tabs keep
+# BASE. BASE is re-asserted after it so the label reverts to the tab colour.
+IDXC="${IDX}"
+((host_any)) && IDXC="#{?#{@window_host_color},#[fg=#{E:@window_host_color}#,bg=#{@thm_bg}],}${IDX}#{?#{@window_host_color},${BASE},}"
+ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${CREW}${LABEL_Z}${ICONFG} ${ICON}${PRCOLOR}#{@window_pr_glyph}${PRNUM}#{@window_pr_num}#[nounderscore]#{@window_pr_pad}${AGO}#[norange]"
 
 # Multi-line branches stay on direct `tmux set` calls: FMT0 contains embedded
 # single quotes (e.g. '#{session_name}') that break outer-single-quoted
@@ -692,7 +748,7 @@ ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDX}: ${HOST}${CREW}${LA
 # agent test is status-format[1]'s own (a mirror window always counts).
 FOLD_LABEL="#{window_index}: #{=/40/…:#{@window_label_id}#{@window_label_rest_long}}"
 FOLD_AGENT="#{?#{?#{@bridge_win},1,#{@window_has_agent}}, #[fg=#{@thm_subtext_0}]#{window_index} #{@window_icon_display},}"
-FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[fg=#{@thm_mauve},bold]#{W:#{?window_active,${FOLD_LABEL},}}#[nobold]#{W:#{?window_active,,${FOLD_AGENT}}}"
+FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name}#{?#{@session_host_marker}, #{E:@session_host_marker},} #[fg=#{@thm_subtext_0},nobold]│ #[fg=#{@thm_mauve},bold]#{W:#{?window_active,${FOLD_LABEL},}}#[nobold]#{W:#{?window_active,,${FOLD_AGENT}}}"
 if [[ $FOLDED == 1 ]]; then
 	tmux set -t "$SESSION" status-format[0] "$FOLD_FMT"
 elif ((! needs_multiline && current_line == 0)); then

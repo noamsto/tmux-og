@@ -12,6 +12,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/noamsto/themestate"
 	"github.com/noamsto/tmux-og/picker/claudestatus"
+	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/proctree"
 )
 
@@ -133,6 +135,10 @@ type agentPaneInfo struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "host-colors" {
+		runHostColors(os.Stdout, os.Args[2:])
+		return
+	}
 	if err := applyConfig(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -1575,4 +1581,23 @@ func envOrMap(envKey string, tmuxOpts map[string]string, tmuxOpt, fallback strin
 		return v
 	}
 	return fallback
+}
+
+var hostColorsNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// runHostColors prints "host name" per line for each requested host, using the
+// same slot assignment as the picker for the raw @remote_bridge_hosts value in
+// args[0]. Hosts that are not plain ssh aliases are skipped: the output feeds
+// tmux formats.
+func runHostColors(w io.Writer, args []string) {
+	if len(args) == 0 {
+		return
+	}
+	hosts := hostcolor.ParseHosts(args[0])
+	for _, h := range args[1:] {
+		if !hostColorsNameRe.MatchString(h) {
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "%s %s\n", h, hostcolor.Name(hosts, h))
+	}
 }

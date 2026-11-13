@@ -13,6 +13,7 @@ import (
 
 	"github.com/noamsto/themestate"
 	"github.com/noamsto/tmux-og/picker/claudestatus"
+	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
 
@@ -59,6 +60,7 @@ var volatileFields = []string{
 	"#{@window_has_agent}",
 	"#{@bridge_usage}",
 	"#{@og_dispatchers}",
+	"#{E:@session_host_marker}", "#{@remote_bridge_hosts}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message
@@ -90,6 +92,7 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	a.windowHasAgent = f[21]
 	a.bridgeUsage = f[22]
 	a.dispatchers = f[23]
+	a.hostMarker, a.remoteBridgeHosts = f[24], f[25]
 	return f[0] == "1", true
 }
 
@@ -165,10 +168,12 @@ type args struct {
 	bridgeCrewName, bridgeCrewColor                 string
 	bridgeLabelID, bridgeLabelRestLong              string
 	bridgeUsage, dispatchers                        string
+	hostMarker, remoteBridgeHosts                   string
 
 	// theme palette (passed pre-expanded from tmux @thm_* options)
 	thmBg, thmRed, thmMauve, thmBlue, thmText, thmSubtext0 string
 	thmOverlay1, thmPeach, thmGreen                        string
+	thmTeal, thmPink, thmYellow, thmSky                    string
 	flavor                                                 string
 
 	// glyphs (tmux @icon_* options + Nix enrich icon set for issue provider)
@@ -231,12 +236,18 @@ func sessionSegment(a args, prefixActive bool) string {
 	// opens the session picker.
 	b.WriteString(" #[range=left]" + a.iconSession + " " + a.session + "#[norange]  ")
 
+	// Pre-styled by the reflow: names the remote hosts this session holds a
+	// placed mirror window from, so it shows on every window of the session.
+	if a.hostMarker != "" {
+		b.WriteString(a.hostMarker + "  ")
+	}
+
 	// Remote-bridge mirror window (#167 @bridge_win opt-out): the active
 	// window's identity belongs to the remote session, not this host repo —
 	// stop at the session pill, after naming the machine it really runs on.
 	if a.bridgeWin == "1" {
-		if a.bridgeHost != "" {
-			b.WriteString("#[fg=" + a.thmPeach + "]" + a.iconRemote + " " + a.bridgeHost + "  ")
+		if a.bridgeHost != "" && a.hostMarker == "" {
+			b.WriteString("#[fg=" + a.hostHex(a.bridgeHost) + "]" + a.iconRemote + " " + a.bridgeHost + "  ")
 		}
 		// Additive, like @pr_draft on a PR badge: names the mirror's own frozen
 		// state without touching the host badge above it.
@@ -290,6 +301,19 @@ func sessionSegment(a args, prefixActive bool) string {
 			branchDisplay(a.branch, a.panePath))
 	}
 	return b.String()
+}
+
+// hostHex resolves host's per-host palette colour, the same slot the session
+// picker gives it. An unpassed palette flag falls back to peach.
+func (a args) hostHex(host string) string {
+	hex := map[string]string{
+		"peach": a.thmPeach, "teal": a.thmTeal, "pink": a.thmPink,
+		"yellow": a.thmYellow, "sky": a.thmSky,
+	}[hostcolor.Name(hostcolor.ParseHosts(a.remoteBridgeHosts), host)]
+	if hex == "" {
+		return a.thmPeach
+	}
+	return hex
 }
 
 // bridgeDisconnectedGlyph flags a mirror whose control connection dropped: the
@@ -432,6 +456,10 @@ func main() {
 	flag.StringVar(&a.thmOverlay1, "thm-overlay1", "", "")
 	flag.StringVar(&a.thmPeach, "thm-peach", "", "")
 	flag.StringVar(&a.thmGreen, "thm-green", "", "")
+	flag.StringVar(&a.thmTeal, "thm-teal", "", "")
+	flag.StringVar(&a.thmPink, "thm-pink", "", "")
+	flag.StringVar(&a.thmYellow, "thm-yellow", "", "")
+	flag.StringVar(&a.thmSky, "thm-sky", "", "")
 	flag.StringVar(&a.flavor, "flavor", "", "")
 	flag.StringVar(&a.iconSession, "icon-session", "", "")
 	flag.StringVar(&a.iconBranch, "icon-branch", "", "")
