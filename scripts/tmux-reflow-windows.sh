@@ -545,7 +545,7 @@ declare -a tmux_cmds=()
 
 # Insertion sort of marker_hosts in the C collation, without a sort fork.
 sort_marker_hosts() {
-	local LC_COLLATE=C i j v
+	local LC_ALL=C i j v
 	for ((i = 1; i < ${#marker_hosts[@]}; i++)); do
 		v=${marker_hosts[i]}
 		for ((j = i - 1; j >= 0; j--)); do
