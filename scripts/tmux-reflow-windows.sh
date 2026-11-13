@@ -556,7 +556,7 @@ sort_marker_hosts() {
 	done
 }
 
-# Per-host colour (#1102): one fork, only when a placed window exists. The Go
+# Per-host colour: one fork, only when a placed window exists. The Go
 # package behind it owns the slot assignment shared with the session picker, so
 # the algorithm is never copied into bash. A failed call (or an unresolved
 # placeholder in a suite without the binary) stamps no colour: tabs fall back to
@@ -620,7 +620,7 @@ for idx in "${indices[@]}"; do
 		"${clip_argv[@]}"
 done
 
-# Session marker (#1102): "<icon> h1 · h2" in each host's colour, drawn on line 0
+# Session marker: "<icon> h1 · h2" in each host's colour, drawn on line 0
 # after the session name and on the folded line. Direct argv, not the `source -`
 # batch below: the value carries '#[' and '#{' that a re-parse would eat. Unset
 # when no placed window remains so a departed host's marker never lingers.
@@ -738,8 +738,9 @@ AGO=" #[fg=#{@thm_overlay_1}]#{p-3:@window_claude_ago}"
 # windows carry an empty @window_crew_disp and render a gapless full-width label.
 CREW=""
 ((crew_colw > 0)) && CREW="#{?${bopt[crew_color]},#[fg=${bopt[crew_color]}#,bg=#{@thm_bg}],}#{@window_crew_disp}${BASE}"
-# Host badge of a placed mirror window, in its host colour (peach fallback), before the crew badge. Emitted only
-# when some window carries one (host_any), like the crew badge.
+# Host badge of a placed mirror window, in its host colour (peach fallback),
+# before the crew badge. Emitted only when some window carries one (host_any),
+# like the crew badge.
 HOST=""
 ((host_any)) && HOST="#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
 # A placed tab's index takes the same colour as its badge; non-placed tabs keep
