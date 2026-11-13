@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/hostcolor"
 )
 
 // noRestore is a stub restoreProbe for tests that don't exercise the
@@ -1468,5 +1470,31 @@ func TestRemoteSessionRowsKeepPlacedWindowWhenNotCurrent(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Sessions = %q, want native kept (its placed window is not current)", res.Sessions)
+	}
+}
+
+func TestHostPaletteMatchesHostcolor(t *testing.T) {
+	for i, p := range hostPalette {
+		if want := "THM_" + strings.ToUpper(hostcolor.Palette[i]); p[0] != want {
+			t.Errorf("hostPalette[%d] = %s, want %s", i, p[0], want)
+		}
+	}
+}
+
+// The status bar takes its host colours from hostcolor.Name; this pins that
+// the picker's hostColorFunc resolves to the same slot, probing included.
+func TestHostColorFuncEqualsHostcolorName(t *testing.T) {
+	raw := "tp-g6 mbp halo lab nas dev gpu"
+	opts := map[string]string{"@remote_bridge_hosts": raw}
+	hosts := hostcolor.ParseHosts(raw)
+	fn := hostColorFunc(opts)
+	ansi := map[string]string{}
+	for i, p := range hostPalette {
+		ansi[hostcolor.Palette[i]] = ansiFg(p[1])
+	}
+	for _, h := range append(append([]string(nil), hosts...), "unlisted") {
+		if got, want := fn(h), ansi[hostcolor.Name(hosts, h)]; got != want {
+			t.Errorf("hostColorFunc(%q) = %q, want %q", h, got, want)
+		}
 	}
 }

@@ -894,15 +894,16 @@
               touch $out
             '';
 
-          # status-format[1]'s peach host badge is gated on @bridge_placed, so
-          # no other window, dedicated mirrors included, shows it.
+          # status-format[1]'s host badge (per-host colour, peach fallback) is
+          # gated on @bridge_placed, so no other window, dedicated mirrors
+          # included, shows it.
           host-badge-conf-assertions =
             pkgs.runCommand "host-badge-conf-assertions" {
               nativeBuildInputs = [pkgs.gnugrep];
               CONF = tmuxConfig.tmuxConf;
             } ''
-              if ! grep -qF '#{?#{@bridge_placed},#[fg=#{@thm_peach}' "$CONF"; then
-                echo "status-format[1] has no @bridge_placed-gated peach host badge — see docs/agents/status-bar.md" >&2
+              if ! grep -qF '#{?#{@bridge_placed},#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}' "$CONF"; then
+                echo "status-format[1] has no @bridge_placed-gated per-host-coloured host badge — see docs/agents/status-bar.md" >&2
                 exit 1
               fi
               touch $out
@@ -2306,6 +2307,23 @@
               [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
               [ "$(grep -c "^set -g @og_icons_job \".*'#{pid}')\"\$" "$CONF")" -eq 1 ]
               grep -Fq 'set -g status-format[0] "#{E:@og_icons_job}' "$CONF"
+              touch $out
+            '';
+
+          # Per-host tab colour + session host marker (#1102). The reflow script
+          # shells out to tmux-picker-generate (the one owner of the host->colour
+          # assignment), so the plain picker package is an input here; no tmux
+          # config or pickerChecked is needed, keeping the suite cheap.
+          reflow-host-colour-tests =
+            pkgs.runCommand "reflow-host-colour-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gawk pkgs.tmux];
+              PICKER_GENERATE = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-picker-generate";
+              LANG = "C.UTF-8";
+              LC_ALL = "C.UTF-8";
+            } ''
+              cp -r ${./scripts} scripts
+              cp -r ${./tests} tests
+              bats tests/reflow-host-colour.bats
               touch $out
             '';
 
