@@ -6,20 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/mirrorname"
 	"github.com/noamsto/tmux-og/picker/ownerdir"
 )
@@ -157,22 +156,7 @@ const (
 
 // parseRemoteHosts splits a whitespace-separated @remote_bridge_hosts value
 // into ssh Host aliases. Empty tokens are dropped.
-func parseRemoteHosts(raw string) []string {
-	fields := strings.Fields(raw)
-	if len(fields) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(fields))
-	seen := make(map[string]bool, len(fields))
-	for _, h := range fields {
-		if seen[h] {
-			continue
-		}
-		seen[h] = true
-		out = append(out, h)
-	}
-	return out
-}
+func parseRemoteHosts(raw string) []string { return hostcolor.ParseHosts(raw) }
 
 // configuredHosts is the @remote_bridge_hosts list with cached self-aliases
 // dropped — the host list Tab's cycle and scopeAll's membership check share.
@@ -1065,54 +1049,17 @@ var hostPalette = [...][2]string{
 // empty opts, and hosts outside the configured list, fall back to plain hash
 // (collisions possible).
 func hostColorFunc(tmuxOpts map[string]string) func(string) string {
-	colors := make([]string, len(hostPalette))
+	colors := make(map[string]string, len(hostPalette))
 	for i, p := range hostPalette {
-		colors[i] = ansiFg(envOrMap(p[0], tmuxOpts, "@"+strings.ToLower(p[0]), p[1]))
+		colors[hostcolor.Palette[i]] = ansiFg(envOrMap(p[0], tmuxOpts, "@"+strings.ToLower(p[0]), p[1]))
 	}
-	n := len(colors)
-	preferredSlot := func(host string) int {
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(host))
-		return int(h.Sum32() % uint32(n)) //nolint:gosec // G115: value is non-negative and fits uint32
-	}
-	hashColor := func(host string) string {
-		return colors[preferredSlot(host)]
-	}
-	hosts := parseRemoteHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", ""))
-	if len(hosts) == 0 {
-		return func(host string) string {
-			if host == "" {
-				return ""
-			}
-			return hashColor(host)
-		}
-	}
-	sorted := append([]string(nil), hosts...)
-	sort.Strings(sorted)
-	assigned := make(map[string]int, len(sorted))
-	used := make([]bool, n)
-	for _, host := range sorted {
-		preferred := preferredSlot(host)
-		slot := preferred
-		for i := range n {
-			candidate := (preferred + i) % n
-			if !used[candidate] {
-				slot = candidate
-				used[candidate] = true
-				break
-			}
-			slot = candidate
-		}
-		assigned[host] = slot
-	}
+	hosts := hostcolor.ParseHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", ""))
 	return func(host string) string {
-		if host == "" {
+		name := hostcolor.Name(hosts, host)
+		if name == "" {
 			return ""
 		}
-		if slot, ok := assigned[host]; ok {
-			return colors[slot]
-		}
-		return hashColor(host)
+		return colors[name]
 	}
 }
 

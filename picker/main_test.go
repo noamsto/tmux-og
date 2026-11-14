@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/noamsto/tmux-og/picker/hostcolor"
 )
 
 func TestCollectorArgvCarriesNotModalFilter(t *testing.T) {
@@ -709,5 +711,23 @@ func TestPaneMapReadsTwelveFieldRows(t *testing.T) {
 	}
 	if _, ok := pm["6"]; ok {
 		t.Error("paneMap() accepted an 11-field row")
+	}
+}
+
+func TestRunHostColors(t *testing.T) {
+	var buf strings.Builder
+	runHostColors(&buf, []string{"lab mbp", "lab", "bad host", "x;y", "mbp", "other.h-1", "user@lab", "@bad", "a#b", "a(b"})
+	hosts := hostcolor.ParseHosts("lab mbp")
+	want := "lab " + hostcolor.Name(hosts, "lab") + "\n" +
+		"mbp " + hostcolor.Name(hosts, "mbp") + "\n" +
+		"other.h-1 " + hostcolor.Name(hosts, "other.h-1") + "\n" +
+		"user@lab " + hostcolor.Name(hosts, "user@lab") + "\n"
+	if buf.String() != want {
+		t.Errorf("got %q, want %q", buf.String(), want)
+	}
+	buf.Reset()
+	runHostColors(&buf, nil)
+	if buf.Len() != 0 {
+		t.Errorf("no args must print nothing, got %q", buf.String())
 	}
 }

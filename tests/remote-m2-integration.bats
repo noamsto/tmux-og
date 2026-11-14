@@ -4033,7 +4033,8 @@ $pane 1" ]; then
 		--icon-usage-claude C --icon-usage-codex X --icon-usage-cursor U --icon-usage-pi P \
 		--thm-bg '#1e1e2e' --thm-red '#f38ba8' --thm-mauve '#cba6f7' --thm-blue '#89b4fa' \
 		--thm-text '#cdd6f4' --thm-subtext0 '#a6adc8' --thm-overlay1 '#7f849c' \
-		--thm-peach '#fab387' --thm-green '#a6e3a1' --flavor mocha)"
+		--thm-peach '#fab387' --thm-teal '#94e2d5' --thm-pink '#f5c2e7' --thm-yellow '#f9e2af' --thm-sky '#89dceb' \
+		--thm-green '#a6e3a1' --flavor mocha)"
 	last_line="$(tail -n1 <<<"$out")"
 	# The cache dir is per-test, so a later test cannot see this run's seeded
 	# figure; clear it anyway for symmetry.
@@ -7760,7 +7761,8 @@ into_statusline() {
 		--icon-usage-claude C --icon-usage-codex X --icon-usage-cursor U --icon-usage-pi P \
 		--thm-bg '#1e1e2e' --thm-red '#f38ba8' --thm-mauve '#cba6f7' --thm-blue '#89b4fa' \
 		--thm-text '#cdd6f4' --thm-subtext0 '#a6adc8' --thm-overlay1 '#7f849c' \
-		--thm-peach '#fab387' --thm-green '#a6e3a1' --flavor mocha
+		--thm-peach '#fab387' --thm-teal '#94e2d5' --thm-pink '#f5c2e7' --thm-yellow '#f9e2af' --thm-sky '#89dceb' \
+		--thm-green '#a6e3a1' --flavor mocha
 }
 
 # local_win_intact asserts the user's window kept its id, its live command and
@@ -7856,10 +7858,14 @@ local_win_intact() {
 	local_win_intact
 }
 
-@test "into: the statusline names the remote host on a placed window only" {
+@test "into: line 0 carries the session host marker on every window, never a placed-window host segment" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	into_host_up
 	bridge_up_into in5 rem --host lab
+
+	# The reflow owns the marker (a pre-styled fragment); stamp it by hand, as a
+	# config-less scratch server runs no reflow.
+	$DST set-option -t host @session_host_marker '#[fg=#fab387]⇄ lab'
 
 	placed="$(placed_wins "$sock")"
 	$DST select-window -t "$placed"
@@ -7867,10 +7873,15 @@ local_win_intact() {
 	$DST select-window -t "$local_win"
 	on_local="$(into_statusline)"
 
-	# The peach host segment (an empty --icon-remote, then the host), not a bare
-	# "lab" a branch or path could also hold.
-	[[ $on_placed == *'#[fg=#fab387] lab '* ]]
-	[[ $on_local != *'#[fg=#fab387] lab '* ]]
+	# Right after the session pill, on both windows.
+	[[ $on_placed == *'#[norange]  #[fg=#fab387]⇄ lab  '* ]]
+	[[ $on_local == *'#[norange]  #[fg=#fab387]⇄ lab  '* ]]
+	# The marker covers the placed window: no separate host segment beside it.
+	[ "$(grep -o 'lab' <<<"$on_placed" | wc -l | tr -d ' ')" -eq 1 ]
+
+	$DST set-option -u -t host @session_host_marker
+	on_none="$(into_statusline)"
+	[[ $on_none != *'⇄ lab'* ]]
 }
 
 @test "into: a placed mirror resizes to the host session's client" {

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/noamsto/tmux-og/picker/hostcolor"
 )
 
 func TestUnderModal(t *testing.T) {
@@ -18,8 +20,8 @@ func TestUnderModal(t *testing.T) {
 }
 
 func TestVolatileFieldsModalSwap(t *testing.T) {
-	if len(volatileFields) != 24 {
-		t.Fatalf("len = %d, want 24", len(volatileFields))
+	if len(volatileFields) != 26 {
+		t.Fatalf("len = %d, want 26", len(volatileFields))
 	}
 	for _, tc := range []struct {
 		idx  int
@@ -150,6 +152,12 @@ func TestSessionSegmentBridgeWinStopsAtPill(t *testing.T) {
 	}
 }
 
+// g6Hex is the hex hostcolor assigns "g6" among the fixtures' full palette
+// when @remote_bridge_hosts is empty (plain hash slot).
+var g6Hex = map[string]string{
+	"peach": "#fab", "teal": "#tea", "pink": "#pnk", "yellow": "#yel", "sky": "#sky",
+}[hostcolor.Name(nil, "g6")]
+
 func TestSessionSegmentBridgeFullIdentity(t *testing.T) {
 	a := args{
 		session: "work", panePath: "/repo",
@@ -157,11 +165,11 @@ func TestSessionSegmentBridgeFullIdentity(t *testing.T) {
 		bridgeCrewName: "coral", bridgeCrewColor: "colour210",
 		bridgeLabelID: "L ENG-7", bridgeLabelRestLong: " Do it",
 		iconSession: "S", iconRemote: "R",
-		thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd", thmPeach: "#fab",
+		thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd", thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky",
 	}
 	got := sessionSegment(a, false)
 	want := "#[fg=#c6a] #[range=left]S work#[norange]  " +
-		"#[fg=#fab]R g6  " +
+		"#[fg=" + g6Hex + "]R g6  " +
 		"#[fg=colour210]coral  " +
 		"#[fg=#89b,bold]L ENG-7#[fg=#cdd,nobold] Do it"
 	if got != want {
@@ -175,11 +183,11 @@ func TestSessionSegmentBridgeIdlessRest(t *testing.T) {
 		bridgeWin: "1", bridgeHost: "g6",
 		bridgeLabelID: "", bridgeLabelRestLong: "feat/x",
 		iconSession: "S", iconRemote: "R", iconBranch: "B",
-		thmMauve: "#c6a", thmBlue: "#89b", thmPeach: "#fab",
+		thmMauve: "#c6a", thmBlue: "#89b", thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky",
 	}
 	got := sessionSegment(a, false)
 	want := "#[fg=#c6a] #[range=left]S work#[norange]  " +
-		"#[fg=#fab]R g6  " +
+		"#[fg=" + g6Hex + "]R g6  " +
 		"#[fg=#89b,bold]B feat/x"
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
@@ -437,14 +445,14 @@ func TestRenderLineBridgeHost(t *testing.T) {
 		session: "g6-main", bridgeWin: "1", bridgeHost: "g6",
 		iconSession: "S", iconRemote: "R",
 		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
-		thmPeach: "#fab",
+		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky",
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
 	got := renderLine(a, dir, true, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
-		"#[fg=#fab]R g6  " +
+		"#[fg=" + g6Hex + "]R g6  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
 		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
@@ -464,14 +472,14 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "disconnected",
 		iconSession: "S", iconRemote: "R",
 		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
-		thmPeach: "#fab", thmRed: "#f00",
+		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky", thmRed: "#f00",
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
 	got := renderLine(a, dir, true, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
-		"#[fg=#fab]R g6  " +
+		"#[fg=" + g6Hex + "]R g6  " +
 		"#[fg=#f00]" + bridgeDisconnectedGlyph + "  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
@@ -492,14 +500,14 @@ func TestRenderLineBridgeStateParked(t *testing.T) {
 		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "parked",
 		iconSession: "S", iconRemote: "R",
 		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
-		thmPeach: "#fab", thmRed: "#f00",
+		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky", thmRed: "#f00",
 		paneIcon: "I", paneCmd: "zsh",
 	}
 
 	got := renderLine(a, dir, true, "dark", false, 9000, "", nil)
 	want := "#[align=left,bg=#000]" +
 		"#[fg=#c6a] #[range=left]S g6-main#[norange]  " +
-		"#[fg=#fab]R g6  " +
+		"#[fg=" + g6Hex + "]R g6  " +
 		"#[fg=#777]" + bridgeParkedGlyph + " offline — press a key  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
@@ -744,7 +752,7 @@ func TestSessionSegmentBridgeRestClips(t *testing.T) {
 				bridgeWin: "1", bridgeHost: "g6",
 				bridgeLabelID: c.id, bridgeLabelRestLong: c.rest,
 				iconSession: "S", iconRemote: "R", iconBranch: "B",
-				thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd", thmPeach: "#fab",
+				thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd", thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky",
 			}
 			got := sessionSegment(a, false)
 			if n := strings.Count(got, "é"); n != c.want {
@@ -754,5 +762,53 @@ func TestSessionSegmentBridgeRestClips(t *testing.T) {
 				t.Fatalf("leading space of the rest was lost: %q", got)
 			}
 		})
+	}
+}
+
+func TestHostHexUsesConfiguredSlots(t *testing.T) {
+	a := args{
+		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky",
+		remoteBridgeHosts: "lab mbp halo",
+	}
+	hex := map[string]string{"peach": "#fab", "teal": "#tea", "pink": "#pnk", "yellow": "#yel", "sky": "#sky"}
+	hosts := hostcolor.ParseHosts(a.remoteBridgeHosts)
+	for _, h := range hosts {
+		if got, want := a.hostHex(h), hex[hostcolor.Name(hosts, h)]; got != want {
+			t.Errorf("hostHex(%q) = %q, want %q", h, got, want)
+		}
+	}
+	if got := (args{thmPeach: "#fab"}).hostHex("lab"); got != "#fab" {
+		t.Errorf("missing palette flags must fall back to peach, got %q", got)
+	}
+}
+
+func TestSessionSegmentHostMarker(t *testing.T) {
+	marker := "#[fg=#fab387]R lab"
+	base := args{
+		session: "work", panePath: "/repo", branch: "main",
+		iconSession: "S", iconRemote: "R", iconBranch: "B",
+		thmMauve: "#c6a", thmBlue: "#89b",
+	}
+
+	local := base
+	local.hostMarker = marker
+	got := sessionSegment(local, false)
+	want := "#[fg=#c6a] #[range=left]S work#[norange]  " + marker + "  #[fg=#89b,bold]B main"
+	if got != want {
+		t.Fatalf("local window with marker\n got %q\nwant %q", got, want)
+	}
+
+	if got := sessionSegment(base, false); strings.Contains(got, "R lab") {
+		t.Fatalf("no marker must render none, got %q", got)
+	}
+
+	placed := local
+	placed.bridgeWin, placed.bridgeHost = "1", "lab"
+	got = sessionSegment(placed, false)
+	if n := strings.Count(got, "R lab"); n != 1 {
+		t.Fatalf("placed window must show the marker only, once; got %d in %q", n, got)
+	}
+	if strings.Contains(got, "#[fg=#fab]") {
+		t.Fatalf("placed window must not print a separate host segment: %q", got)
 	}
 }
