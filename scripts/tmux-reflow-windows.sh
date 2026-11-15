@@ -162,6 +162,7 @@ PREFIX_WIDTH=5 # " ├─ " or " ╰─ "
 
 # --- Single pass: collect window data ---
 declare -a indices
+declare -A win_wid
 total=0
 has_zoom=0
 
@@ -190,7 +191,7 @@ has_zoom=0
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_glyph}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{window_id}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_glyph}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
@@ -198,8 +199,9 @@ declare -A win_host win_host_dw win_host_disp win_bhost
 host_any=0         # 1 when some window is placed (gates the badge fragment in ENTRY)
 CREW_HOST_ICON='⇄' # plain Unicode (not a Nerd Font glyph); nerd alt: nf-md-remote
 crew_colw=0        # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx wclip branch pane_path zoomed iprov iid ititle prnum prglyph ibranch crew chost hasagent wai bridge bid brest bpr bcrew bhost wname bname wtask; do
+while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prnum prglyph ibranch crew chost hasagent wai bridge bid brest bpr bcrew bhost wname bname wtask; do
 	indices+=("$idx")
+	win_wid[$idx]="$wid"
 	win_clip_prev[$idx]="$wclip"
 	# The zoom marker (" 󰁌", 2 cells) is emitted inline by LABEL_Z on zoomed
 	# windows; carve it from that window's label budget so its grid slot stays
@@ -584,41 +586,92 @@ if ((host_any)); then
 	fi
 fi
 
-# Per-window vars use tmux's argv command-sequence form — one tmux exec per
-# window, the 11 sets joined by literal ';' arguments — instead of one exec per
-# set (9N execs before). Not `tmux source -`: source re-parses a text stream, so
-# free-form issue titles with quotes/';'/'#' would break it. In argv form each
-# value is its own execve argument and is never reparsed, so titles pass verbatim.
+# Per-window vars use tmux's argv command-sequence form: the sets are joined by
+# literal ';' arguments, and several windows share one exec (a full pass cost one
+# exec per window before, #1118). Not `tmux source -`: source re-parses a text
+# stream, so free-form issue titles with quotes/';'/'#' would break it. In argv
+# form each value is its own execve argument and is never reparsed, so titles
+# pass verbatim.
+# Windows are addressed by id (@N), not by an index that renumber-windows can
+# slide. tmux stops a sequence at its first failing command, so a window that
+# vanished mid-pass would drop every later window's writes in its chunk: a
+# failed chunk is replayed one window per exec (the sets are idempotent), which
+# restores the old isolation.
 # @window_label_id stays the full identity for the pickers and the single-line
 # global format; @window_label_id_disp is the grid's copy, clipped to the column.
-for idx in "${indices[@]}"; do
-	target="${SESSION}:${idx}"
-	clip_argv=()
+# Chunk budget. tmux answers "command too long" past two limits, both far
+# tighter than ARG_MAX (1 MB macOS, 2 MB Linux): the argv is shipped to the
+# server in one imsg of at most 16 KiB (MAX_IMSGSIZE), and measured on 3.9 about
+# 1000 arguments is the other ceiling, which ~90 arguments per window reach
+# first. A chunk stays at 12 KiB and 800 arguments, leaving room for the framing.
+REFLOW_CHUNK_BYTES=12288
+REFLOW_CHUNK_ARGS=800
+
+# Sets REPLY to the byte length of win_argv, counting each NUL terminator.
+win_argv_bytes() {
+	local LC_ALL=C a
+	REPLY=0
+	for a in "${win_argv[@]}"; do ((REPLY += ${#a} + 1)); done
+}
+
+# Fills win_argv with one window's set sequence.
+build_window_argv() {
+	local idx=$1 target=${win_wid[$1]} hcolor=""
+	[[ ${win_bhost[$idx]} =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] && hcolor=${host_color[${win_bhost[$idx]}]:-}
+	win_argv=(
+		set -w -t "$target" @window_label_short "${win_short[$idx]}" ';'
+		set -w -t "$target" @window_label_id "${win_id[$idx]}" ';'
+		set -w -t "$target" @window_label_id_disp "${win_id_disp[$idx]}" ';'
+		set -w -t "$target" @window_label_rest_short "${win_rest_short[$idx]}" ';'
+		set -w -t "$target" @window_label_rest_long "${win_rest_long[$idx]}" ';'
+		set -w -t "$target" @window_label_disp "${win_disp[$idx]}" ';'
+		set -w -t "$target" @window_pr_plain "${win_pr[$idx]}" ';'
+		set -w -t "$target" @window_pr_glyph "${win_pr_glyph[$idx]}" ';'
+		set -w -t "$target" @window_pr_num "${win_pr_num[$idx]}" ';'
+		set -w -t "$target" @window_pr_pad "${win_pr_pad[$idx]}" ';'
+		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" ';'
+		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" ';'
+		set -w -t "$target" @window_host_color "$hcolor"
+	)
 	if [[ ${win_clip[$idx]} != "${win_clip_prev[$idx]}" ]]; then
 		if [[ -n ${win_clip[$idx]} ]]; then
-			clip_argv=(';' set -w -t "$target" @window_label_clipped 1)
+			win_argv+=(';' set -w -t "$target" @window_label_clipped 1)
 		else
-			clip_argv=(';' set -wu -t "$target" @window_label_clipped)
+			win_argv+=(';' set -wu -t "$target" @window_label_clipped)
 		fi
 	fi
-	hcolor=""
-	[[ ${win_bhost[$idx]} =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] && hcolor=${host_color[${win_bhost[$idx]}]:-}
-	tmux \
-		set -w -t "$target" @window_label_short "${win_short[$idx]}" ';' \
-		set -w -t "$target" @window_label_id "${win_id[$idx]}" ';' \
-		set -w -t "$target" @window_label_id_disp "${win_id_disp[$idx]}" ';' \
-		set -w -t "$target" @window_label_rest_short "${win_rest_short[$idx]}" ';' \
-		set -w -t "$target" @window_label_rest_long "${win_rest_long[$idx]}" ';' \
-		set -w -t "$target" @window_label_disp "${win_disp[$idx]}" ';' \
-		set -w -t "$target" @window_pr_plain "${win_pr[$idx]}" ';' \
-		set -w -t "$target" @window_pr_glyph "${win_pr_glyph[$idx]}" ';' \
-		set -w -t "$target" @window_pr_num "${win_pr_num[$idx]}" ';' \
-		set -w -t "$target" @window_pr_pad "${win_pr_pad[$idx]}" ';' \
-		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" ';' \
-		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" ';' \
-		set -w -t "$target" @window_host_color "$hcolor" \
-		"${clip_argv[@]}"
+}
+
+declare -a win_argv chunk_argv=() chunk_idx=()
+chunk_bytes=0
+chunk_args=0
+
+flush_window_chunk() {
+	local i
+	((${#chunk_idx[@]})) || return 0
+	if ! tmux "${chunk_argv[@]}" 2>/dev/null; then
+		for i in "${chunk_idx[@]}"; do
+			build_window_argv "$i"
+			tmux "${win_argv[@]}" 2>/dev/null || true
+		done
+	fi
+	chunk_argv=()
+	chunk_idx=()
+	chunk_bytes=0
+	chunk_args=0
+}
+
+for idx in "${indices[@]}"; do
+	build_window_argv "$idx"
+	win_argv_bytes
+	n=$REPLY
+	((chunk_bytes + n > REFLOW_CHUNK_BYTES || chunk_args + ${#win_argv[@]} + 1 > REFLOW_CHUNK_ARGS)) && flush_window_chunk
+	((${#chunk_argv[@]})) && chunk_argv+=(';')
+	chunk_argv+=("${win_argv[@]}")
+	chunk_idx+=("$idx")
+	((chunk_bytes += n, chunk_args += ${#win_argv[@]} + 1))
 done
+flush_window_chunk
 
 # Session marker: "<icon> h1 · h2" in each host's colour, drawn on line 0
 # after the session name and on the folded line. Direct argv, not the `source -`

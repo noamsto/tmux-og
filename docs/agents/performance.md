@@ -557,7 +557,7 @@ The key-replay mode the user suggested as a second target was not added.
 | --- | --- |
 | Busy pane output and title churn alone | Remote-direct p99 0.6 ms |
 | `-B` monitor ticks | 5 jobs per 5 s |
-| `tmux-reflow-windows` | Cache hit (`@reflow_key` unchanged): 1 `display-message` (+1 `list-clients` while a client is attached), ~7 ms. A full pass costs one tmux exec per window, so it grows with window count: see "Reflow full-pass cost (#1110)" |
+| `tmux-reflow-windows` | Cache hit (`@reflow_key` unchanged): 1 `display-message` (+1 `list-clients` while a client is attached), ~7 ms. A full pass writes the per-window options in chunks of ~8 windows per tmux exec (#1118), so it still grows with window count, slowly: see "Reflow full-pass cost (#1110)" |
 | Local `#()` status jobs | Plain local pane p99 3–10 ms with a status client attached |
 | `#()` jobs on a bridge-only host such as halo | Never run: control clients draw no status line |
 
@@ -580,7 +580,18 @@ A full pass is about N+5 execs on a single-line bar and N+11 on a multi-line gri
 
 Full passes are mostly backgrounded (`after-new-window`, `window-unlinked`, `client-resized` and `client-detached` use `run-shell -b`, the last two with `--debounce`). `session-window-changed`, `after-new-session` and `client-session-changed` run in the foreground; the last can miss the cache when the session was last stamped at another width, and enrich `--force` runs (always detached) are full passes too, but off the hook path.
 
-**Decision: not ported to Go.** The ~1,100 lines would have to keep `tests/reflow*.bats` unchanged, and the exec half of the cost is a batching shape, not a language problem. Follow-ups, in order: (1) batch several windows' sets per tmux exec, in chunks to stay under `ARG_MAX` (titles are free-form; macOS limit is 1 MB), expected to remove about the exec half; (2) revisit a Go port of `reflow_fit_columns`/`reflow_clip_rests`/host sort only if bash compute still dominates, as a testability and speed win.
+**Batched per-window writes (#1118).** The per-window loop now builds each window's argv (addressed by `@N` id, not `${SESSION}:${idx}`) and packs several into one argv-form exec, `';'`-joined, in chunks of at most 12 KiB and 800 arguments. tmux rejects a longer command with "command too long": the argv travels to the server in one 16 KiB imsg, and on 3.9 about 1000 arguments is a second ceiling that a 13-set window (~90 arguments) reaches first. A bigger batch fails and falls back to per-window execs, which measured slower than before. tmux stops a sequence at its first failing command, so a chunk that fails (a window died mid-pass) is replayed one window per exec; the sets are idempotent, and a vanished window drops only its own writes (`tests/reflow-fanout.bats`, #1118). Same method as above, before/after on the same scratch server, 8-run mean:
+
+| Windows | Full pass before | Full pass after |
+| --- | --- | --- |
+| 5 | 92 ms | 73 ms |
+| 20 | 179 ms | 93 ms |
+| 60 | 431 ms | 189 ms |
+| 120 | 856 ms | 344 ms |
+
+(Absolute times drift ~15% between runs on a shared host; the before column here is the old script run in the same session, not the table above.)
+
+**Decision: not ported to Go.** The ~1,100 lines would have to keep `tests/reflow*.bats` unchanged, and the exec half of the cost is a batching shape, not a language problem. Follow-up (1), batching, shipped in #1118 (above); (2) revisit a Go port of `reflow_fit_columns`/`reflow_clip_rests`/host sort only if bash compute still dominates, as a testability and speed win.
 
 ## Residuals (follow-ups)
 

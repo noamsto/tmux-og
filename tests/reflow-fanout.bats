@@ -772,3 +772,34 @@ setup_border_title() {
 	[[ "$(tmux show -v -t S @reflow_key)" == 1:200:* ]]
 	exec 9>&-
 }
+
+@test "a window killed between the list read and the write does not drop other windows' option writes (#1118)" {
+	tmux new-window -d
+	tmux new-window -d
+	tmux new-window -d # 4 windows; the second one dies mid-pass
+	local victim real
+	victim=$(tmux list-windows -t S -F '#{window_id}' | sed -n 2p)
+	real=$(command -v tmux)
+	mkdir -p "$TDIR/shim"
+	# The first per-window `set -w` kills the victim, once, then runs for real:
+	# the list read is already done, so the batch still names the dead window.
+	cat >"$TDIR/shim/tmux" <<-EOF
+		#!/bin/sh
+		if [ "\$1" = set ] && [ "\$2" = -w ] && [ ! -e "$TDIR/killed" ]; then
+			: >"$TDIR/killed"
+			"$real" kill-window -t "$victim"
+		fi
+		exec "$real" "\$@"
+	EOF
+	chmod +x "$TDIR/shim/tmux"
+
+	PATH="$TDIR/shim:$PATH" bash "$REFLOW" S 200 --force >/dev/null 2>&1
+	[ -e "$TDIR/killed" ]
+	[ "$(tmux list-windows -t S | wc -l)" -eq 3 ]
+	local id n=0
+	for id in $(tmux list-windows -t S -F '#{window_id}'); do
+		[ -n "$(tmux show -wv -t "$id" @window_label_id_disp 2>/dev/null)$(tmux show -wv -t "$id" @window_label_short 2>/dev/null)" ]
+		n=$((n + 1))
+	done
+	[ "$n" -eq 3 ]
+}
