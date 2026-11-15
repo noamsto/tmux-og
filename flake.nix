@@ -1398,7 +1398,10 @@
               grep -qxF "$(printf 'b\tgb')" <<<"$g"
               # past the verb fish falls back to files: no subverb names.
               past=$(comp "$STUB" "og g a " | cut -f1)
-              ! grep -qxE 'a|b' <<<"$past"
+              if grep -qxE 'a|b' <<<"$past"; then
+                echo "subverbs offered past the verb" >&2
+                exit 1
+              fi
 
               # every real verb is completable: noun at `og `, subverb at `og <noun> `.
               real_top=$(comp "$REAL" "og " | cut -f1)

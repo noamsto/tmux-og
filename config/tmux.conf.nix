@@ -875,7 +875,7 @@
       else "${toString n} subcommand${lib.optionalString (n != 1) "s"}";
     nounLine = noun: "complete -c og -f -n '__fish_use_subcommand' -a ${fishQuote noun} -d ${fishQuote (nounDesc noun)}";
     subLine = noun: v: let
-      cond = "set -l t (commandline -xpc); test (count $t) -eq 2; and test $t[2] = ${fishQuote noun}";
+      cond = "set -l t (commandline -opc); test (count $t) -eq 2; and test $t[2] = ${fishQuote noun}";
     in "complete -c og -f -n ${fishQuote cond} -a ${fishQuote (lib.last (tokensOf v))} -d ${fishQuote verbs.${v}.summary}";
     ogFish = pkgs.writeText "og.fish" ''
       complete -c og -f -n '__fish_use_subcommand' -a help -d 'List every verb'
