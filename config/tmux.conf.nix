@@ -190,25 +190,11 @@
         "@providers@"
         "@enrich_icon_linear@"
         "@enrich_icon_github@"
-        "@enrich_icon_pending@"
-        "@enrich_icon_success@"
-        "@enrich_icon_failure@"
-        "@enrich_icon_merged@"
-        "@enrich_icon_closed@"
-        "@enrich_icon_conflict@"
-        "@enrich_icon_draft@"
       ]
       [
         enrichProvidersStr
         enrichIconsRaw.linear
         enrichIconsRaw.github
-        enrichIconsRaw.pending
-        enrichIconsRaw.success
-        enrichIconsRaw.failure
-        enrichIconsRaw.merged
-        enrichIconsRaw.closed
-        enrichIconsRaw.conflict
-        enrichIconsRaw.draft
       ]
       raw;
   in

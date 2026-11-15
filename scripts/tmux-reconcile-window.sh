@@ -86,6 +86,7 @@ if [[ -n $cur_wt && $cur_wt != "$top" ]]; then
 	tmux set-option -t "$target" -wu @pr_review 2>/dev/null
 	tmux set-option -t "$target" -wu @pr_auto_merge 2>/dev/null
 	tmux set-option -t "$target" -wu @pr_check_progress 2>/dev/null
+	tmux set-option -t "$target" -wu @pr_glyph 2>/dev/null
 	tmux set-option -t "$target" -wu @pr_branch 2>/dev/null
 fi
 
