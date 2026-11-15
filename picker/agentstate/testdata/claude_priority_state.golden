@@ -1,0 +1,22 @@
+claude_priority_state() {
+	local w=$1 k=$2 p=$3 d=$4 i=$5 e=${6:-0} dn=${7:-0} int=${8:-0}
+	if ((e > 0)); then
+		REPLY="error"
+	elif ((w > 0)); then
+		REPLY="waiting"
+	elif ((dn > 0)); then
+		REPLY="denied"
+	elif ((k > 0)); then
+		REPLY="compacting"
+	elif ((int > 0)); then
+		REPLY="interrupted"
+	elif ((p > 0)); then
+		REPLY="processing"
+	elif ((d > 0)); then
+		REPLY="done"
+	elif ((i > 0)); then
+		REPLY="idle"
+	else
+		REPLY=""
+	fi
+}

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/agentstate"
 )
 
 // statePalette holds the per-state catppuccin hues for one theme, mirroring
@@ -119,23 +121,25 @@ type counts struct {
 }
 
 func (c counts) priorityState() string {
-	switch {
-	case c.errorN > 0:
-		return "error"
-	case c.waiting > 0:
-		return "waiting"
-	case c.denied > 0:
-		return "denied"
-	case c.compacting > 0:
-		return "compacting"
-	case c.processing > 0:
-		return "processing"
-	case c.done > 0:
-		return "done"
-	case c.idle > 0:
-		return "idle"
-	}
-	return ""
+	return agentstate.Pick(func(state string) bool {
+		switch state {
+		case "error":
+			return c.errorN > 0
+		case "waiting":
+			return c.waiting > 0
+		case "denied":
+			return c.denied > 0
+		case "compacting":
+			return c.compacting > 0
+		case "processing":
+			return c.processing > 0
+		case "done":
+			return c.done > 0
+		case "idle":
+			return c.idle > 0
+		}
+		return false
+	})
 }
 
 func (c *counts) tally(state string) {
