@@ -856,9 +856,43 @@
       ${lib.concatMapStringsSep "\n" summaryLine order}
       OG_ORDER=(${lib.concatMapStringsSep " " lib.escapeShellArg order})
     '';
+    ogBin =
+      pkgs.writeShellScriptBin "og"
+      (builtins.replaceStrings ["@og_table@"] ["${ogTable}"] (builtins.readFile ../scripts/og.sh));
+
+    # Fish single quotes honour only \\ and \'; escapeShellArg's '\'' is not
+    # valid fish.
+    fishQuote = s: "'" + builtins.replaceStrings ["\\" "'"] ["\\\\" "\\'"] s + "'";
+    tokensOf = v: lib.splitString " " v;
+    nouns = lib.unique (map (v: builtins.head (tokensOf v)) order);
+    subverbsOf = noun: lib.filter (v: lib.length (tokensOf v) == 2 && builtins.head (tokensOf v) == noun) order;
+    nounDesc = noun: let
+      subs = subverbsOf noun;
+      n = lib.length subs;
+    in
+      if verbs ? ${noun}
+      then verbs.${noun}.summary
+      else "${toString n} subcommand${lib.optionalString (n != 1) "s"}";
+    nounLine = noun: "complete -c og -f -n '__fish_use_subcommand' -a ${fishQuote noun} -d ${fishQuote (nounDesc noun)}";
+    subLine = noun: v: let
+      cond = "set -l t (commandline -xpc); test (count $t) -eq 2; and test $t[2] = ${fishQuote noun}";
+    in "complete -c og -f -n ${fishQuote cond} -a ${fishQuote (lib.last (tokensOf v))} -d ${fishQuote verbs.${v}.summary}";
+    ogFish = pkgs.writeText "og.fish" ''
+      complete -c og -f -n '__fish_use_subcommand' -a help -d 'List every verb'
+      ${lib.concatMapStringsSep "\n" nounLine nouns}
+      ${lib.concatMapStringsSep "\n" (noun: lib.concatMapStringsSep "\n" (subLine noun) (subverbsOf noun)) nouns}
+    '';
+    completions = pkgs.runCommand "og-completions" {} ''
+      install -Dm644 ${ogFish} $out/share/fish/vendor_completions.d/og.fish
+    '';
   in
-    pkgs.writeShellScriptBin "og"
-    (builtins.replaceStrings ["@og_table@"] ["${ogTable}"] (builtins.readFile ../scripts/og.sh));
+    # bin/og stays the plain script; the join only adds share/. passthru.bin
+    # keeps the inner path reachable for the leak checks that grep for it.
+    pkgs.symlinkJoin {
+      name = "og";
+      paths = [ogBin completions];
+      passthru.bin = ogBin;
+    };
 
   og = mkOg (lib.mapAttrs (_: v: {
       target =
