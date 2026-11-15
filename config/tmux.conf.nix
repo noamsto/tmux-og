@@ -289,6 +289,7 @@
   picker-statusline-bin = "${picker-generate}/bin/tmux-statusline";
   picker-card-bin = "${picker-generate}/bin/tmux-enrich-card";
   picker-bridge-ctl-bin = "${picker-generate}/bin/og-remote-bridge-ctl";
+  picker-remote-launcher-bin = "${picker-generate}/bin/og-remote-launcher";
   picker-bridge-daemon-bin = "${picker-generate}/bin/og-remote-bridge-daemon";
   picker-bridge-renderer-bin = "${picker-generate}/bin/og-remote-bridge-renderer";
   picker-session-res-bin = "${picker-generate}/bin/tmux-session-resources";
@@ -471,16 +472,18 @@
       (builtins.readFile ../scripts/${name}.sh)
     );
 
-  # Scripts that source lib-remote get its store path substituted, plus the
-  # bridge binaries the launcher probes and spawns — pinned for the same reason
-  # as @reflow@ above, which the launcher spells out.
+  # Scripts that source lib-remote get its store path substituted, plus the Go
+  # launcher binary (og-remote-open is a shim that execs it) and the bridge
+  # binaries it probes and spawns — pinned for the same reason as @reflow@
+  # above, which the launcher spells out.
   scriptsWithRemote = ["og-remote-open" "og-remote-auth" "og-remote-theme"];
   mkRemoteScript = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings
-      ["@lib_remote@" "@bridge_ctl@" "@bridge_daemon@" "@bridge_renderer@" "@reflow@" "@loading@"]
+      ["@lib_remote@" "@remote_launcher@" "@bridge_ctl@" "@bridge_daemon@" "@bridge_renderer@" "@reflow@" "@loading@"]
       [
         "${lib-remote}"
+        picker-remote-launcher-bin
         picker-bridge-ctl-bin
         picker-bridge-daemon-bin
         picker-bridge-renderer-bin
