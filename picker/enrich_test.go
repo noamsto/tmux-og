@@ -123,6 +123,8 @@ func TestColorPRBadge(t *testing.T) {
 		{"review required", " G #11", "open", "success", "mergeable", "review_required", "", "<s>G <r><q>#11<r>"},
 		{"auto-merge underlines", " G #12", "open", "success", "mergeable", "approved", "1", "<s>G <r><s><u>#12<r>"},
 		{"draft prefix stays in the glyph half", " D G #13", "open", "success", "mergeable", "", "", "<s>D G <r><s>#13<r>"},
+		{"conflicting approved splits glyph and number", " G #14", "open", "success", "conflicting", "approved", "", "<f>G <r><s>#14<r>"},
+		{"review on merged PR has no tint", " G #15", "merged", "success", "mergeable", "changes_requested", "1", "<m>G <r><m>#15<r>"},
 		{"no # keeps one colour", " weird", "open", "success", "mergeable", "approved", "", "<s>weird<r>"},
 	}
 	for _, c2 := range cases {

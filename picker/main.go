@@ -28,6 +28,7 @@ import (
 	"github.com/noamsto/themestate"
 	"github.com/noamsto/tmux-og/picker/agentstate"
 	"github.com/noamsto/tmux-og/picker/claudestatus"
+	"github.com/noamsto/tmux-og/picker/enrichstate"
 	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/proctree"
 )
@@ -1424,49 +1425,46 @@ func branchEchoesName(branch, name string) bool {
 // prColors holds the PR badge tints, mirroring the status bar's coloring.
 type prColors struct{ success, failure, pending, merged, closed, required, underline, reset string }
 
+// role returns the tint for an enrichstate colour role.
+func (c prColors) role(r enrichstate.ColorRole) string {
+	switch r {
+	case enrichstate.ColorMerged:
+		return c.merged
+	case enrichstate.ColorClosed:
+		return c.closed
+	case enrichstate.ColorFailure:
+		return c.failure
+	case enrichstate.ColorPending:
+		return c.pending
+	case enrichstate.ColorReviewRequired:
+		return c.required
+	default:
+		return c.success
+	}
+}
+
 // colorPRBadge tints a plain PR badge (" <glyph> #<n>" from @window_pr_plain),
-// mirroring the status bar. The glyph half takes the state tint: merged/closed
-// PRs → terminal (so a leftover pending/failed rollup can't mask them — closed
-// is a dead/superseded PR, dimmed so it can't read as live), a conflicting merge
-// or failing checks → failure, pending → pending, else success. The #<n> half of
-// an open PR takes its review tint and an auto-merge underline instead. Returns
-// "" when there is no PR.
+// mirroring the status bar; the colour precedence lives in enrichstate. The glyph
+// half takes the state tint, the #<n> half of an open PR its review tint and an
+// auto-merge underline. Returns "" when there is no PR.
 func colorPRBadge(prPlain, state, check, mergeable, review, autoMerge string, c prColors) string {
 	badge := strings.TrimSpace(prPlain)
 	if badge == "" {
 		return ""
 	}
-	var col string
-	switch {
-	case state == "merged":
-		col = c.merged
-	case state == "closed":
-		col = c.closed
-	case mergeable == "conflicting", check == "failure":
-		col = c.failure
-	case check == "pending":
-		col = c.pending
-	default:
-		col = c.success
-	}
+	role, _ := enrichstate.Classify(state, check, mergeable)
+	col := c.role(role)
 	// A mirror's badge is remote-derived and sanitized, not guaranteed shaped.
 	i := strings.LastIndex(badge, "#")
 	if i < 0 {
 		return col + badge + c.reset
 	}
 	numCol, underline := col, ""
-	if state == "open" {
-		switch review {
-		case "approved":
-			numCol = c.success
-		case "changes_requested":
-			numCol = c.failure
-		case "review_required":
-			numCol = c.required
-		}
-		if autoMerge == "1" {
-			underline = c.underline
-		}
+	if r, ok := enrichstate.ReviewColor(state, review); ok {
+		numCol = c.role(r)
+	}
+	if enrichstate.AutoMerge(state, autoMerge) {
+		underline = c.underline
 	}
 	return col + badge[:i] + c.reset + numCol + underline + badge[i:] + c.reset
 }
