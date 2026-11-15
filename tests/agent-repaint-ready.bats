@@ -20,7 +20,6 @@ POLL_TRIES=300
 
 setup() {
 	unset TMUX TMUX_PANE
-	REAL_TMUX="$(command -v tmux)" || skip "tmux not on PATH"
 	REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 	SCRIPT="$REPO_ROOT/scripts/tmux-agent-repaint.sh"
 
@@ -34,6 +33,8 @@ setup() {
 	export XDG_DATA_HOME="$TMUX_TMPDIR/data"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
+	OG_TEST_ISOLATED=1
+	REAL_TMUX="$(command -v tmux)" || skip "tmux not on PATH"
 
 	CALLS="$BATS_TEST_TMPDIR/calls.log"
 	mkdir -p "$BATS_TEST_TMPDIR/bin"
@@ -47,6 +48,8 @@ EOF
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${TMUX_TMPDIR:-}"
 }

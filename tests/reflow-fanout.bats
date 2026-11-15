@@ -16,8 +16,6 @@
 # on PATH the window is S:1 and half the file fails with "no such window: S:0".
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -75,6 +73,9 @@ setup() {
 	# re-execs itself ($0) as a detached waiter.
 	chmod +x "$REFLOW"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	tmux -f /dev/null new-session -d -s S -x 200 -y 50
 	tmux set -g base-index 0
 	local v
@@ -84,6 +85,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 	tmux -L og1038 kill-server 2>/dev/null || true
 }

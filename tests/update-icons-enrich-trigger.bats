@@ -9,8 +9,6 @@
 # with a real pane cwd, not a fake.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -63,6 +61,9 @@ setup() {
 	git -C "$REPO" commit -q --allow-empty -m init
 	git -C "$REPO" branch -q -M main
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	tmux -f /dev/null new-session -d -s S -c "$REPO" -x 200 -y 50
 	tmux set -g base-index 0
 	local v
@@ -72,6 +73,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 

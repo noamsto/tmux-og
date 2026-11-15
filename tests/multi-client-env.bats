@@ -5,7 +5,6 @@
 # real pty attaches (`script`), so #{I/e:VAR} reads genuine client environments.
 
 setup() {
-	script --version 2>/dev/null | grep -q util-linux || skip "no GNU-style script(1) for a pty"
 	TMUX_BIN="${TMUX_BIN:?set TMUX_BIN to the built wrapper}"
 	TEST_HOME="$BATS_TEST_TMPDIR/home"
 	mkdir -p "$TEST_HOME"
@@ -26,6 +25,8 @@ setup() {
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	mkdir -p "$CLAUDE_STATUS_DIR"/{panes,screen,interrupt,tasks,issues,watchers}
+	OG_TEST_ISOLATED=1
+	script --version 2>/dev/null | grep -q util-linux || skip "no GNU-style script(1) for a pty"
 
 	# A client's stdin must stay open: EOF makes `script` type ^D into the pane.
 	mkfifo "$TMUX_TMPDIR/hold"
@@ -37,6 +38,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	[ -n "${HOLD_PID:-}" ] && kill "$HOLD_PID" 2>/dev/null
 	t kill-server 2>/dev/null || true
 	[ -n "${TMUX_TMPDIR:-}" ] && rm -rf "$TMUX_TMPDIR"

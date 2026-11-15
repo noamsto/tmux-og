@@ -9,8 +9,6 @@
 # real windows/panes, not fakes.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -62,6 +60,9 @@ setup() {
 	NONGIT="$TDIR/nongit"
 	mkdir -p "$NONGIT"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	tmux -f /dev/null new-session -d -s S -c "$REPO_A" -x 200 -y 50
 	tmux set -g base-index 0
 	# Address the window by id, never "S:0": base-index is only pinned after the
@@ -76,6 +77,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 
