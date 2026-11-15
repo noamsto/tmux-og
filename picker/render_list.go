@@ -289,17 +289,23 @@ func (m tuiModel) renderHints() string {
 
 	// Emit mode never switches or creates — enter only writes the pick back to
 	// the wrapper (spec D8) — and inherits no session/window to kill or forget.
+	onRemoteWindow := hasItem && item.remoteWindowID != "" && m.mode != modeWall
 	enterLabel := "open"
 	switch {
 	case m.emitPath != "":
 		enterLabel = "pick"
 	case len(m.marked) > 0:
 		enterLabel = "open " + strconv.Itoa(len(m.marked))
+	case onRemoteWindow && m.canPlace:
+		enterLabel = "place"
 	}
 
 	parts := []string{
 		hint("^jk/↑↓", "nav"),
 		hint("enter", enterLabel),
+	}
+	if onRemoteWindow && m.canPlace && m.emitPath == "" {
+		parts = append(parts, hint("^e", "jump"))
 	}
 	if m.emitPath == "" && (!hasItem || item.remoteDirPath == "") {
 		parts = append(parts, hint("^x", killLabel))
@@ -362,6 +368,10 @@ func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
 	hintKey, hintDesc := "esc", "cancel"
 	head := frame + " opening " + m.attach.label + " · " + attachPhaseLabel(m.attach.phase) +
 		" · " + strconv.Itoa(int(time.Since(m.attach.phaseAt)/time.Second)) + "s"
+	if m.attach.placing {
+		head = frame + " placing " + m.attach.label + "…"
+		hintKey, hintDesc = "esc", "quit"
+	}
 	if m.attach.cancelling {
 		hintKey, hintDesc = "^c", "quit"
 		head = frame + " cancelling " + m.attach.label + "…"

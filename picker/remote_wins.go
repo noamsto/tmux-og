@@ -20,14 +20,17 @@ type remoteWindow struct {
 	Index          int    `json:"index"`
 	Name           string `json:"name"`
 	SessionCreated string `json:"session_created,omitempty"`
+	// Pane is the window's active pane id (%N), the key a placed mirror's
+	// @bridge_pane carries. Not cached: a restarted remote renumbers it.
+	Pane string `json:"-"`
 }
 
-// remoteWindowRowsFormat emits one `W|$N|@N|idx|name` row per listed tmux
+// remoteWindowRowsFormat emits one `W|$N|@N|idx|%N|name` row per listed tmux
 // window, except a mirror window (@bridge_win), which emits an `M|` marker
 // instead of a blank line, so a remote's own mirror windows (a mirror of a
 // mirror) never reach the window picker (#1060) while the probe still knows
 // the server answered. The name stays last so it may hold `|`.
-const remoteWindowRowsFormat = "#{?#{@bridge_win},M|,W|#{session_id}|#{window_id}|#{window_index}|#{window_name}}"
+const remoteWindowRowsFormat = "#{?#{@bridge_win},M|,W|#{session_id}|#{window_id}|#{window_index}|#{pane_id}|#{window_name}}"
 
 // remoteListWindowsBody lists sessions and every window in one chained tmux
 // command. Each free-text field sits last on its own line kind (S or W), so a
@@ -110,9 +113,15 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 			}
 			res.SessionCreated[f[3]] = f[2]
 		case strings.HasPrefix(line, "W|"):
-			f := strings.SplitN(line, "|", 5)
-			if len(f) != 5 || !isTmuxID(f[1], '$') || !isTmuxID(f[2], '@') || !isDigits(f[3]) {
+			f := strings.SplitN(line, "|", 6)
+			if len(f) < 5 || !isTmuxID(f[1], '$') || !isTmuxID(f[2], '@') || !isDigits(f[3]) {
 				continue
+			}
+			// A row without a valid pane id (an older remote's five-field
+			// row) keeps the row and its whole tail as the name.
+			pane, name := "", strings.Join(f[4:], "|")
+			if len(f) == 6 && isTmuxID(f[4], '%') {
+				pane, name = f[4], f[5]
 			}
 			res.ServerAlive = true
 			sess, ok := names[f[1]]
@@ -123,7 +132,7 @@ func parseRemoteWindowsOutput(stdout string) remoteProbeResult {
 			if err != nil {
 				continue
 			}
-			res.Windows = append(res.Windows, remoteWindow{Session: sess, SessionID: f[1], ID: f[2], Index: idx, Name: f[4], SessionCreated: created[f[1]]})
+			res.Windows = append(res.Windows, remoteWindow{Session: sess, SessionID: f[1], ID: f[2], Index: idx, Name: name, Pane: pane, SessionCreated: created[f[1]]})
 		}
 	}
 	return res
@@ -245,6 +254,7 @@ func remoteWindowRowItem(host string, w remoteWindow, note, cHost, cDim string, 
 		remoteSessionID:      w.SessionID,
 		remoteSessionCreated: w.SessionCreated,
 		remoteWindowName:     name,
+		remoteWindowPane:     w.Pane,
 		display:              cHost + remoteTreeMid + reset + " " + label,
 		displayEnd:           cHost + remoteTreeEnd + reset + " " + label,
 		plain:                remoteTreeMid + " " + plain,

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -639,4 +640,339 @@ func TestWindowModeHostRowEnterKeepsSessionBehaviour(t *testing.T) {
 			t.Errorf("cmd=%v status=%q, want the tailscale refusal", cmd, got)
 		}
 	})
+}
+
+// stubPlace seams the tmux lookups behind Enter on a window row and returns the
+// windows selectWindowFn was asked to select.
+func stubPlace(t *testing.T, cur currentSession, curOK bool, placed map[string]string) *[]string {
+	t.Helper()
+	origCur, origPlaced, origSel := currentSessionFn, placedWindowFn, selectWindowFn
+	t.Cleanup(func() { currentSessionFn, placedWindowFn, selectWindowFn = origCur, origPlaced, origSel })
+	currentSessionFn = func(string) (currentSession, bool) { return cur, curOK }
+	placedWindowFn = func(sessID, host, sess, pane string) (string, bool) {
+		w, ok := placed[sessID+"|"+host+"|"+sess+"|"+pane]
+		return w, ok
+	}
+	var selected []string
+	selectWindowFn = func(id string) error { selected = append(selected, id); return nil }
+	return &selected
+}
+
+// runAttachArgv presses key on m and returns the launcher's argv once the
+// attach it started has finished, plus the model after the done message.
+func runAttachArgv(t *testing.T, m tuiModel, argvFile, key string) (tuiModel, string) {
+	t.Helper()
+	next, cmd := m.Update(wallKey(key))
+	nm := next.(tuiModel)
+	if nm.attach == nil || cmd == nil {
+		t.Fatalf("%s did not start an attach", key)
+	}
+	id := nm.attach.id
+	done := awaitAttachMsg(t, runBatchAsync(cmd), 5*time.Second, func(msg tea.Msg) bool {
+		d, ok := msg.(attachDoneMsg)
+		return ok && d.id == id
+	})
+	got, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, _ = nm.Update(done)
+	return next.(tuiModel), string(got)
+}
+
+func placeModel(t *testing.T, body string) (tuiModel, string) {
+	t.Helper()
+	argv := filepath.Join(t.TempDir(), "ARGV")
+	m := windowAttachModel(t, fakeLauncher(t, `printf '%s\n' "$@" > `+argv+"\n"+body))
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.target == "remote:lab:api:@4" })
+	return m, argv
+}
+
+func TestEnterOnWindowRowPlacesIntoCurrentSession(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	m, argv := placeModel(t, "")
+
+	_, got := runAttachArgv(t, m, argv, "enter")
+
+	if want := "lab\napi\n--into\nwork\n--window\n@4\n"; got != want {
+		t.Errorf("launcher argv = %q, want %q", got, want)
+	}
+	if len(*selected) != 0 {
+		t.Errorf("selected %v without a probe pane id, want none", *selected)
+	}
+}
+
+func TestCtrlEOnWindowRowOpensDedicated(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	m, argv := placeModel(t, "")
+
+	_, got := runAttachArgv(t, m, argv, "ctrl+e")
+
+	if want := "lab\napi\n@4\n"; got != want {
+		t.Errorf("launcher argv = %q, want %q", got, want)
+	}
+}
+
+func TestEnterOnWindowRowDedicatedFallbacks(t *testing.T) {
+	cases := []struct {
+		name   string
+		env    string
+		cur    currentSession
+		curOK  bool
+		lookup bool
+	}{
+		{"no current window", "", currentSession{id: "$2", name: "work"}, true, false},
+		{"lookup failed", "@9", currentSession{}, false, true},
+		{"current session is a dedicated mirror", "@9", currentSession{id: "$2", name: "lab-api", dedicated: true}, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OG_PICKER_CURRENT_WINDOW", tc.env)
+			stubPlace(t, tc.cur, tc.curOK, nil)
+			m, argv := placeModel(t, "")
+
+			_, got := runAttachArgv(t, m, argv, "enter")
+
+			if want := "lab\napi\n@4\n"; got != want {
+				t.Errorf("launcher argv = %q, want the dedicated %q", got, want)
+			}
+		})
+	}
+}
+
+func TestEnterOnAlreadyPlacedWindowFocusesWithoutLauncher(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true,
+		map[string]string{"$2|lab|api|%7": "@12"})
+	argv := filepath.Join(t.TempDir(), "ARGV")
+	m := windowAttachModel(t, fakeLauncher(t, `printf '%s\n' "$@" > `+argv))
+	m.visible[m.cursor].remoteWindowPane = "%7"
+
+	next, cmd := m.Update(wallKey("enter"))
+
+	nm := next.(tuiModel)
+	if nm.attach != nil {
+		t.Fatal("an attach started for an already placed window")
+	}
+	if cmd == nil || fmt.Sprintf("%T", cmd()) != "tea.QuitMsg" {
+		t.Errorf("cmd = %v, want tea.Quit", cmd)
+	}
+	if want := []string{"@12"}; !reflect.DeepEqual(*selected, want) {
+		t.Errorf("selected = %v, want %v", *selected, want)
+	}
+	assertNoFile(t, argv)
+}
+
+// placedAttachDone runs a placed attach to its done message and returns the
+// model after finishAttach plus the poll Cmd it returned.
+func placedAttachDone(t *testing.T) (tuiModel, tea.Cmd) {
+	t.Helper()
+	m, _ := placeModel(t, "")
+	m.visible[m.cursor].remoteWindowPane = "%7"
+	next, cmd := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	id := nm.attach.id
+	done := awaitAttachMsg(t, runBatchAsync(cmd), 5*time.Second, func(msg tea.Msg) bool {
+		d, ok := msg.(attachDoneMsg)
+		return ok && d.id == id
+	})
+	next, poll := nm.Update(done)
+	return next.(tuiModel), poll
+}
+
+func shortPlacedPoll(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	origInt, origDl := placedPollInterval, placedPollDeadline
+	t.Cleanup(func() { placedPollInterval, placedPollDeadline = origInt, origDl })
+	placedPollInterval, placedPollDeadline = time.Millisecond, deadline
+}
+
+// The daemon answers the launcher before it creates the mirror windows, so the
+// window appears only after the launcher has exited.
+func TestPlacedAttachSelectsPlacedWindowOnSuccess(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	shortPlacedPoll(t, 5*time.Second)
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	calls := 0
+	placedWindowFn = func(sessID, host, sess, pane string) (string, bool) {
+		calls++
+		return "@12", calls > 3 && sessID == "$2" && host == "lab" && sess == "api" && pane == "%7"
+	}
+
+	nm, poll := placedAttachDone(t)
+
+	if nm.attach == nil || !nm.attach.placing || poll == nil {
+		t.Fatalf("attach = %+v, cmd = %v, want a placing state and a poll Cmd", nm.attach, poll)
+	}
+	nm.width = 80
+	if got := stripANSI(nm.renderHints()); !strings.Contains(got, "placing lab/api") {
+		t.Errorf("hints = %q, want a placing status line", got)
+	}
+	if len(*selected) != 0 {
+		t.Fatalf("selected %v before the window existed", *selected)
+	}
+	msg := poll()
+	next, quit := nm.Update(msg)
+	if quit == nil || fmt.Sprintf("%T", quit()) != "tea.QuitMsg" || next.(tuiModel).attach != nil {
+		t.Errorf("cmd = %v, want tea.Quit and a cleared attach", quit)
+	}
+	if want := []string{"@12"}; !reflect.DeepEqual(*selected, want) {
+		t.Errorf("selected = %v, want %v", *selected, want)
+	}
+}
+
+func TestPlacedAttachQuitsAtDeadlineWithoutSelecting(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	shortPlacedPoll(t, 20*time.Millisecond)
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+
+	nm, poll := placedAttachDone(t)
+	_, quit := nm.Update(poll())
+
+	if quit == nil || fmt.Sprintf("%T", quit()) != "tea.QuitMsg" {
+		t.Errorf("cmd = %v, want tea.Quit", quit)
+	}
+	if len(*selected) != 0 {
+		t.Errorf("selected %v after the deadline", *selected)
+	}
+}
+
+func TestPlacedAttachCancelledSkipsPlacedPoll(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	m, _ := placeModel(t, "")
+	m.visible[m.cursor].remoteWindowPane = "%7"
+	next, _ := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	att := *nm.attach
+	att.cancelling = true
+	nm.attach = &att
+
+	next, cmd := nm.finishAttach(attachResult{outcome: attachOK})
+
+	if cmd == nil || fmt.Sprintf("%T", cmd()) != "tea.QuitMsg" {
+		t.Errorf("cmd = %v, want tea.Quit", cmd)
+	}
+	if next.(tuiModel).attach != nil {
+		t.Errorf("attach = %+v, want it cleared with no placed poll", next.(tuiModel).attach)
+	}
+	if len(*selected) != 0 {
+		t.Errorf("selected %v after a cancelled launch", *selected)
+	}
+}
+
+func TestPlacedAttachEscWhilePlacingQuits(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	shortPlacedPoll(t, time.Millisecond)
+	stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+
+	nm, _ := placedAttachDone(t)
+	_, quit := nm.Update(wallKey("esc"))
+
+	if quit == nil || fmt.Sprintf("%T", quit()) != "tea.QuitMsg" {
+		t.Errorf("cmd = %v, want tea.Quit", quit)
+	}
+}
+
+func TestPlacedAttachErrorLandsInStatusLine(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	m, argv := placeModel(t, "echo 'refusing: session is a mirror' >&2\nexit 1")
+
+	nm, _ := runAttachArgv(t, m, argv, "enter")
+
+	if want := "lab/api:2: refusing: session is a mirror — enter to retry"; nm.statusMsg != want {
+		t.Errorf("statusMsg = %q, want %q", nm.statusMsg, want)
+	}
+	if len(*selected) != 0 {
+		t.Errorf("selected %v after a failed launch", *selected)
+	}
+}
+
+func TestPlacedRunGetsLongMirrorBudget(t *testing.T) {
+	placed := newAttachRun(attachSpec{host: "lab", sess: "api", into: "work", selector: "@4"})
+	if got := placed.budget(phaseMirror); got != placedMirrorBudget {
+		t.Errorf("placed mirror budget = %v, want %v", got, placedMirrorBudget)
+	}
+	if got := newAttachRun(attachSpec{host: "lab", sess: "api"}).budget(phaseMirror); got != attachBudgets[phaseMirror] {
+		t.Errorf("dedicated mirror budget = %v, want %v", got, attachBudgets[phaseMirror])
+	}
+}
+
+func TestBuildAttachCmdPlacedIgnoresRestoreAndNewDir(t *testing.T) {
+	cmd := buildAttachCmd(attachSpec{bin: "og-remote-open", host: "lab", sess: "api", into: "work", selector: "@4", window: "@4", restore: true, newDir: "/x"}, time.Second)
+
+	if want := []string{"og-remote-open", "lab", "api", "--into", "work", "--window", "@4"}; !reflect.DeepEqual(cmd.Args, want) {
+		t.Errorf("args = %v, want %v", cmd.Args, want)
+	}
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, "OG_REMOTE_RESTORE=") || strings.HasPrefix(e, "OG_REMOTE_NEW_DIR=") {
+			t.Errorf("placed open set %s", e)
+		}
+	}
+}
+
+func TestCtrlEIsNoOpOffWindowRowsAndInWall(t *testing.T) {
+	stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	m := attachTestModel("unused")
+	m.cursor = findVisible(t, m, func(it listItem) bool { return it.remoteHost != "" && it.remoteWindowID == "" })
+	next, cmd := m.Update(wallKey("ctrl+e"))
+	if nm := next.(tuiModel); nm.attach != nil || cmd != nil {
+		t.Errorf("ctrl+e on a non-window row started an attach")
+	}
+
+	w := windowAttachModel(t, "unused")
+	w.mode = modeWall
+	next, cmd = w.Update(wallKey("ctrl+e"))
+	if nm := next.(tuiModel); nm.attach != nil || cmd != nil {
+		t.Errorf("ctrl+e in wall mode started an attach")
+	}
+}
+
+func TestFindPlacedWindow(t *testing.T) {
+	out := "@1|||||\n@2|1|lab|%3|api\n@5|1|lab|%7|a|b\n@6||lab|%7|api\n"
+	cases := []struct {
+		host, sess, pane, want string
+	}{
+		{"lab", "api", "%3", "@2"},
+		{"lab", "a|b", "%7", "@5"},
+		{"lab", "api", "%7", ""}, // @6 is not placed
+		{"other", "api", "%3", ""},
+		{"lab", "web", "%3", ""},
+	}
+	for _, tc := range cases {
+		got, ok := findPlacedWindow(out, tc.host, tc.sess, tc.pane)
+		if got != tc.want || ok != (tc.want != "") {
+			t.Errorf("findPlacedWindow(%s,%s,%s) = %q,%v, want %q", tc.host, tc.sess, tc.pane, got, ok, tc.want)
+		}
+	}
+}
+
+func TestParseCurrentSession(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want currentSession
+		ok   bool
+	}{
+		{"plain session", "$2|||work\n", currentSession{id: "$2", name: "work"}, true},
+		{"placed mirror window reads as its local session", "$2|||work", currentSession{id: "$2", name: "work"}, true},
+		{"dedicated mirror", "$2|lab||work\n", currentSession{id: "$2", name: "work", dedicated: true}, true},
+		{"dedicated by sock only", "$2||/s|work", currentSession{id: "$2", name: "work", dedicated: true}, true},
+		{"name holds a pipe", "$2|||a|b\n", currentSession{id: "$2", name: "a|b"}, true},
+		{"short row", "$2||work", currentSession{}, false},
+		{"garbled id", "x|||work", currentSession{}, false},
+		{"empty name", "$2|||", currentSession{}, false},
+		{"empty", "", currentSession{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseCurrentSession(tc.out)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("parseCurrentSession(%q) = %+v, %v; want %+v, %v", tc.out, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
 }

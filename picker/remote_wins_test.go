@@ -20,13 +20,13 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 		"S|$1|1700000000|api",
 		"S|$2|1700000001|web",
 		"S|$3|1700000002|",
-		"W|$1|@3|1|server",
-		"W|$1|@4|2|logs|with|pipes",
-		"W|$2|@7|1|vite",
-		"W|$9|@8|1|orphan",
-		"W|1|@3|1|x",
-		"W|$1|3|1|x",
-		"W|$1|@5|x|y",
+		"W|$1|@3|1|%3|server",
+		"W|$1|@4|2|%4|logs|with|pipes",
+		"W|$2|@7|1|%9|vite",
+		"W|$9|@8|1|%1|orphan",
+		"W|1|@3|1|%1|x",
+		"W|$1|3|1|%1|x",
+		"W|$1|@5|x|%1|y",
 		"",
 	}, "\n")
 
@@ -45,9 +45,9 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 		t.Errorf("SessionCreated = %v, want %v", got.SessionCreated, want)
 	}
 	want := []remoteWindow{
-		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server", SessionCreated: "1700000000"},
-		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs|with|pipes", SessionCreated: "1700000000"},
-		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite", SessionCreated: "1700000001"},
+		{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "server", Pane: "%3", SessionCreated: "1700000000"},
+		{Session: "api", SessionID: "$1", ID: "@4", Index: 2, Name: "logs|with|pipes", Pane: "%4", SessionCreated: "1700000000"},
+		{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "vite", Pane: "%9", SessionCreated: "1700000001"},
 	}
 	if !reflect.DeepEqual(got.Windows, want) {
 		t.Errorf("windows = %+v, want %+v", got.Windows, want)
@@ -59,7 +59,7 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 func TestParseRemoteWindowsOutputKeepsRawNames(t *testing.T) {
 	sess := "  s\x1b[31m\x07 "
 	win := " w\u202e\x1b[0m "
-	out := "id\nuser\nS|$1|1700000000|" + sess + "\nW|$1|@1|1|" + win + "\r\n"
+	out := "id\nuser\nS|$1|1700000000|" + sess + "\nW|$1|@1|1|%1|" + win + "\r\n"
 
 	got := parseRemoteWindowsOutput(out)
 
@@ -104,7 +104,7 @@ func TestRemoteListWindowsCmdFishSafe(t *testing.T) {
 	if !strings.Contains(cmd, `list-sessions -F '`+remoteSessionRowsFormat+`' \; list-windows -a -F '`+remoteWindowRowsFormat+`'`) {
 		t.Fatalf("cmd = %q, want list-sessions \\; list-windows -a", cmd)
 	}
-	if !strings.Contains(remoteWindowRowsFormat, "W|#{session_id}|#{window_id}|#{window_index}|#{window_name}") || !strings.Contains(remoteWindowRowsFormat, "M|") {
+	if !strings.Contains(remoteWindowRowsFormat, "W|#{session_id}|#{window_id}|#{window_index}|#{pane_id}|#{window_name}") || !strings.Contains(remoteWindowRowsFormat, "M|") {
 		t.Fatalf("remoteWindowRowsFormat must keep the W row contract and the M marker: %q", remoteWindowRowsFormat)
 	}
 	if strings.Contains(cmd, "td=") || strings.Contains(cmd, "; t=") {
@@ -646,5 +646,75 @@ func TestRemoteWindowRowItemCarriesSessionID(t *testing.T) {
 	}
 	if got := row.remoteSessionCreated; got != "1700000009" {
 		t.Errorf("remoteSessionCreated = %q, want 1700000009", got)
+	}
+}
+
+// A row without a valid %N pane field keeps the window, with the whole tail as
+// its name and no pane id.
+func TestParseRemoteWindowsOutputMissingOrInvalidPane(t *testing.T) {
+	out := strings.Join([]string{
+		"id", "user",
+		"S|$1|1700000000|api",
+		"W|$1|@1|1|old|style",
+		"W|$1|@2|2|9|bad",
+		"W|$1|@3|3|%x|bad",
+		"W|$1|@4|4|%5|pipes|in|name",
+		"",
+	}, "\n")
+
+	got := parseRemoteWindowsOutput(out).Windows
+
+	want := []struct{ id, pane, name string }{
+		{"@1", "", "old|style"},
+		{"@2", "", "9|bad"},
+		{"@3", "", "%x|bad"},
+		{"@4", "%5", "pipes|in|name"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("windows = %+v, want %d rows", got, len(want))
+	}
+	for i, w := range want {
+		if got[i].ID != w.id || got[i].Pane != w.pane || got[i].Name != w.name {
+			t.Errorf("window %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+// The pane id is probe-only: a restarted remote renumbers it, so a cached row
+// must never carry a stale one.
+func TestRemoteWindowPaneIsNotCached(t *testing.T) {
+	useRemoteCache(t)
+	writeRemoteWindowCache("lab", []remoteWindow{{Session: "api", SessionID: "$1", ID: "@4", Index: 1, Name: "x", Pane: "%7"}}, time.Now())
+
+	c, ok := readRemoteWindowCache("lab")
+	if !ok || len(c.Windows) != 1 || c.Windows[0].Pane != "" {
+		t.Fatalf("cache = %+v ok=%v, want one window with no pane", c, ok)
+	}
+}
+
+func TestRemoteWindowRowCarriesPane(t *testing.T) {
+	row := remoteWindowRowItem("lab", remoteWindow{Session: "api", ID: "@4", Pane: "%7"}, "", "", "", false)
+	if row.remoteWindowPane != "%7" {
+		t.Errorf("remoteWindowPane = %q, want %%7", row.remoteWindowPane)
+	}
+}
+
+// A remote session that already has a dedicated mirror lists no window rows:
+// its windows are reached through the mirror's local rows.
+func TestBridgedSessionYieldsNoWindowRows(t *testing.T) {
+	bridges := firstPaintBridges([]listItem{{target: "lab-api", session: "lab-api", bridgeHost: "lab"}})
+	probe := remoteProbeResult{
+		Sessions:    []string{"api", "web"},
+		ServerAlive: true,
+		Windows: []remoteWindow{
+			{Session: "api", SessionID: "$1", ID: "@3", Index: 1, Name: "a"},
+			{Session: "web", SessionID: "$2", ID: "@7", Index: 1, Name: "w"},
+		},
+	}
+
+	got, state := remoteWindowsForHost("lab", bridges, probe, nil)
+
+	if state != remoteProbeOK || len(got) != 1 || got[0].Session != "web" {
+		t.Fatalf("windows = %+v state=%v, want only web's window", got, state)
 	}
 }

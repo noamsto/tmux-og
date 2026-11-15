@@ -2071,6 +2071,23 @@ $4|a|b'
 	grep -qxF 'select=@12' "$SELECT_LOG"
 }
 
+# The window picker's Enter on a remote window row (buildAttachCmd: host sess
+# --into <current session name> --window <@N>).
+@test "into: the window picker's placed argv launches one daemon per chosen window id" {
+	install_into_fakes
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@4'
+	[ "$status" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 1 ]
+	grep -qE '^pid=[0-9]+ into=\$3 remote_open=<unset> local=dispatch$' "$LAUNCH_LOG"
+	grep -qxF 'select=@4' "$SELECT_LOG"
+
+	run bash "$LAUNCHER" tp-g6 workstation --into dispatch --window '@5'
+	[ "$status" -eq 0 ]
+	[ "$(wc -l <"$LAUNCH_LOG")" -eq 2 ]
+	grep -qxF 'select=@5' "$SELECT_LOG"
+}
+
 @test "into: --window without --into is refused as such, not as a bad window index" {
 	install_into_fakes
 
