@@ -47,11 +47,10 @@ func one(rt roundTrip, cmd string) (controlmode.Line, bool) { return rt(cmd)() }
 // empty #{pane_private_modes}. The wrap field therefore carries a "w" prefix, so
 // it stays one non-empty field wherever the others are dropped and parseCursor
 // can find it by that prefix instead of by position. The cursor style (s, b),
-// colour (c) and key mode (k) fields follow the same rule, and sit after the
-// positional list so its field positions never move. The key mode drops its
-// space ("Ext 2" -> "Ext2") so it stays one field.
+// and colour (c) fields follow the same rule, and sit after the positional list
+// so its field positions never move.
 func cursorCmd(paneID string) string {
-	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes} s#{cursor_shape} b#{cursor_blinking} c#{cursor_colour} k#{s/ //:pane_key_mode}'", paneID)
+	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes} s#{cursor_shape} b#{cursor_blinking} c#{cursor_colour}'", paneID)
 }
 
 func captureCmd(paneID string) string {
@@ -128,14 +127,14 @@ func replaceLF(b []byte) []byte {
 // "cursor_x cursor_y alternate_on keypad_cursor_flag mouse_standard_flag
 // mouse_button_flag mouse_all_flag mouse_sgr_flag mouse_utf8_flag
 // w<wrap_flag> pane_private_modes s<cursor_shape> b<cursor_blinking>
-// c<cursor_colour> k<pane_key_mode>". An error reply or a dead stream degrades to
+// c<cursor_colour>". An error reply or a dead stream degrades to
 // (0,0,false,false,nil,nil,nil,nil) rather than rejecting the seed — only the
 // capture-pane reply can do that (see parseCapture). mouse is nil (unknown)
 // unless the reply carries the five mouse fields, modes is nil (unknown)
 // unless it carries the private-mode list (a remote tmux missing that format
 // expands it empty and drops the field), and wrap is nil (unknown) unless the
 // w-prefixed field reads w0 or w1. extra is nil unless at least one of the
-// s/b/c/k fields reads as a known value; the rest of it stays nil.
+// s/b/c fields reads as a known value; the rest of it stays nil.
 func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes, wrap *bool, extra *render.Extra) {
 	if !ok || l.Kind == controlmode.Error {
 		return 0, 0, false, false, nil, nil, nil, nil
@@ -154,7 +153,6 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 	var shape string
 	var blink bool
 	var colour string
-	var keyMode *int
 	for _, f := range fields[4:] {
 		v := f[1:]
 		switch f[0] {
@@ -169,15 +167,11 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 			blink = v == "1"
 		case 'c':
 			colour = v
-		case 'k':
-			if n, known := keyModes[v]; known {
-				keyMode = &n
-			}
 		default:
 			rest = append(rest, f)
 		}
 	}
-	extra = cursorExtra(shape, blink, colour, keyMode)
+	extra = cursorExtra(shape, blink, colour)
 	if len(rest) >= 5 {
 		mouse = &render.MouseMode{
 			Standard: rest[0] == "1",
@@ -201,15 +195,11 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes, wrap, extra
 }
 
-// keyModes maps #{pane_key_mode} with its space removed to the CSI > 4 ; n m
-// value that restores it.
-var keyModes = map[string]int{"VT10x": 0, "Ext1": 1, "Ext2": 2}
-
-// cursorExtra builds the seed's style, colour and key-mode restore from the
+// cursorExtra builds the seed's style and colour restore from the
 // plucked fields, nil when none is known. A colour with characters outside
 // [A-Za-z0-9#] is unknown, as it came from the remote and reaches an OSC
 // sequence.
-func cursorExtra(shape string, blink bool, colour string, keyMode *int) *render.Extra {
+func cursorExtra(shape string, blink bool, colour string) *render.Extra {
 	var e render.Extra
 	switch shape {
 	case "block", "underline", "bar", "default":
@@ -220,7 +210,6 @@ func cursorExtra(shape string, blink bool, colour string, keyMode *int) *render.
 	}) {
 		e.Colour = &colour
 	}
-	e.KeyMode = keyMode
 	if e == (render.Extra{}) {
 		return nil
 	}

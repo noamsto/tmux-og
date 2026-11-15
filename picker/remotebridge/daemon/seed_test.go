@@ -508,13 +508,13 @@ func TestParseCursorWrapKeepsMouseAndModes(t *testing.T) {
 
 // The w#{wrap_flag} field is the seed's only source of DECAWM; dropping it silently leaves wrap unknown.
 func TestCursorCmdFormat(t *testing.T) {
-	want := "display-message -p -t %7 -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes} s#{cursor_shape} b#{cursor_blinking} c#{cursor_colour} k#{s/ //:pane_key_mode}'"
+	want := "display-message -p -t %7 -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes} s#{cursor_shape} b#{cursor_blinking} c#{cursor_colour}'"
 	if got := cursorCmd("%7"); got != want {
 		t.Errorf("cursorCmd = %q, want %q", got, want)
 	}
 }
 
-// TestParseCursorExtra: the s/b/c/k fields are plucked by prefix wherever they
+// TestParseCursorExtra: the s/b/c fields are plucked by prefix wherever they
 // sit, never reach the positional mouse/modes rules, and each missing or
 // unreadable one leaves only its own part of extra nil.
 func TestParseCursorExtra(t *testing.T) {
@@ -524,18 +524,15 @@ func TestParseCursorExtra(t *testing.T) {
 		name, reply string
 		style       *render.CursorStyle
 		colour      string
-		keyMode     int // -1 nil
 	}{
-		{"full", base + " sbar b0 c#ff8800 kExt2", &render.CursorStyle{Shape: "bar"}, "#ff8800", 2},
-		{"blinking block", base + " sblock b1 cnone kVT10x", &render.CursorStyle{Shape: "block", Blink: true}, "none", 0},
-		{"no style", base + " c#112233 kExt1", nil, "#112233", 1},
-		{"no blink field", base + " sunderline c#112233 kExt1", &render.CursorStyle{Shape: "underline"}, "#112233", 1},
-		{"no colour", base + " sdefault b0 kExt2", &render.CursorStyle{Shape: "default"}, "", 2},
-		{"empty-expanding key mode", base + " sbar b1 cnone k", &render.CursorStyle{Shape: "bar", Blink: true}, "none", -1},
-		{"unknown key mode", base + " sbar b1 cnone kExt9", &render.CursorStyle{Shape: "bar", Blink: true}, "none", -1},
-		{"unsafe colour", base + " sbar b0 c#ff;rm kExt2", &render.CursorStyle{Shape: "bar"}, "", 2},
-		{"unknown shape", base + " sfoo b0 cnone kExt2", nil, "none", 2},
-		{"reordered before the list", "1 2 0 0 0 0 0 0 0 w1 sbar b0 cnone kExt2 25,2004", &render.CursorStyle{Shape: "bar"}, "none", 2},
+		{"full", base + " sbar b0 c#ff8800", &render.CursorStyle{Shape: "bar"}, "#ff8800"},
+		{"blinking block", base + " sblock b1 cnone", &render.CursorStyle{Shape: "block", Blink: true}, "none"},
+		{"no style", base + " c#112233", nil, "#112233"},
+		{"no blink field", base + " sunderline c#112233", &render.CursorStyle{Shape: "underline"}, "#112233"},
+		{"no colour", base + " sdefault b0", &render.CursorStyle{Shape: "default"}, ""},
+		{"unsafe colour", base + " sbar b0 c#ff;rm", &render.CursorStyle{Shape: "bar"}, ""},
+		{"unknown shape", base + " sfoo b0 cnone", nil, "none"},
+		{"reordered before the list", "1 2 0 0 0 0 0 0 0 w1 sbar b0 cnone 25,2004", &render.CursorStyle{Shape: "bar"}, "none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, _, mouse, modes, wrap, extra := parseCursor(line(tc.reply), true)
@@ -551,14 +548,11 @@ func TestParseCursorExtra(t *testing.T) {
 			if tc.colour == "" && extra.Colour != nil || tc.colour != "" && (extra.Colour == nil || *extra.Colour != tc.colour) {
 				t.Errorf("colour = %v, want %q", extra.Colour, tc.colour)
 			}
-			if tc.keyMode < 0 && extra.KeyMode != nil || tc.keyMode >= 0 && (extra.KeyMode == nil || *extra.KeyMode != tc.keyMode) {
-				t.Errorf("keyMode = %v, want %d", extra.KeyMode, tc.keyMode)
-			}
 		})
 	}
 
 	// An older remote reply carries none of the new fields: extra stays nil.
-	for _, reply := range []string{base, "1 2 0 0", "1 2 0 0 0 0 0 0 0 w1 25 s b c k"} {
+	for _, reply := range []string{base, "1 2 0 0", "1 2 0 0 0 0 0 0 0 w1 25 s b c"} {
 		if _, _, _, _, _, _, _, extra := parseCursor(line(reply), true); extra != nil {
 			t.Errorf("reply %q: extra = %+v, want nil", reply, extra)
 		}
@@ -566,10 +560,10 @@ func TestParseCursorExtra(t *testing.T) {
 }
 
 // TestPaneSeedRestoresHiddenBarCursor: a remote pane with a hidden bar cursor
-// in Ext 2 gets DECSCUSR 6, the key mode and ?25l, the latter after the CUP.
+// gets DECSCUSR 6 and ?25l, the latter after the CUP.
 func TestPaneSeedRestoresHiddenBarCursor(t *testing.T) {
 	stream := strings.Join([]string{
-		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0 w1 7 sbar b0 cnone kExt2", "%end 1 1 1",
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0 w1 7 sbar b0 cnone", "%end 1 1 1",
 		"%begin 2 2 1", "line-one", "%end 2 2 1",
 	}, "\n") + "\n"
 	var sent []string
@@ -577,7 +571,7 @@ func TestPaneSeedRestoresHiddenBarCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PaneSeed: %v", err)
 	}
-	for _, want := range []string{"\x1b[6 q", "\x1b]112\x1b\\", "\x1b[>4;2m"} {
+	for _, want := range []string{"\x1b[6 q", "\x1b]112\x1b\\"} {
 		if !bytes.Contains(got, []byte(want)) {
 			t.Errorf("seed %q missing %q", got, want)
 		}

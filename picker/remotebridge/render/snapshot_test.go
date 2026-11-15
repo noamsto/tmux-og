@@ -319,31 +319,8 @@ func TestSeedCursorColour(t *testing.T) {
 	}
 }
 
-// TestSeedKeyMode: CSI > 4 ; n m restores the pane's extended-keys mode, and
-// a nil or out-of-range mode writes nothing.
-func TestSeedKeyMode(t *testing.T) {
-	for _, tc := range []struct {
-		mode *int
-		want string
-	}{
-		{new(0), "\x1b[>4;0m"},
-		{new(1), "\x1b[>4;1m"},
-		{new(2), "\x1b[>4;2m"},
-		{new(3), ""},
-		{nil, ""},
-	} {
-		out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, &Extra{KeyMode: tc.mode}))
-		if got := strings.Contains(out, "\x1b[>4;"); got != (tc.want != "") {
-			t.Errorf("mode %v: seed %q contains CSI > 4 = %v", tc.mode, out, got)
-		}
-		if tc.want != "" && !strings.Contains(out, tc.want) {
-			t.Errorf("seed %q missing %q", out, tc.want)
-		}
-	}
-}
-
 // TestSeedNilExtraWritesNothing: unknown extra state leaves the local pane's
-// cursor style, colour and key mode as they are.
+// cursor style and colour as they are.
 func TestSeedNilExtraWritesNothing(t *testing.T) {
 	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, nil))
 	for _, seq := range []string{" q", "\x1b]12", "\x1b]112", "\x1b[>4;"} {

@@ -46,15 +46,14 @@ type CursorStyle struct {
 // Colour is tmux's #{cursor_colour}, already sanitized: "none" and any value
 // that is not #rrggbb (colourN, a colour name, default, terminal) reset the
 // cursor colour with OSC 112, because the local tmux's OSC 12 only parses
-// #rrggbb, rgb: and X11 names. KeyMode is #{pane_key_mode}: 0 VT10x, 1 Ext 1,
-// 2 Ext 2. The local tmux encodes keys per renderer pane by that mode, and the
-// renderer forwards stdin verbatim to the remote, so a renderer left in VT10x
-// would turn Ctrl-Enter into a bare CR for a remote app in Ext 2. Kitty
-// keyboard flags are not reported by tmux and are not restored.
+// #rrggbb, rgb: and X11 names.
+//
+// Key mode (#{pane_key_mode}) is deliberately NOT restored: keyneg strips every
+// live CSI > 4 ... m / n (#338), so a seeded mode would go stale when the
+// remote app exits and CSI-u-encode Ctrl keys for a shell.
 type Extra struct {
-	Style   *CursorStyle
-	Colour  *string
-	KeyMode *int
+	Style  *CursorStyle
+	Colour *string
 }
 
 // Seed paints captured as a full-screen repaint. A nil mouse, modes or wrap
@@ -64,7 +63,7 @@ type Extra struct {
 // DECAWM (?7): tmux keeps one per pane, shared by the main and alternate
 // screens, and ?1049h/l neither saves nor restores it, so a pane left with
 // autowrap off (a reshape hold writes ?7l) stays that way unless a seed sets it.
-// A nil extra leaves cursor style, colour and key mode alone, the same way.
+// A nil extra leaves cursor style and colour alone, the same way.
 func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, mouse *MouseMode, modes *TerminalModes, wrap *bool, extra *Extra) []byte {
 	var b bytes.Buffer
 	// Both the alt-screen switch and ED erase with the CURRENT background, and
@@ -149,7 +148,7 @@ func writeMouseMode(b *bytes.Buffer, mouse MouseMode) {
 	}
 }
 
-// writeExtra restores cursor style, cursor colour and key mode.
+// writeExtra restores cursor style and cursor colour.
 func writeExtra(b *bytes.Buffer, e Extra) {
 	if e.Style != nil {
 		if n, ok := decscusr(*e.Style); ok {
@@ -162,9 +161,6 @@ func writeExtra(b *bytes.Buffer, e Extra) {
 		} else {
 			b.WriteString("\x1b]112\x1b\\")
 		}
-	}
-	if e.KeyMode != nil && *e.KeyMode >= 0 && *e.KeyMode <= 2 {
-		fmt.Fprintf(b, "\x1b[>4;%dm", *e.KeyMode)
 	}
 }
 

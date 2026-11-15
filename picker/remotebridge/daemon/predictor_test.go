@@ -842,13 +842,13 @@ func TestStreamGround(t *testing.T) {
 	}
 }
 
-// TestPredictModelSurvivesSeedExtra: the cursor style, colour, key-mode and
+// TestPredictModelSurvivesSeedExtra: the cursor style, colour and
 // visibility bytes a seed now carries leave the model usable and let the seed's
 // trailing ?25l hide its cursor.
 func TestPredictModelSurvivesSeedExtra(t *testing.T) {
-	shape, colour, keyMode := render.CursorStyle{Shape: "bar"}, "#ff8800", 2
+	shape, colour := render.CursorStyle{Shape: "bar"}, "#ff8800"
 	seed := render.Seed([]byte("$ ab"), 4, 0, false, false, nil, &render.TerminalModes{}, nil,
-		&render.Extra{Style: &shape, Colour: &colour, KeyMode: &keyMode})
+		&render.Extra{Style: &shape, Colour: &colour})
 	m := newPredictModel(20, 3, seed, plainModes(3))
 	if m == nil {
 		t.Fatal("newPredictModel rejected a seed carrying the extra state")
