@@ -44,6 +44,7 @@ t set-option -t s:2 -w @issue_id NOA-123
 t set-option -t s:2 -w @pr_number 247
 t set-option -t s:2 -w @pr_state open
 t set-option -t s:2 -w @pr_check_state pending
+t set-option -t s:2 -w @pr_glyph "*"
 
 t new-window -t s # Linear + open PR passing
 t set-option -t s:3 -w @issue_provider linear
@@ -51,6 +52,7 @@ t set-option -t s:3 -w @issue_id NOA-124
 t set-option -t s:3 -w @pr_number 248
 t set-option -t s:3 -w @pr_state open
 t set-option -t s:3 -w @pr_check_state success
+t set-option -t s:3 -w @pr_glyph "OK"
 
 t new-window -t s # GitHub + open PR passing
 t set-option -t s:4 -w @issue_provider github
@@ -58,6 +60,7 @@ t set-option -t s:4 -w @issue_id "#142"
 t set-option -t s:4 -w @pr_number 249
 t set-option -t s:4 -w @pr_state open
 t set-option -t s:4 -w @pr_check_state success
+t set-option -t s:4 -w @pr_glyph "OK"
 
 t new-window -t s # Linear + no PR yet
 t set-option -t s:5 -w @issue_provider linear
@@ -121,6 +124,7 @@ t set-option -t s:6 -w @issue_title "should not render"
 t set-option -t s:6 -w @pr_number 999
 t set-option -t s:6 -w @pr_state open
 t set-option -t s:6 -w @pr_check_state success
+t set-option -t s:6 -w @pr_glyph "OK"
 
 # Force a reflow now that the opt-out + enrichment fields are set (the
 # after-new-window hook that fired at creation predates them). Resolve the
@@ -155,6 +159,7 @@ t set-option -t s:7 -w @branch "feat/draft-pr"
 t set-option -t s:7 -w @pr_number 250
 t set-option -t s:7 -w @pr_state open
 t set-option -t s:7 -w @pr_check_state success
+t set-option -t s:7 -w @pr_glyph "D OK"
 t set-option -t s:7 -w @pr_draft 1
 
 t new-window -t s # same PR state, not a draft — the control
@@ -166,6 +171,7 @@ t set-option -t s:8 -w @branch "feat/ready-pr"
 t set-option -t s:8 -w @pr_number 251
 t set-option -t s:8 -w @pr_state open
 t set-option -t s:8 -w @pr_check_state success
+t set-option -t s:8 -w @pr_glyph "OK"
 
 # In an issue-named worktree, the async reconcile/enrich hook can stamp inherited
 # issue metadata onto these synthetic windows after creation. Keep branch state

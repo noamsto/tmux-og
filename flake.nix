@@ -240,6 +240,7 @@
               # only counts it as one char under a UTF-8 locale.
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
+              SANITIZE_TITLE_VECTORS = ./picker/prenrich/testdata/sanitize-title.tsv;
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
