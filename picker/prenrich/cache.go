@@ -73,10 +73,6 @@ func fileMtime(path string) int64 {
 	return fi.ModTime().Unix()
 }
 
-func touch(path string) {
-	touchAt(path, time.Now())
-}
-
 func touchAt(path string, t time.Time) {
 	if os.Chtimes(path, t, t) == nil {
 		return

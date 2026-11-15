@@ -58,7 +58,7 @@ func (f *fakeRunner) output(dir, name string, args ...string) (string, error) {
 	var out string
 	var err error
 	for _, r := range f.rules {
-		if strings.HasPrefix(joined, r.prefix) && len(r.prefix) > best {
+		if strings.HasPrefix(joined, r.prefix) && len(r.prefix) >= best {
 			best, out, err = len(r.prefix), r.out, r.err
 		}
 	}

@@ -229,16 +229,6 @@ func TestWritePROptions_ReflowOnlyOnChange(t *testing.T) {
 	}
 }
 
-func notifyCalls(f *fakeRunner) []call {
-	var out []call
-	for _, c := range f.kind("detach") {
-		if c.name == "/bin/notify" {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 func notifyArgs(level, title string) []string {
 	return []string{"emit", "--source", "pr", "--level", level, "--window", "T", "--title", title, "--body", "#12 T"}
 }

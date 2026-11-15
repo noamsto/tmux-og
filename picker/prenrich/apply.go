@@ -98,7 +98,7 @@ func prGlyph(ic enrichstate.Icons, number, state, check, mergeable, draft, progr
 	return enrichstate.Glyph(ic, state, check, mergeable, draft, progress)
 }
 
-const prevSnapshotFormat ="#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_review}|#{@pr_auto_merge}|#{@pr_check_progress}|#{@pr_glyph}"
+const prevSnapshotFormat = "#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_review}|#{@pr_auto_merge}|#{@pr_check_progress}|#{@pr_glyph}"
 
 // writePROptions stamps the window options. The prior badge-driving values are
 // read first so the cache-bypassing reflow only runs when the badge changed.
