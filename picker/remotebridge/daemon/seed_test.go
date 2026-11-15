@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
+	"github.com/noamsto/tmux-og/picker/remotebridge/render"
 )
 
 // testRoundTrip wires PaneSeed the way Run does — one stream numbering the
@@ -442,9 +443,14 @@ func TestPaneSeedCarriesWrapThroughSeed(t *testing.T) {
 			if !bytes.Contains(got, []byte(tc.want)) || bytes.Contains(got, []byte(tc.not)) {
 				t.Errorf("seed %q: want %q and not %q", got, tc.want, tc.not)
 			}
-			// The wrap field must not shift the mouse or modes rules.
-			if !bytes.HasSuffix(got, []byte("\x1b[3;6H")) {
-				t.Errorf("seed %q does not end with cursor CUP", got)
+			// The wrap field must not shift the mouse or modes rules. Visibility
+			// follows the cursor move, and 25 is in the list unless it was dropped.
+			wantEnd := "\x1b[3;6H"
+			if strings.Contains(tc.reply, "7,25") {
+				wantEnd += "\x1b[?25h"
+			}
+			if !bytes.HasSuffix(got, []byte(wantEnd)) {
+				t.Errorf("seed %q does not end with %q", got, wantEnd)
 			}
 		})
 	}
@@ -480,7 +486,7 @@ func TestPaneSeedUnknownWrapLeavesAutowrapAlone(t *testing.T) {
 // absent, or the only field after the base four.
 func TestParseCursorWrapKeepsMouseAndModes(t *testing.T) {
 	line := func(s string) controlmode.Line { return controlmode.Line{Kind: controlmode.End, Data: []byte(s)} }
-	_, _, _, _, mouse, modes, wrap := parseCursor(line("1 2 0 0 0 0 1 1 0 w1 2004"), true)
+	_, _, _, _, mouse, modes, wrap, _ := parseCursor(line("1 2 0 0 0 0 1 1 0 w1 2004"), true)
 	if mouse == nil || !mouse.All || !mouse.SGR || mouse.Standard {
 		t.Errorf("mouse = %+v, want All+SGR", mouse)
 	}
@@ -491,7 +497,7 @@ func TestParseCursorWrapKeepsMouseAndModes(t *testing.T) {
 		t.Errorf("wrap = %v, want true", wrap)
 	}
 
-	_, _, _, _, mouse, modes, wrap = parseCursor(line("1 2 0 0 w0"), true)
+	_, _, _, _, mouse, modes, wrap, _ = parseCursor(line("1 2 0 0 w0"), true)
 	if mouse != nil || modes != nil {
 		t.Errorf("mouse = %+v, modes = %+v, want both unknown", mouse, modes)
 	}
@@ -502,8 +508,75 @@ func TestParseCursorWrapKeepsMouseAndModes(t *testing.T) {
 
 // The w#{wrap_flag} field is the seed's only source of DECAWM; dropping it silently leaves wrap unknown.
 func TestCursorCmdFormat(t *testing.T) {
-	want := "display-message -p -t %7 -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes}'"
+	want := "display-message -p -t %7 -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes} s#{cursor_shape} b#{cursor_blinking} c#{cursor_colour}'"
 	if got := cursorCmd("%7"); got != want {
 		t.Errorf("cursorCmd = %q, want %q", got, want)
+	}
+}
+
+// TestParseCursorExtra: the s/b/c fields are plucked by prefix wherever they
+// sit, never reach the positional mouse/modes rules, and each missing or
+// unreadable one leaves only its own part of extra nil.
+func TestParseCursorExtra(t *testing.T) {
+	line := func(s string) controlmode.Line { return controlmode.Line{Kind: controlmode.End, Data: []byte(s)} }
+	const base = "1 2 0 0 0 0 0 0 0 w1 25,2004"
+	for _, tc := range []struct {
+		name, reply string
+		style       *render.CursorStyle
+		colour      string
+	}{
+		{"full", base + " sbar b0 c#ff8800", &render.CursorStyle{Shape: "bar"}, "#ff8800"},
+		{"blinking block", base + " sblock b1 cnone", &render.CursorStyle{Shape: "block", Blink: true}, "none"},
+		{"no style", base + " c#112233", nil, "#112233"},
+		{"no blink field", base + " sunderline c#112233", &render.CursorStyle{Shape: "underline"}, "#112233"},
+		{"no colour", base + " sdefault b0", &render.CursorStyle{Shape: "default"}, ""},
+		{"unsafe colour", base + " sbar b0 c#ff;rm", &render.CursorStyle{Shape: "bar"}, ""},
+		{"unknown shape", base + " sfoo b0 cnone", nil, "none"},
+		{"reordered before the list", "1 2 0 0 0 0 0 0 0 w1 sbar b0 cnone 25,2004", &render.CursorStyle{Shape: "bar"}, "none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, _, mouse, modes, wrap, extra := parseCursor(line(tc.reply), true)
+			if mouse == nil || wrap == nil || modes == nil || !modes.CursorVisible || !modes.BracketedPaste {
+				t.Fatalf("mouse=%v modes=%+v wrap=%v: prefixed fields disturbed the positional ones", mouse, modes, wrap)
+			}
+			if extra == nil {
+				t.Fatal("extra = nil")
+			}
+			if (extra.Style == nil) != (tc.style == nil) || (tc.style != nil && *extra.Style != *tc.style) {
+				t.Errorf("style = %+v, want %+v", extra.Style, tc.style)
+			}
+			if tc.colour == "" && extra.Colour != nil || tc.colour != "" && (extra.Colour == nil || *extra.Colour != tc.colour) {
+				t.Errorf("colour = %v, want %q", extra.Colour, tc.colour)
+			}
+		})
+	}
+
+	// An older remote reply carries none of the new fields: extra stays nil.
+	for _, reply := range []string{base, "1 2 0 0", "1 2 0 0 0 0 0 0 0 w1 25 s b c"} {
+		if _, _, _, _, _, _, _, extra := parseCursor(line(reply), true); extra != nil {
+			t.Errorf("reply %q: extra = %+v, want nil", reply, extra)
+		}
+	}
+}
+
+// TestPaneSeedRestoresHiddenBarCursor: a remote pane with a hidden bar cursor
+// gets DECSCUSR 6 and ?25l, the latter after the CUP.
+func TestPaneSeedRestoresHiddenBarCursor(t *testing.T) {
+	stream := strings.Join([]string{
+		"%begin 1 1 1", "5 2 0 0 0 0 0 0 0 w1 7 sbar b0 cnone", "%end 1 1 1",
+		"%begin 2 2 1", "line-one", "%end 2 2 1",
+	}, "\n") + "\n"
+	var sent []string
+	got, err := PaneSeed(testRoundTrip(stream, &sent), "%3")
+	if err != nil {
+		t.Fatalf("PaneSeed: %v", err)
+	}
+	for _, want := range []string{"\x1b[6 q", "\x1b]112\x1b\\"} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("seed %q missing %q", got, want)
+		}
+	}
+	if !bytes.HasSuffix(got, []byte("\x1b[3;6H\x1b[?25l")) {
+		t.Errorf("seed %q does not end with CUP then ?25l", got)
 	}
 }

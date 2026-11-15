@@ -110,7 +110,7 @@ func newHarness(t *testing.T, captured string, cx, cy int, o harnessOpts) *predH
 	h.p.now = func() time.Time { return h.clock }
 	t.Cleanup(func() { h.p.shutdown() })
 
-	seed := render.Seed([]byte(captured), cx, cy, o.alt, false, nil, nil, nil)
+	seed := render.Seed([]byte(captured), cx, cy, o.alt, false, nil, nil, nil, nil)
 	h.writeLocal(h.p.onResize(o.w, o.h))
 	h.p.observe(seed)
 	h.writeLocal(seed)
@@ -333,7 +333,7 @@ func TestPredictorSeedDrops(t *testing.T) {
 	h := newHarness(t, "$ ", 2, 0, harnessOpts{})
 	h.confirm("a")
 	h.keys("b")
-	seed := render.Seed([]byte("$ ab"), 4, 0, false, false, nil, nil, nil)
+	seed := render.Seed([]byte("$ ab"), 4, 0, false, false, nil, nil, nil, nil)
 	out := h.p.onSeed(seed)
 	if !bytes.HasPrefix(out, []byte("\x1b8\x1b7")) {
 		t.Errorf("onSeed = %q, want an unpaint", out)
@@ -839,5 +839,25 @@ func TestStreamGround(t *testing.T) {
 				t.Errorf("atGround = %v, want %v (state %+v)", got, c.want, g)
 			}
 		})
+	}
+}
+
+// TestPredictModelSurvivesSeedExtra: the cursor style, colour and
+// visibility bytes a seed now carries leave the model usable and let the seed's
+// trailing ?25l hide its cursor.
+func TestPredictModelSurvivesSeedExtra(t *testing.T) {
+	shape, colour := render.CursorStyle{Shape: "bar"}, "#ff8800"
+	seed := render.Seed([]byte("$ ab"), 4, 0, false, false, nil, &render.TerminalModes{}, nil,
+		&render.Extra{Style: &shape, Colour: &colour})
+	m := newPredictModel(20, 3, seed, plainModes(3))
+	if m == nil {
+		t.Fatal("newPredictModel rejected a seed carrying the extra state")
+	}
+	defer m.close()
+	if m.poisoned {
+		t.Error("the extra state poisoned the model")
+	}
+	if !m.hidden {
+		t.Error("the seed's trailing ?25l did not hide the model's cursor")
 	}
 }

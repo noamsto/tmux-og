@@ -2657,6 +2657,21 @@ wait_mirror_paste_focus() {
 	return 1
 }
 
+# wait_mirror_cursor polls the mirror pane's cursor visibility and shape until
+# they read $1 ("0 bar": hidden bar cursor). Both are restored by the seed, so a
+# mirror attached after the remote changed them must match (#1104).
+wait_mirror_cursor() {
+	local got=""
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		got="$($DST display-message -p -t host-sess:1.0 '#{cursor_flag} #{cursor_shape}' 2>/dev/null)"
+		[ "$got" = "$1" ] && return 0
+		sleep 0.1
+	done
+	echo "mirror cursor flag/shape: got '$got', want '$1'" >&3
+	return 1
+}
+
 # mouse_probe starts a remote program in a new pane that turns on the DECSET
 # mouse modes for encoding $2 (sgr: 1000/1002 + 1006, x10: 1000 alone) and
 # then logs its raw input to $3. $1 picks the pane: "tiled" splits the window,
@@ -2965,6 +2980,31 @@ EOF
 
 	bridge_up 1 pastepre
 	wait_mirror_paste_focus "1 1"
+
+	kill "$daemon_pid" 2>/dev/null || true
+	wait "$daemon_pid" 2>/dev/null || true
+}
+
+@test "a hidden bar cursor set before the mirror attached reaches the mirror pane" {
+	prog="$BATS_TEST_TMPDIR/cursorpre-prog.sh"
+	cat >"$prog" <<'EOF'
+printf '\033[?25l\033[6 q'
+exec cat -v
+EOF
+	$SRC new-session -d -s rem -x 100 -y 30 "bash $prog"
+	$DST new-session -d -s host-sess -x 100 -y 30
+
+	# The cursor state must be set before the daemon attaches, or it reaches the
+	# mirror as live output and the seed goes untested.
+	deadline=$((SECONDS + BRIDGE_UP_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$($SRC display-message -p -t rem '#{cursor_flag} #{cursor_shape}')" = "0 bar" ] && break
+		sleep 0.1
+	done
+	[ "$($SRC display-message -p -t rem '#{cursor_flag} #{cursor_shape}')" = "0 bar" ]
+
+	bridge_up 1 cursorpre
+	wait_mirror_cursor "0 bar"
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
