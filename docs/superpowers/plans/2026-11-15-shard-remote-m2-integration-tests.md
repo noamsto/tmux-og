@@ -12,7 +12,7 @@ Goal: replace the single 151-test `remote-m2-integration-tests` derivation (~8.5
 
 Choose **B**. In each shard derivation, `awk` rewrites the line `@test "name" {` of every test not assigned to the shard into `__unrun_<n>() {`: a valid bash function body that bats never registers, so helpers between tests, setup/teardown and the test bodies stay byte-identical. Assignment is computed in Nix from the test names read out of the source file (`builtins.readFile` + regex), so a new test needs no registration.
 
-Balancing: `tests/remote-m2-weights.json` maps test name → measured seconds (x86_64-linux, from `bats --timing`). Nix runs greedy longest-processing-time assignment over those weights; a test missing from the table gets the median weight. Shard count N = 4 (`remoteM2ShardCount`).
+Balancing: `tests/remote-m2-weights.json` maps test name → measured milliseconds (x86_64-linux, from `bats --timing`). Nix runs greedy longest-processing-time assignment over those weights; a test missing from the table gets the median weight. Shard count N = 4 (`remoteM2ShardCount`).
 
 ## Steps
 
@@ -27,4 +27,4 @@ Balancing: `tests/remote-m2-weights.json` maps test name → measured seconds (x
 ## Risks
 
 - Shared `/tmp/og-m2-bats-$$` and tmux `-L` names are per-process/per-sandbox, so shards running concurrently do not collide (sandbox `/tmp` is private on Linux; macOS non-sandboxed builds share `/tmp` but `$$` differs and `-L m2src` lives under `$TMUX_TMPDIR`).
-- `awk` rewrite must match only column-0 `@test` lines, as bats does.
+- The awk rewrite, the Nix name regex and the guard's grep must all use bats' own `^[[:blank:]]*@test` pattern, so an indented test cannot run in every shard.
