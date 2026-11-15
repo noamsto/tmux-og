@@ -1388,7 +1388,7 @@
 
               sq="'"
               top=$(comp "$STUB" "og ")
-              grep -qxF "q"$'\t'"it''${sq}s (quoted) -- with \\\\ backslash" <<<"$top"
+              grep -qxF "q"$'\t'"it''${sq}s (quoted) -- with \\ backslash" <<<"$top"
               grep -qxF "$(printf 'g\t2 subcommands')" <<<"$top"
               grep -qxF "$(printf 'help\tList every verb')" <<<"$top"
               q=$(comp "$STUB" "og q ")
