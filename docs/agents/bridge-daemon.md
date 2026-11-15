@@ -29,8 +29,8 @@ completes, so the mirror reads as *frozen* rather than dead (#396).
   the visible screen, not the scrollback.
 - The session we were switched to is then handed to `og-remote-open <host>
   <sess>` (`Config.HandOff`, wired from `OG_DAEMON_REMOTE_OPEN`, which the
-  launcher sets to its own path (`--self`) so a hand-off re-enters the launcher at
-  the daemon's own revision), which reuses a live bridge for that session or
+  launcher sets to the `og-remote-open` shim's path (passed as `--self`) so a
+  hand-off re-enters the launcher at the daemon's own revision), which reuses a live bridge for that session or
   starts one and switches the local client to it. So `sesh connect` inside a
   mirror opens the target as a second mirror instead of no-opping.
 
@@ -106,7 +106,7 @@ switches a client into. Several placed daemons share one host session. `--window
   statusline are exempt on purpose: pane-context `#{@bridge_sock}` resolves the
   window first, and the statusline shows the current window's host. Guarded
   readers: `og-remote-open`'s pair lookup (verified by session-scoped
-  `show-options`, as is `retire_mirror`), the picker's session snapshot,
+  `show-options`, as is `retireMirror`), the picker's session snapshot,
   `collectBridgeSessions`/`collectBridgeMirrors`/`bridgeSessionNames`.
 - **Own windows** are the windows of `$N` whose window-scoped `@bridge_sock`
   equals this daemon's: the registry, the rebuild placeholder and a half-built

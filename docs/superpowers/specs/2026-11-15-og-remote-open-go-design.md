@@ -17,7 +17,7 @@ copy of the mirror session-name mapping (`mirror_name_part`), leaving
   the progress-fd phase lines, the exact argv of every `tmux`/`ssh`/ctl/daemon
   invocation, the exact probe-script text sent to the remote, the daemon's
   environment, socket/lock/pid/phase/log file paths.
-- G3. The seven named bats suites pass against the Go build; the only test
+- G3. The named bats suites pass against the Go build; the only test
   edits are ones that read the deleted shell source or the deleted shell
   helpers (listed under "Test changes", each a test of implementation detail).
 - G4. `mirror_name_part` deleted; `lib-remote.sh` keeps only what other scripts
@@ -170,13 +170,15 @@ shell metacharacters for printable input, `$'…'` with `\n`, `\t`, `\E`, octal
 ### A. argv and refusals — `ParseArgs(args []string, env Env) (Opts, error)`
 
 Two pure functions, because the refusal order is observable and tmux reads
-sit between them (B1, B2 and A12 all run before A11/A13–A18: a placed `sess`
+sit between them (B1, B2 and A12 all run before A13–A18; A11 runs first, as `validateWin`: a placed `sess`
 holding a backslash with no such local session must report `no local session`
 first):
 
 - `ParseArgs(args []string, env Env) (Opts, error)` covers A1–A10.
-- `Validate(o Opts, env Env) error` covers A11 and A13–A18; `main` calls it
-  after B1, B2, the progress-fd setup and A12.
+- `validateWin(o Opts) error` covers A11; the launcher calls it before the A12
+  predict check.
+- `Validate(o Opts) error` (no env) covers A13–A18; the launcher calls it after
+  B1, B2, the progress-fd setup and A12.
 
 `env` is the subset of the environment they read (`OG_REMOTE_NEW_DIR`,
 `OG_REMOTE_RESTORE`, `OG_REMOTE_TMPDIR`). Each returns a typed `*UsageError`
@@ -486,7 +488,7 @@ close, the fd close before the launch.
 
 | Acceptance item | Evidence |
 |---|---|
-| seven bats suites pass against the Go build | `nix flake check` (`remote-tests`, `remote-m2-integration-tests`, `remote-bridge-integration-tests`, `mirror-session-name-integration-tests`, `picker-launcher-tests`) — remote.bats/remote-picker.bats run inside `remote-tests` |
+| named bats suites pass against the Go build | `nix flake check` (`remote-tests`, `remote-m2-integration-tests`, `remote-bridge-integration-tests`, `mirror-session-name-integration-tests`, `picker-launcher-tests`) — `tests/remote.bats` is deleted (see "Test changes"); `remote-cold-start.bats`/`remote-picker.bats` run inside `remote-tests` |
 | Go unit tests for argv, refusals, lock | `go test -race ./remoteopen/...` inside `picker-go-tests` |
 | lint | `nix build .#lint --accept-flake-config` |
 | flake check | `nix flake check` |

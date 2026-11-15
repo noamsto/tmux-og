@@ -14,7 +14,7 @@ This file holds only what every task needs. The measured evidence, invariants an
 | `picker/` TUI layout, header/pinned line, key input, which-key ranking | `docs/agents/picker.md` |
 | `@issue_*`/`@pr_*`, `tmux-pr-enrich`, agent usage segment, `@window_cwd_seen` | `docs/agents/enrichment.md` |
 | Anything a mirror window *displays* about the remote: `@bridge_*` labels, remote agent status, `@bridge_res` CPU/Mem, the enrich card in a mirror; URL opens forwarded to the controller (`og-open`, `@og_open_url`) | `docs/agents/bridge-shipped-state.md` |
-| `picker/remotebridge/daemon`: reconnect, session pinning, renderers, reseed, zoom, float mirroring, reply ordinals/barriers, `get-clipboard`; what a remote host needs on PATH | `docs/agents/bridge-daemon.md` |
+| `picker/remotebridge/daemon` and `picker/remoteopen` (the `og-remote-open` launcher; its behaviour is in `scripts.md`, `rg og-remote-open`): reconnect, session pinning, renderers, reseed, zoom, float mirroring, reply ordinals/barriers, `get-clipboard`; what a remote host needs on PATH | `docs/agents/bridge-daemon.md` |
 | Kitty/sixel graphics across the bridge, `prefix + I` carousel, `ctrl+v` image paste | `docs/agents/bridge-graphics-paste.md` |
 | Float binds, `@float_geom`, `@og_float_target_<tool>`, popup-floats / the modal-pane chrome rule (any new `list-panes` or `pane_active` consumer) | `docs/agents/floats.md` |
 | Light/dark, `@catppuccin_flavor`, `theme-state.json`, client theme hooks | `docs/agents/theme.md` |

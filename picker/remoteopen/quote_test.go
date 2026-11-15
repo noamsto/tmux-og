@@ -32,8 +32,8 @@ func TestBashQuote(t *testing.T) {
 			t.Errorf("bashQuote(%q) = %q, want %q", in, got, fields[1])
 		}
 	}
-	if rows != 207 {
-		t.Errorf("read %d rows, want 207", rows)
+	if rows != 216 {
+		t.Errorf("read %d rows, want 216", rows)
 	}
 }
 

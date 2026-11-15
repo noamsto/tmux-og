@@ -17,7 +17,7 @@ Create:
 - `picker/remoteopen/quote_test.go` — table tests, incl. `testdata/quote.tsv`.
 - `picker/remoteopen/cksum.go` — POSIX `cksum` CRC, `intoSockPath`.
 - `picker/remoteopen/cksum_test.go`.
-- `picker/remoteopen/args.go` — `Opts`, `Env`, `UsageError`, `ParseArgs` (A1–A10), `Validate` (A11, A13–A18).
+- `picker/remoteopen/args.go` — `Opts`, `Env`, `UsageError`, `ParseArgs` (A1–A10), `validateWin` (A11), `Validate(o Opts)` (A13–A18, no env).
 - `picker/remoteopen/args_test.go`.
 - `picker/remoteopen/probe.go` — `buildProbeScript`, `parseProbe`.
 - `picker/remoteopen/probe_test.go` — golden tests over `testdata/probe/`.
@@ -74,7 +74,7 @@ Flakes see only git-tracked files: from Step 1 on, every new file is `git add`-e
 - [ ] **Step 4: argv parsing and refusals (test-first)** — files `args.go`, `args_test.go`.
   Test first, one table per function with exact `err.Error()` strings from spec A (prefix `og-remote-open: `):
   `ParseArgs` — every A1–A10 row, each with a passing neighbour; overlaps that pin order: `h --into` (A2), `h s 1 --window x` (A3), `h s --window @1 --into x` (A4 usage), `h s 1 --into x` (A5), `h s --into x y` (A6), `h s --into x --window` (`$#==5` → A6), `h s --into x --nope @1` (A6), env `OG_REMOTE_RESTORE=1` + `h s --into x` (A7), `h "" --into x` (A8, not A2), `'bad|host' s --into x` and `-x s --into x` (A9), each A10 bad selector from `tests/remote-cold-start.bats` line ~2045 plus `''` (message uses `bashQuote`). Accepted shapes: `h` (sess ""), `h s`, `h s 3`, `h s @5` (WantMode true), `h s 3 junk` (junk ignored, Win `3`), `h s --into x`, `h s --into x --window @3`, `h s --into x --window @crew_branch=B`; placed sets `Win=""`.
-  `Validate` — A11 (`h s abc`), A13 (`h "" @5`; env restore + `h s @5`), A14, A15, A16/A17 on `Sess`, A18; `WantMode` false under either env var; placed opts skip A11/A13.
+  `validateWin` — A11 (`h s abc`); `Validate` — A13 (`h "" @5`; env restore + `h s @5`), A14, A15, A16/A17 on `Sess`, A18; `WantMode` false under either env var; placed opts skip A11/A13.
   Red, then implement exactly the bash conditions (spec A; `$#` counts are over the public argv).
   Proof: `go test -race ./remoteopen/ -run 'ParseArgs|Validate'` → `ok`.
 
@@ -135,7 +135,7 @@ Flakes see only git-tracked files: from Step 1 on, every new file is `git add`-e
 
 ## Acceptance
 
-- [ ] Seven bats suites pass against the Go build → `nix flake check` (`remote-tests` runs `remote-cold-start.bats`, `remote-picker.bats`; plus `remote-m2-integration-tests`, `remote-bridge-integration-tests`, `mirror-session-name-integration-tests`, `picker-launcher-tests`). Test edits: only `remote.bats` and `mirror-session-name-integration.bats`. Every `remote.bats` case tests a deleted shell helper or greps the deleted bash, so the file is expected to go; the PR body's "Test changes" section maps each deleted case to its Go replacement (`remote_daemon_alive` → `daemon_test` pidfile/alive cases; `valid_remote_path`, `shell_quotable` → `quote_test`; `mirror_name_part` vectors → `mirrorname` Go test; `read_session_env` → `local_test`; the three source greps → `local_test` recorded-argv guards).
+- [ ] The named bats suites pass against the Go build → `nix flake check` (`remote-tests` runs `remote-cold-start.bats`, `remote-picker.bats`; plus `remote-m2-integration-tests`, `remote-bridge-integration-tests`, `mirror-session-name-integration-tests`, `picker-launcher-tests`). Test edits: only `remote.bats` and `mirror-session-name-integration.bats`. Every `remote.bats` case tests a deleted shell helper or greps the deleted bash, so the file is expected to go; the PR body's "Test changes" section maps each deleted case to its Go replacement (`remote_daemon_alive` → `daemon_test` pidfile/alive cases; `valid_remote_path`, `shell_quotable` → `quote_test`; `mirror_name_part` vectors → `mirrorname` Go test; `read_session_env` → `local_test`; the three source greps → `local_test` recorded-argv guards).
 - [ ] Go unit tests for argv parsing, refusals and the lock → `go test -race ./remoteopen/...` (Steps 4, 7), also inside `picker-go-tests`.
 - [ ] `nix build .#lint --accept-flake-config` → Step 16.
 - [ ] `nix flake check` → Step 16.
