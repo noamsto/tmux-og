@@ -70,7 +70,7 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   `gh pr view <url>`, no cwd — and written through the same
   `applyCache` path. Cache key is derived from `url|<url>` so it
   can't collide with a `repo|branch` key; TTLs are the usual ones (merged/closed
-  `TTL_TERMINAL`, open `TTL`). These windows count against the same 30-entry cap
+  `ttlTerminal`, open `ttl`). These windows count against the same 30-entry cap
   and are skipped in the checks-only pending pass. No `@pr_url` (or a url that
   isn't `https://github.com/<owner>/<repo>/pull/<N>`) still means skipped, and
   `@bridge_win` mirrors stay skipped. Without this the badge stayed `open`
@@ -78,7 +78,7 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   runs the card's `refreshCmd` with `--dir`, and when that dir no longer
   resolves a repo the poller refreshes a well-formed `@pr_url` by url rather
   than silently no-op'ing the branch fetch, so `--force` bypasses a cached
-  `TTL_TERMINAL` answer (#923).
+  `ttlTerminal` answer (#923).
 - **Fork PRs are ignored.** `gh pr list --head <b>` matches the head branch
   *name* across forks, so a fork PR whose branch is also called `main` used to
   shadow the repo's own PR — and a window merely sitting on the default branch

@@ -59,8 +59,10 @@ leftover `@pr_*` that the reflow renders. So every `--tick-run` and
 `@pr_glyph` (appended after the six existing fields, parsed tolerantly: missing
 trailing fields read empty, so the budget fakes' 6-field rows still parse), and
 before the branch/bridge/cap filters each non-`@bridge_win` window whose
-recomputed glyph differs from its `@pr_glyph` gets one `set-option` and its
-session one forced reflow. A window with no PR (`@pr_number` empty or `none`)
+recomputed glyph differs from its `@pr_glyph` first has its seven PR options
+re-read with one `display-message` and the glyph recomputed from that read (so a
+concurrent writer's newer values win); only if that still differs does it get one
+`set-option` and its session one forced reflow. A window with no PR (`@pr_number` empty or `none`)
 wants an empty glyph. An `enrich.icons` change therefore lands on every window at
 the next full pass (≤ `prRefreshSeconds`, since a reload does not reset
 `.last-tick`) rather than at the activation reflow as today — an accepted delay
@@ -143,7 +145,8 @@ Every rule below is the bash behaviour; the Go port keeps it exactly.
   reviewDecision,autoMergeRequest,statusCheckRollup`. gh runs with `cmd.Dir` = the
   repo checkout; gh absent → serve cache; non-zero exit → cache untouched.
 - **Full pass**: one `tmux list-windows -a -F '#{session_id}:#{window_id}|#{@worktree}
-  |#{@git_root}|#{@branch}|#{@bridge_win}|#{@pr_url}'`, rows with ≥5 fields; skip
+  |#{@git_root}|#{@branch}|#{@bridge_win}|#{s/[|]/ /:@pr_url}'`, rows with ≥5 fields (the `s/[|]/ /` keeps a `|` in the url from shifting
+  the glyph-sync fields that follow it); skip
   empty branch and `@bridge_win=1`; repo = `git -C <@worktree or @git_root>
   rev-parse --path-format=absolute --git-common-dir`, retrying `@git_root`; gone
   checkout + well-formed `@pr_url` → url group; 30-entry cap shared by both, a

@@ -7,13 +7,6 @@ setup_lib_enrich() {
 		-e 's/@providers@/linear github/g' \
 		-e 's/@enrich_icon_linear@/L/g' \
 		-e 's/@enrich_icon_github@/G/g' \
-		-e 's/@enrich_icon_pending@/P/g' \
-		-e 's/@enrich_icon_success@/S/g' \
-		-e 's/@enrich_icon_failure@/F/g' \
-		-e 's/@enrich_icon_merged@/M/g' \
-		-e 's/@enrich_icon_closed@/X/g' \
-		-e 's/@enrich_icon_conflict@/C/g' \
-		-e 's/@enrich_icon_draft@/D/g' \
 		scripts/lib-enrich.sh >"$tmp"
 	# shellcheck source=/dev/null
 	source "$tmp"
