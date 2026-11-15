@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -37,10 +38,21 @@ func TestBashQuote(t *testing.T) {
 }
 
 func TestShellQuote(t *testing.T) {
-	for in, want := range map[string]string{"it's": `'it'\''s'`, "": "''", "a b": "'a b'"} {
+	// A backslash passes through unchanged, never doubled: backslash-bearing
+	// values are refused before they reach shellQuote.
+	for in, want := range map[string]string{"it's": `'it'\''s'`, "": "''", "a b": "'a b'", `a\b`: `'a\b'`} {
 		if got := shellQuote(in); got != want {
 			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
 		}
+	}
+	// Round-tripped under sh only: the nix sandbox has no fish.
+	in := "it's/a path"
+	out, err := exec.Command("/bin/sh", "-c", "printf '%s' "+shellQuote(in)).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Errorf("sh round-trip = %q, want %q", out, in)
 	}
 }
 
@@ -68,7 +80,7 @@ func TestRequireSessionName(t *testing.T) {
 		want := "og-remote-open: session name contains a control character, which no tmux session name can: " + bashQuote(in) + " — pass an explicit session name instead"
 		err := requireSessionName(in)
 		var usageErr *UsageError
-		if !errors.As(err, &usageErr) || err.Error() != want {
+		if !errors.As(err, &usageErr) || usageErr.Error() != want {
 			t.Errorf("requireSessionName(%q) = %v, want %q", in, err, want)
 		}
 	}

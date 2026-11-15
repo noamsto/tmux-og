@@ -173,7 +173,10 @@ func TestValidate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := Validate(c.o)
+			err := validateWin(c.o)
+			if err == nil {
+				err = Validate(c.o)
+			}
 			if c.msg == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -183,6 +186,16 @@ func TestValidate(t *testing.T) {
 			wantUsage(t, err, c.msg)
 		})
 	}
+}
+
+// The launcher runs the @og_bridge_predict check between the two, so a bad
+// window is validateWin's alone.
+func TestValidateLeavesWindowToValidateWin(t *testing.T) {
+	o := Opts{Host: "h", Sess: "s", Win: "abc", WantMode: true}
+	if err := Validate(o); err != nil {
+		t.Fatalf("Validate = %v, want nil", err)
+	}
+	wantUsage(t, validateWin(o), "window must be a numeric index or an @id, got: abc")
 }
 
 func TestWantModeFalseUnderEnv(t *testing.T) {

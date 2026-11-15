@@ -21,6 +21,8 @@ type localTmux struct {
 	sleep func(time.Duration)
 	// reap stops a daemon by pid; nil means reapDaemon.
 	reap func(pid int)
+	// readPid reads a proven daemon's pidfile; nil means readPidFile.
+	readPid func(path string) (int, bool)
 }
 
 // query runs tmux and returns its stdout, treating a failure as empty: the
@@ -197,7 +199,11 @@ func (l *localTmux) pairLookup(host, sess string) string {
 func (l *localTmux) retireMirror(id string) {
 	old := l.option(id, "@bridge_sock")
 	if old != "" && probeDaemon(l.r, l.ctl, old) != "" {
-		if pid, ok := readPidFile(old + ".pid"); ok {
+		read := l.readPid
+		if read == nil {
+			read = readPidFile
+		}
+		if pid, ok := read(old + ".pid"); ok {
 			l.reapPid(pid)
 		}
 	}

@@ -17,6 +17,11 @@ func readPidFile(path string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
+	return parsePid(b)
+}
+
+// parsePid is readPidFile's rule over content already read.
+func parsePid(b []byte) (int, bool) {
 	s := strings.TrimRight(string(b), "\n")
 	if s == "" {
 		return 0, false

@@ -88,12 +88,17 @@ func ParseArgs(args []string, env Env) (Opts, error) {
 	return o, nil
 }
 
-// Validate covers A11 and A13-A18, which bash runs after the placed
-// local-session reads and the @og_bridge_predict check.
-func Validate(o Opts) error {
+// validateWin is A11, which bash runs after the placed local-session reads
+// and before the @og_bridge_predict check.
+func validateWin(o Opts) error {
 	if o.Win != "" && !windowRe.MatchString(o.Win) {
 		return &UsageError{"window must be a numeric index or an @id, got: " + o.Win}
 	}
+	return nil
+}
+
+// Validate covers A13-A18, which bash runs after the @og_bridge_predict check.
+func Validate(o Opts) error {
 	if o.Win != "" && o.Win[0] == '@' && !o.WantMode {
 		return &UsageError{"a window @id needs a live session to resolve against (not with OG_REMOTE_RESTORE, OG_REMOTE_NEW_DIR, or no session): " + o.Win}
 	}
