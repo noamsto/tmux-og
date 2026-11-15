@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/noamsto/tmux-og/picker/remoteopen"
 )
 
 func lastLine(s string) string {
@@ -27,7 +29,17 @@ func TestRunPassthrough(t *testing.T) {
 		{"status shape flag", []string{"s", "--flag", "foo"}, "2\n[--flag]\n[foo]\n"},
 		{"leading --", []string{"plain", "--", "--help"}, "2\n[--]\n[--help]\n"},
 		{"go-backed verb forwards the raw argv", []string{"remote", "open", "host", "sess", "--into", "x"}, "4\n[host]\n[sess]\n[--into]\n[x]\n"},
+		// remoteopen.ParseArgs alone judges these; og forwards them verbatim.
 		{"go-backed verb keeps flag position", []string{"remote", "open", "--into", "x", "host", "sess"}, "4\n[--into]\n[x]\n[host]\n[sess]\n"},
+		{"go-backed verb forwards the = form", []string{"remote", "open", "h", "s", "--into=loc"}, "3\n[h]\n[s]\n[--into=loc]\n"},
+		{"go-backed verb forwards --into first", []string{"remote", "open", "--into", "x", "1"}, "3\n[--into]\n[x]\n[1]\n"},
+		{"go-backed verb forwards unknown flags", []string{"remote", "open", "host", "--bogus"}, "2\n[host]\n[--bogus]\n"},
+		{"go-backed verb with no arguments", []string{"remote", "open"}, "0\n"},
+		{"go-backed verb forwards extra arguments", []string{"remote", "open", "a", "b", "c", "d"}, "4\n[a]\n[b]\n[c]\n[d]\n"},
+		{"dash-leading session", []string{"remote", "open", "host", "-sess"}, "2\n[host]\n[-sess]\n"},
+		{"dash-leading host", []string{"remote", "open", "-host", "sess"}, "2\n[-host]\n[sess]\n"},
+		{"dash-leading local session", []string{"remote", "open", "host", "sess", "--into", "-scratch"}, "4\n[host]\n[sess]\n[--into]\n[-scratch]\n"},
+		{"help token past a host is a name", []string{"remote", "open", "host", "--help"}, "2\n[host]\n[--help]\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,7 +75,6 @@ func TestRunVerbHelpLastLineIsTarget(t *testing.T) {
 		for _, args := range [][]string{
 			{"remote", "open", "--help"},
 			{"remote", "open", "-h"},
-			{"remote", "open", "host", "--help"},
 		} {
 			got := runOg(t, verbs, nil, args...)
 			if got.code != 0 || got.stubOut != "" {
@@ -84,26 +95,44 @@ func TestRunVerbHelpLastLineIsTarget(t *testing.T) {
 	})
 }
 
-func TestRunGoBackedValidation(t *testing.T) {
+func TestRunGoBackedHelpStatesTheTargetGrammar(t *testing.T) {
 	target := stubTarget(t, t.TempDir())
-	verbs := stubVerbs(target)
+	got := runOg(t, stubVerbs(target), nil, "remote", "open", "--help")
+	for _, banned := range []string{"--into=", "[flags]", "STRING"} {
+		if strings.Contains(got.stdout, banned) {
+			t.Errorf("help advertises %q:\n%s", banned, got.stdout)
+		}
+	}
+}
 
-	for _, args := range [][]string{
-		{"remote", "open", "host", "--bogus"},
-		{"remote", "open", "--bogus", "host"},
-		{"remote", "open"},
-		{"remote", "open", "a", "b", "c", "d"},
-	} {
-		got := runOg(t, verbs, nil, args...)
-		if got.code != 2 {
-			t.Errorf("%v: exit %d, want 2", args, got.code)
+// Every flag the kong model declares must be a token ParseArgs accepts in a
+// literal position, or completion would offer a flag the launcher rejects.
+func TestRemoteOpenModelFlagsAreParseArgsTokens(t *testing.T) {
+	accepted := map[string][]string{
+		"into":   {"h", "s", "--into", "loc"},
+		"window": {"h", "s", "--into", "loc", "--window", "@1"},
+	}
+	parser, err := buildParser(mustTable(t, stubVerbs("/stub")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := 0
+	for _, f := range flagNames(child(t, child(t, parser.Model.Node, "remote"), "open")) {
+		flags++
+		args, ok := accepted[f]
+		if !ok {
+			t.Errorf("flag --%s has no ParseArgs-accepted argv in this test", f)
+			continue
 		}
-		if got.stubOut != "" {
-			t.Errorf("%v: target ran: %q", args, got.stubOut)
+		if !slices.Contains(args, "--"+f) {
+			t.Errorf("argv %v lacks the literal token --%s", args, f)
 		}
-		if got.stdout != "" || !strings.HasPrefix(got.stderr, "og: ") {
-			t.Errorf("%v: stdout %q stderr %q", args, got.stdout, got.stderr)
+		if _, err := remoteopen.ParseArgs(args, remoteopen.Env{}); err != nil {
+			t.Errorf("ParseArgs(%v): %v", args, err)
 		}
+	}
+	if flags != len(accepted) {
+		t.Errorf("model declares %d flags, test covers %d", flags, len(accepted))
 	}
 }
 

@@ -14,9 +14,14 @@ stays `ogVerbSpec` in `config/tmux.conf.nix`; the binary reads it at runtime.
   checks cost an `install`, not a Go build.
 - **`model`:** optional name of a Go-backed verb, looked up in
   `picker/ogcli/models.go` (only `remote-open` today). kong parses that verb's
-  real flags for `--help`, validation and completion, then the target is exec'd
-  with the *original* argv so `remoteopen.ParseArgs` still decides. A model on a
-  verb that also has subverbs, or an unknown model, fails table load.
+  flags for completion and a hand-written `--help` text that states the
+  target's real grammar. kong never validates the argv: anything but a sole
+  `--help`/`-h` is exec'd raw, so `remoteopen.ParseArgs` is the only validator
+  (it is strictly positional: `--into` is argument 3, no `--into=value`, and
+  dash-leading host/session names are legal) and exit codes are the launcher's.
+  A test pins each declared flag as a literal token in an argv `ParseArgs`
+  accepts. A model on a verb that also has subverbs, or an unknown model, fails
+  table load.
 - **Hand resolver:** the longest-match resolver is a 1:1 port of `og.sh`
   because kong cannot express a node with both positional args and subcommands,
   which `status`/`notify` need (`status --flag` is the bare verb, `status x`
@@ -35,8 +40,9 @@ stays `ogVerbSpec` in `config/tmux.conf.nix`; the binary reads it at runtime.
   a `COMP_LINE` hook would drop. bash/zsh are `jotaen/kong-completion`
   (`og completion bash|zsh -c`), dynamic and names only.
 - **`completion` is hidden:** absent from `og help`, noun help and
-  `ogVerbSpec`; the resolver routes a literal first token `completion`, and
-  table load refuses a verb or noun of that name.
+  `ogVerbSpec`; `ogcli.Main` intercepts a literal first argument `completion`
+  before `Resolve`, and table load refuses a verb whose first word is
+  `completion`.
 - **Contract pinned by `og-dispatch-assertions`:** help shape (`  %-22s %s`,
   blank line between nouns), `<verb> --help` last line is the target, the
   two-line `unknown command` on stderr with exit 2, raw passthrough

@@ -1460,6 +1460,7 @@
               nativeBuildInputs = [pkgs.findutils pkgs.gnugrep pkgs.coreutils];
               BINDIR = "${tmuxConfig.wrapperBinDir}/bin";
               DISPATCH = tmuxConfig.ogDispatchBin;
+              OG = tmuxConfig.og;
               CONF = tmuxConfig.tmuxConf;
             } ''
               if [ -z "$(find "$BINDIR" -lname '*tmux-picker-generate*')" ]; then
@@ -1471,8 +1472,12 @@
                 echo "og-dispatch is linked into the tmux wrapper bin dir" >&2
                 exit 1
               fi
-              if ls "$BINDIR" | grep -qx 'og-dispatch'; then
-                echo "og-dispatch is on the tmux wrapper PATH" >&2
+              if ls "$BINDIR" | grep -qxE 'og|og-dispatch'; then
+                echo "og or og-dispatch is on the tmux wrapper PATH" >&2
+                exit 1
+              fi
+              if [ -n "$(find "$BINDIR" -lname "*$OG*")" ]; then
+                echo "og is linked into the tmux wrapper bin dir" >&2
                 exit 1
               fi
               if grep -qF "$DISPATCH" "$CONF"; then
@@ -1515,8 +1520,7 @@
             pkgs.runCommand "og-dispatch-assertions" {
               nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
               OG = tmuxConfig.og;
-              # og is a symlinkJoin over the script; a leak would carry the
-              # inner path, never the join's.
+              # og.bin is og itself (a copied binary, no join); kept so a leak check names the path the user's PATH carries.
               OG_INNER = tmuxConfig.og.bin;
               OG_STUB = ogStub;
               CONF = tmuxConfig.tmuxConf;
