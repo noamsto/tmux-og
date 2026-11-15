@@ -296,7 +296,7 @@ func (m tuiModel) renderHints() string {
 		enterLabel = "pick"
 	case len(m.marked) > 0:
 		enterLabel = "open " + strconv.Itoa(len(m.marked))
-	case onRemoteWindow:
+	case onRemoteWindow && m.canPlace:
 		enterLabel = "place"
 	}
 
@@ -304,7 +304,7 @@ func (m tuiModel) renderHints() string {
 		hint("^jk/↑↓", "nav"),
 		hint("enter", enterLabel),
 	}
-	if onRemoteWindow && m.emitPath == "" {
+	if onRemoteWindow && m.canPlace && m.emitPath == "" {
 		parts = append(parts, hint("^e", "jump"))
 	}
 	if m.emitPath == "" && (!hasItem || item.remoteDirPath == "") {
@@ -368,6 +368,10 @@ func (m tuiModel) renderAttachStatus(dim, key lipgloss.Style) string {
 	hintKey, hintDesc := "esc", "cancel"
 	head := frame + " opening " + m.attach.label + " · " + attachPhaseLabel(m.attach.phase) +
 		" · " + strconv.Itoa(int(time.Since(m.attach.phaseAt)/time.Second)) + "s"
+	if m.attach.placing {
+		head = frame + " placing " + m.attach.label + "…"
+		hintKey, hintDesc = "esc", "quit"
+	}
 	if m.attach.cancelling {
 		hintKey, hintDesc = "^c", "quit"
 		head = frame + " cancelling " + m.attach.label + "…"

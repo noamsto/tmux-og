@@ -742,20 +742,6 @@ func TestEnterOnWindowRowDedicatedFallbacks(t *testing.T) {
 	}
 }
 
-// A placed mirror window in a local session is not a dedicated session, so the
-// placed argv still applies (currentSessionFormat blanks its window-scoped stamps).
-func TestEnterOnWindowRowFromPlacedMirrorWindowStillPlaces(t *testing.T) {
-	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
-	stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
-	m, argv := placeModel(t, "")
-
-	_, got := runAttachArgv(t, m, argv, "enter")
-
-	if !strings.Contains(got, "--into\nwork\n") {
-		t.Errorf("launcher argv = %q, want a placed open", got)
-	}
-}
-
 func TestEnterOnAlreadyPlacedWindowFocusesWithoutLauncher(t *testing.T) {
 	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
 	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true,
@@ -779,20 +765,12 @@ func TestEnterOnAlreadyPlacedWindowFocusesWithoutLauncher(t *testing.T) {
 	assertNoFile(t, argv)
 }
 
-func TestPlacedAttachSelectsPlacedWindowOnSuccess(t *testing.T) {
-	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
-	// Not placed yet at decision time; placed once the launcher returns.
-	launched := false
-	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
-	placedWindowFn = func(sessID, host, sess, pane string) (string, bool) {
-		if !launched {
-			return "", false
-		}
-		return "@12", sessID == "$2" && host == "lab" && sess == "api" && pane == "%7"
-	}
+// placedAttachDone runs a placed attach to its done message and returns the
+// model after finishAttach plus the poll Cmd it returned.
+func placedAttachDone(t *testing.T) (tuiModel, tea.Cmd) {
+	t.Helper()
 	m, _ := placeModel(t, "")
 	m.visible[m.cursor].remoteWindowPane = "%7"
-
 	next, cmd := m.Update(wallKey("enter"))
 	nm := next.(tuiModel)
 	id := nm.attach.id
@@ -800,14 +778,77 @@ func TestPlacedAttachSelectsPlacedWindowOnSuccess(t *testing.T) {
 		d, ok := msg.(attachDoneMsg)
 		return ok && d.id == id
 	})
-	launched = true
-	_, quit := nm.Update(done)
+	next, poll := nm.Update(done)
+	return next.(tuiModel), poll
+}
+
+func shortPlacedPoll(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	origInt, origDl := placedPollInterval, placedPollDeadline
+	t.Cleanup(func() { placedPollInterval, placedPollDeadline = origInt, origDl })
+	placedPollInterval, placedPollDeadline = time.Millisecond, deadline
+}
+
+// The daemon answers the launcher before it creates the mirror windows, so the
+// window appears only after the launcher has exited.
+func TestPlacedAttachSelectsPlacedWindowOnSuccess(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	shortPlacedPoll(t, 5*time.Second)
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	calls := 0
+	placedWindowFn = func(sessID, host, sess, pane string) (string, bool) {
+		calls++
+		return "@12", calls > 3 && sessID == "$2" && host == "lab" && sess == "api" && pane == "%7"
+	}
+
+	nm, poll := placedAttachDone(t)
+
+	if nm.attach == nil || !nm.attach.placing || poll == nil {
+		t.Fatalf("attach = %+v, cmd = %v, want a placing state and a poll Cmd", nm.attach, poll)
+	}
+	nm.width = 80
+	if got := stripANSI(nm.renderHints()); !strings.Contains(got, "placing lab/api") {
+		t.Errorf("hints = %q, want a placing status line", got)
+	}
+	if len(*selected) != 0 {
+		t.Fatalf("selected %v before the window existed", *selected)
+	}
+	msg := poll()
+	next, quit := nm.Update(msg)
+	if quit == nil || fmt.Sprintf("%T", quit()) != "tea.QuitMsg" || next.(tuiModel).attach != nil {
+		t.Errorf("cmd = %v, want tea.Quit and a cleared attach", quit)
+	}
+	if want := []string{"@12"}; !reflect.DeepEqual(*selected, want) {
+		t.Errorf("selected = %v, want %v", *selected, want)
+	}
+}
+
+func TestPlacedAttachQuitsAtDeadlineWithoutSelecting(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	shortPlacedPoll(t, 20*time.Millisecond)
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+
+	nm, poll := placedAttachDone(t)
+	_, quit := nm.Update(poll())
 
 	if quit == nil || fmt.Sprintf("%T", quit()) != "tea.QuitMsg" {
 		t.Errorf("cmd = %v, want tea.Quit", quit)
 	}
-	if want := []string{"@12"}; !reflect.DeepEqual(*selected, want) {
-		t.Errorf("selected = %v, want %v", *selected, want)
+	if len(*selected) != 0 {
+		t.Errorf("selected %v after the deadline", *selected)
+	}
+}
+
+func TestPlacedAttachEscWhilePlacingQuits(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	shortPlacedPoll(t, time.Millisecond)
+	stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+
+	nm, _ := placedAttachDone(t)
+	_, quit := nm.Update(wallKey("esc"))
+
+	if quit == nil || fmt.Sprintf("%T", quit()) != "tea.QuitMsg" {
+		t.Errorf("cmd = %v, want tea.Quit", quit)
 	}
 }
 
@@ -882,5 +923,32 @@ func TestFindPlacedWindow(t *testing.T) {
 		if got != tc.want || ok != (tc.want != "") {
 			t.Errorf("findPlacedWindow(%s,%s,%s) = %q,%v, want %q", tc.host, tc.sess, tc.pane, got, ok, tc.want)
 		}
+	}
+}
+
+func TestParseCurrentSession(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want currentSession
+		ok   bool
+	}{
+		{"plain session", "$2|||work\n", currentSession{id: "$2", name: "work"}, true},
+		{"placed mirror window reads as its local session", "$2|||work", currentSession{id: "$2", name: "work"}, true},
+		{"dedicated mirror", "$2|lab||work\n", currentSession{id: "$2", name: "work", dedicated: true}, true},
+		{"dedicated by sock only", "$2||/s|work", currentSession{id: "$2", name: "work", dedicated: true}, true},
+		{"name holds a pipe", "$2|||a|b\n", currentSession{id: "$2", name: "a|b"}, true},
+		{"short row", "$2||work", currentSession{}, false},
+		{"garbled id", "x|||work", currentSession{}, false},
+		{"empty name", "$2|||", currentSession{}, false},
+		{"empty", "", currentSession{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseCurrentSession(tc.out)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("parseCurrentSession(%q) = %+v, %v; want %+v, %v", tc.out, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }

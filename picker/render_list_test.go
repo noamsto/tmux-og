@@ -343,7 +343,7 @@ func TestRenderSearchPlaceholder(t *testing.T) {
 }
 
 func TestRenderHintsRemoteWindowRow(t *testing.T) {
-	m := tuiModel{windowMode: true, width: 200, visible: []listItem{{remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"}}, cursor: 0}
+	m := tuiModel{windowMode: true, canPlace: true, width: 200, visible: []listItem{{remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"}}, cursor: 0}
 	hints := stripANSI(m.renderHints())
 	for _, want := range []string{"enter:place", "^e:jump"} {
 		if !strings.Contains(hints, want) {
@@ -354,5 +354,21 @@ func TestRenderHintsRemoteWindowRow(t *testing.T) {
 	hints = stripANSI(m.renderHints())
 	if strings.Contains(hints, "^e") || strings.Contains(hints, "enter:place") {
 		t.Errorf("hints = %q, must not advertise place/jump off a window row", hints)
+	}
+}
+
+func TestRenderHintsRemoteWindowRowCannotPlace(t *testing.T) {
+	m := tuiModel{windowMode: true, width: 200, visible: []listItem{{remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"}}, cursor: 0}
+	hints := stripANSI(m.renderHints())
+	if !strings.Contains(hints, "enter:open") || strings.Contains(hints, "enter:place") || strings.Contains(hints, "^e") {
+		t.Errorf("hints = %q, want enter:open and no ^e when placing is unavailable", hints)
+	}
+}
+
+func TestRenderHintsRemoteWindowRowNarrowStaysOneLine(t *testing.T) {
+	m := tuiModel{windowMode: true, canPlace: true, width: 40, visible: []listItem{{remoteHost: "lab", remoteSess: "api", remoteWindowID: "@4"}}, cursor: 0}
+	hints := m.renderHints()
+	if strings.Contains(hints, "\n") || visibleWidth(hints) > m.width {
+		t.Errorf("hints = %q (width %d), want one line within %d", hints, visibleWidth(hints), m.width)
 	}
 }

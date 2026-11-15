@@ -194,6 +194,9 @@ type tuiModel struct {
 	// key but esc/ctrl+c and every mouse event is ignored so a second
 	// concurrent attach can never start.
 	attach *attachState
+	// canPlace is whether Enter on a remote window row places it into the
+	// current session; set once at construction so render makes no tmux call.
+	canPlace bool
 	// attachSeq mints attach ids so a stray message from a superseded attempt
 	// is recognizable and dropped.
 	attachSeq int
@@ -304,6 +307,37 @@ type attachState struct {
 	placed       bool
 	localSession string
 	remotePane   string
+	placing      bool // launcher returned; polling for the placed window
+}
+
+// placedPollMsg ends a placed attach's wait for its window; window is empty
+// when the deadline passed first.
+type placedPollMsg struct {
+	id     int
+	window string
+}
+
+// Seams so tests can shorten the wait. The daemon answers the launcher's ping
+// before it creates the mirror windows, so the placed window shows up after
+// the launcher has returned.
+var (
+	placedPollInterval = 150 * time.Millisecond
+	placedPollDeadline = 15 * time.Second
+)
+
+func pollPlacedWindowCmd(id int, att attachState) tea.Cmd {
+	return func() tea.Msg {
+		deadline := time.Now().Add(placedPollDeadline)
+		for {
+			if w, ok := placedWindowFn(att.localSession, att.host, att.sess, att.remotePane); ok {
+				return placedPollMsg{id: id, window: w}
+			}
+			if !time.Now().Before(deadline) {
+				return placedPollMsg{id: id}
+			}
+			time.Sleep(placedPollInterval)
+		}
+	}
 }
 
 // waitAttachCmd blocks on r's progress/done for one event; Update re-issues it
@@ -467,6 +501,7 @@ func initialModel(windowMode, agentOnly, wall bool, emitPath string) tuiModel {
 
 	m := newPickerModel(windowMode, agentOnly, wall, opts, theme, items, emitPath)
 	m.currentSession = currentSession
+	_, m.canPlace = placeTarget()
 	if emitPath != "" {
 		m.emitHost = os.Getenv("OG_PICKER_HOST")
 	}
@@ -699,6 +734,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.finishAttach(msg.result)
+
+	case placedPollMsg:
+		if m.attach == nil || msg.id != m.attach.id || !m.attach.placing {
+			return m, nil
+		}
+		m.attach = nil
+		if msg.window != "" {
+			_ = selectWindowFn(msg.window)
+		}
+		return m, tea.Quit
 
 	case attachTickMsg:
 		if m.attach == nil || msg.id != m.attach.id {
@@ -1827,7 +1872,11 @@ func lookupCurrentSession(windowID string) (currentSession, bool) {
 	if err != nil {
 		return currentSession{}, false
 	}
-	f := strings.SplitN(strings.TrimRight(string(out), "\n"), "|", 4)
+	return parseCurrentSession(string(out))
+}
+
+func parseCurrentSession(out string) (currentSession, bool) {
+	f := strings.SplitN(strings.TrimRight(out, "\n"), "|", 4)
 	if len(f) != 4 || !isTmuxID(f[0], '$') || f[3] == "" {
 		return currentSession{}, false
 	}
@@ -1857,18 +1906,26 @@ func findPlacedWindow(listPanes, host, sess, pane string) (string, bool) {
 	return "", false
 }
 
+// placeTarget is the session a remote window would be placed into: the current
+// window's session unless there is none, the lookup failed, or it is a dedicated
+// mirror.
+func placeTarget() (currentSession, bool) {
+	cur := os.Getenv("OG_PICKER_CURRENT_WINDOW")
+	if cur == "" {
+		return currentSession{}, false
+	}
+	sess, ok := currentSessionFn(cur)
+	return sess, ok && !sess.dedicated
+}
+
 // placeDecision decides Enter on a remote window row from the picker's current
 // window. No current window or a failed lookup keeps the dedicated open, and so
 // does a dedicated mirror as the current session: the launcher refuses --into
 // there (the daemon kills its session on teardown, placed windows included), and
 // the dedicated open is what the user asked to see anyway.
 func placeDecision(item listItem) placeDecisionResult {
-	cur := os.Getenv("OG_PICKER_CURRENT_WINDOW")
-	if cur == "" {
-		return placeDecisionResult{kind: placeDedicated}
-	}
-	sess, ok := currentSessionFn(cur)
-	if !ok || sess.dedicated {
+	sess, ok := placeTarget()
+	if !ok {
 		return placeDecisionResult{kind: placeDedicated}
 	}
 	res := placeDecisionResult{kind: placeOpen, sessID: sess.id, sessName: sess.name}
@@ -1982,16 +2039,15 @@ func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 	m.attach = nil
 	switch res.outcome {
 	case attachOK:
-		if att.placed && att.remotePane != "" {
-			// The launcher stamps @bridge_pane before it returns.
-			if w, ok := placedWindowFn(att.localSession, att.host, att.sess, att.remotePane); ok {
-				_ = selectWindowFn(w)
-			}
-		}
 		for _, it := range rest {
 			launchDetached(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
 		}
 		m.marked = nil
+		if att.placed && att.remotePane != "" {
+			att.placing = true
+			m.attach = &att
+			return m, pollPlacedWindowCmd(att.id, att)
+		}
 		return m, tea.Quit
 	case attachCancelled:
 		m.statusMsg = "cancelled opening " + label
@@ -2010,6 +2066,9 @@ func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 func (m tuiModel) handleAttachKey(key string) (tea.Model, tea.Cmd) {
 	if m.attach == nil || (key != "esc" && key != "ctrl+c") {
 		return m, nil
+	}
+	if m.attach.placing {
+		return m, tea.Quit
 	}
 	if m.attach.cancelling {
 		if key == "ctrl+c" {

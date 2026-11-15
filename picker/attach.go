@@ -44,9 +44,9 @@ var (
 	attachKillGrace = 5 * time.Second
 )
 
-// placedMirrorBudget is the mirror-phase budget of a placed open, matching the
-// launcher's own wait for the daemon.
-const placedMirrorBudget = 60 * time.Second
+// placedMirrorBudget is the mirror-phase budget of a placed open: just over
+// the launcher's own OG_INTO_LISTEN_TIMEOUT (60s), so its error wins.
+const placedMirrorBudget = 65 * time.Second
 
 // attachPostKillDrain bounds the post-Wait drain once the group has been
 // signalled, so a descendant that survived the kill cannot add a second grace to
