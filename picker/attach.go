@@ -44,6 +44,10 @@ var (
 	attachKillGrace = 5 * time.Second
 )
 
+// placedMirrorBudget is the mirror-phase budget of a placed open, matching the
+// launcher's own wait for the daemon.
+const placedMirrorBudget = 60 * time.Second
+
 // attachPostKillDrain bounds the post-Wait drain once the group has been
 // signalled, so a descendant that survived the kill cannot add a second grace to
 // the done message.
@@ -99,6 +103,8 @@ type attachSpec struct {
 	window          string // remote window id (@N) to focus; "" = none
 	newDir          string // OG_REMOTE_NEW_DIR: create the session at this remote path; "" = none
 	restore         bool
+	into            string // local session name: place the window there (--into) instead of opening a dedicated mirror; "" = dedicated
+	selector        string // --window selector for a placed open (a remote @N)
 }
 
 // attachRun supervises one og-remote-open: phase progress, per-phase budgets,
@@ -118,11 +124,17 @@ type attachRun struct {
 // newAttachRun only allocates: the fork happens in run, off the Update path.
 func newAttachRun(spec attachSpec) *attachRun {
 	ctx, stop := context.WithCancel(context.Background())
+	budgets := maps.Clone(attachBudgets)
+	if spec.into != "" {
+		// The launcher closes the progress fd after "mirror", then waits up to
+		// 60s for the placed daemon to listen.
+		budgets[phaseMirror] = placedMirrorBudget
+	}
 	return &attachRun{
 		ctx:      ctx,
 		stop:     stop,
 		spec:     spec,
-		budgets:  maps.Clone(attachBudgets),
+		budgets:  budgets,
 		grace:    attachKillGrace,
 		progress: make(chan attachPhase, 16),
 		done:     make(chan struct{}),
@@ -159,17 +171,24 @@ func buildAttachCmd(spec attachSpec, grace time.Duration) *exec.Cmd {
 	if spec.sess != "" {
 		args = append(args, spec.sess)
 	}
-	if spec.window != "" {
+	placed := spec.into != ""
+	switch {
+	case placed:
+		args = append(args, "--into", spec.into)
+		if spec.selector != "" {
+			args = append(args, "--window", spec.selector)
+		}
+	case spec.window != "":
 		args = append(args, spec.window)
 	}
 	cmd := exec.Command(spec.bin, args...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	// With no controlling tty (Setsid), ssh must fail a surprise auth prompt
 	// fast rather than pop a GUI askpass.
 	cmd.Env = append(os.Environ(), "OG_REMOTE_OPEN_PROGRESS_FD=3", "SSH_ASKPASS_REQUIRE=never")
-	if spec.restore {
+	if spec.restore && !placed {
 		cmd.Env = append(cmd.Env, "OG_REMOTE_RESTORE=1")
 	}
-	if spec.newDir != "" && !spec.restore {
+	if spec.newDir != "" && !spec.restore && !placed {
 		cmd.Env = append(cmd.Env, "OG_REMOTE_NEW_DIR="+spec.newDir)
 	}
 	cmd.SysProcAttr = attachSysProcAttr()

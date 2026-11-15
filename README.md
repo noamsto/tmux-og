@@ -269,6 +269,11 @@ had a control-mode client attached — keeps running untouched, so `prefix + s`
 reopens it. The plain `detach-client` is one keystroke further out: the client
 lands on another local session, where `d` means what it always did.
 
+In the window picker (`prefix + w`), Enter on a remote window row places that
+one window into your current session as a mirrored window (tinted per host, so
+remote and local windows sit side by side); `ctrl+e` opens the whole remote
+session as its own mirror session instead.
+
 A host that answers SSH but has **no tmux server** shows as
 `<host>  (no server — Enter starts one)`. Enter starts the remote's own
 `tmux-startup.service`, then re-probes and bridges whatever session that

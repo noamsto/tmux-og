@@ -289,17 +289,23 @@ func (m tuiModel) renderHints() string {
 
 	// Emit mode never switches or creates — enter only writes the pick back to
 	// the wrapper (spec D8) — and inherits no session/window to kill or forget.
+	onRemoteWindow := hasItem && item.remoteWindowID != "" && m.mode != modeWall
 	enterLabel := "open"
 	switch {
 	case m.emitPath != "":
 		enterLabel = "pick"
 	case len(m.marked) > 0:
 		enterLabel = "open " + strconv.Itoa(len(m.marked))
+	case onRemoteWindow:
+		enterLabel = "place"
 	}
 
 	parts := []string{
 		hint("^jk/↑↓", "nav"),
 		hint("enter", enterLabel),
+	}
+	if onRemoteWindow && m.emitPath == "" {
+		parts = append(parts, hint("^e", "jump"))
 	}
 	if m.emitPath == "" && (!hasItem || item.remoteDirPath == "") {
 		parts = append(parts, hint("^x", killLabel))
