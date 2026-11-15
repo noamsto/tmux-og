@@ -15,7 +15,7 @@ in
     # checks.picker-go-tests runs the suite (with -race and a real tmux);
     # repeating it here would rerun timing-sensitive tests on every cache miss.
     doCheck = false;
-    vendorHash = "sha256-Z72w5oQsXFFqvkK1ndOTtu7AonXtxAM55JhzgJV5Usc=";
+    vendorHash = "sha256-haYxCeWfmkYqDL4OxZGAW2MUzwk5zO1Jxs0842oNpw4=";
     subPackages = ["." "splash" "statusline" "enrichcard" "agentdetect" "sessionres" "remotebridge" "remotebridge/cmd/daemon" "remotebridge/cmd/renderer" "remotebridge/cmd/ctl" "remoteopen/cmd/launcher" "dwindle" "prenrich"];
     # -s -w strip debug info for a smaller binary + faster startup. psBin pins
     # tmux-session-resources' ps: it runs from a monitor hook, whose PATH is the

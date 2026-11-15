@@ -59,10 +59,13 @@ shell installer that call these on your behalf are landing in a follow-up PR;
 for now they're reachable through the Nix-built `og` wrapper.
 
 The Nix-built `og` also ships fish completions (`og <TAB>` lists the nouns,
-`og notify <TAB>` its subverbs, each with its summary), generated from the same
-verb table as the dispatcher, so they cannot drift. Past the verb, fish falls
-back to files. Home Manager links them into your profile; on NixOS, per-user
-profile completions load only with `programs.fish.enable = true`.
+`og notify <TAB>` its subverbs, `og remote open --<TAB>` its flags, each with
+its summary), emitted by the `og` binary from the same verb table it
+dispatches on, so they cannot drift. fish keeps the summaries because its
+script is static; for bash and zsh, source `og completion bash -c` or
+`og completion zsh -c` for dynamic, name-only completion. Past the verb, fish
+falls back to files. Home Manager links the fish file into your profile; on
+NixOS, per-user profile completions load only with `programs.fish.enable = true`.
 
 ## Binary cache
 
