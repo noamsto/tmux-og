@@ -8,9 +8,6 @@
 # tmux-statusline render is covered by its Go tests.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-	[[ -x ${PICKER_GENERATE:-} ]] || skip "PICKER_GENERATE not set"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -44,6 +41,10 @@ setup() {
 		scripts/tmux-reflow-windows.sh >"$REFLOW"
 	chmod +x "$REFLOW"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+	[[ -x ${PICKER_GENERATE:-} ]] || skip "PICKER_GENERATE not set"
+
 	tmux -f /dev/null new-session -d -s S -x 200 -y 50
 	tmux set -g base-index 0
 	tmux set -g @icon_remote "R"
@@ -59,6 +60,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 

@@ -43,7 +43,6 @@ tmux() { command tmux -L og-cg "$@"; }
 
 setup() {
 	unset TMUX
-	type -P tmux >/dev/null || skip "tmux not on PATH"
 
 	REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 	GUARD="$REPO_ROOT/scripts/tmux-carousel-guard.sh"
@@ -57,6 +56,8 @@ setup() {
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
+	OG_TEST_ISOLATED=1
+	type -P tmux >/dev/null || skip "tmux not on PATH"
 
 	# A run-shell -b job inherits the server's environment, not this test's,
 	# so the recorder bakes in absolute paths.
@@ -81,6 +82,8 @@ EOF
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"
 }

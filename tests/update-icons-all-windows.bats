@@ -7,8 +7,6 @@ bats_require_minimum_version 1.5.0
 # stamp every list-windows -a row.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -73,6 +71,9 @@ setup() {
 	cp -L "$(command -v bash)" "$TDIR/bin/pi"
 	chmod +x "$TDIR/bin/pi"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	tmux -f /dev/null new-session -d -s A -c "$REPO" -x 200 -y 50
 	tmux new-session -d -s B -c "$REPO" -x 200 -y 50
 	tmux set -g default-shell "$TDIR/bin/claude"
@@ -86,6 +87,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 

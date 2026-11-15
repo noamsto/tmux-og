@@ -11,8 +11,6 @@
 # time (see float-refit.bats's header comment on the same trap).
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	OG_TMUX_DIR="/tmp/og-pbf-$$-${BATS_TEST_NUMBER}"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -25,6 +23,9 @@ setup() {
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
+
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
 
 	tmux -f /dev/null new-session -d -s S -x 80 -y 24
 	WIN="$(tmux -u display-message -p -t S '#{window_id}')"
@@ -64,6 +65,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux -L og-outer kill-server 2>/dev/null || true
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"

@@ -314,6 +314,15 @@
               touch $out
             '';
 
+          teardown-isolation-tests =
+            pkgs.runCommand "teardown-isolation-tests" {
+              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.gawk];
+            } ''
+              cp -r ${./tests} tests
+              bats tests/teardown-isolation.bats
+              touch $out
+            '';
+
           reflow-tests =
             pkgs.runCommand "reflow-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.coreutils];

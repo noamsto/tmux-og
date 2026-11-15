@@ -12,8 +12,6 @@ bats_require_minimum_version 1.5.0
 # rejecting them at parse time (same trap as tests/pane-border-format.bats).
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -67,6 +65,9 @@ setup() {
 	cp -L "$(command -v bash)" "$TDIR/bin/picker-x"
 	chmod +x "$TDIR/bin/picker-x"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	tmux -f /dev/null new-session -d -s S -c "$REPO" -x 200 -y 50
 	tmux split-window -t S -c "$REPO"
 
@@ -89,6 +90,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 

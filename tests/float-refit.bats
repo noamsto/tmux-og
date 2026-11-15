@@ -25,8 +25,6 @@
 # binary directly before writing these assertions.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	OG_TMUX_DIR="/tmp/og-fr-$$-${BATS_TEST_NUMBER}"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -41,6 +39,9 @@ setup() {
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	# -f /dev/null: a real config would arm the window-resized hook that runs
 	# this very script automatically, which would invalidate the before/after
 	# comparisons below (most of all the "skips" test, whose whole point is
@@ -51,6 +52,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"
 }

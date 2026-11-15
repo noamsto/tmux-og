@@ -21,7 +21,6 @@
 POLL_TRIES=300
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
 	ORIG_PATH="$PATH"
 
 	REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
@@ -46,6 +45,9 @@ setup() {
 	# too, so hook-run jobs agree with the lock-loser test's formula.
 	export TMPDIR="$TMUX_TMPDIR"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	# -f /dev/null: a real config would arm the window-resized hooks that run
 	# these very scripts, invalidating the before/after comparisons below.
 	# Four panes: one lead plus three roles, the shape a live grid has.
@@ -59,6 +61,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	# A test that put a tmux wrapper on PATH must not leave it in front of the
 	# real tmux: a broken wrapper would make the kill-server below a silent
 	# no-op, leaving a server that holds bats' output fd open forever.

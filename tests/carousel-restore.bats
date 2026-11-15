@@ -8,8 +8,6 @@ bats_require_minimum_version 1.5.0 # run !
 # sed pass over the script is needed.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -17,6 +15,9 @@ setup() {
 	unset TMUX
 
 	SCRIPT="$PWD/scripts/tmux-carousel-restore.sh"
+
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
 
 	tmux -f /dev/null new-session -d -s S -c "$TDIR" -x 200 -y 50
 	tmux set -g base-index 0
@@ -48,6 +49,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	if [ -z "${BATS_TEST_COMPLETED:-}" ]; then
 		echo "panes: $(tmux list-panes -a -F '#{pane_index}|#{pane_id}|#{pane_current_command}' 2>&1)"
 	fi

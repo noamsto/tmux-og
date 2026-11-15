@@ -8,8 +8,6 @@ bats_require_minimum_version 1.5.0
 # idle/done/standby glyphs for ASCII tokens.
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	TDIR="$BATS_TEST_TMPDIR"
 	export TMUX_TMPDIR="$TDIR/tmux"
 	export XDG_DATA_HOME="$TDIR/data"
@@ -61,6 +59,9 @@ setup() {
 	cp -L "$(command -v bash)" "$TDIR/bin/claude"
 	chmod +x "$TDIR/bin/claude"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	tmux -f /dev/null new-session -d -s S1 -c "$REPO" -x 200 -y 50
 	tmux new-session -d -s S2 -c "$REPO" -x 200 -y 50
 	tmux set -g default-shell "$TDIR/bin/claude"
@@ -72,6 +73,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 

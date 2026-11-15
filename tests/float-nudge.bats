@@ -11,8 +11,6 @@
 # the pinned next-3.9 tmux (mkTmux in flake.nix's float-nudge-tests check).
 
 setup() {
-	command -v tmux >/dev/null || skip "tmux not on PATH"
-
 	OG_TMUX_DIR="/tmp/og-fn-$$-${BATS_TEST_NUMBER}"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -22,6 +20,9 @@ setup() {
 	export CLAUDE_STATUS_DIR="$TMUX_TMPDIR/claude-status"
 	mkdir -p "$CLAUDE_STATUS_DIR"
 
+	OG_TEST_ISOLATED=1
+	command -v tmux >/dev/null || skip "tmux not on PATH"
+
 	# -f /dev/null: the real config would arm hooks that mutate @float_geom /
 	# resize the float behind the assertions below.
 	tmux -f /dev/null new-session -d -s S -x 200 -y 50
@@ -30,6 +31,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"
 }

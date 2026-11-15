@@ -18,6 +18,7 @@ setup() {
 	export CLAUDE_STATUS_DIR="$BATS_TEST_TMPDIR/status"
 	mkdir -p "$TMUX_TMPDIR" "$CLAUDE_STATUS_DIR"
 	unset TMUX TMUX_PANE
+	OG_TEST_ISOLATED=1
 
 	# Order matters: the checks batch is asked for isCrossRepository only; head
 	# lookups carry --head; the identity batch is the one --state open call with
@@ -54,6 +55,8 @@ setup() {
 }
 
 teardown() {
+	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 }
 
