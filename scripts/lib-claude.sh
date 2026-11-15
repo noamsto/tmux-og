@@ -944,7 +944,10 @@ claude_bg_badge() {
 
 # claude_priority_state WAITING COMPACTING PROCESSING DONE IDLE ERROR DENIED INTERRUPTED
 # Given counts per state, returns the highest-priority non-zero state.
-# Sets REPLY to state string, empty if all zero.
+# Sets REPLY to state string, empty if all zero. The order is defined once, in
+# picker/agentstate: after changing Order, run `cd picker && go test ./agentstate -update`
+# and copy the golden between the BEGIN/END markers below.
+# BEGIN generated from picker/agentstate (agent-priority-drift check)
 claude_priority_state() {
 	local w=$1 k=$2 p=$3 d=$4 i=$5 e=${6:-0} dn=${7:-0} int=${8:-0}
 	if ((e > 0)); then
@@ -967,6 +970,7 @@ claude_priority_state() {
 		REPLY=""
 	fi
 }
+# END generated
 
 # tally_claude_state STATE ARRAY_PREFIX
 # Increments the associative array entry ${ARRAY_PREFIX}[$STATE] by 1.

@@ -26,6 +26,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/noamsto/themestate"
+	"github.com/noamsto/tmux-og/picker/agentstate"
 	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/proctree"
@@ -1195,15 +1196,13 @@ func mergeAgentWindows(windows []windowData, agent map[string]*agentCounts) {
 	}
 }
 
-// agentStateOrder mirrors lib-claude.sh's claude_priority_state, minus
-// "interrupted" — a shell-only state derived from a transcript-tail scrape
-// the Go picker never does (see CLAUDE.md's Remote Agent Status section).
+// agentStateOrder is agentstate.Order minus "interrupted" — a shell-only
+// state derived from a transcript-tail scrape the Go picker never does.
 // Single source of truth for both agentPriority (per-window state) and
-// window mode's state-grouped header order (#229) — a second, hand-copied
-// list here would silently diverge from this one.
-var agentStateOrder = []string{
-	"error", "waiting", "denied", "compacting", "processing", "done", "idle",
-}
+// window mode's state-grouped header order (#229).
+var agentStateOrder = slices.DeleteFunc(slices.Clone(agentstate.Order), func(s string) bool {
+	return s == "interrupted"
+})
 
 // agentStateLabel is the header text for each state in window mode's
 // state-grouped view; "" (no agent state at all) is the trailing group.

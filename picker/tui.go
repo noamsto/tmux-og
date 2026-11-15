@@ -3464,9 +3464,9 @@ func groupWindowsBySession(windows []windowData, sessActivity map[string]int64) 
 	return groups
 }
 
-// groupWindowsByState buckets windows by claude_priority_state (the same
-// priority ordering the shell side uses for any agent, not only Claude — see
-// scripts/lib-claude.sh), in agentStateOrder — the same priority the status
+// groupWindowsByState buckets windows by agent priority (agentstate.Order, the
+// ordering the shell side's generated claude_priority_state also uses for any
+// agent, not only Claude), in agentStateOrder — the same priority the status
 // bar and pane pollers use (#229). Windows with no agent state at all collapse
 // into one trailing group (key ""), never one group per stateless window.
 // Within a group, windows keep session-activity order so the busiest

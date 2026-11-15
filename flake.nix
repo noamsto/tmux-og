@@ -2714,6 +2714,19 @@
               touch $out
             '';
 
+          # The shell claude_priority_state is generated from picker/agentstate
+          # (the one definition of the agent priority order); fail if the marked
+          # region of lib-claude.sh drifts from the Go-pinned golden.
+          agent-priority-drift =
+            pkgs.runCommand "agent-priority-drift" {
+              nativeBuildInputs = [pkgs.gawk pkgs.diffutils];
+            } ''
+              awk '/^# END generated/{f=0} f{print} /^# BEGIN generated from picker\/agentstate/{f=1}' ${./scripts/lib-claude.sh} > region
+              [ -s region ] || { echo "marker region missing in lib-claude.sh" >&2; exit 1; }
+              diff -u ${./picker/agentstate/testdata/claude_priority_state.golden} region
+              touch $out
+            '';
+
           # Pure unit coverage for setup_claude_colors' precedence (#663):
           # explicit flavor argument > live $TMUX @catppuccin_flavor >
           # theme-state.json fallback. No live tmux server needed.
