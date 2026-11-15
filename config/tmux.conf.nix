@@ -683,6 +683,7 @@
     "remote open" = {
       script = "og-remote-open";
       summary = "Open a remote tmux session as local mirror windows";
+      model = "remote-open";
     };
     "remote picker" = {
       script = "og-remote-picker";
@@ -847,66 +848,53 @@
   ogPartitionUndecided = lib.subtractLists ogPartitioned scriptNames;
   ogPartitionUnknown = lib.subtractLists scriptNames ogPartitioned;
 
+  # The dispatcher binary is a second build of the picker module, kept out of
+  # go-tools: go-tools feeds picker-generate -> wrapperBinPkgs, so a binary
+  # added there lands on the tmux server's PATH. `-X main.psBin` is inert here.
+  ogDispatchBin = goTools.overrideAttrs (_: {
+    pname = "og-dispatch";
+    subPackages = ["ogcli/cmd/og"];
+    postInstall = "mv $out/bin/og $out/bin/og-dispatch";
+  });
+
   # mkOg is a function, not a fixed derivation, so a check can instantiate a
   # dispatcher over a table of its own pointing at stub targets -- the only
   # way to test argument passthrough without depending on a real script.
   # `verbs` takes already-resolved targets: { "<tokens>" = { target =
-  # "<absolute exec path>"; summary = "..."; }; }.
+  # "<absolute exec path>"; summary = "..."; model = "<optional>"; }; }.
   mkOg = verbs: let
-    order = builtins.attrNames verbs; # Nix sorts attrset keys
-    targetLine = v: "OG_TARGET[${lib.escapeShellArg v}]=${lib.escapeShellArg verbs.${v}.target}";
-    summaryLine = v: "OG_SUMMARY[${lib.escapeShellArg v}]=${lib.escapeShellArg verbs.${v}.summary}";
-    ogTable = pkgs.writeText "og-table.sh" ''
-      ${lib.concatMapStringsSep "\n" targetLine order}
-      ${lib.concatMapStringsSep "\n" summaryLine order}
-      OG_ORDER=(${lib.concatMapStringsSep " " lib.escapeShellArg order})
-    '';
-    ogBin =
-      pkgs.writeShellScriptBin "og"
-      (builtins.replaceStrings ["@og_table@"] ["${ogTable}"] (builtins.readFile ../scripts/og.sh));
-
-    # Fish single quotes honour only \\ and \'; escapeShellArg's '\'' is not
-    # valid fish.
-    fishQuote = s: "'" + builtins.replaceStrings ["\\" "'"] ["\\\\" "\\'"] s + "'";
-    tokensOf = v: lib.splitString " " v;
-    nouns = lib.unique (map (v: builtins.head (tokensOf v)) order);
-    subverbsOf = noun: lib.filter (v: lib.length (tokensOf v) == 2 && builtins.head (tokensOf v) == noun) order;
-    nounDesc = noun: let
-      subs = subverbsOf noun;
-      n = lib.length subs;
-    in
-      if verbs ? ${noun}
-      then verbs.${noun}.summary
-      else "${toString n} subcommand${lib.optionalString (n != 1) "s"}";
-    nounLine = noun: "complete -c og -f -n '__fish_use_subcommand' -a ${fishQuote noun} -d ${fishQuote (nounDesc noun)}";
-    subLine = noun: v: let
-      cond = "set -l t (commandline -opc); test (count $t) -eq 2; and test $t[2] = ${fishQuote noun}";
-    in "complete -c og -f -n ${fishQuote cond} -a ${fishQuote (lib.last (tokensOf v))} -d ${fishQuote verbs.${v}.summary}";
-    ogFish = pkgs.writeText "og.fish" ''
-      complete -c og -f -n '__fish_use_subcommand' -a help -d 'List every verb'
-      ${lib.concatMapStringsSep "\n" nounLine nouns}
-      ${lib.concatMapStringsSep "\n" (noun: lib.concatMapStringsSep "\n" (subLine noun) (subverbsOf noun)) nouns}
-    '';
-    completions = pkgs.runCommand "og-completions" {} ''
-      install -Dm644 ${ogFish} $out/share/fish/vendor_completions.d/og.fish
+    # Nix sorts attrset keys; the table file is a JSON array in this order.
+    table = pkgs.writeText "og-table.json" (builtins.toJSON (map (verb:
+      {
+        inherit verb;
+        inherit (verbs.${verb}) target summary;
+      }
+      // lib.optionalAttrs (verbs.${verb} ? model) {inherit (verbs.${verb}) model;})
+    (builtins.attrNames verbs)));
+    # bin/og is a copy, not a symlink: the binary finds share/og/table.json
+    # next to its symlink-resolved path, which a link would resolve back into
+    # the og-dispatch derivation.
+    ogBin = pkgs.runCommand "og" {} ''
+      install -Dm755 ${ogDispatchBin}/bin/og-dispatch $out/bin/og
+      install -Dm644 ${table} $out/share/og/table.json
+      mkdir -p $out/share/fish/vendor_completions.d
+      $out/bin/og completion fish > $out/share/fish/vendor_completions.d/og.fish
     '';
   in
-    # bin/og stays the plain script; the join only adds share/. passthru.bin
-    # keeps the inner path reachable for the leak checks that grep for it.
-    pkgs.symlinkJoin {
-      name = "og";
-      paths = [ogBin completions];
-      passthru.bin = ogBin;
-    };
+    # passthru.bin is the derivation itself, so the leak checks that grep for
+    # og's own path keep working.
+    lib.extendDerivation true {bin = ogBin;} ogBin;
 
-  og = mkOg (lib.mapAttrs (_: v: {
+  og = mkOg (lib.mapAttrs (_: v:
+    {
       target =
         if v ? script
         then "${script.${v.script}}/bin/${v.script}"
         else v.target;
       inherit (v) summary;
-    })
-    ogVerbSpec);
+    }
+    // lib.optionalAttrs (v ? model) {inherit (v) model;})
+  ogVerbSpec);
 
   # --- Generator (og generate) ---
   # What ships is the generator's output (tmuxConf = generatedConf); the frozen
@@ -1120,4 +1108,4 @@ in
     og dispatcher partition mismatch (see ogVerbSpec/ogInternal in config/tmux.conf.nix):
       in scriptNames but not in ogVerbSpec or ogInternal: ${lib.concatStringsSep ", " ogPartitionUndecided}
       in ogVerbSpec/ogInternal but not in scriptNames: ${lib.concatStringsSep ", " ogPartitionUnknown}
-  ''; {inherit tmux-wrapped wrapperBinDir wrapperBinPkgs tmuxConf script og mkOg ogVerbSpec referenceConf configToml pathsToml generatedConf picker-session-res-bin;}
+  ''; {inherit tmux-wrapped wrapperBinDir wrapperBinPkgs tmuxConf script og mkOg ogVerbSpec ogDispatchBin referenceConf configToml pathsToml generatedConf picker-session-res-bin;}

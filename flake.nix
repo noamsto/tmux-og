@@ -1378,6 +1378,12 @@
                 target = stubTarget;
                 summary = "gb";
               };
+              # A Go-backed verb: its flags are completed, gated on the verb.
+              "r go" = {
+                target = stubTarget;
+                summary = "rgo";
+                model = "remote-open";
+              };
             };
             realOg = tmuxConfig.og;
           in
@@ -1408,6 +1414,17 @@
                 exit 1
               fi
 
+              # A Go-backed verb's flags are offered after the verb, and only
+              # there: not at the noun, not after a bash-backed verb.
+              grep -qxF -- "--into" <<<"$(comp "$STUB" "og r go --" | cut -f1)"
+              grep -qxF -- "--window" <<<"$(comp "$STUB" "og r go --" | cut -f1)"
+              for line in "og r --" "og r " "og q sub --" "og g a --"; do
+                if comp "$STUB" "$line" | cut -f1 | grep -qxE -- '--into|--window'; then
+                  echo "go-backed flags offered at: $line" >&2
+                  exit 1
+                fi
+              done
+
               # every real verb is completable: noun at `og `, subverb at `og <noun> `.
               real_top=$(comp "$REAL" "og " | cut -f1)
               while read -r v; do
@@ -1421,6 +1438,52 @@
                 esac
               done <<<"$VERBS"
 
+              # the real Go-backed verb completes its flags, with descriptions.
+              real_flags=$(comp "$REAL" "og remote open --")
+              grep -qxE -- '--into'$'\t'.+ <<<"$real_flags"
+              grep -qxE -- '--window'$'\t'.+ <<<"$real_flags"
+              if comp "$REAL" "og remote picker --" | cut -f1 | grep -qxE -- '--into|--window'; then
+                echo "remote open's flags offered for another verb" >&2
+                exit 1
+              fi
+
+              touch $out
+            '';
+
+          # og-dispatch is the dispatcher's binary, a separate derivation from
+          # go-tools so it never reaches the tmux server's PATH. wrapperBinDir
+          # is a symlinkJoin, so the check looks at link targets and names, and
+          # at the generated conf. The find positive control proves -lname can
+          # match a link the join is known to hold.
+          og-dispatch-binary-assertions =
+            pkgs.runCommand "og-dispatch-binary-assertions" {
+              nativeBuildInputs = [pkgs.findutils pkgs.gnugrep pkgs.coreutils];
+              BINDIR = "${tmuxConfig.wrapperBinDir}/bin";
+              DISPATCH = tmuxConfig.ogDispatchBin;
+              OG = tmuxConfig.og;
+              CONF = tmuxConfig.tmuxConf;
+            } ''
+              if [ -z "$(find "$BINDIR" -lname '*tmux-picker-generate*')" ]; then
+                echo "positive control failed: find -lname matches no go-tools link in $BINDIR" >&2
+                exit 1
+              fi
+              if [ -n "$(find "$BINDIR" -lname '*og-dispatch*')" ] \
+                || [ -n "$(find "$BINDIR" -lname "*$DISPATCH*")" ]; then
+                echo "og-dispatch is linked into the tmux wrapper bin dir" >&2
+                exit 1
+              fi
+              if ls "$BINDIR" | grep -qxE 'og|og-dispatch'; then
+                echo "og or og-dispatch is on the tmux wrapper PATH" >&2
+                exit 1
+              fi
+              if [ -n "$(find "$BINDIR" -lname "*$OG*")" ]; then
+                echo "og is linked into the tmux wrapper bin dir" >&2
+                exit 1
+              fi
+              if grep -qF "$DISPATCH" "$CONF"; then
+                echo "og-dispatch's store path is in the generated tmux.conf" >&2
+                exit 1
+              fi
               touch $out
             '';
 
@@ -1457,8 +1520,7 @@
             pkgs.runCommand "og-dispatch-assertions" {
               nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
               OG = tmuxConfig.og;
-              # og is a symlinkJoin over the script; a leak would carry the
-              # inner path, never the join's.
+              # og.bin is og itself (a copied binary, no join); kept so a leak check names the path the user's PATH carries.
               OG_INNER = tmuxConfig.og.bin;
               OG_STUB = ogStub;
               CONF = tmuxConfig.tmuxConf;
