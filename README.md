@@ -58,6 +58,12 @@ missing on `PATH` — locally and on each configured remote. A Homebrew tap and
 shell installer that call these on your behalf are landing in a follow-up PR;
 for now they're reachable through the Nix-built `og` wrapper.
 
+The Nix-built `og` also ships fish completions (`og <TAB>` lists the nouns,
+`og notify <TAB>` its subverbs, each with its summary), generated from the same
+verb table as the dispatcher, so they cannot drift. Past the verb, fish falls
+back to files. Home Manager links them into your profile; on NixOS, per-user
+profile completions load only with `programs.fish.enable = true`.
+
 ## Binary cache
 
 Prebuilt artifacts are pushed to a [Cachix](https://cachix.org) cache, so you can pull the
