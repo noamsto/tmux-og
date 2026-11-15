@@ -81,7 +81,7 @@ type remoteDir struct {
 
 // filterRemoteDirs keeps the entries the transport and og-remote-open can
 // carry: absolute, no newline/CR/NUL (validEmitField) and no backslash
-// (og-remote-open's shell_quotable rejects it). The name comes from the raw
+// (og-remote-open's shellQuotable rejects it). The name comes from the raw
 // path before sanitizing, so the sanitizer's length cut never shortens it
 // from the middle.
 func filterRemoteDirs(entries []string) []remoteDir {

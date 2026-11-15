@@ -175,7 +175,7 @@ func (f *SSHFetcher) fetch(ctx context.Context, remote, key string) (string, err
 	}
 
 	// remote and key are remote-derived; a backslash defeats POSIX quoting under
-	// a fish login shell (cf. shell_quotable in scripts/lib-remote.sh).
+	// a fish login shell (cf. shellQuotable in picker/remoteopen).
 	if strings.ContainsRune(remote, '\\') || strings.ContainsRune(key, '\\') {
 		return "", fmt.Errorf("fetch %s: backslash in path or key", remote)
 	}

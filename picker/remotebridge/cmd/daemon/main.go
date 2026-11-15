@@ -450,7 +450,7 @@ func main() {
 
 	// Seeded from the mirror session's own resolved clients when one is
 	// attached yet (R1/R3) — the launcher's -term/-termfeatures flags sample
-	// only the INVOKING client (og-remote-open.sh:475), while this
+	// only the INVOKING client (the launcher, picker/remoteopen local.go termIdentity), while this
 	// resolves LocalSess's own AND'd capability and lexicographic termname,
 	// which is what makes acceptance 2's "never nacked" a property of the code
 	// rather than a coincidence. The flags remain the fallback for the startup

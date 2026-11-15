@@ -448,8 +448,13 @@ close, the fd close before the launch.
   to compute expected names with `mirror_name_part`; replace those calls with
   the literal expected names (derived from `vectors.tsv`'s rule) and drop the
   `source`.
-- No other suite changes. `remote-cold-start.bats` and the integration suite
-  keep running `bash "$LAUNCHER"` on the `sed`-ed shim.
+- `tests/remote-cold-start.bats`: delete the one case that `eval`s the bash
+  `shell_quote()` function out of the launcher source ("shell_quote is plain
+  POSIX single-quoting …"); found while driving the suite green. Its
+  assertions (quote round-trip under `sh`, backslash passed through, not
+  doubled) move to `TestShellQuote`. Every other case keeps running
+  `bash "$LAUNCHER"` on the `sed`-ed shim unchanged, as does the integration
+  suite.
 
 ## Go unit tests (`picker/remoteopen/*_test.go`)
 

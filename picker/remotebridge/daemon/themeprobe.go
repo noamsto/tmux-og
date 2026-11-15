@@ -68,9 +68,9 @@ func themeToggleAvailableRetry(rt roundTrip, sess string, retries int, interval 
 }
 
 // themeMissingRetries and themeMissingRetryInterval bound notifyThemeMissing's
-// wait for a client to attach. scripts/og-remote-open.sh backgrounds the
-// daemon and only then runs switch-client, so the very first thing Run() might
-// report can race a mirror session that has no client yet; by the time the
+// wait for a client to attach. The launcher (picker/remoteopen) starts the
+// daemon detached with setsid(2) and only then switches the client, so the
+// very first thing Run() might report can race a mirror session that has no client yet; by the time the
 // probe's round-trip returns that's usually already resolved, but this is the
 // backstop, not the mechanism.
 const (

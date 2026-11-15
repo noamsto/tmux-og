@@ -29,7 +29,7 @@ completes, so the mirror reads as *frozen* rather than dead (#396).
   the visible screen, not the scrollback.
 - The session we were switched to is then handed to `og-remote-open <host>
   <sess>` (`Config.HandOff`, wired from `OG_DAEMON_REMOTE_OPEN`, which the
-  launcher sets to `${BASH_SOURCE[0]}` so a hand-off re-enters the launcher at
+  launcher sets to its own path (`--self`) so a hand-off re-enters the launcher at
   the daemon's own revision), which reuses a live bridge for that session or
   starts one and switches the local client to it. So `sesh connect` inside a
   mirror opens the target as a second mirror instead of no-opping.

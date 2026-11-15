@@ -5,9 +5,7 @@
 package mirrorname
 
 // Part maps every byte outside [A-Za-z0-9_-] to '_'. It operates byte-wise,
-// not rune-wise, and must stay byte-identical to mirror_name_part in
-// scripts/lib-remote.sh: the shared testdata/vectors.tsv pins both against
-// the same expected output.
+// not rune-wise; testdata/vectors.tsv pins the expected output.
 func Part(s string) string {
 	b := []byte(s)
 	for i, c := range b {
