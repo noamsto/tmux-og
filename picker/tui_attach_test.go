@@ -839,6 +839,30 @@ func TestPlacedAttachQuitsAtDeadlineWithoutSelecting(t *testing.T) {
 	}
 }
 
+func TestPlacedAttachCancelledSkipsPlacedPoll(t *testing.T) {
+	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
+	selected := stubPlace(t, currentSession{id: "$2", name: "work"}, true, nil)
+	m, _ := placeModel(t, "")
+	m.visible[m.cursor].remoteWindowPane = "%7"
+	next, _ := m.Update(wallKey("enter"))
+	nm := next.(tuiModel)
+	att := *nm.attach
+	att.cancelling = true
+	nm.attach = &att
+
+	next, cmd := nm.finishAttach(attachResult{outcome: attachOK})
+
+	if cmd == nil || fmt.Sprintf("%T", cmd()) != "tea.QuitMsg" {
+		t.Errorf("cmd = %v, want tea.Quit", cmd)
+	}
+	if next.(tuiModel).attach != nil {
+		t.Errorf("attach = %+v, want it cleared with no placed poll", next.(tuiModel).attach)
+	}
+	if len(*selected) != 0 {
+		t.Errorf("selected %v after a cancelled launch", *selected)
+	}
+}
+
 func TestPlacedAttachEscWhilePlacingQuits(t *testing.T) {
 	t.Setenv("OG_PICKER_CURRENT_WINDOW", "@9")
 	shortPlacedPoll(t, time.Millisecond)

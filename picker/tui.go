@@ -739,8 +739,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.attach == nil || msg.id != m.attach.id || !m.attach.placing {
 			return m, nil
 		}
+		att := *m.attach
 		m.attach = nil
-		if msg.window != "" {
+		if msg.window == "" {
+			logEvent("picker", "event", "place_select_timeout", "host", att.host, "sess", att.sess, "pane", att.remotePane)
+		} else {
 			_ = selectWindowFn(msg.window)
 		}
 		return m, tea.Quit
@@ -2043,7 +2046,7 @@ func (m tuiModel) finishAttach(res attachResult) (tea.Model, tea.Cmd) {
 			launchDetached(m.tmuxOpts, it.remoteHost, it.remoteSess, it.remoteRestore)
 		}
 		m.marked = nil
-		if att.placed && att.remotePane != "" {
+		if att.placed && att.remotePane != "" && !att.cancelling {
 			att.placing = true
 			m.attach = &att
 			return m, pollPlacedWindowCmd(att.id, att)
