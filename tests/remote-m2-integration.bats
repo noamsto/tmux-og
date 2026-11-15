@@ -39,6 +39,10 @@ write_dst_conf() {
 }
 
 setup() {
+	# The scratch servers inherit this environment: a run from inside a bridged
+	# or aeye-aware shell would otherwise start with the variables the
+	# cell-size and relay cases assert on already set.
+	unset AEYE_CELL_PX OG_RELAY_GRAPHICS
 	OG_TMUX_DIR="/tmp/og-m2-bats-$$"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
@@ -97,16 +101,62 @@ setup() {
 	$DST kill-server 2>/dev/null || true
 }
 
+# stop_pid <pid> ends one background job within a bound. A daemon retrying its
+# reconnect holds the build's output pipe (fd 3) open for its whole 10 min
+# retry budget, so an unbounded stop stalls bats and the nix build; a bare
+# `wait` is unbounded and timeout(1) cannot wrap the `wait` builtin. CONT first:
+# a SIGSTOPped job does not act on TERM.
+stop_pid() {
+	local pid="$1" i
+	kill -CONT "$pid" 2>/dev/null || true
+	kill "$pid" 2>/dev/null || true
+	for ((i = 0; i < 100; i++)); do
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -9 "$pid" 2>/dev/null || true
+	fi
+	wait "$pid" 2>/dev/null || true
+}
+
+# reap_jobs stops every background job of the test shell. teardown shares that
+# shell, so this covers every `&` start site (bridge_up, the inline
+# `daemon_pid=$!` starts, `sampler_pid=$!`) with one change. `jobs -pr` skips
+# finished jobs, whose pid the kernel may have reused; bats's own per-test
+# timeout watchdog is a job of this shell too, and stopping it would drop the
+# bound for the rest of teardown.
+reap_jobs() {
+	local pid
+	for pid in $(jobs -pr); do
+		[ "$pid" = "${BATS_killer_pid:-}" ] && continue
+		stop_pid "$pid"
+	done
+}
+
+# shellcheck disable=SC2086 # $SRC/$DST/$DST2 are "tmux -L name -f conf" command lines
 teardown() {
+	local leaked
+	reap_jobs
 	size_daemons_stop
 	# A park case that ends mid-outage leaves SRC's socket moved aside — kill
 	# that server too, or its process (and the tmpdir entry below) leaks.
-	[ -S "$src_sock.away" ] && tmux -S "$src_sock.away" kill-server 2>/dev/null || true
-	$SRC kill-server 2>/dev/null || true
-	$DST kill-server 2>/dev/null || true
-	$DST2 kill-server 2>/dev/null || true
-	tmux -L m2obs kill-server 2>/dev/null || true # pty host for the attached-client test
+	[ -S "$src_sock.away" ] && timeout 10 tmux -S "$src_sock.away" kill-server 2>/dev/null || true
+	timeout 10 $SRC kill-server 2>/dev/null || true
+	timeout 10 $DST kill-server 2>/dev/null || true
+	timeout 10 $DST2 kill-server 2>/dev/null || true
+	timeout 10 tmux -L m2obs kill-server 2>/dev/null || true # pty host for the attached-client test
+	# Tripwire: a daemon of this test that outlived reap_jobs would hold the
+	# build's pipe open. ENVIRON keeps the patterns out of awk's own argv.
+	leaked="$(ps -Aww -o pid=,args= |
+		DAEMON_BASE="$(basename "$DAEMON")" TEST_DIR="$BATS_TEST_TMPDIR" awk 'index($0, ENVIRON["DAEMON_BASE"]) && index($0, ENVIRON["TEST_DIR"]) { printf "%s ", $1 }')"
+	if [ -n "$leaked" ]; then
+		# shellcheck disable=SC2086 # word-split the pid list
+		kill -9 $leaked 2>/dev/null || true
+		printf 'teardown: leaked daemon pid(s) %safter reap_jobs\n' "$leaked" >&3
+	fi
 	rm -rf "${OG_TMUX_DIR:-}"
+	[ -z "$leaked" ]
 }
 
 # sorted_dims prints TARGET_ARGS's pane dims, one "WxH" per line, sorted —
@@ -755,9 +805,7 @@ size_daemons_stop() {
 	local pids="$BATS_TEST_TMPDIR/size-daemons.pids" pid
 	[ -f "$pids" ] || return 0
 	while read -r pid; do
-		kill -CONT "$pid" 2>/dev/null || true
-		kill "$pid" 2>/dev/null || true
-		wait "$pid" 2>/dev/null || true
+		stop_pid "$pid"
 	done <"$pids"
 	rm -f "$pids"
 }
@@ -2377,6 +2425,22 @@ relay_env() {
 	grep -qF -- "$expected" "$f"
 }
 
+# relay_flake_diag dumps what the final byte-identical check saw. It exists
+# because that failure is not reproducible locally, so CI logs would otherwise
+# show only the assertion.
+relay_flake_diag() {
+	local captured="$1" log="$2"
+	{
+		echo "relay_flake_diag: captured bytes: $(wc -c 2>/dev/null <"$captured" || true)"
+		echo "relay_flake_diag: DCS introducers: $(grep -c -F -- $'\033Pq' "$captured" 2>/dev/null || true)"
+		echo "relay_flake_diag: tilde bytes: $(tr -cd '~' 2>/dev/null <"$captured" | wc -c || true)"
+		echo "relay_flake_diag: daemon graphics: lines:"
+		grep -F 'graphics:' "$log" 2>/dev/null | tail -5 || true
+		echo "relay_flake_diag: daemon log tail:"
+		tail -20 "$log" 2>/dev/null || true
+	} >&3 || true
+}
+
 # (c) — the DYNAMIC half of R8/#574: the two tests above bake the capability in
 # at daemon startup via --sixel. This one proves it instead FOLLOWS
 # whichever client is attached to the LOCAL mirror session (host-sess) right
@@ -2485,7 +2549,10 @@ relay_env() {
 	exp="$BATS_TEST_TMPDIR/gxv.expected"
 	expected_sixel_bytes "$exp"
 	expected="$(cat "$exp")"
-	grep -qF -- "$expected" "$f2"
+	grep -qF -- "$expected" "$f2" || {
+		relay_flake_diag "$f2" "$BATS_TEST_TMPDIR/gxv.log"
+		return 1
+	}
 	# No control-client replacement happened: this is Half 1 only (acceptance 4).
 	[ "$new_transport" = "$old_transport" ]
 }

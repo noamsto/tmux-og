@@ -2833,10 +2833,28 @@
               # The dwindle mirror cases extract the real window-layout-changed[20]
               # hook (it embeds the store path of tmux-dwindle) from this conf.
               TMUX_OG_CONF = tmuxConfig.tmuxConf;
+              # A per-test bound turns a hung test into `not ok N <name> # timeout
+              # after 180s` and moves on, instead of holding the build until the
+              # 30-min CI job cap. bats kills the test's whole process tree (the
+              # daemons) on timeout and still runs teardown. 180s is ~8x the
+              # slowest passing Linux test (21s), leaving headroom for darwin
+              # runners at 1.5-2x slower.
+              BATS_TEST_TIMEOUT = "180";
             } ''
               cp -r ${./tests} tests
               export HOME=$TMPDIR
-              bats tests/remote-m2-integration.bats
+              # --timing puts per-test durations in the log so slow tests name
+              # themselves. The outer timeout is the backstop for a hang that
+              # bats' own timeout cannot see: it ends the run with the TAP so far,
+              # instead of the CI job being cancelled with no output. It is sized
+              # to fire before the 30-min job cap, given the suite starts 13-15 min
+              # into a cold macOS job. When it fires no test names itself (the
+              # hung one is the first after the last TAP line), hence the echo.
+              timeout --kill-after=15s 14m bats --timing tests/remote-m2-integration.bats || {
+                s=$?
+                [ "$s" -ge 124 ] && echo "remote-m2: suite exceeded 14m; the hung test is the one after the last TAP line above" >&2
+                exit "$s"
+              }
               touch $out
             '';
 
