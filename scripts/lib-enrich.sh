@@ -6,8 +6,8 @@
 
 # shellcheck disable=SC2034  # used by scripts that source this library
 
-# PR-state cache dir; consumed by the PR enrichment poller. Overridable for the
-# same reason as the stamp lock below — a test must not touch the real cache.
+# PR-state cache dir: the Go poller's default and tmux-issue-stamp's backfill
+# tick dir. Overridable so a test must not touch the real cache.
 ENRICH_CACHE_DIR="${OG_ENRICH_CACHE_DIR:-/tmp/og-pr}"
 # Suffix for the cache dir's per-server state: the tick gates' stamps and the
 # pending-checks markers. The dir is a bare /tmp path shared by every tmux server
@@ -24,21 +24,10 @@ fi
 # a real machine's /tmp dir across concurrent bats runs.
 ENRICH_STAMP_LOCK_DIR="${OG_ENRICH_LOCK_DIR:-/tmp/og-enrich-lock}"
 
-# Enrich glyphs (substituted at Nix build time from enrichIconSetRaw). Text-only;
+# Provider glyphs (substituted at Nix build time from enrichIconSetRaw). Text-only;
 # the status template applies color and appends process/claude icons separately.
 ENRICH_ICON_LINEAR="@enrich_icon_linear@"
 ENRICH_ICON_GITHUB="@enrich_icon_github@"
-ENRICH_ICON_PENDING="@enrich_icon_pending@"
-ENRICH_ICON_SUCCESS="@enrich_icon_success@"
-ENRICH_ICON_FAILURE="@enrich_icon_failure@"
-ENRICH_ICON_MERGED="@enrich_icon_merged@"
-ENRICH_ICON_CLOSED="@enrich_icon_closed@"
-ENRICH_ICON_CONFLICT="@enrich_icon_conflict@"
-ENRICH_ICON_DRAFT="@enrich_icon_draft@"
-
-# The pending glyph's progress variant, filled by share of checks finished. Not a
-# user icon key: nf-md-circle_slice_1…8, the same frames as CLAUDE_SPINNER_FRAMES.
-ENRICH_PIE_GLYPHS=("󰪞" "󰪟" "󰪠" "󰪡" "󰪢" "󰪣" "󰪤" "󰪥")
 
 # branch_to_linear_key BRANCH
 # Extracts a Linear issue key (TEAM-123) from a branch name.
@@ -126,61 +115,6 @@ truncate_ellipsis() {
 	fi
 }
 
-# branch_sha1 BRANCH
-# Computes a stable cache key (sha1 hex) for a branch name.
-# Sets REPLY to the 40-char hex digest.
-branch_sha1() {
-	local out
-	out="$(printf '%s' "$1" | sha1sum)"
-	REPLY="${out%% *}"
-}
-
-# collapse_check_rollup ROLLUP_JSON
-# Maps a gh `statusCheckRollup` array (a CheckRun | StatusContext union) to a
-# single state. CheckRun entries carry .status + .conclusion; StatusContext
-# entries (Travis/CircleCI-v1/commit-status API) carry .state instead.
-# Priority: empty → none;
-#   any FAILURE/ERROR/CANCELLED/TIMED_OUT/ACTION_REQUIRED/STALE → failure;
-#   else any IN_PROGRESS/QUEUED/PENDING/EXPECTED, or an unfinished CheckRun
-#     (empty conclusion) → pending;
-#   else success.
-# Sets REPLY to one of: failure | pending | success | none, and REPLY_PROGRESS
-# to "<finished>/<total>" when REPLY is pending ("" otherwise). One jq fork.
-collapse_check_rollup() {
-	local state="" progress=""
-	{
-		IFS= read -r state
-		IFS= read -r progress
-	} < <(jq -r '
-		def pending:
-			((.status // "") | ascii_upcase | (. == "IN_PROGRESS" or . == "QUEUED" or . == "PENDING"))
-			or ((.state // "") | ascii_upcase | (. == "EXPECTED" or . == "PENDING"))
-			or (.__typename == "CheckRun" and ((.conclusion // "") == ""));
-		(if length == 0 then "none"
-		elif any(.[]; (.conclusion // .state // "") | ascii_upcase
-			| . == "FAILURE" or . == "ERROR" or . == "CANCELLED"
-			or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STALE") then "failure"
-		elif any(.[]; pending) then "pending"
-		else "success"
-		end),
-		"\([.[] | select(pending | not)] | length)/\(length)"
-	' <<<"$1" 2>/dev/null) || true
-	REPLY="${state:-none}"
-	REPLY_PROGRESS=""
-	if [[ $REPLY == pending ]]; then REPLY_PROGRESS="$progress"; fi
-}
-
-# pr_pie_glyph PROGRESS
-# "<finished>/<total>" → the ENRICH_PIE_GLYPHS slice filled to the share
-# finished. Sets REPLY, or "" when PROGRESS is not a usable count.
-pr_pie_glyph() {
-	REPLY=""
-	[[ $1 =~ ^([0-9]+)/([0-9]+)$ ]] || return 0
-	local finished=${BASH_REMATCH[1]} total=${BASH_REMATCH[2]}
-	((total > 0 && finished <= total)) || return 0
-	REPLY="${ENRICH_PIE_GLYPHS[finished * 7 / total]}"
-}
-
 # split_pr_badge BADGE
 # Splits a REPLY_PR badge (" <glyph> #<n>") at its number so a renderer can style
 # the halves apart. Sets REPLY_GLYPH (" <glyph> ", trailing space included) and
@@ -191,32 +125,6 @@ split_pr_badge() {
 	[[ -n $1 ]] || return 0
 	REPLY_GLYPH="${1%#*}"
 	REPLY_NUM="#${1##*#}"
-}
-
-# pr_cache_decision FORCE CACHE_EXISTS CACHE_CONTENT AGE TTL TTL_NONE [TTL_TERMINAL]
-# Decides whether the PR poller may serve a cached result or must hit gh.
-# An empty-array ("[]") cache is "no PR", which expires on TTL_NONE (the
-# none→PR transition is what a user waits on after `gh pr create`); a
-# merged/closed PR is terminal and expires on TTL_TERMINAL (defaults to TTL;
-# the substring match is safe because gh emits minified JSON and any quote
-# inside a title is escaped); a real open PR uses TTL. --force and a missing
-# cache always fetch. Sets REPLY to "serve" or "fetch".
-pr_cache_decision() {
-	local force="$1" exists="$2" content="$3" age="$4" ttl="$5" ttl_none="$6" ttl_terminal="${7:-$5}"
-	if ((force != 0)) || ((exists == 0)); then
-		REPLY="fetch"
-		return
-	fi
-	if [[ $content == "[]" ]]; then
-		ttl=$ttl_none
-	elif [[ $content == *'"state":"MERGED"'* || $content == *'"state":"CLOSED"'* ]]; then
-		ttl=$ttl_terminal
-	fi
-	if ((age < ttl)); then
-		REPLY="serve"
-	else
-		REPLY="fetch"
-	fi
 }
 
 # provider_priority_list
@@ -265,9 +173,8 @@ parse_explicit_issue_id() {
 	return 0
 }
 
-# build_window_label MODE PROVIDER ISSUE_ID ISSUE_TITLE PR_NUMBER PR_STATE \
-#                    PR_CHECK_STATE BRANCH PANE_PATH [PR_MERGEABLE] [TASK] \
-#                    [AI_NAME] [PR_DRAFT] [PR_PROGRESS]
+# build_window_label MODE PROVIDER ISSUE_ID ISSUE_TITLE PR_NUMBER PR_GLYPH \
+#                    BRANCH PANE_PATH [TASK] [AI_NAME]
 # MODE is "short" or "long". Composes the text-only window label (no color, no
 # process/claude icons — the status template adds those). The issue id is taken
 # from a stamped @issue_id or, if absent, derived from the branch (provider
@@ -280,8 +187,9 @@ parse_explicit_issue_id() {
 #
 # The PR indicator is NOT folded into the name. It is returned as its own
 # segment so the status template can color just the PR by check state and keep
-# window_name / pickers free of color codes. The name itself is also split into
-# a bold-able identity prefix and a remainder.
+# window_name / pickers free of color codes. PR_GLYPH is composed once by the Go
+# poller (enrichstate.Glyph) and arrives as @pr_glyph; it is rendered verbatim.
+# The name itself is also split into a bold-able identity prefix and a remainder.
 #
 # Sets:
 #   REPLY      full plain name (no PR); always REPLY_ID + REPLY_REST
@@ -290,9 +198,9 @@ parse_explicit_issue_id() {
 #   REPLY_PR   plain PR segment " <glyph> #<num>" or "" when there is no PR
 build_window_label() {
 	local mode="$1" provider="$2" issue_id="$3" issue_title="$4"
-	local pr_number="$5" pr_state="$6" pr_check="$7" branch="$8" pane_path="$9"
-	local pr_mergeable="${10:-}" task="${11:-}" ai_name="${12:-}" pr_draft="${13:-}" pr_progress="${14:-}"
-	local provider_icon pr_glyph=""
+	local pr_number="$5" pr_glyph="$6" branch="$7" pane_path="$8"
+	local task="${9:-}" ai_name="${10:-}"
+	local provider_icon
 	REPLY=""
 	REPLY_ID=""
 	REPLY_REST=""
@@ -340,35 +248,7 @@ build_window_label() {
 	# PR at a glance. Returned as its own segment (REPLY_PR), never fused into
 	# the name, so the template can color it by check state in isolation.
 	if [[ -n $pr_number && $pr_number != "none" ]]; then
-		# Terminal states are historical: a leftover pending/failed rollup must
-		# not mask them, so merged/closed glyphs win over check state. A closed
-		# (non-merged) PR is dead/superseded — distinct dim glyph, never a live
-		# check. Then conflicts trump check state — a conflicting PR needs a
-		# rebase, which re-runs checks anyway (open PRs only).
-		if [[ $pr_state == "merged" ]]; then
-			pr_glyph="$ENRICH_ICON_MERGED"
-		elif [[ $pr_state == "closed" ]]; then
-			pr_glyph="$ENRICH_ICON_CLOSED"
-		elif [[ $pr_mergeable == "conflicting" ]]; then
-			pr_glyph="$ENRICH_ICON_CONFLICT"
-		else
-			case "$pr_check" in
-			failure) pr_glyph="$ENRICH_ICON_FAILURE" ;;
-			pending)
-				pr_pie_glyph "$pr_progress"
-				pr_glyph="${REPLY:-$ENRICH_ICON_PENDING}"
-				;;
-			*) pr_glyph="$ENRICH_ICON_SUCCESS" ;;
-			esac
-		fi
-		# Draft is orthogonal to check state — a draft PR still runs CI — so it
-		# prepends its own glyph instead of winning the state glyph. gh clears
-		# isDraft on merge, and on a closed PR the closed glyph already says
-		# "dead", so terminal states carry no draft marker.
-		if [[ $pr_draft == 1 && $pr_state != "merged" && $pr_state != "closed" ]]; then
-			pr_glyph="${ENRICH_ICON_DRAFT} ${pr_glyph}"
-		fi
-		REPLY_PR=" ${pr_glyph} #${pr_number}"
+		REPLY_PR=" ${pr_glyph:+$pr_glyph }#${pr_number}"
 	fi
 
 	if [[ -n $rid ]]; then

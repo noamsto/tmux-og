@@ -48,3 +48,11 @@ func TestDraft(t *testing.T) {
 		})
 	}
 }
+
+func TestPieRejectsSignedHalves(t *testing.T) {
+	for _, p := range []string{"+3/5", "3/+5"} {
+		if got := Pie(p); got != "" {
+			t.Errorf("Pie(%q) = %q, want empty", p, got)
+		}
+	}
+}

@@ -6,11 +6,14 @@ Per-worktree Linear/GitHub issue identity + PR check-state shown in the status
 line. Enabled by default via `programs.tmux-og.enrich.enable`.
 
 - **Window options are the source of truth.** `tmux-issue-stamp` (backgrounded
-  from worktrunk `post-switch` hook) writes `@issue_*`; `tmux-pr-enrich`
+  from worktrunk `post-switch` hook) writes `@issue_*`; `tmux-pr-enrich` — a
+  shim exec'ing the Go poller `tmux-pr-enrich-go` (`picker/prenrich`, config
+  baked in as build-time flags)
   (driven by the `@og-pr-tick` monitor hook, not status-format[0] — a
   control-mode client renders no status line, so a status-driven poller never
-  runs on a host whose only clients are bridges, #603) writes `@pr_*`. Display
-  formats and keybinds only read them.
+  runs on a host whose only clients are bridges, #603) writes `@pr_*`,
+  including `@pr_glyph`, the badge's glyph half. Display formats and keybinds
+  only read them.
 - **Stamp failures:** when a provider CLI runs but a matched id ends up with
   no title/url, `tmux-issue-stamp` stores the sanitized first line of the
   CLI's stderr in `@issue_stamp_error` (cleared on a successful stamp or when
@@ -65,9 +68,9 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   resolve a repo (a merged PR's worktree was removed, the window stayed open)
   but which carries a well-formed `@pr_url` is refreshed by that url —
   `gh pr view <url>`, no cwd — and written through the same
-  `apply_cache_to_target` path. Cache key is derived from `url|<url>` so it
+  `applyCache` path. Cache key is derived from `url|<url>` so it
   can't collide with a `repo|branch` key; TTLs are the usual ones (merged/closed
-  `TTL_TERMINAL`, open `TTL`). These windows count against the same 30-entry cap
+  `ttlTerminal`, open `ttl`). These windows count against the same 30-entry cap
   and are skipped in the checks-only pending pass. No `@pr_url` (or a url that
   isn't `https://github.com/<owner>/<repo>/pull/<N>`) still means skipped, and
   `@bridge_win` mirrors stay skipped. Without this the badge stayed `open`
@@ -75,7 +78,7 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   runs the card's `refreshCmd` with `--dir`, and when that dir no longer
   resolves a repo the poller refreshes a well-formed `@pr_url` by url rather
   than silently no-op'ing the branch fetch, so `--force` bypasses a cached
-  `TTL_TERMINAL` answer (#923).
+  `ttlTerminal` answer (#923).
 - **Fork PRs are ignored.** `gh pr list --head <b>` matches the head branch
   *name* across forks, so a fork PR whose branch is also called `main` used to
   shadow the repo's own PR — and a window merely sitting on the default branch
@@ -93,12 +96,24 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
 - **Conflicts:** `@pr_mergeable` (lowercase `mergeable`/`conflicting`/`unknown`
   from gh) is written with the other `@pr_*` options; `conflicting` wins the
   badge glyph over check state and renders red.
+- **`@pr_glyph`:** the poller composes the badge's glyph half once
+  (`enrichstate.Glyph`: draft marker + state glyph or progress pie) and writes
+  it with the other `@pr_*`; `tmux-reflow-windows` builds `@window_pr_plain`
+  from `@pr_number` + `@pr_glyph` only. Every full/pending pass starts with a
+  gh-free glyph sync that rewrites a stale `@pr_glyph` on every non-mirror
+  window carrying a PR — including windows the pass otherwise skips (empty
+  `@branch`, past the 30 cap, gone checkout without a url) — so an
+  `enrich.icons` change lands at the next full pass (≤ `prRefreshSeconds`),
+  not at the activation reflow. Upgrade: a window shows ` #<n>` with no glyph
+  until the first full pass writes `@pr_glyph`. `tmux-reconcile-window` unsets
+  it with the other `@pr_*`.
 - **Drafts:** `@pr_draft` (`1`/empty, from gh `isDraft`) is additive, not a
   state — the draft glyph *prepends* the check-state glyph and leaves the color
   precedence alone, because a draft PR still runs CI. Terminal states carry no
   marker (gh clears `isDraft` on merge; a closed PR already reads as dead). The
-  rule lives three times: `build_window_label` (shell), `enrichstate.Draft`
-  (Go, the enrich card), and the picker's `colorPRBadge`.
+  rule lives in `enrichstate.Draft`, composed into `@pr_glyph` by
+  `enrichstate.Glyph`; the picker's `colorPRBadge` takes its colour precedence
+  from enrichstate.
 - **Review and auto-merge:** `@pr_review` (`approved`/`changes_requested`/
   `review_required`/empty, from gh `reviewDecision`) and `@pr_auto_merge`
   (`1`/empty, from gh `autoMergeRequest`) tint and decorate the badge's `#<n>`
@@ -106,13 +121,13 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   approved, red for changes requested, dim overlay for review required,
   underlined on top of any of those when auto-merge is queued. Open PRs only;
   with no review decision the `#<n>` keeps the glyph half's tint.
-- **Progress:** while a rollup is pending, `collapse_check_rollup` also sets
-  `REPLY_PROGRESS` to `<finished>/<total>`; `pr_pie_glyph` turns that into an
-  `nf-md-circle_slice_1`…`8` glyph at index `finished * 7 / total`, replacing
-  the plain pending glyph so a check-state badge shows how far the rollup has
-  gotten. The eight slices live twice — `ENRICH_PIE_GLYPHS` (shell) and
-  `enrichstate.PieSlices` (Go) must stay byte-identical — and are not part of
-  `enrich.icons`: they're not user-configurable.
+- **Progress:** while a rollup is pending, the poller's rollup collapse
+  (`collapseRollup`) writes `<finished>/<total>` to `@pr_check_progress`;
+  `enrichstate.Glyph` turns that into an `nf-md-circle_slice_1`…`8` glyph at
+  index `finished * 7 / total`, replacing the plain pending glyph so a
+  check-state badge shows how far the rollup has gotten. The eight slices live
+  only in `enrichstate.PieSlices` and are not part of `enrich.icons`: they're
+  not user-configurable.
 - **Display test:** `./tests/test-display.sh` after `nix build .#default`
   (manual; not in `nix flake check`).
 

@@ -1868,7 +1868,7 @@ func TestEnrichRefreshVerbNeverOverlaysPane(t *testing.T) {
 // unrebuilt remote's poller drops the unknown --url, and --branch alone would
 // enter single-target mode with an empty --dir — gh in the remote tmux server's
 // cwd, writing another repo's PR onto the window (#598). The rule itself lives in
-// the poller (pr_url_wellformed); tests/enrich-url.bats pins the rejection.
+// the poller (prURLWellformed); tests/enrich-url.bats pins the rejection.
 func TestEnrichRefreshVerbPicksTheModeFromTheCheckout(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {

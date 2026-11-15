@@ -190,25 +190,11 @@
         "@providers@"
         "@enrich_icon_linear@"
         "@enrich_icon_github@"
-        "@enrich_icon_pending@"
-        "@enrich_icon_success@"
-        "@enrich_icon_failure@"
-        "@enrich_icon_merged@"
-        "@enrich_icon_closed@"
-        "@enrich_icon_conflict@"
-        "@enrich_icon_draft@"
       ]
       [
         enrichProvidersStr
         enrichIconsRaw.linear
         enrichIconsRaw.github
-        enrichIconsRaw.pending
-        enrichIconsRaw.success
-        enrichIconsRaw.failure
-        enrichIconsRaw.merged
-        enrichIconsRaw.closed
-        enrichIconsRaw.conflict
-        enrichIconsRaw.draft
       ]
       raw;
   in
@@ -420,6 +406,14 @@
         "@reflow@"
         "@lib_log@"
         "@notify@"
+        "@pr_enrich_bin@"
+        "@enrich_icon_pending@"
+        "@enrich_icon_success@"
+        "@enrich_icon_failure@"
+        "@enrich_icon_merged@"
+        "@enrich_icon_closed@"
+        "@enrich_icon_conflict@"
+        "@enrich_icon_draft@"
       ]
       [
         "${lib-enrich}"
@@ -431,6 +425,14 @@
         "${script.tmux-reflow-windows}/bin/tmux-reflow-windows"
         "${lib-log}"
         notifyBin
+        "${goTools}/bin/tmux-pr-enrich-go"
+        (lib.escapeShellArg enrichIconsRaw.pending)
+        (lib.escapeShellArg enrichIconsRaw.success)
+        (lib.escapeShellArg enrichIconsRaw.failure)
+        (lib.escapeShellArg enrichIconsRaw.merged)
+        (lib.escapeShellArg enrichIconsRaw.closed)
+        (lib.escapeShellArg enrichIconsRaw.conflict)
+        (lib.escapeShellArg enrichIconsRaw.draft)
       ]
       raw;
   in

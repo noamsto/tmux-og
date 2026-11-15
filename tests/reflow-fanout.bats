@@ -491,6 +491,7 @@ stamp_placed() {
 	tmux set -wq -t S:0 @pr_number 12
 	tmux set -wq -t S:0 @pr_state open
 	tmux set -wq -t S:0 @pr_check_state success
+	tmux set -wq -t S:0 @pr_glyph S
 	bash "$REFLOW" S "$full" --force >/dev/null 2>&1
 
 	[ "$(tmux show -wv -t S:0 @window_pr_plain)" = " S #12" ]
@@ -514,6 +515,7 @@ stamp_placed() {
 	tmux set -wq -t S:0 @pr_number 12
 	tmux set -wq -t S:0 @pr_state open
 	tmux set -wq -t S:0 @pr_check_state success
+	tmux set -wq -t S:0 @pr_glyph S
 
 	bash "$REFLOW" S 100 --force >/dev/null 2>&1
 

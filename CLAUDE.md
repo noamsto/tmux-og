@@ -61,7 +61,7 @@ Reload a running tmux with `prefix + r`. `./tests/test-display.sh` is a manual d
 
 - **`lib-icons.sh`** — `ICON_MAP`, `build_proc_icons`, `measure_display_width`, `strip_tmux_colors`, `pad_to_width`. Icon mapping data lives in `config/process-icons.nix`.
 - **`lib-claude.sh`** — `CLAUDE_PANES_DIR`, `read_pane_state` (staleness, interrupt, dead-agent), `claude_state_icon`, `setup_claude_colors`, `claude_priority_state`, the reap/prune/clear helpers.
-- **`lib-enrich.sh`** — branch→issue parsing, `sanitize_title`, `collapse_check_rollup`, `pr_pie_glyph`, `split_pr_badge`. Pure logic, unit-tested in `tests/enrich.bats`.
+- **`lib-enrich.sh`** — branch→issue parsing, `sanitize_title`, `split_pr_badge`, `build_window_label`. Pure logic, unit-tested in `tests/enrich.bats`.
 - **`lib-reflow.sh`** — `reflow_fit_columns`, `reflow_clip_rests`.
 
 Hot-path functions set `REPLY` instead of echoing, to avoid a subshell fork.
@@ -91,7 +91,7 @@ The repo doubles as a CC plugin marketplace: `.claude-plugin/marketplace.json` �
 - **A `@bridge_win` mirror window is daemon-owned.** Local scripts skip it; the daemon writes `@bridge_*`, never the real option names (a same-name write is a two-writer race reflow wins). Every consumer naming a mirror pane's command prefers `@bridge_proc`.
 - **Remote-derived values are sanitized daemon-side before any local format renders them** — `#(…)` in a carried value would execute here. The one launcher-side case is the mirror's session name: `og-remote-open` maps it to `[A-Za-z0-9_-]`, because stock `run-shell -C` menus parse session names as commands; the raw name lives in `@bridge_session`.
 - **Every float bind stamps `@float_geom`** and pins `remain-on-exit off` (`float-conf-assertions` fails the build otherwise).
-- **Duplicated tables must stay byte-identical**: `ENRICH_PIE_GLYPHS` (shell) ↔ `enrichstate.PieSlices` (Go); the draft-badge rule in `build_window_label`, `enrichstate.Draft` and the picker's `colorPRBadge`.
+- **Duplicated tables must stay byte-identical**: `sanitize_title` (`lib-enrich.sh`) ↔ `sanitizeTitle` (`picker/prenrich`), pinned by `picker/prenrich/testdata/sanitize-title.tsv`.
 - **Picker cells are sized with `visibleWidth`, never `len`**; a typed key is `printableKeyText`, never `len(key) == 1`.
 - **A resident tmux server may predate the rebuilt binary** (#407) — version-gate on the live `#{version}`, never `tmux -V`.
 

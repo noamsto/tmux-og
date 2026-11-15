@@ -240,6 +240,7 @@
               # only counts it as one char under a UTF-8 locale.
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
+              SANITIZE_TITLE_VECTORS = ./picker/prenrich/testdata/sanitize-title.tsv;
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
@@ -251,6 +252,7 @@
             pkgs.runCommand "enrich-budget-tests" {
               # git: the pass groups windows by `git rev-parse --git-common-dir`,
               # so the fixture needs a real repo.
+              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git];
             } ''
               cp -r ${./scripts} scripts
@@ -263,6 +265,7 @@
             pkgs.runCommand "enrich-url-tests" {
               # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
               # for the pass's repo resolution.
+              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
             } ''
               cp -r ${./scripts} scripts
@@ -275,6 +278,7 @@
             pkgs.runCommand "enrich-fork-tests" {
               # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
               # for the pass's repo resolution.
+              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
             } ''
               cp -r ${./scripts} scripts
@@ -509,6 +513,7 @@
 
           notify-producers-tests =
             pkgs.runCommand "notify-producers-tests" {
+              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
               nativeBuildInputs = [pkgs.bats pkgs.coreutils];
             } ''
               cp -r ${./scripts} scripts

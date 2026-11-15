@@ -7,13 +7,6 @@ setup_lib_enrich() {
 		-e 's/@providers@/linear github/g' \
 		-e 's/@enrich_icon_linear@/L/g' \
 		-e 's/@enrich_icon_github@/G/g' \
-		-e 's/@enrich_icon_pending@/P/g' \
-		-e 's/@enrich_icon_success@/S/g' \
-		-e 's/@enrich_icon_failure@/F/g' \
-		-e 's/@enrich_icon_merged@/M/g' \
-		-e 's/@enrich_icon_closed@/X/g' \
-		-e 's/@enrich_icon_conflict@/C/g' \
-		-e 's/@enrich_icon_draft@/D/g' \
 		scripts/lib-enrich.sh >"$tmp"
 	# shellcheck source=/dev/null
 	source "$tmp"
@@ -100,20 +93,33 @@ make_notify_center() {
 		scripts/og-notify-center.sh >"$NOTIFY_CENTER"
 }
 
-# Builds a runnable tmux-pr-enrich. Every placeholder the script contains must be
-# stubbed: @lib_enrich@ and @lib_log@ are sourced, refresh placeholders are used
-# in arithmetic (an unsubstituted value is a syntax error), and @reflow@ is
-# EXECUTED from write_pr_options on exactly the change path the notify tests
-# exercise (left unstubbed, the test execs the literal string). @notify@ is
-# deliberately left raw — OG_NOTIFY_BIN overrides it at run time, and its
-# raw form is what "notifications disabled" looks like. Sets PR_ENRICH_SCRIPT.
+# Builds a runnable tmux-pr-enrich shim that execs the Go poller. The binary is
+# PR_ENRICH_BIN (set by the flake to the picker/prenrich build); without it, bats
+# builds picker/prenrich once per run. Every placeholder the shim contains must be
+# stubbed: the refresh placeholders are parsed as integers, and @reflow@ is
+# executed on exactly the change path the notify tests exercise (left raw, the
+# poller would exec the literal string). @notify@ is deliberately left raw —
+# OG_NOTIFY_BIN overrides it at run time, and its raw form is what "notifications
+# disabled" looks like. Sets PR_ENRICH_SCRIPT.
 make_pr_enrich() {
 	PR_ENRICH_SCRIPT="$BATS_TEST_TMPDIR/tmux-pr-enrich.sh"
-	sed -e "s|@lib_enrich@|$PWD/scripts/lib-enrich.sh|" \
+	local bin=${PR_ENRICH_BIN:-}
+	if [[ -z $bin ]]; then
+		bin="$BATS_RUN_TMPDIR/tmux-pr-enrich-go"
+		[[ -x $bin ]] || go build -C "$PWD/picker" -o "$bin" ./prenrich
+	fi
+	sed -e "s|@pr_enrich_bin@|$bin|" \
 		-e "s|@lib_log@|$PWD/scripts/lib-log.sh|" \
 		-e 's|@pr_refresh_seconds@|30|' \
 		-e 's|@pr_check_refresh_seconds@|300|' \
 		-e 's|@reflow@|true|' \
+		-e 's|@enrich_icon_pending@|P|' \
+		-e 's|@enrich_icon_success@|S|' \
+		-e 's|@enrich_icon_failure@|F|' \
+		-e 's|@enrich_icon_merged@|M|' \
+		-e 's|@enrich_icon_closed@|X|' \
+		-e 's|@enrich_icon_conflict@|C|' \
+		-e 's|@enrich_icon_draft@|D|' \
 		scripts/tmux-pr-enrich.sh >"$PR_ENRICH_SCRIPT"
 }
 
