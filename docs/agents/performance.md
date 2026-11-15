@@ -557,13 +557,30 @@ The key-replay mode the user suggested as a second target was not added.
 | --- | --- |
 | Busy pane output and title churn alone | Remote-direct p99 0.6 ms |
 | `-B` monitor ticks | 5 jobs per 5 s |
-| `tmux-reflow-windows` | 2 batched tmux calls (+1 `list-clients` fork while a client is attached, for the narrowest-client width; +1 `tmux-picker-generate host-colors` fork per full pass only while a placed window exists, #1102; the host sort is pure bash and the marker unset rides the existing batch, so no other fork), ~7 ms, off the server thread |
+| `tmux-reflow-windows` | Cache hit (`@reflow_key` unchanged): 1 `display-message` (+1 `list-clients` while a client is attached), ~7 ms. A full pass costs one tmux exec per window, so it grows with window count: see "Reflow full-pass cost (#1110)" |
 | Local `#()` status jobs | Plain local pane p99 3–10 ms with a status client attached |
 | `#()` jobs on a bridge-only host such as halo | Never run: control clients draw no status line |
 
 `session-window-changed` runs reflow and `mark-seen` in the foreground. That
 adds ~6 ms to a `select-window` on the same client. It was left alone: the
 foreground run is deliberate ordering.
+
+## Reflow full-pass cost (#1110)
+
+Measured on a scratch server (`-L probe`, private `TMUX_TMPDIR`, 200x50, detached), the wrapped tmux, 8-run mean of `tmux-reflow-windows --force <session> 200`. Execs counted with `strace -f -e trace=execve` behind a `tmux` shim. "Stubbed" replaces the per-window `set -w` exec with a no-op, leaving the bash layout compute plus the fixed calls.
+
+| Windows | Cache hit | Full pass | Full pass, per-window sets stubbed | tmux execs per full pass |
+| --- | --- | --- | --- | --- |
+| 5 | 7 ms | 53 ms | 38 ms | 10 |
+| 20 | 7 ms | 177 ms | 109 ms | 31 |
+| 60 | 7 ms | 411 ms | 214 ms | 71 |
+| 120 | 7 ms | 853 ms | 392 ms | ~130 |
+
+A full pass is about N+5 execs: the per-window loop (`scripts/tmux-reflow-windows.sh:594-621`) runs one argv-form `tmux set -w … ';' …` per window, plus fixed calls. It costs ~7 ms per window: roughly 3.5 ms bash layout compute and 3.5 ms exec. Compute dominates at realistic counts (5 windows: 38 of 53 ms), the execs only at large counts.
+
+Full passes are mostly backgrounded (`after-new-window`, `window-unlinked`, `client-resized` and `client-detached` use `run-shell -b`, the last two with `--debounce`). `session-window-changed`, `after-new-session` and `client-session-changed` run in the foreground; the last can miss the cache when the session was last stamped at another width, and enrich `--force` runs are full passes too.
+
+**Decision: not ported to Go.** The ~1,100 lines would have to keep `tests/reflow*.bats` unchanged, and the exec half of the cost is a batching shape, not a language problem. Follow-ups, in order: (1) batch several windows' sets per tmux exec, in chunks to stay under `ARG_MAX` (titles are free-form; macOS limit is 1 MB), expected to remove about the exec half; (2) revisit a Go port of `reflow_fit_columns`/`reflow_clip_rests`/host sort only if bash compute still dominates, as a testability and speed win.
 
 ## Residuals (follow-ups)
 
