@@ -652,7 +652,8 @@ flush_window_chunk() {
 	if ! tmux "${chunk_argv[@]}" 2>/dev/null; then
 		for i in "${chunk_idx[@]}"; do
 			build_window_argv "$i"
-			tmux "${win_argv[@]}" 2>/dev/null || true
+			tmux "${win_argv[@]}" 2>/dev/null ||
+				{ log_enabled && log_event reflow event window_write_failed win "${win_wid[$i]}" sess "$SESSION"; }
 		done
 	fi
 	chunk_argv=()
