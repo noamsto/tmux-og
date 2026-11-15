@@ -44,7 +44,9 @@ type launcher struct {
 	// inSignal stops onSignal's own commands from re-entering it.
 	inSignal bool
 	// settled: the failure path already waited for an in-flight signal.
-	settled   bool
+	settled bool
+	// settle bounds the wait for an in-flight signal (signalSettle in production).
+	settle    time.Duration
 	proc      *daemonProc
 	sock      string
 	phaseFile string
@@ -65,6 +67,7 @@ func Main(p Paths, args []string) int {
 		stderr:   os.Stderr,
 		progress: progress,
 		paths:    p,
+		settle:   signalSettle,
 	}
 	l.sig = watchSignals()
 	l.r = execRunner{before: l.checkpoint, after: l.afterCommand}
@@ -129,7 +132,7 @@ func (l *launcher) settleSignal() {
 		return
 	}
 	l.settled = true
-	l.sig.waitPending(signalSettle)
+	l.sig.waitPending(l.settle)
 	l.checkpoint()
 }
 
@@ -187,7 +190,7 @@ func (l *launcher) checkpoint() {
 // ctl ping reads as "no daemon", and the live daemon's files are removed).
 func (l *launcher) afterCommand(status int) {
 	if status > 128 && !l.inSignal && !l.attached {
-		l.sig.waitPending(signalSettle)
+		l.sig.waitPending(l.settle)
 	}
 	l.checkpoint()
 }

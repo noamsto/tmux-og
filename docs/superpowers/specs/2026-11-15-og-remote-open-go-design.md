@@ -125,7 +125,7 @@ must therefore build the new subpackage (it is the same `buildGoModule`).
   must not let its empty reply read as "no daemon" and delete a live daemon's
   files before the launcher sees its own copy of the signal. `onSignal`:
   - `attached` set → exit 0.
-  - placed: if `daemonStarted` and a daemon pid exists → `reapDaemon(pid)`,
+  - placed: if `daemonStarted` and a daemon pid exists → `reapDaemon(pid)` (skipped once the launcher's own Wait has reaped it, so a recycled pid is never signalled),
     `rm -f sock sock.pid sock.phase`; exit 143 (lock released by the exit path).
   - dedicated, `mirrorCreated` set: reap the started daemon if any;
     `tmux kill-session -t =<local_sess> 2>/dev/null`; `rm -f sock sock.pid

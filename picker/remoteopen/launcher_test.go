@@ -86,6 +86,7 @@ func newHarness(t *testing.T) *harness {
 		pid:    os.Getpid(),
 		stderr: h.stderr,
 		sig:    newSigWatch(),
+		settle: signalSettle,
 		paths:  Paths{Self: "/self", Ctl: "@bridge_ctl@", Daemon: "@bridge_daemon@", Renderer: "@bridge_renderer@", Reflow: "@reflow@", Loading: "/bin/loading"},
 	}
 	l.r = hookRunner{inner: h.rec, l: l}
@@ -332,7 +333,10 @@ func TestLauncherLateSignalBeatsTheRefusal(t *testing.T) {
 
 // fireSoon delivers SIGTERM shortly after the current command returns, as
 // os/signal forwards a group signal that also killed the child.
+// The settle bound is widened so a loaded runner cannot outrun it; the wait
+// ends as soon as the signal lands.
 func fireSoon(l *launcher) {
+	l.settle = 5 * time.Second
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		fireSignal(l)
