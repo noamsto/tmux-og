@@ -42,7 +42,7 @@ Modify:
 - `scripts/lib-remote.sh` — delete `remote_daemon_alive`, `valid_remote_path`, `shell_quotable`, `mirror_name_part`, `read_session_env`.
 - `picker/default.nix` — `subPackages` += `"remoteopen/cmd/launcher"`; `postInstall` `mv $out/bin/launcher $out/bin/og-remote-launcher`.
 - `config/tmux.conf.nix` — `mkRemoteScript` replacement `@remote_launcher@` → `${picker-generate}/bin/og-remote-launcher`; comment above `scriptsWithRemote`.
-- `flake.nix` — `remote-tests`: add `OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";`, drop `MIRROR_NAME_VECTORS` and its comment; `mirror-session-name-integration-tests`: add the same `OG_REMOTE_LAUNCHER`, reword the comment calling the launcher a script.
+- `flake.nix` — `remote-tests`: add `OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";` (Step 12), drop `MIRROR_NAME_VECTORS` and its comment (Step 14, with the `remote.bats` deletion); `mirror-session-name-integration-tests`: add the same `OG_REMOTE_LAUNCHER`, reword the comment calling the launcher a script.
 - `tests/remote.bats` — delete the helper cases and the three source-grep cases (spec "Test changes"); delete the file and its `bats` line in `flake.nix` if nothing remains.
 - `tests/mirror-session-name-integration.bats` — drop the `source lib-remote.sh`; replace `mirror_name_part` calls with literal expected names.
 - `picker/mirrorname/mirrorname.go` — drop the `mirror_name_part` twin clause.
@@ -122,7 +122,7 @@ Flakes see only git-tracked files: from Step 1 on, every new file is `git add`-e
   `go build -o $SCRATCH/og-remote-launcher ./remoteopen/cmd/launcher`, then from the repo root `OG_REMOTE_LAUNCHER=$SCRATCH/og-remote-launcher bats tests/remote-cold-start.bats` and `bats tests/remote-picker.bats tests/picker-launcher.bats`. Each failure is a divergence from the bash: compare against `git show 86a11d34:scripts/og-remote-open.sh` and fix the Go (add a unit test pinning the divergence when it is not already covered).
   Proof: both commands → `ok` for every case, `0 failures`.
 
-- [ ] **Step 14: delete the shell helpers and their tests** — files `scripts/lib-remote.sh`, `tests/remote.bats`, `tests/mirror-session-name-integration.bats`, `flake.nix` (only if `remote.bats` is deleted, or to drop `MIRROR_NAME_VECTORS` if Step 12 left it).
+- [ ] **Step 14: delete the shell helpers and their tests** — files `scripts/lib-remote.sh`, `tests/remote.bats`, `tests/mirror-session-name-integration.bats`, `flake.nix` (drop `MIRROR_NAME_VECTORS` and its comment, and the `bats tests/remote.bats` line if the file is deleted).
   Delete the five helpers; `rg -n 'remote_daemon_alive|valid_remote_path|shell_quotable|mirror_name_part|read_session_env' scripts/ tests/` must list only `scripts/og-remote-picker.sh`'s own `valid_remote_path` copy. `remote.bats`: delete the cases named in spec "Test changes" (if none remain, delete the file and its `bats` line). Mirror-name suite: drop the `source`, replace each `mirror_name_part X; v=$REPLY` with the literal mapped value (map every byte outside `[A-Za-z0-9_-]` to `_`, checked against `vectors.tsv` where a row exists).
   Proof: `bats tests/remote.bats` (if kept) → `0 failures`; `bats tests/remote-auth.bats tests/remote-theme.bats` → `0 failures`; `nix build .#checks.x86_64-linux.mirror-session-name-integration-tests` → success.
 
