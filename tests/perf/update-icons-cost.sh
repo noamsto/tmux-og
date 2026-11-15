@@ -19,6 +19,11 @@
 # window included), not the arguments.
 set -euo pipefail
 
+command -v strace >/dev/null || {
+	echo "update-icons-cost: strace not on PATH" >&2
+	exit 1
+}
+
 NWIN="${1:-20}"
 PANES="${2:-2}"
 NAGENT="${3:-5}"
@@ -166,6 +171,7 @@ time_calls() {
 		<<<"$out"
 }
 
+awk -v k="$K" -v hz="$CLK_TCK" 'BEGIN { printf "server CPU resolution: %.2f ms per call (one clock tick over K=%d calls)\n", 1000 / hz / k, k }'
 echo "| Windows | Panes | driver | execs (tmux) | wall ms | client CPU ms | server CPU ms |"
 echo "|---|---|---|---|---|---|---|"
 for mode in tick sweep; do
