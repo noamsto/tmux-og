@@ -64,6 +64,11 @@ regression guards.
   slow sample's timestamp. Count `job_run` lines (two per job) and
   `hooks_insert_event: hook=` lines to see what forked and which hooks
   fired.
+- **`tests/perf/update-icons-cost.sh [windows [panes [agents]]]`** (env
+  `UPDATE_ICONS_BIN`, `K`, `REPS`) prices one `tmux-update-icons` tick and sweep
+  on a scratch server: execs, wall, client CPU and server CPU per call (#1112).
+  `keystroke-latency.sh` takes `LOCAL_WINS=N` and `NO_ICONS=1` for the icons
+  job's A/B.
 - **`tests/perf/agent-detect-forks.sh <agent-detect binary>`** (env `TMUX_BIN`,
   `PANES`, `IDLE`, `RESIZES`, `DRAG`) counts the command-client connections a
   client-less scratch server accepts from idle `agent-detect` watchers, across
@@ -560,6 +565,7 @@ The key-replay mode the user suggested as a second target was not added.
 | `tmux-reflow-windows` | Cache hit (`@reflow_key` unchanged): 1 `display-message` (+1 `list-clients` while a client is attached), ~7 ms. A full pass costs one tmux exec per window, so it grows with window count: see "Reflow full-pass cost (#1110)" |
 | Local `#()` status jobs | Plain local pane p99 3–10 ms with a status client attached |
 | `#()` jobs on a bridge-only host such as halo | Never run: control clients draw no status line |
+| `tmux-update-icons` job | Removing it entirely moves keystroke p95 by less than the harness's own run-to-run spread (see "`tmux-update-icons` cost (#1112)"). Its cost is client-side CPU, not server-thread time |
 
 `session-window-changed` runs reflow and `mark-seen` in the foreground. That
 adds ~6 ms to a `select-window` on the same client. It was left alone: the
@@ -581,6 +587,47 @@ A full pass is about N+5 execs on a single-line bar and N+11 on a multi-line gri
 Full passes are mostly backgrounded (`after-new-window`, `window-unlinked`, `client-resized` and `client-detached` use `run-shell -b`, the last two with `--debounce`). `session-window-changed`, `after-new-session` and `client-session-changed` run in the foreground; the last can miss the cache when the session was last stamped at another width, and enrich `--force` runs (always detached) are full passes too, but off the hook path.
 
 **Decision: not ported to Go.** The ~1,100 lines would have to keep `tests/reflow*.bats` unchanged, and the exec half of the cost is a batching shape, not a language problem. Follow-ups, in order: (1) batch several windows' sets per tmux exec, in chunks to stay under `ARG_MAX` (titles are free-form; macOS limit is 1 MB), expected to remove about the exec half; (2) revisit a Go port of `reflow_fit_columns`/`reflow_clip_rests`/host sort only if bash compute still dominates, as a testability and speed win.
+
+## `tmux-update-icons` cost (#1112)
+
+`scripts/tmux-update-icons.sh` is the `#()` job in `status-format[0]` (once a second per status-drawing client) and the `@og-sweep-tick` hook (every 5 s, `OG_TICK_SWEEP=1`, no client needed). #1112 measured it and prototyped its steady-state path in Go.
+
+**Method.** `tests/perf/update-icons-cost.sh [windows [panes [agents]]]` builds a scratch server (`-L probe`, private `TMUX_TMPDIR`/`CLAUDE_STATUS_DIR`/`XDG_DATA_HOME`) with N windows x 2 panes, a fifth of them live `claude` agent windows with state files, every window in a stamped git repo so steady state forks only the one invoking-window `git` poll. It runs the built store binary exactly as production does (all six args for the tick; `OG_TICK_SWEEP=1`, no args, for the sweep), over K=60 consecutive `CLAUDE_NOW` values so one tick in five takes the `arm_agent_detect` `list-panes`. Server CPU is the tmux server's `/proc/<pid>/stat` utime+stime delta (10 ms clock ticks, hence the large K). Manual, timing-dependent, not in `nix flake check`.
+
+**Go prototype.** Throwaway, not committed: the same two tmux reads (the `list-panes -a` format copied byte for byte), the 31-field row parse, process icons, claude state from the pane files (priority via `picker/agentstate`), the dispatcher overlay, the change gates, one batched `source -` only on change, the direct-argv writes, and the same `timeout 2 git` poll. On three scenarios (cold tick, steady tick, sweep, reap) its logged tmux writes matched the shell's exactly. It skips the processing-pane interrupt reclassifier (`claude_progress_emit`) and simplifies `claude_prune_stale_state`/`claude_reap_dead_panes`, so it is a lower bound on a full port's cost.
+
+**Per call, mean of 3 reps, ms** (shell and Go on the same scratch server per rep; total = client + server CPU):
+
+| Windows | driver | shell wall | shell total CPU | Go wall | Go total CPU | total CPU change | server CPU, shell / Go |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 5 | tick | 19.8 | 20.5 | 7.6 | 8.2 | -60% | 1.4 / 1.0 |
+| 20 | tick | 22.6 | 22.9 | 7.9 | 8.4 | -63% | 1.8 / 1.8 |
+| 60 | tick | 36.7 | 36.4 | 9.6 | 9.5 | -74% | 3.8 / 3.3 |
+| 120 | tick | 64.3 | 63.1 | 13.9 | 13.1 | -79% | 7.3 / 6.4 |
+| 5 | sweep | 8.9 | 9.0 | 3.1 | 3.4 | -62% | 0.6 / 0.4 |
+| 20 | sweep | 9.2 | 9.1 | 3.2 | 3.5 | -62% | 0.7 / 0.7 |
+| 60 | sweep | 13.6 | 13.2 | 3.8 | 3.8 | -71% | 1.4 / 1.3 |
+| 120 | sweep | 21.3 | 20.7 | 5.4 | 5.2 | -75% | 2.6 / 2.4 |
+
+Run-to-run spread is about 2 ms at 5 and 60 windows and up to 8 ms at 20 (shell tick wall 19.7-28.2). Execs per tick are 5 in both implementations (the binary, `list-sessions`, `list-panes`, `timeout`, `git`): the shell already batches its tmux reads, so the exec floor is the same. A Go tick's remaining ~7 ms is that floor; its client CPU stays flat (6-7 ms) while the shell's grows with window count (bash per-window work). `tests/perf/update-icons-cost.sh` reproduces the shell rows (5.2 execs and 16 ms wall at 6 windows, 71 ms at 121), within about 10%.
+
+**Keystroke latency.** `LOCAL_WINS=N` adds N plain windows on the local server (its mirror windows are `@bridge_win` and skipped by the job, so it would otherwise have nothing to do); `NO_ICONS=1` disables the job and its sweep hook. Removing the job entirely is the ceiling for any port. `busy`, 400 samples, three runs per cell, p95 ms (median, min-max):
+
+| LOCAL_WINS | icons job on | icons job off |
+| --- | --- | --- |
+| 0 | 8.0 (7.9-8.2) | 7.8 (7.5-8.0) |
+| 20 | 10.6 (7.5-15.8) | 10.6 (8.6-22.9) |
+| 60 | 11.6 (7.8-23.8) | 10.8 (8.9-33.3) |
+
+The on/off difference is far inside the spread within each arm, on a host shared with other workers. The 33.7 ms reference p95 from #1119 sits inside that same spread. The server thread does the same two list reads and the same sets either way, which is why the server-CPU column barely moves.
+
+**Threshold (fixed before the Go numbers were taken).** Port if the prototype (T1) improves keystroke p95 by more than the harness's run-to-run spread, or (T2) cuts total CPU per tick by more than 30% at the realistic size (20 windows), *and* the port can keep `tests/icons.bats` and every `tests/update-icons-*.bats` unchanged.
+
+- T1: not met. Removing the job altogether does not move p95 beyond noise.
+- T2: met, by a wide margin (-63% at 20 windows, -79% at 120). In absolute terms that is ~23 ms of CPU per second (about 2% of a core) per status-drawing client at 20 windows, ~63 ms at 120, almost all of it client CPU off the server thread. A bridge-only host never runs the `#()` job.
+- Feasibility: not met. Every `update-icons-*.bats` suite `sed`-substitutes `scripts/tmux-update-icons.sh` and runs it, and `tests/update-icons-resume-guard.bats` extracts the `list-panes -F` string from the shell source. The suites pin the shell body, so keeping them unchanged means keeping the shell implementation beside a Go one, which is a second implementation, not a port.
+
+**Decision: not ported.** The only gain is client-side CPU, and realizing it means either rewriting six bats suites against a Go binary or carrying two implementations. Revisit if that CPU matters (many status-drawing clients on a large session set) by porting together with a migration of the suites to drive the Go binary; the prototype shows what to expect (~7 ms per tick floor, flat in window count). The exec count is already at the floor, so there is no cheaper shell-side step: the remaining cost is bash per-window compute.
 
 ## Residuals (follow-ups)
 
