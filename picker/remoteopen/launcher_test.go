@@ -85,7 +85,7 @@ func newHarness(t *testing.T) *harness {
 		sleep:  func(time.Duration) {},
 		pid:    os.Getpid(),
 		stderr: h.stderr,
-		sig:    &sigWatch{},
+		sig:    newSigWatch(),
 		paths:  Paths{Self: "/self", Ctl: "@bridge_ctl@", Daemon: "@bridge_daemon@", Renderer: "@bridge_renderer@", Reflow: "@reflow@", Loading: "/bin/loading"},
 	}
 	l.r = hookRunner{inner: h.rec, l: l}
@@ -128,10 +128,7 @@ func (h *harness) indexOf(prefix string) int {
 	return slices.IndexFunc(h.tmuxLines(), func(s string) bool { return strings.HasPrefix(s, prefix) })
 }
 
-func fireSignal(l *launcher) {
-	s := os.Signal(syscall.SIGTERM)
-	l.sig.last.Store(&s)
-}
+func fireSignal(l *launcher) { l.sig.deliver(syscall.SIGTERM) }
 
 func envHas(env []string, kv string) bool { return slices.Contains(env, kv) }
 
@@ -308,6 +305,39 @@ func TestLauncherSignalBeforeAnythingExits143(t *testing.T) {
 	}
 	if h.indexOf("new-session") >= 0 || h.indexOf("kill-session") >= 0 {
 		t.Fatalf("tmux calls %q", h.tmuxLines())
+	}
+}
+
+// A signal os/signal forwards only after the probe returned, with no further
+// command to checkpoint: the refusal that follows still yields to it.
+func TestLauncherLateSignalBeatsTheRefusal(t *testing.T) {
+	h := newHarness(t)
+	h.answer = func(c cmdSpec, line string) (string, int, bool) {
+		if c.Name == "ssh" {
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				fireSignal(h.l)
+			}()
+			return "", 0, true
+		}
+		return "", 0, false
+	}
+	if code := h.run("h", "work"); code != 143 {
+		t.Fatalf("exit %d, want 143, stderr %q", code, h.stderr)
+	}
+	if h.stderr.Len() != 0 {
+		t.Fatalf("stderr %q, want none", h.stderr)
+	}
+}
+
+func TestSigWatchWaitPending(t *testing.T) {
+	w := newSigWatch()
+	if w.waitPending(time.Millisecond) {
+		t.Fatal("pending with no signal")
+	}
+	go w.deliver(syscall.SIGHUP)
+	if !w.waitPending(5 * time.Second) {
+		t.Fatal("delivered signal not seen")
 	}
 }
 

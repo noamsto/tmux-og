@@ -116,8 +116,11 @@ must therefore build the new subpackage (it is the same `buildGoModule`).
   point unchecked. The bats signal cases tolerate this:
   `FAKE_TERM_ON='set-option -t … @bridge_session'` has a dozen checkpoints
   before `switch-client`; `FAKE_TERM_ON=switch-client` exits 0 either way
-  (attached is set before it); `FAKE_SSH_TERM` is followed by the probe parse
-  and several commands. `onSignal`:
+  (attached is set before it). A failure exit can follow with no command in
+  between (`FAKE_SSH_TERM`'s empty probe goes straight to the E6 refusal), so
+  every non-zero exit outside `onSignal` and before `attached` first waits up
+  to 100 ms for a signal still in flight, then checkpoints, before printing
+  its message. `onSignal`:
   - `attached` set → exit 0.
   - placed: if `daemonStarted` and a daemon pid exists → `reapDaemon(pid)`,
     `rm -f sock sock.pid sock.phase`; exit 143 (lock released by the exit path).

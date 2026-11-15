@@ -42,7 +42,9 @@ type launcher struct {
 
 	placed, attached, mirrorCreated, daemonStarted bool
 	// inSignal stops onSignal's own commands from re-entering it.
-	inSignal  bool
+	inSignal bool
+	// settled: the failure path already waited for an in-flight signal.
+	settled   bool
 	proc      *daemonProc
 	sock      string
 	phaseFile string
@@ -105,10 +107,35 @@ func (l *launcher) main(args []string) (code int) {
 	return 0
 }
 
-func (l *launcher) exit(code int) { l.ex.exit(code) }
+// exit ends the run. A failure first settles any in-flight signal, which
+// exits through onSignal instead.
+func (l *launcher) exit(code int) {
+	if code != 0 {
+		l.settleSignal()
+	}
+	l.ex.exit(code)
+}
+
+// signalSettle bounds how long a failure waits for a signal os/signal is
+// still forwarding.
+const signalSettle = 100 * time.Millisecond
+
+// settleSignal runs, once, before a failure is reported: a signal a child
+// sent just before exiting may not have reached the watch by the command's
+// after-checkpoint, and bash would have run its trap there, before this
+// failure. Not from onSignal, and not once attached.
+func (l *launcher) settleSignal() {
+	if l.inSignal || l.attached || l.settled {
+		return
+	}
+	l.settled = true
+	l.sig.waitPending(signalSettle)
+	l.checkpoint()
+}
 
 // fail prints msg and exits 1.
 func (l *launcher) fail(msg string) {
+	l.settleSignal()
 	_, _ = fmt.Fprintln(l.stderr, msg)
 	l.exit(1)
 }
@@ -469,12 +496,14 @@ func (l *launcher) launchPlaced(o Opts, lt *localTmux, ctl, daemon string, liste
 			l.exit(0)
 		}
 		if l.proc.exited() {
+			l.settleSignal()
 			_, _ = fmt.Fprintf(l.stderr, "og-remote-open: the bridge daemon for %s:%s exited before listening:\n", o.Host, o.Sess)
 			_, _ = io.WriteString(l.stderr, tailLines(l.sock+".log", 20))
 			l.exit(1)
 		}
 		l.pollSleep(pollTick)
 	}
+	l.settleSignal()
 	_, _ = fmt.Fprintf(l.stderr, "og-remote-open: the bridge daemon for %s:%s was not listening after %ds\n", o.Host, o.Sess, listenTimeout)
 	l.reap(l.proc.Pid)
 	removeFiles(l.sock, l.sock+".pid", l.sock+".phase")

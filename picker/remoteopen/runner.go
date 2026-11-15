@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 type stderrMode int
@@ -107,18 +108,47 @@ func (r execRunner) run(c cmdSpec) (string, int, error) {
 // between commands, where bash would run its trap.
 type sigWatch struct {
 	last atomic.Pointer[os.Signal]
+	// notify wakes waitPending once a signal is recorded.
+	notify chan struct{}
 }
 
+func newSigWatch() *sigWatch { return &sigWatch{notify: make(chan struct{}, 1)} }
+
 func watchSignals() *sigWatch {
-	w := &sigWatch{}
+	w := newSigWatch()
 	ch := make(chan os.Signal, 3)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	go func() {
 		for s := range ch {
-			w.last.Store(&s)
+			w.deliver(s)
 		}
 	}()
 	return w
+}
+
+func (w *sigWatch) deliver(s os.Signal) {
+	w.last.Store(&s)
+	select {
+	case w.notify <- struct{}{}:
+	default:
+	}
+}
+
+// waitPending reports whether a signal is pending, waiting up to d for one
+// still being forwarded by os/signal: a signal a child sent just before
+// exiting can reach the watch after the command returned.
+func (w *sigWatch) waitPending(d time.Duration) bool {
+	if _, ok := w.pending(); ok {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-w.notify:
+	case <-t.C:
+	}
+	_, ok := w.pending()
+	return ok
 }
 
 func (w *sigWatch) pending() (os.Signal, bool) {
