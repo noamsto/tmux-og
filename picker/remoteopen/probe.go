@@ -87,7 +87,7 @@ func buildProbeScript(o Opts) string {
 // (shell greetings) are ignored, values stay verbatim.
 func parseProbe(out string) probeResult {
 	var r probeResult
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		switch {
 		case strings.HasPrefix(line, "os="):
 			r.OS = line[len("os="):]
