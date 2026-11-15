@@ -25,7 +25,7 @@ stays `ogVerbSpec` in `config/tmux.conf.nix`; the binary reads it at runtime.
 - **Hand resolver:** the longest-match resolver is a 1:1 port of `og.sh`
   because kong cannot express a node with both positional args and subcommands,
   which `status`/`notify` need (`status --flag` is the bare verb, `status x`
-  its subverb). kong supplies the model (help, flags, completion) only.
+  its subverb). kong supplies the model for flags and completion only.
 - **Separate derivation, leak guard:** `ogDispatchBin` is
   `goTools.overrideAttrs` building only `ogcli/cmd/og`, never part of
   `go-tools`: `go-tools` feeds `picker-generate` and `wrapperBinPkgs`, so a

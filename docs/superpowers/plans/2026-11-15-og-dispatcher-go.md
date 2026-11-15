@@ -3,9 +3,10 @@
 Rewrite `scripts/og.sh` as a Go binary built on kong. The verb table stays
 `ogVerbSpec` in `config/tmux.conf.nix`; `mkOg` serialises it to JSON that the
 binary reads at runtime. Bash-backed verbs still exec their script with the
-argv untouched. `remote open` is the first Go-backed verb: kong parses its real
-flags for completion and `--help` text, and the target is exec'd with the raw
-argv (kong does not validate it; `remoteopen.ParseArgs` is the authority).
+argv untouched. `remote open` is the first Go-backed verb: kong supplies its real
+flags for completion only; `--help` is static text (`picker/ogcli/models.go`),
+and the target is exec'd with the raw argv (`remoteopen.ParseArgs` is the sole
+validator).
 
 ## Design (decisions)
 
@@ -17,7 +18,7 @@ argv (kong does not validate it; `remoteopen.ParseArgs` is the authority).
   from Nix and compile per table). The longest-match resolver is ported 1:1
   from `og.sh`, because kong cannot express a node that has both positional
   args and subcommands, which `status`/`notify` need. kong supplies the model
-  (help text, flags, completion) and parses a Go-backed verb's remainder.
+  (flags, completion); a Go-backed verb's argv is exec'd raw.
 - **The dispatcher is a separate derivation, never part of `go-tools`.**
   `go-tools` → `picker-generate` → `wrapperBinPkgs`, so any binary added there
   lands on the tmux server's PATH, and check 11 of `og-dispatch-assertions`
@@ -60,12 +61,12 @@ argv (kong does not validate it; `remoteopen.ParseArgs` is the authority).
 | `ogVerbSpec` → `og` (`script`/`target` resolution) | compatible; `model = "remote-open"` added to `remote open` only |
 | `og.bin`/`OG_INNER` leak checks 10/11 | compatible: `bin` is the same drv; guards still grep its path |
 | `go-tools` → `picker-generate` → `wrapperBinPkgs` → tmux PATH; `packages.go-tools` | unchanged: dispatcher is a separate drv; new leak check covers `og-dispatch` |
-| `og <verb> --help` last line = target (checks 2–5, 9, 12) | preserved: summary line, kong help (Go-backed only), target last |
+| `og <verb> --help` last line = target (checks 2–5, 9, 12) | preserved: summary line, static usage (Go-backed only), target last |
 | bare `og`, `og help`, `og <noun>`, `og <noun> --help|-h|help` lists | preserved byte-for-byte in shape (`  %-22s %s`, blank line between nouns) |
 | unknown command: stderr 2 lines, exit 2, empty stdout (checks 6, 8, 12) | preserved |
 | flag-vs-subverb rule for `status`/`notify` (check 12, stub `s`/`s x`) | ported verbatim in `resolve` + table-driven Go test |
 | exec of target with `remaining` untouched (check 7: `--flag`, `--`, `""`) | preserved: raw remainder exec'd |
-| `og remote open` argv: kong stricter on leading-dash session names / unknown flags, laxer on flag position | forward raw argv so `remoteopen.ParseArgs` still decides; exit 2 (kong) vs 1 (launcher) for the kong-rejected cases; no runtime caller of `og remote open` (docs, check 5 only) |
+| `og remote open` argv, any input | raw argv exec'd for every input; exit codes are the launcher's; no runtime caller of `og remote open` (docs, check 5 only) |
 | `modules/home-manager.nix:1151` (`home.packages`), `flake.nix` `packages.og` | compatible: one derivation |
 | fish completions `share/fish/vendor_completions.d/og.fish` | same shape + flag lines; Go-emitted instead of Nix-emitted |
 | `README.md` completion paragraph (61-65) | updated (flags, bash/zsh) |
@@ -100,7 +101,7 @@ the PR exists, never committed).
 - [ ] **Step 3: failing resolver tests.** File: `resolve_test.go`. Table test encoding every `og.sh` branch: bare/`help`/`--help`/`-h`; two-token match; one-token match for the `status`/`notify` shape (`s`, `s --flag foo`, `s frobnicate` → unknown, `s --help` and `s help` → noun help); `og ""`; unknown; subverb-only noun (`remote`) bare, `--help`, `help`, `frobnicate`; `<verb> --help` as sole remainder; a table naming a verb `completion` is refused. Command: `go test ./ogcli -run TestResolve` (red).
 - [ ] **Step 4: resolver + help.** File: `resolve.go`. Port `og.sh` exactly (same conditions and order, `%-22s`, blank line between nouns, two-line `unknown command` on stderr). Command: `go test ./ogcli -run TestResolve` → green.
 - [ ] **Step 5: failing run + completion tests.** Files: `run_test.go`, `fish_test.go`. Process-replacing paths (exec, `kongcompletion.Register` which may `os.Exit`) run through a `TestMain` re-exec helper, never in-process. (a) exec passthrough with a stub script: `--flag -- bar ""` arrives verbatim (mirror of check 7); (b) `<verb> --help` last line is the target for a bash-backed and the Go-backed verb; (c) Go-backed verb: every argv (unknown flag, `--into=loc`, dash-leading names) → target exec'd with the raw argv, no og-side validation; (d) `completion fish` output over a stub table: noun lines with escaped summaries (quote, paren, `--`, backslash), `N subcommands` description, gated subverb lines, `help` line, flag lines for the Go verb only, nothing past the verb; (e) `completion bash -c` names the binary path; `COMP_LINE="og remote open --"` lists `--into`/`--window`; (f) `og help` contains no `completion` line. Command: `go test ./ogcli -run 'TestRun|TestFish'` (red).
-- [ ] **Step 6: run + fish + main.** Files: `run.go`, `fish.go`, `completion.go`, `cmd/og/main.go`. `Main`: `kongcompletion.Register(parser)` first (COMP_LINE), then resolve → help → kong-parse remainder for Go-backed verbs → `syscall.Exec(target, [target]+remainder, os.Environ())`; help via kong with custom writer/exit so the target is the last line. Command: `go test ./ogcli` → green.
+- [ ] **Step 6: run + fish + main.** Files: `run.go`, `fish.go`, `completion.go`, `cmd/og/main.go`. `Main`: `kongcompletion.Register(parser)` first (COMP_LINE), then resolve → help (Go-backed: static `models.go` text, target last) → `syscall.Exec(target, [target]+remainder, os.Environ())` with the remainder raw for every verb. Command: `go test ./ogcli` → green.
 - [ ] **Step 7: lint locally.** Command: `cd picker && golangci-lint run ./ogcli/... && go vet ./ogcli/... && go test -race ./ogcli/...`. Fix at the source; per-line `//nolint:gosec // G204: ...` on the exec like `remoteopen/runner.go:86`. Run `nilaway` as the devShell provides.
 - [ ] **Step 8: Nix wiring.** Files: `picker/default.nix` (`vendorHash = lib.fakeHash`, build, paste the printed hash), `config/tmux.conf.nix` (`model` on `remote open`; `ogDispatchBin`; table JSON from `builtins.toJSON` of the ordered verb list with `model` where set; `ogBin = runCommand` per Design, `lib.extendDerivation` for `passthru.bin`). Give `ogDispatchBin` its own `pname = "og-dispatch"` and add it to the attrset `tmux.conf.nix` returns (the `inherit` list at the end) so the flake check can reach it. `git rm scripts/og.sh`. Commands: `nix build .#og --accept-flake-config -o result-og`; `./result-og/bin/og help | head`; `./result-og/bin/og remote open --help`; `nix build .#go-tools` and `ls result/bin | rg og-dispatch` → absent.
 - [ ] **Step 9: checks.** File: `flake.nix`. `og-completion-assertions`: keep every existing assertion (stub and real) and add: real `og remote open --` lists `--into` and `--window`; stub Go-backed verb's flags only appear after it. The flag lines are gated on the `commandline -opc` tokens being `og remote open`; assert they do not appear at `og remote ` or past the verb. New `og-dispatch-binary-assertions`: `wrapperBinDir` is a symlinkJoin, so test link targets (`find -lname '*og-dispatch*'` over `wrapperBinDir`, plus `ls` for the name) and grep `tmuxConf` for the store path; show the `find` can match by a positive control against a link known to exist. Command: `nix build .#checks.x86_64-linux.og-completion-assertions .#checks.x86_64-linux.og-dispatch-binary-assertions .#checks.x86_64-linux.og-dispatch-assertions --accept-flake-config`.
@@ -109,7 +110,7 @@ the PR exists, never committed).
 
 ## Risks and decisions for the reviewer
 
-- **kong vs `remoteopen.ParseArgs`:** kong = help + completion only; any argv but a sole `--help`/`-h` is exec'd raw, so `ParseArgs` is the sole validator and exit codes are the launcher's. kong validating was both laxer (`--into=loc`, `--into` first) and stricter (dash-leading names) than `ParseArgs`, which is strictly positional.
+- **kong vs `remoteopen.ParseArgs`:** kong = completion only (`--help` is static text); any argv but a sole `--help`/`-h` is exec'd raw, so `ParseArgs` is the sole validator and exit codes are the launcher's. kong validating was both laxer (`--into=loc`, `--into` first) and stricter (dash-leading names) than `ParseArgs`, which is strictly positional.
 - **Go-emitted fish duplicates the old Nix emitter's rules** (quoting, "N subcommands"); the existing assertions pin them, so the port cannot drift silently.
 - **Out of scope (follow-up):** kong models for `init`/`doctor`/`generate` (separate Go module, own `flag` sets) and the bash verbs.
 

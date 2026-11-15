@@ -11,7 +11,7 @@ import (
 )
 
 // passthroughVerb is a bash-backed verb: og never parses its arguments, the
-// positional only gives the model (help, completion) a place for them.
+// positional only gives the model (completion) a place for them.
 type passthroughVerb struct {
 	Args []string `arg:"" optional:"" passthrough:"" help:"Arguments passed to the target unchanged."`
 }
