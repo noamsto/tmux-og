@@ -84,7 +84,7 @@ func TestApplyCache_FullPR(t *testing.T) {
 	if glyph != "D "+enrichstate.PieSlices[3] {
 		t.Fatalf("test glyph = %q", glyph)
 	}
-	var tmux []call
+	tmux := []call{}
 	for _, c := range f.snapshot() {
 		if c.name == "tmux" {
 			tmux = append(tmux, c)

@@ -130,7 +130,11 @@ func TestFetchForce_SplitsChecksCache(t *testing.T) {
 	f.on(ghPrefix("open"), list, nil)
 	e := testEnricher(t, f, opts{force: true})
 	e.fetchPRCached("/repo", "feat", "k1", "open+all", ttlNone)
-	if got := f.byName("gh")[0].args; !reflect.DeepEqual(got, ghArgs("open", true)) {
+	gh := f.byName("gh")
+	if len(gh) == 0 {
+		t.Fatal("no gh call recorded")
+	}
+	if got := gh[0].args; !reflect.DeepEqual(got, ghArgs("open", true)) {
 		t.Errorf("argv = %v", got)
 	}
 	ident, _ := readJSON(t, filepath.Join(e.cacheDir, "k1.json")).([]any)

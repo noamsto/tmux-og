@@ -48,7 +48,10 @@ func newMainEnv(t *testing.T, o opts, tmuxEnv string, bins ...string) *mainEnv {
 
 func (m *mainEnv) dirExists() bool {
 	fi, err := os.Stat(m.dir)
-	return err == nil && fi.IsDir()
+	if err != nil {
+		return false
+	}
+	return fi.IsDir()
 }
 
 func (m *mainEnv) mkdir(t *testing.T) {
@@ -454,7 +457,11 @@ func TestGate_ForceBypassesFreshTickAndStaysOutOfArgv(t *testing.T) {
 	m.stamp(t, ".last-tick"+m.e.srv, 1)
 	m.e.run(testSelf)
 	wantDetach(t, m.f, o, "--tick-run")
-	for _, a := range m.f.kind("detach")[0].args {
+	d := m.f.kind("detach")
+	if len(d) == 0 {
+		t.Fatal("no detach call recorded")
+	}
+	for _, a := range d[0].args {
 		if a == "--force" {
 			t.Fatal("--force leaked into detached argv")
 		}

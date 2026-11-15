@@ -91,7 +91,7 @@ func (f *fakeRunner) snapshot() []call {
 }
 
 func (f *fakeRunner) byName(name string) []call {
-	var out []call
+	out := []call{}
 	for _, c := range f.snapshot() {
 		if c.name == name {
 			out = append(out, c)
@@ -101,7 +101,7 @@ func (f *fakeRunner) byName(name string) []call {
 }
 
 func (f *fakeRunner) kind(kind string) []call {
-	var out []call
+	out := []call{}
 	for _, c := range f.snapshot() {
 		if c.kind == kind {
 			out = append(out, c)
