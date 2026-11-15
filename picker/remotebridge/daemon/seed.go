@@ -46,9 +46,12 @@ func one(rt roundTrip, cmd string) (controlmode.Line, bool) { return rt(cmd)() }
 // drops any field that expands empty: a remote tmux missing a format, or an
 // empty #{pane_private_modes}. The wrap field therefore carries a "w" prefix, so
 // it stays one non-empty field wherever the others are dropped and parseCursor
-// can find it by that prefix instead of by position.
+// can find it by that prefix instead of by position. The cursor style (s, b),
+// colour (c) and key mode (k) fields follow the same rule, and sit after the
+// positional list so its field positions never move. The key mode drops its
+// space ("Ext 2" -> "Ext2") so it stays one field.
 func cursorCmd(paneID string) string {
-	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes}'", paneID)
+	return fmt.Sprintf("display-message -p -t %s -F '#{cursor_x} #{cursor_y} #{alternate_on} #{keypad_cursor_flag} #{mouse_standard_flag} #{mouse_button_flag} #{mouse_all_flag} #{mouse_sgr_flag} #{mouse_utf8_flag} w#{wrap_flag} #{pane_private_modes} s#{cursor_shape} b#{cursor_blinking} c#{cursor_colour} k#{s/ //:pane_key_mode}'", paneID)
 }
 
 func captureCmd(paneID string) string {
@@ -96,7 +99,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 	for i, id := range paneIDs {
 		curLine, curOK := next()
 		capLine, capOK := next()
-		cx, cy, alt, appck, mouse, modes, wrap := parseCursor(curLine, curOK)
+		cx, cy, alt, appck, mouse, modes, wrap, extra := parseCursor(curLine, curOK)
 		captured, isErr := parseCapture(capLine, capOK)
 		// isErr, not len(captured)==0: a genuinely blank pane is a valid
 		// successful capture with empty Data, so an emptiness check alone
@@ -113,7 +116,7 @@ func PaneSeeds(rt roundTrip, paneIDs []string, onSeed func(i int, seed []byte, e
 			onSeed(i, nil, fmt.Errorf("capture-pane failed for %s", id))
 			continue
 		}
-		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, modes, wrap), nil)
+		onSeed(i, render.Seed(replaceLF(captured), cx, cy, alt, appck, mouse, modes, wrap, extra), nil)
 	}
 }
 
@@ -124,37 +127,57 @@ func replaceLF(b []byte) []byte {
 // parseCursor parses an already-read display-message reply into
 // "cursor_x cursor_y alternate_on keypad_cursor_flag mouse_standard_flag
 // mouse_button_flag mouse_all_flag mouse_sgr_flag mouse_utf8_flag
-// w<wrap_flag> pane_private_modes". An error reply or a dead stream degrades to
-// (0,0,false,false,nil,nil,nil) rather than rejecting the seed — only the
+// w<wrap_flag> pane_private_modes s<cursor_shape> b<cursor_blinking>
+// c<cursor_colour> k<pane_key_mode>". An error reply or a dead stream degrades to
+// (0,0,false,false,nil,nil,nil,nil) rather than rejecting the seed — only the
 // capture-pane reply can do that (see parseCapture). mouse is nil (unknown)
 // unless the reply carries the five mouse fields, modes is nil (unknown)
 // unless it carries the private-mode list (a remote tmux missing that format
 // expands it empty and drops the field), and wrap is nil (unknown) unless the
-// w-prefixed field reads w0 or w1.
-func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes, wrap *bool) {
+// w-prefixed field reads w0 or w1. extra is nil unless at least one of the
+// s/b/c/k fields reads as a known value; the rest of it stays nil.
+func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bool, mouse *render.MouseMode, modes *render.TerminalModes, wrap *bool, extra *render.Extra) {
 	if !ok || l.Kind == controlmode.Error {
-		return 0, 0, false, false, nil, nil, nil
+		return 0, 0, false, false, nil, nil, nil, nil
 	}
 	fields := strings.Fields(string(l.Data))
 	if len(fields) < 4 {
-		return 0, 0, false, false, nil, nil, nil
+		return 0, 0, false, false, nil, nil, nil, nil
 	}
 	cx, _ = strconv.Atoi(fields[0])
 	cy, _ = strconv.Atoi(fields[1])
-	// The wrap field is plucked out wherever it sits, so the mouse and modes
-	// rules below see the same field positions as before it existed.
+	// The prefixed fields are plucked out wherever they sit, so the mouse and
+	// modes rules below see the same field positions as before they existed. No
+	// positional field can start with a prefix letter: the flags are 0/1 and
+	// the mode list is digits and commas.
 	rest := make([]string, 0, len(fields)-4)
+	var shape string
+	var blink bool
+	var colour string
+	var keyMode *int
 	for _, f := range fields[4:] {
-		v, isWrap := strings.CutPrefix(f, "w")
-		if !isWrap {
+		v := f[1:]
+		switch f[0] {
+		case 'w':
+			if v == "0" || v == "1" {
+				on := v == "1"
+				wrap = &on
+			}
+		case 's':
+			shape = v
+		case 'b':
+			blink = v == "1"
+		case 'c':
+			colour = v
+		case 'k':
+			if n, known := keyModes[v]; known {
+				keyMode = &n
+			}
+		default:
 			rest = append(rest, f)
-			continue
-		}
-		if v == "0" || v == "1" {
-			on := v == "1"
-			wrap = &on
 		}
 	}
+	extra = cursorExtra(shape, blink, colour, keyMode)
 	if len(rest) >= 5 {
 		mouse = &render.MouseMode{
 			Standard: rest[0] == "1",
@@ -172,9 +195,36 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 		modes = &render.TerminalModes{
 			BracketedPaste: privateModeSet(rest[5], 2004),
 			FocusReporting: privateModeSet(rest[5], 1004),
+			CursorVisible:  privateModeSet(rest[5], 25),
 		}
 	}
-	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes, wrap
+	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes, wrap, extra
+}
+
+// keyModes maps #{pane_key_mode} with its space removed to the CSI > 4 ; n m
+// value that restores it.
+var keyModes = map[string]int{"VT10x": 0, "Ext1": 1, "Ext2": 2}
+
+// cursorExtra builds the seed's style, colour and key-mode restore from the
+// plucked fields, nil when none is known. A colour with characters outside
+// [A-Za-z0-9#] is unknown, as it came from the remote and reaches an OSC
+// sequence.
+func cursorExtra(shape string, blink bool, colour string, keyMode *int) *render.Extra {
+	var e render.Extra
+	switch shape {
+	case "block", "underline", "bar", "default":
+		e.Style = &render.CursorStyle{Shape: shape, Blink: blink}
+	}
+	if colour != "" && !strings.ContainsFunc(colour, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '#'
+	}) {
+		e.Colour = &colour
+	}
+	e.KeyMode = keyMode
+	if e == (render.Extra{}) {
+		return nil
+	}
+	return &e
 }
 
 // privateModeSet reports whether a #{pane_private_modes} list contains mode.

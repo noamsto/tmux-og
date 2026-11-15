@@ -475,7 +475,7 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 	readSinkFrame(t, peer)
 	m := plainModes(24)
 	m.cx = 2
-	s.predictSeed(render.Seed([]byte("$ "), 2, 0, false, false, nil, nil, nil), m)
+	s.predictSeed(render.Seed([]byte("$ "), 2, 0, false, false, nil, nil, nil, nil), m)
 	s.keys([]byte("a"))
 	_, _ = s.Write([]byte("a"))
 	readOutput(t, peer)
@@ -491,7 +491,7 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 	requireFrame(t, peer, wire.FrameOutput, holdOut("HOLD", 1))
 
 	m.cx = 3
-	s.predictSeed(render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil, nil), m)
+	s.predictSeed(render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil, nil, nil), m)
 	s.keys([]byte("c"))
 	// A lone UTF-8 lead byte leaves the stream mid-character if observed.
 	_, _ = s.Write([]byte("\xe2"))
@@ -509,7 +509,7 @@ func TestPredictSinkHoldTurnsPredictionOff(t *testing.T) {
 		t.Error("output while held was observed")
 	}
 
-	seed := render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil, nil)
+	seed := render.Seed([]byte("$ a"), 3, 0, false, false, nil, nil, nil, nil)
 	s.enqueue(wire.FrameSeed, seed)
 	if f := readSinkFrame(t, peer); f.Type != wire.FrameSeed {
 		t.Fatalf("frame = %v %q, want the seed", f.Type, f.Payload)

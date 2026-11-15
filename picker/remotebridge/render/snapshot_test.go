@@ -6,7 +6,7 @@ import (
 )
 
 func TestSeedAltScreenAndCursor(t *testing.T) {
-	out := string(Seed([]byte("hello"), 2, 0, true, true, nil, nil, nil))
+	out := string(Seed([]byte("hello"), 2, 0, true, true, nil, nil, nil, nil))
 	if !strings.Contains(out, "\x1b[?1049h") {
 		t.Error("should enter alternate screen")
 	}
@@ -22,7 +22,7 @@ func TestSeedAltScreenAndCursor(t *testing.T) {
 }
 
 func TestSeedPlainNoAlt(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, nil))
 	if strings.Contains(out, "1049h") || strings.Contains(out, "\x1b[?1h") {
 		t.Error("plain seed must not set alt/app-cursor modes")
 	}
@@ -33,7 +33,7 @@ func TestSeedPlainNoAlt(t *testing.T) {
 // emit the DECRST clears — asserting only the "on" modes leaves the mirror
 // stuck in a mode the remote already left (#803).
 func TestSeedClearsAltScreenAndCursorKeys(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, nil))
 	if !strings.Contains(out, "\x1b[?1049l\x1b[m") {
 		t.Errorf("seed must clear the alt screen: %q", out)
 	}
@@ -58,7 +58,7 @@ func TestSeedTerminalModes(t *testing.T) {
 		{true, true},
 	} {
 		m := TerminalModes{BracketedPaste: tc.bpaste, FocusReporting: tc.focus}
-		out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil))
+		out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil, nil))
 		for _, mode := range []string{"2004", "1004"} {
 			if !strings.Contains(out, "\x1b[?"+mode+"l") {
 				t.Errorf("%+v: seed %q missing clear ?%sl", m, out, mode)
@@ -84,7 +84,7 @@ func TestSeedTerminalModes(t *testing.T) {
 // every DECSET before the 2J/captured content.
 func TestSeedTerminalModesBeforeTheRepaint(t *testing.T) {
 	m := TerminalModes{BracketedPaste: true, FocusReporting: true}
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil, nil))
 	paint := strings.Index(out, "\x1b[2J")
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
@@ -100,7 +100,7 @@ func TestSeedTerminalModesBeforeTheRepaint(t *testing.T) {
 // remote's state could not be read) emits no bracketed-paste or focus DECSET
 // at all, set or clear.
 func TestSeedUnknownTerminalModesLeavesModesAlone(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, nil))
 	for _, mode := range []string{"2004", "1004"} {
 		if strings.Contains(out, "\x1b[?"+mode) {
 			t.Errorf("seed %q touches mode ?%s with the state unknown", out, mode)
@@ -112,7 +112,7 @@ func TestSeedUnknownTerminalModesLeavesModesAlone(t *testing.T) {
 // so it (and the app-cursor clear) must precede the 2J/captured repaint, or
 // the restore would clobber the freshly reseeded contents.
 func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil, nil))
 	paint := strings.Index(out, "\x1b[2J")
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
@@ -137,7 +137,7 @@ func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
 
 func TestSeedResetsAttrsBeforeErase(t *testing.T) {
 	for _, alt := range []bool{false, true} {
-		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil, nil))
+		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil, nil, nil))
 		if !strings.HasPrefix(out, "\x1b[m") {
 			t.Errorf("alt=%v: erase must follow an SGR reset, or it fills with the live stream's background: %q", alt, out)
 		}
@@ -148,7 +148,7 @@ func TestSeedResetsAttrsBeforeErase(t *testing.T) {
 // ?1049h, so the erase after it needs its own SGR reset, in both alt cases.
 func TestSeedResetsAttrsAfterAltScreenRestore(t *testing.T) {
 	for _, alt := range []bool{false, true} {
-		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil, nil))
+		out := string(Seed([]byte("x"), 0, 0, alt, false, nil, nil, nil, nil))
 		_, after, found := strings.Cut(out, "\x1b[?1049l")
 		if !found {
 			t.Fatalf("alt=%v: seed has no alt-screen clear: %q", alt, out)
@@ -166,7 +166,7 @@ func TestSeedResetsAttrsAfterAltScreenRestore(t *testing.T) {
 func TestSeedMouseModes(t *testing.T) {
 	for bits := range 1 << 5 {
 		m := MouseMode{Standard: bits&1 != 0, Button: bits&2 != 0, All: bits&4 != 0, SGR: bits&8 != 0, UTF8: bits&16 != 0}
-		out := string(Seed([]byte("x"), 0, 0, false, false, &m, nil, nil))
+		out := string(Seed([]byte("x"), 0, 0, false, false, &m, nil, nil, nil))
 		want := map[string]bool{
 			"1003": m.All,
 			"1002": m.Button && !m.All,
@@ -196,7 +196,7 @@ func TestSeedMouseModes(t *testing.T) {
 // TestSeedUnknownMouseModeLeavesModesAlone: a nil MouseMode (the remote's
 // state could not be read) emits no mouse DECSET at all, set or clear.
 func TestSeedUnknownMouseModeLeavesModesAlone(t *testing.T) {
-	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil))
+	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil, nil))
 	for _, mode := range []string{"1000", "1002", "1003", "1005", "1006"} {
 		if strings.Contains(out, "\x1b[?"+mode) {
 			t.Errorf("seed %q touches mouse mode ?%s with the state unknown", out, mode)
@@ -220,12 +220,135 @@ func TestSeedWrapMode(t *testing.T) {
 		{"unknown", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, tc.wrap))
+			out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, tc.wrap, nil))
 			for _, seq := range []string{"\x1b[?7h", "\x1b[?7l"} {
 				if got, want := strings.Contains(out, seq), seq == tc.want; got != want {
 					t.Errorf("seed %q contains %q = %v, want %v", out, seq, got, want)
 				}
 			}
 		})
+	}
+}
+
+// TestSeedCursorVisibilityIsLast: ?25h/?25l follows the final cursor move, so
+// nothing the repaint writes can undo it; unknown modes leave it alone.
+func TestSeedCursorVisibilityIsLast(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		modes   *TerminalModes
+		wantEnd string
+	}{
+		{"visible", &TerminalModes{CursorVisible: true}, "\x1b[2;3H\x1b[?25h"},
+		{"hidden", &TerminalModes{}, "\x1b[2;3H\x1b[?25l"},
+		{"unknown", nil, "\x1b[2;3H"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := string(Seed([]byte("x"), 2, 1, false, false, nil, tc.modes, nil, nil))
+			if !strings.HasSuffix(out, tc.wantEnd) {
+				t.Errorf("seed %q does not end with %q", out, tc.wantEnd)
+			}
+			if tc.modes == nil && strings.Contains(out, "\x1b[?25") {
+				t.Errorf("seed %q touches ?25 with the state unknown", out)
+			}
+		})
+	}
+}
+
+// TestSeedCursorStyle: every shape and blink maps to its DECSCUSR value; the
+// default shape is CSI 0 SP q whatever the blink; an unknown shape or a nil
+// style writes nothing.
+func TestSeedCursorStyle(t *testing.T) {
+	for _, tc := range []struct {
+		shape string
+		blink bool
+		want  string
+	}{
+		{"block", true, "\x1b[1 q"},
+		{"block", false, "\x1b[2 q"},
+		{"underline", true, "\x1b[3 q"},
+		{"underline", false, "\x1b[4 q"},
+		{"bar", true, "\x1b[5 q"},
+		{"bar", false, "\x1b[6 q"},
+		{"default", true, "\x1b[0 q"},
+		{"default", false, "\x1b[0 q"},
+		{"weird", true, ""},
+	} {
+		out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, &Extra{Style: &CursorStyle{Shape: tc.shape, Blink: tc.blink}}))
+		if tc.want == "" {
+			if strings.Contains(out, " q") {
+				t.Errorf("%s: seed %q writes a DECSCUSR", tc.shape, out)
+			}
+			continue
+		}
+		at := strings.Index(out, tc.want)
+		if at < 0 || at > strings.Index(out, "\x1b[2J") {
+			t.Errorf("%s blink=%v: seed %q must carry %q before the repaint", tc.shape, tc.blink, out, tc.want)
+		}
+	}
+	if out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, &Extra{})); strings.Contains(out, " q") {
+		t.Errorf("seed %q writes a DECSCUSR with no style", out)
+	}
+}
+
+// TestSeedCursorColour: only #rrggbb is set with OSC 12; none and every other
+// value (colourN, names) reset with OSC 112, since the local tmux's OSC 12
+// parses nothing else; nil leaves the colour alone.
+func TestSeedCursorColour(t *testing.T) {
+	for _, tc := range []struct {
+		colour *string
+		want   string
+	}{
+		{new("#ff8800"), "\x1b]12;#ff8800\x1b\\"},
+		{new("none"), "\x1b]112\x1b\\"},
+		{new("colour212"), "\x1b]112\x1b\\"},
+		{new("red"), "\x1b]112\x1b\\"},
+		{new("default"), "\x1b]112\x1b\\"},
+		{new("#ff88"), "\x1b]112\x1b\\"},
+		{nil, ""},
+	} {
+		out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, &Extra{Colour: tc.colour}))
+		if tc.want == "" {
+			if strings.Contains(out, "\x1b]1") {
+				t.Errorf("seed %q touches the cursor colour with it unknown", out)
+			}
+			continue
+		}
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("colour %q: seed %q missing %q", *tc.colour, out, tc.want)
+		}
+	}
+}
+
+// TestSeedKeyMode: CSI > 4 ; n m restores the pane's extended-keys mode, and
+// a nil or out-of-range mode writes nothing.
+func TestSeedKeyMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode *int
+		want string
+	}{
+		{new(0), "\x1b[>4;0m"},
+		{new(1), "\x1b[>4;1m"},
+		{new(2), "\x1b[>4;2m"},
+		{new(3), ""},
+		{nil, ""},
+	} {
+		out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, &Extra{KeyMode: tc.mode}))
+		if got := strings.Contains(out, "\x1b[>4;"); got != (tc.want != "") {
+			t.Errorf("mode %v: seed %q contains CSI > 4 = %v", tc.mode, out, got)
+		}
+		if tc.want != "" && !strings.Contains(out, tc.want) {
+			t.Errorf("seed %q missing %q", out, tc.want)
+		}
+	}
+}
+
+// TestSeedNilExtraWritesNothing: unknown extra state leaves the local pane's
+// cursor style, colour and key mode as they are.
+func TestSeedNilExtraWritesNothing(t *testing.T) {
+	out := string(Seed([]byte("x"), 0, 0, false, false, nil, nil, nil, nil))
+	for _, seq := range []string{" q", "\x1b]12", "\x1b]112", "\x1b[>4;"} {
+		if strings.Contains(out, seq) {
+			t.Errorf("seed %q contains %q with the extra state unknown", out, seq)
+		}
 	}
 }
