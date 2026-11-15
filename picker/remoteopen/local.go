@@ -25,8 +25,7 @@ type localTmux struct {
 	readPid func(path string) (int, bool)
 }
 
-// query runs tmux and returns its stdout, treating a failure as empty: the
-// bash `2>/dev/null || true`.
+// query runs tmux and returns its stdout, treating a failure as empty.
 func (l *localTmux) query(args ...string) string {
 	out, status, err := l.r.Run(cmdSpec{Name: "tmux", Args: args, Capture: true, Stderr: stderrDiscard})
 	if err != nil || status != 0 {
@@ -95,7 +94,7 @@ func parseMirrorArea(raw string) (w, h int, ok bool) {
 		rows = 0
 	case "on":
 	default:
-		if n, err := strconv.Atoi(status); err == nil && n >= 0 && isDigits(status) {
+		if n, err := strconv.Atoi(status); err == nil && isDigits(status) {
 			rows = n
 		}
 	}

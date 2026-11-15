@@ -5,9 +5,8 @@ import (
 	"strings"
 )
 
-// cksum is POSIX cksum (CRC-32/CKSUM). The socket key must match what the
-// bash launcher computed with coreutils `cksum`, so the byte-length suffix
-// and final complement are part of the contract, not a detail to simplify.
+// cksum is POSIX cksum (CRC-32/CKSUM), as coreutils computes it: the
+// byte-length suffix and final complement are part of the algorithm.
 func cksum(data []byte) uint32 {
 	var crc uint32
 	for _, b := range data {

@@ -256,8 +256,8 @@ func (l *launcher) resolve(v, name string, required bool) string {
 	return ""
 }
 
-// readDaemonPid reads a proven daemon's pidfile like bash's set -e
-// `$(<file)`: an unreadable file exits 1, non-digit content is no pid.
+// readDaemonPid reads a proven daemon's pidfile: an unreadable file exits 1,
+// non-digit content is no pid.
 func (l *launcher) readDaemonPid(path string) (int, bool) {
 	b, err := os.ReadFile(path) //nolint:gosec // G304: path is the launcher-derived daemon pidfile
 	if err != nil {
@@ -298,7 +298,7 @@ func (l *launcher) tmuxStatus(args ...string) int {
 	return status
 }
 
-// mustTmux is a `set -e` tmux call.
+// mustTmux runs tmux and exits with its status on failure.
 func (l *launcher) mustTmux(args ...string) {
 	if status := l.tmuxStatus(args...); status != 0 {
 		l.exit(status)
@@ -317,7 +317,7 @@ func noWindowMsg(sess, host string) string {
 	return fmt.Sprintf("og-remote-open: session '%s' has no window on %s — it is gone or was never there", sess, host)
 }
 
-// run is the bash top level, in order. It always ends through exit.
+// run is the launch sequence. It always ends through exit.
 func (l *launcher) run(args []string) {
 	o, err := ParseArgs(args, Env{
 		NewDir:  l.getenv("OG_REMOTE_NEW_DIR"),
@@ -376,7 +376,7 @@ type mirrorArea struct {
 	ok   bool
 }
 
-// placedLock is D1-D5: the socket key, the per-key lock (held to the end)
+// placedLock computes the socket key, the per-key lock (held to the end)
 // and the live-daemon check, all before any ssh.
 func (l *launcher) placedLock(o Opts, intoID string) (probeTimeout, listenTimeout int) {
 	serverPid, status, _ := l.r.Run(cmdSpec{Name: "tmux", Args: []string{"display-message", "-p", "-t", intoID, "#{pid}"}, Capture: true})
@@ -420,8 +420,7 @@ func (l *launcher) placedLock(o Opts, intoID string) (probeTimeout, listenTimeou
 	return probeTimeout, listenTimeout
 }
 
-// probeAndPrepare is E1-E8: the one-round-trip probe and the checks on what
-// it found.
+// probeAndPrepare runs the one-round-trip probe and checks what it found.
 func (l *launcher) probeAndPrepare(o Opts, probeTimeout int) (sess, win string, pr probeResult) {
 	l.phase("connect")
 	rm := &remote{r: l.r, host: o.Host, phase: l.phase, lookPath: l.lookPath}
@@ -458,7 +457,7 @@ func (l *launcher) probeAndPrepare(o Opts, probeTimeout int) (sess, win string, 
 	return sess, win, pr
 }
 
-// prepareRemote is E10-E14: cold start, restore, the invoking client's area
+// prepareRemote does the cold start, restore, the invoking client's area
 // (read once, for both the remote creation and the local mirror), new-dir
 // creation and the late active-window lookup.
 func (l *launcher) prepareRemote(o Opts, lt *localTmux, pr probeResult, sess, win string) (string, string, mirrorArea) {
@@ -504,7 +503,7 @@ func clientVals(lt *localTmux, v *daemonVals) {
 	v.TermProgram, _ = lt.readSessionEnv(cur, "TERM_PROGRAM")
 }
 
-// launchPlaced is F2: launch into the caller's session under the held lock
+// launchPlaced launches into the caller's session under the held lock
 // and wait for the daemon to listen.
 func (l *launcher) launchPlaced(o Opts, lt *localTmux, ctl, daemon string, listenTimeout int, vals daemonVals) {
 	clientVals(lt, &vals)
@@ -550,8 +549,8 @@ func tailLines(path string, n int) string {
 	return strings.Join(lines, "")
 }
 
-// launchDedicated is F3-F12: find or name the mirror session, reuse it behind
-// a live daemon, else recreate it, launch its daemon and switch to it.
+// launchDedicated finds or names the mirror session, reuses it behind
+// a live daemon, else recreates it, launches its daemon and switches to it.
 func (l *launcher) launchDedicated(o Opts, lt *localTmux, ctl, daemon, loading, sess string, area mirrorArea, vals daemonVals) {
 	host := o.Host
 	sessPart := mirrorname.Part(sess)
@@ -575,7 +574,7 @@ func (l *launcher) launchDedicated(o Opts, lt *localTmux, ctl, daemon, loading, 
 	removeFiles(l.sock, l.sock+".pid", l.phaseFile)
 	lt.ok("kill-session", "-t", "="+local)
 
-	if err := os.WriteFile(l.phaseFile, []byte("connecting to "+host+"\n"), 0o644); err != nil { //nolint:gosec // G306: the loading pane reads it, as the bash `>` left it
+	if err := os.WriteFile(l.phaseFile, []byte("connecting to "+host+"\n"), 0o644); err != nil { //nolint:gosec // G306: the loading pane reads it
 		l.fail("og-remote-open: " + err.Error())
 	}
 	args := []string{"new-session", "-d", "-s", local, "-n", sessPart}

@@ -159,8 +159,7 @@ func (l *intoLock) ident() string {
 	return "ino:" + strconv.FormatUint(st.Ino, 10)
 }
 
-// dirAge is path's age in whole seconds, from second-resolution clocks as
-// `$((now - mtime))` computed it.
+// dirAge is path's age in whole seconds, from second-resolution clocks.
 func (l *intoLock) dirAge(path string) (int64, bool) {
 	fi, err := os.Lstat(path)
 	if err != nil {

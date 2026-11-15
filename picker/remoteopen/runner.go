@@ -17,7 +17,7 @@ type stderrMode int
 
 const (
 	stderrInherit stderrMode = iota
-	// stderrDiscard is the bash `2>/dev/null`.
+	// stderrDiscard is `2>/dev/null`.
 	stderrDiscard
 	// stderrMerge is `$(… 2>&1)`: stderr joins the captured stdout.
 	stderrMerge
@@ -44,8 +44,6 @@ func (c cmdSpec) captures() bool { return c.Capture || c.Stderr == stderrMerge }
 type runner interface {
 	Run(c cmdSpec) (stdout string, status int, err error)
 }
-
-var _ runner = execRunner{}
 
 // execRunner runs real processes. before and after (either may be nil) run
 // around every command on the caller's goroutine; the launcher's signal

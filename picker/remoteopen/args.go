@@ -3,7 +3,7 @@ package remoteopen
 import "regexp"
 
 // Env is the slice of the environment the argv checks read; a value counts as
-// set only when non-empty, like bash's `-n ${X:-}`.
+// set only when non-empty.
 type Env struct{ NewDir, Restore, Tmpdir string }
 
 // Opts is the parsed command line plus the env values that shape the open.
@@ -30,7 +30,7 @@ var (
 	windowRe    = regexp.MustCompile(`^@?[0-9]+$`)
 )
 
-// ParseArgs covers the argv refusals that run before any tmux read (A1-A10).
+// ParseArgs covers the argv refusals that run before any tmux read.
 func ParseArgs(args []string, env Env) (Opts, error) {
 	if len(args) < 1 {
 		return Opts{}, &UsageError{"usage: og-remote-open <host> [<sess> [<win>]]"}
@@ -88,8 +88,8 @@ func ParseArgs(args []string, env Env) (Opts, error) {
 	return o, nil
 }
 
-// validateWin is A11, which bash runs after the placed local-session reads
-// and before the @og_bridge_predict check.
+// validateWin checks the window argument. It runs after the placed
+// local-session reads and before the @og_bridge_predict check.
 func validateWin(o Opts) error {
 	if o.Win != "" && !windowRe.MatchString(o.Win) {
 		return &UsageError{"window must be a numeric index or an @id, got: " + o.Win}
@@ -97,7 +97,7 @@ func validateWin(o Opts) error {
 	return nil
 }
 
-// Validate covers A13-A18, which bash runs after the @og_bridge_predict check.
+// Validate covers the refusals that run after the @og_bridge_predict check.
 func Validate(o Opts) error {
 	if o.Win != "" && o.Win[0] == '@' && !o.WantMode {
 		return &UsageError{"a window @id needs a live session to resolve against (not with OG_REMOTE_RESTORE, OG_REMOTE_NEW_DIR, or no session): " + o.Win}

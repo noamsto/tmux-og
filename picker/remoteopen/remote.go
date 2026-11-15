@@ -12,7 +12,7 @@ type exitStatus struct{ code int }
 func (e *exitStatus) Error() string { return "exit status " + strconv.Itoa(e.code) }
 
 // remote is the ssh side of the launcher: every leg is one ssh argv with the
-// remote command as a single element, expanded client-side like the bash.
+// remote command as a single element, expanded client-side.
 // phase receives the progress phase names; lookPath resolves timeout(1).
 type remote struct {
 	r                      runner
@@ -76,7 +76,7 @@ func (rm *remote) startRemoteServer() (string, error) {
 	return desc, nil
 }
 
-// coldStart is E10: start the server, then resolve the session it created.
+// coldStart starts the server, then resolve the session it created.
 func (rm *remote) coldStart() (string, error) {
 	desc, err := rm.startRemoteServer()
 	if err != nil {
@@ -92,7 +92,7 @@ func (rm *remote) coldStart() (string, error) {
 	return sess, nil
 }
 
-// startIfNoServer re-runs the phase after a cold start, as the bash does.
+// startIfNoServer re-announces the phase after a cold start.
 func (rm *remote) startIfNoServer(phase string) error {
 	if first, _ := rm.firstRemoteSession(); first != "" {
 		return nil
@@ -104,7 +104,7 @@ func (rm *remote) startIfNoServer(phase string) error {
 	return nil
 }
 
-// restore is E11: bring sess back through tmux-remux when it is not live.
+// restore brings sess back through tmux-remux when it is not live.
 func (rm *remote) restore(sess string) error {
 	rm.phase("restore")
 	if rm.hasSession(sess) {
@@ -130,7 +130,7 @@ func (rm *remote) restore(sess string) error {
 	return nil
 }
 
-// createSession is E13: make sess in dir unless it is live. w > 0 adds the
+// createSession makes sess in dir unless it is live. w > 0 adds the
 // -x/-y size of the local mirror area.
 func (rm *remote) createSession(sess, dir string, w, h int) error {
 	rm.phase("create")
@@ -154,7 +154,7 @@ func (rm *remote) createSession(sess, dir string, w, h int) error {
 	return nil
 }
 
-// activeWindow is E14 including its phase("connect"): the active window index
+// activeWindow announces phase "connect" and returns the active window index
 // of sess, empty when the session is gone. A non-zero status is a `set -e` exit.
 func (rm *remote) activeWindow(sess string) (string, int) {
 	rm.phase("connect")

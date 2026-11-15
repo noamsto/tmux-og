@@ -83,7 +83,7 @@ func buildProbeScript(o Opts) string {
 	return b.String()
 }
 
-// parseProbe mirrors the bash read loop: last occurrence wins, unknown lines
+// parseProbe reads the probe output: last occurrence wins, unknown lines
 // (shell greetings) are ignored, values stay verbatim.
 func parseProbe(out string) probeResult {
 	var r probeResult

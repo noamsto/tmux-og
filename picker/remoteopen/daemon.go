@@ -91,7 +91,7 @@ func (d *daemonProc) exited() bool {
 // goroutine reaps the child so a dead daemon fails kill -0 instead of
 // lingering as a zombie.
 func launchDaemon(path string, environ []string, logPath string) (*daemonProc, error) {
-	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) //nolint:gosec // G302/G304: caller-chosen log path, world-readable like the bash `2>`
+	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) //nolint:gosec // G302/G304: caller-chosen log path, world-readable
 	if err != nil {
 		return nil, fmt.Errorf("open daemon log: %w", err)
 	}
