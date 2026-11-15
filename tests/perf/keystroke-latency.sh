@@ -11,7 +11,12 @@
 # Env: TMUX_BIN (tmux binary under test, default ./result/bin/tmux),
 #      SAMPLES (probe sample count, default 400),
 #      VLOG=1 (run the remote server under `tmux -v` and print refit-hook
-#      fork counts after busy and reattach).
+#      fork counts after busy and reattach),
+#      LOCAL_WINS=N (default 0: create N plain windows in session locwork on
+#      the local server; its mirror windows are skipped by tmux-update-icons,
+#      so without these the icons job has nothing to do),
+#      NO_ICONS=1 (disable the icons job and its sweep hook on the local
+#      server only, for an A/B on one build).
 # Needs GNU coreutils (`base64 -w`, `date +%s%N`) -- run inside the devshell.
 set -euo pipefail
 
@@ -24,6 +29,7 @@ SAMPLES="${SAMPLES:-400}"
 W="$(mktemp -d /tmp/og-perf.XXXX)"
 export TMUX_TMPDIR="$W"
 export CLAUDE_STATUS_DIR="$W/status"
+export XDG_DATA_HOME="$W/data"
 unset TMUX
 # shellcheck disable=SC2174  # only the root itself must be owner-only
 mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
@@ -148,6 +154,16 @@ start_chain() {
 	fi
 
 	"$TMUX_BIN" -L loc new-session -d -s mirror -x 200 -y 50
+	if [ "${LOCAL_WINS:-0}" -gt 0 ]; then
+		"$TMUX_BIN" -L loc new-session -d -s locwork -x 200 -y 50 -c "$W"
+		for ((i = 1; i < LOCAL_WINS; i++)); do
+			"$TMUX_BIN" -L loc new-window -d -t locwork: -c "$W"
+		done
+	fi
+	if [ "${NO_ICONS:-0}" = 1 ]; then
+		"$TMUX_BIN" -L loc set -g @og_icons_job ''
+		"$TMUX_BIN" -L loc set-hook -g -u -B '@og-sweep-tick'
+	fi
 	"$TMUX_BIN" -L obs new-session -d -s obs -x 200 -y 52 "env -u TMUX $TMUX_BIN -L loc attach -t mirror"
 	sleep 1
 	start_daemon work mirror
