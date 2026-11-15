@@ -67,7 +67,7 @@ func Main(p Paths, args []string) int {
 		paths:    p,
 	}
 	l.sig = watchSignals()
-	l.r = execRunner{before: l.checkpoint, after: l.checkpoint}
+	l.r = execRunner{before: l.checkpoint, after: l.afterCommand}
 	l.reap = func(pid int) { reapDaemon(pid, l.pollSleep) }
 	return l.main(args)
 }
@@ -180,6 +180,18 @@ func (l *launcher) checkpoint() {
 	}
 }
 
+// afterCommand is the checkpoint after a command. A child killed by a signal
+// was most likely hit by the same group signal as this process, which
+// os/signal may still be forwarding; bash would run its trap before the next
+// step, and that step can be destructive with no command in between (a dead
+// ctl ping reads as "no daemon", and the live daemon's files are removed).
+func (l *launcher) afterCommand(status int) {
+	if status > 128 && !l.inSignal && !l.attached {
+		l.sig.waitPending(signalSettle)
+	}
+	l.checkpoint()
+}
+
 func (l *launcher) pollSleep(d time.Duration) {
 	l.checkpoint()
 	l.sleep(d)
@@ -197,19 +209,27 @@ func (l *launcher) onSignal() {
 		// The host session is the user's: only the daemon this call launched
 		// and its files are undone; the exit path releases the lock.
 		if l.daemonStarted && l.proc != nil {
-			l.reap(l.proc.Pid)
+			l.reapOwnDaemon()
 			removeFiles(l.sock, l.sock+".pid", l.sock+".phase")
 		}
 		l.exit(143)
 	}
 	if l.mirrorCreated {
 		if l.daemonStarted && l.proc != nil {
-			l.reap(l.proc.Pid)
+			l.reapOwnDaemon()
 		}
 		_, _, _ = l.r.Run(cmdSpec{Name: "tmux", Args: []string{"kill-session", "-t", "=" + l.localSess}, Stderr: stderrDiscard})
 		removeFiles(l.sock, l.sock+".pid", l.phaseFile)
 	}
 	l.exit(143)
+}
+
+// reapOwnDaemon reaps the daemon this call launched, unless its Wait already
+// reaped it and the pid may belong to another process by now.
+func (l *launcher) reapOwnDaemon() {
+	if !l.proc.exited() {
+		l.reap(l.proc.Pid)
+	}
 }
 
 func removeFiles(paths ...string) {
@@ -505,7 +525,7 @@ func (l *launcher) launchPlaced(o Opts, lt *localTmux, ctl, daemon string, liste
 	}
 	l.settleSignal()
 	_, _ = fmt.Fprintf(l.stderr, "og-remote-open: the bridge daemon for %s:%s was not listening after %ds\n", o.Host, o.Sess, listenTimeout)
-	l.reap(l.proc.Pid)
+	l.reapOwnDaemon()
 	removeFiles(l.sock, l.sock+".pid", l.sock+".phase")
 	l.exit(1)
 }

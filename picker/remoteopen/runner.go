@@ -49,9 +49,10 @@ var _ runner = execRunner{}
 
 // execRunner runs real processes. before and after (either may be nil) run
 // around every command on the caller's goroutine; the launcher's signal
-// checkpoint hangs off them.
+// checkpoint hangs off them. after sees the command's status.
 type execRunner struct {
-	before, after func()
+	before func()
+	after  func(status int)
 }
 
 func (r execRunner) Run(c cmdSpec) (string, int, error) {
@@ -60,15 +61,29 @@ func (r execRunner) Run(c cmdSpec) (string, int, error) {
 	}
 	out, status, err := r.run(c)
 	if r.after != nil {
-		r.after()
+		r.after(status)
 	}
 	return out, status, err
+}
+
+// notRun reports a command that never started where bash would have: on the
+// command's stderr, so `2>/dev/null` hides it and `2>&1` captures it.
+func notRun(c cmdSpec, status int, msg string, err error) (string, int, error) {
+	line := "og-remote-open: " + c.Name + ": " + msg
+	switch c.Stderr {
+	case stderrDiscard:
+	case stderrMerge:
+		return line, status, err
+	case stderrInherit:
+		_, _ = fmt.Fprintln(os.Stderr, line)
+	}
+	return "", status, err
 }
 
 func (r execRunner) run(c cmdSpec) (string, int, error) {
 	path, err := exec.LookPath(c.Name)
 	if err != nil {
-		return "", 127, fmt.Errorf("%s: %w", c.Name, err)
+		return notRun(c, 127, "command not found", fmt.Errorf("%s: %w", c.Name, err))
 	}
 	cmd := exec.Command(path, c.Args...) //nolint:gosec // G204: argv passed without a shell; the launcher names every program
 	cmd.Args[0] = c.Name
@@ -90,7 +105,7 @@ func (r execRunner) run(c cmdSpec) (string, int, error) {
 		cmd.Stderr = cmd.Stdout
 	}
 	if err := cmd.Start(); err != nil {
-		return "", 126, fmt.Errorf("%s: %w", c.Name, err)
+		return notRun(c, 126, err.Error(), fmt.Errorf("%s: %w", c.Name, err))
 	}
 	err = cmd.Wait()
 	out := strings.TrimRight(buf.String(), "\n")

@@ -24,7 +24,7 @@ type hookRunner struct {
 func (h hookRunner) Run(c cmdSpec) (string, int, error) {
 	h.l.checkpoint()
 	out, status, err := h.inner.Run(c)
-	h.l.checkpoint()
+	h.l.afterCommand(status)
 	return out, status, err
 }
 
@@ -327,6 +327,99 @@ func TestLauncherLateSignalBeatsTheRefusal(t *testing.T) {
 	}
 	if h.stderr.Len() != 0 {
 		t.Fatalf("stderr %q, want none", h.stderr)
+	}
+}
+
+// fireSoon delivers SIGTERM shortly after the current command returns, as
+// os/signal forwards a group signal that also killed the child.
+func fireSoon(l *launcher) {
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		fireSignal(l)
+	}()
+}
+
+// A group signal kills the ctl ping of a live dedicated daemon: its empty
+// reply must not be taken for "no daemon" before the signal is seen.
+func TestLauncherSignalKilledPingSparesLiveMirror(t *testing.T) {
+	h := newHarness(t)
+	sock := filepath.Join(h.tmp, "og-daemon-h-work.sock")
+	writeFile(t, sock, "")
+	writeFile(t, sock+".pid", strconv.Itoa(os.Getpid())+"\n")
+	h.answer = func(c cmdSpec, line string) (string, int, bool) {
+		if strings.HasSuffix(c.Name, "og-remote-bridge-ctl") {
+			fireSoon(h.l)
+			return "", 143, true
+		}
+		return "", 0, false
+	}
+	if code := h.run("h", "work"); code != 143 {
+		t.Fatalf("exit %d, want 143, stderr %q", code, h.stderr)
+	}
+	if h.indexOf("kill-session") >= 0 || h.indexOf("new-session") >= 0 {
+		t.Fatalf("tmux calls %q", h.tmuxLines())
+	}
+	for _, p := range []string{sock, sock + ".pid"} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s removed: %v", p, err)
+		}
+	}
+}
+
+// The same at D5: a listening placed daemon keeps its files.
+func TestLauncherSignalKilledPingSparesPlacedDaemon(t *testing.T) {
+	h := newHarness(t)
+	sock := intoSockPath(h.tmp, "h", "work", "4242", "$3", "")
+	writeFile(t, sock, "")
+	writeFile(t, sock+".pid", strconv.Itoa(os.Getpid())+"\n")
+	h.answer = func(c cmdSpec, line string) (string, int, bool) {
+		if strings.HasSuffix(c.Name, "og-remote-bridge-ctl") {
+			fireSoon(h.l)
+			return "", 143, true
+		}
+		return "", 0, false
+	}
+	if code := h.run("h", "work", "--into", "dispatch"); code != 143 {
+		t.Fatalf("exit %d, want 143, stderr %q", code, h.stderr)
+	}
+	if len(h.launches) != 0 || len(h.reaped) != 0 {
+		t.Fatalf("launches %d, reaped %v", len(h.launches), h.reaped)
+	}
+	for _, p := range []string{sock, sock + ".pid"} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s removed: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(sock + ".lock"); !os.IsNotExist(err) {
+		t.Errorf("lock left behind: %v", err)
+	}
+}
+
+// A daemon its Wait already reaped is not signalled by pid again.
+func TestLauncherSignalSkipsReapOfExitedDaemon(t *testing.T) {
+	h := newHarness(t)
+	h.onLaunch = func(sock string) *daemonProc {
+		writeFile(t, sock+".pid", strconv.Itoa(os.Getpid())+"\n")
+		d := &daemonProc{Pid: 777, done: make(chan struct{})}
+		close(d.done)
+		return d
+	}
+	h.answer = func(c cmdSpec, line string) (string, int, bool) {
+		if strings.HasSuffix(c.Name, "og-remote-bridge-ctl") {
+			fireSignal(h.l)
+			return "", 1, true
+		}
+		return "", 0, false
+	}
+	if code := h.run("h", "work", "--into", "dispatch"); code != 143 {
+		t.Fatalf("exit %d, want 143, stderr %q", code, h.stderr)
+	}
+	if len(h.reaped) != 0 {
+		t.Fatalf("reaped %v, want none", h.reaped)
+	}
+	sock := intoSockPath(h.tmp, "h", "work", "4242", "$3", "")
+	if _, err := os.Stat(sock + ".pid"); !os.IsNotExist(err) {
+		t.Errorf("pidfile left behind: %v", err)
 	}
 }
 

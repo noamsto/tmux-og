@@ -120,7 +120,10 @@ must therefore build the new subpackage (it is the same `buildGoModule`).
   between (`FAKE_SSH_TERM`'s empty probe goes straight to the E6 refusal), so
   every non-zero exit outside `onSignal` and before `attached` first waits up
   to 100 ms for a signal still in flight, then checkpoints, before printing
-  its message. `onSignal`:
+  its message. The after-command checkpoint waits the same way when the child
+  itself died of a signal (status > 128): a group TERM that killed `ctl ping`
+  must not let its empty reply read as "no daemon" and delete a live daemon's
+  files before the launcher sees its own copy of the signal. `onSignal`:
   - `attached` set → exit 0.
   - placed: if `daemonStarted` and a daemon pid exists → `reapDaemon(pid)`,
     `rm -f sock sock.pid sock.phase`; exit 143 (lock released by the exit path).
