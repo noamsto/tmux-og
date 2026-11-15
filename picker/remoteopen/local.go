@@ -55,7 +55,8 @@ func (l *localTmux) option(target, name string) string {
 // resolveInto maps an --into name to a local, non-mirror session id.
 func (l *localTmux) resolveInto(name string) (string, error) {
 	var id string
-	for row := range strings.SplitSeq(l.query("list-sessions", "-F", "#{session_id}|#{session_name}"), "\n") {
+	rows := l.query("list-sessions", "-F", "#{session_id}|#{session_name}")
+	for row := range strings.SplitSeq(rows, "\n") {
 		rowID, rest, found := strings.Cut(row, "|")
 		if !found {
 			rest = row
