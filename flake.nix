@@ -2829,9 +2829,14 @@
               # themselves. The outer timeout is the backstop for a hang that
               # bats' own timeout cannot see: it ends the run with the TAP so far,
               # instead of the CI job being cancelled with no output. It is sized
-              # to fire before the 30-min job cap, given the suite starts ~13 min
-              # into a cold macOS job.
-              timeout --kill-after=30s 14m bats --timing tests/remote-m2-integration.bats
+              # to fire before the 30-min job cap, given the suite starts 13-15 min
+              # into a cold macOS job. When it fires no test names itself (the
+              # hung one is the first after the last TAP line), hence the echo.
+              timeout --kill-after=15s 14m bats --timing tests/remote-m2-integration.bats || {
+                s=$?
+                [ "$s" -ge 124 ] && echo "remote-m2: suite exceeded 14m; the hung test is the one after the last TAP line above" >&2
+                exit "$s"
+              }
               touch $out
             '';
 

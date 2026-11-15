@@ -114,16 +114,22 @@ stop_pid() {
 		kill -0 "$pid" 2>/dev/null || break
 		sleep 0.1
 	done
-	kill -9 "$pid" 2>/dev/null || true
+	if kill -0 "$pid" 2>/dev/null; then
+		kill -9 "$pid" 2>/dev/null || true
+	fi
 	wait "$pid" 2>/dev/null || true
 }
 
 # reap_jobs stops every background job of the test shell. teardown shares that
 # shell, so this covers every `&` start site (bridge_up, the inline
-# `daemon_pid=$!` starts, `sampler_pid=$!`) with one change.
+# `daemon_pid=$!` starts, `sampler_pid=$!`) with one change. `jobs -pr` skips
+# finished jobs, whose pid the kernel may have reused; bats's own per-test
+# timeout watchdog is a job of this shell too, and stopping it would drop the
+# bound for the rest of teardown.
 reap_jobs() {
 	local pid
-	for pid in $(jobs -p); do
+	for pid in $(jobs -pr); do
+		[ "$pid" = "${BATS_killer_pid:-}" ] && continue
 		stop_pid "$pid"
 	done
 }
