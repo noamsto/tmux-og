@@ -142,6 +142,188 @@
           '';
         });
 
+        # tests/remote-m2-integration.bats is split across remoteM2ShardCount
+        # derivations so its ~8.5 min serial tail runs in parallel (#1132). Every
+        # shard sees the whole file, with the `@test "..." {` line of each test
+        # it does not own rewritten to a dead `__unrun_<n>() {` function: bats
+        # never registers it, and the helpers defined between tests, setup and
+        # teardown stay byte-identical. Test names and ordinals are read from the
+        # file with bats' own `@test` line pattern, so a new test needs no
+        # registration. Assignment is greedy longest-processing-time over
+        # tests/remote-m2-weights.json (name -> ms, measured with `bats --timing`);
+        # a test missing from the table weighs the median.
+        remoteM2ShardCount = 4;
+        remoteM2Src = ./tests/remote-m2-integration.bats;
+        remoteM2TestLine = ''[[:blank:]]*@test "(.*)" \{'';
+        remoteM2Names = lib.concatMap (l: let
+          m = builtins.match remoteM2TestLine l;
+        in
+          lib.optional (m != null) (builtins.head m)) (builtins.filter builtins.isString (builtins.split "\n" (builtins.readFile remoteM2Src)));
+        remoteM2Weights = builtins.fromJSON (builtins.readFile ./tests/remote-m2-weights.json);
+        remoteM2MedianWeight = let
+          sorted = lib.sort (a: b: a < b) (lib.attrValues remoteM2Weights);
+        in
+          builtins.elemAt sorted (builtins.length sorted / 2);
+        # The .bats source spells an embedded quote as \", the JSON key as ".
+        remoteM2Weight = name: remoteM2Weights.${builtins.replaceStrings [''\"''] [''"''] name} or remoteM2MedianWeight;
+        remoteM2Shards = let
+          items =
+            lib.imap1 (ord: name: {
+              inherit ord;
+              weight = remoteM2Weight name;
+            })
+            remoteM2Names;
+          heaviestFirst = lib.sort (a: b: a.weight > b.weight || (a.weight == b.weight && a.ord < b.ord)) items;
+          lightest = shards:
+            lib.foldl' (best: s:
+              if s.weight < best.weight
+              then s
+              else best) (builtins.head shards)
+            shards;
+          assign = shards: item: let
+            target = (lightest (lib.imap0 (idx: s: s // {inherit idx;}) shards)).idx;
+          in
+            lib.imap0 (idx: s:
+              if idx == target
+              then {
+                ords = s.ords ++ [item.ord];
+                weight = s.weight + item.weight;
+              }
+              else s)
+            shards;
+        in
+          map (s: s // {ords = lib.sort (a: b: a < b) s.ords;}) (lib.foldl' assign (lib.genList (_: {
+              ords = [];
+              weight = 0;
+            })
+            remoteM2ShardCount)
+          heaviestFirst);
+        remoteM2ShardFile = n: let
+          shard = builtins.elemAt remoteM2Shards (n - 1);
+        in
+          pkgs.runCommand "remote-m2-shard-${toString n}.bats" {
+            nativeBuildInputs = [pkgs.gawk];
+            keep = " ${lib.concatMapStringsSep " " toString shard.ords} ";
+          } ''
+            awk -v keep="$keep" '
+              /^[[:blank:]]*@test ".*" \{$/ {
+                k++
+                if (index(keep, " " k " ")) print
+                else print "__unrun_" k "() {"
+                next
+              }
+              { print }
+            ' ${remoteM2Src} > $out
+          '';
+        remoteM2Env = {
+          # Same private, config-less two-server pattern: an isolated
+          # "remote" tmux -L server plus an isolated "local" tmux -L
+          # server, wired together by the M2.1 daemon's --test-local seam
+          # (no ssh). Both binaries are prebuilt via the vendored
+          # buildGoModule (pickerChecked) so this check never invokes
+          # `go build` — a non-FOD sandbox has no network.
+          #
+          # Uses the pinned next-3.9 tmux (mkTmux), not pkgs.tmux (3.7c):
+          # The live tests in tests/remote-m2-integration.bats rely on the
+          # pinned build deferring notifications out of guard blocks
+          # (tmux 6db5175e). The M2 bridge is a next-3.8 effort and its
+          # control-mode notification behavior (e.g. %window-close on
+          # kill-window) differs from 3.7c, so the mirror is exercised
+          # against the version it — and production, local + remote —
+          # actually runs.
+          # procps supplies ps, which the #482 reconnect cases use to find
+          # the daemon's own transport child (not the daemon_pid itself)
+          # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
+          # unixtools' shim — ps/sysctl/top/watch, no pgrep — which is why
+          # transport_child reads the process table rather than pgrepping.
+          nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
+          DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
+          RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+          # M2.3 structural input: the tests drive ctl straight at the
+          # daemon's socket, since these vanilla -L servers carry no
+          # tmux-og keybindings for a gate to intercept.
+          CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+          # The agent-usage integration test runs the real statusline
+          # against DST's mirror session, same prebuilt-binary pattern.
+          STATUSLINE = "${pickerChecked}/bin/tmux-statusline";
+          # Only tests/ is copied in, so a ../scripts path would not resolve.
+          # The raw source file is what ships: this script carries no
+          # build-time placeholder substitution.
+          DETACH = ./scripts/og-remote-detach.sh;
+          # Same "raw source ships" reasoning as DETACH: og-open needs no
+          # build-time placeholder substitution either.
+          OG_OPEN = ./scripts/og-open.sh;
+          # The dwindle mirror cases extract the real window-layout-changed[20]
+          # hook (it embeds the store path of tmux-dwindle) from this conf.
+          TMUX_OG_CONF = tmuxConfig.tmuxConf;
+          # A per-test bound turns a hung test into `not ok N <name> # timeout
+          # after 180s` and moves on, instead of holding the build until the
+          # 30-min CI job cap. bats kills the test's whole process tree (the
+          # daemons) on timeout and still runs teardown. 180s is ~8x the
+          # slowest passing Linux test (21s), leaving headroom for darwin
+          # runners at 1.5-2x slower.
+          BATS_TEST_TIMEOUT = "180";
+        };
+        # The rewritten file is copied beside the tests so $BATS_TEST_DIRNAME
+        # (../picker, ../scripts) resolves as it does for the original.
+        remoteM2Shard = n:
+          pkgs.runCommand "remote-m2-integration-tests-${toString n}" remoteM2Env ''
+            cp -r ${./tests} tests
+            chmod -R u+w tests
+            cp ${remoteM2ShardFile n} tests/remote-m2-shard.bats
+            export HOME=$TMPDIR
+            # --timing puts per-test durations in the log so slow tests name
+            # themselves. The outer timeout is the backstop for a hang that
+            # bats' own timeout cannot see: it ends the run with the TAP so far,
+            # instead of the CI job being cancelled with no output. It is sized
+            # to fire before the 30-min job cap, given the suite starts 13-15 min
+            # into a cold macOS job. When it fires no test names itself (the
+            # hung one is the first after the last TAP line), hence the echo.
+            timeout --kill-after=15s 14m bats --timing tests/remote-m2-shard.bats || {
+              s=$?
+              [ "$s" -ge 124 ] && echo "remote-m2 shard ${toString n}: suite exceeded 14m; the hung test is the one after the last TAP line above" >&2
+              exit "$s"
+            }
+            touch $out
+          '';
+        remoteM2Checks =
+          lib.listToAttrs (map (n: lib.nameValuePair "remote-m2-integration-tests-${toString n}" (remoteM2Shard n)) (lib.range 1 remoteM2ShardCount))
+          // {
+            # A test in no shard (or two) would pass CI unrun or run twice, so
+            # count what each shard's rewritten file registers, the very file
+            # the shard check runs.
+            remote-m2-shard-coverage = pkgs.runCommand "remote-m2-shard-coverage" (remoteM2Env
+              // {
+                passthru = {
+                  shardSizes = map (s: builtins.length s.ords) remoteM2Shards;
+                  shardWeights = map (s: s.weight) remoteM2Shards;
+                };
+              }) ''
+              cp -r ${./tests} tests
+              chmod -R u+w tests
+              total=$(grep -cE '^[[:blank:]]*@test ' ${remoteM2Src})
+              dups=$(grep -E '^[[:blank:]]*@test ' ${remoteM2Src} | sort | uniq -d)
+              if [ -n "$dups" ]; then
+                echo "duplicate @test names:" >&2
+                echo "$dups" >&2
+                exit 1
+              fi
+              sum=0
+              ${lib.concatMapStrings (n: let
+                shard = builtins.elemAt remoteM2Shards (n - 1);
+              in ''
+                cp ${remoteM2ShardFile n} tests/shard-${toString n}.bats
+                got=$(bats --count tests/shard-${toString n}.bats)
+                echo "shard ${toString n}: $got tests (expected ${toString (builtins.length shard.ords)}, est ${toString (shard.weight / 1000)}s)"
+                [ "$got" -eq ${toString (builtins.length shard.ords)} ] || { echo "shard ${toString n} count mismatch" >&2; exit 1; }
+                sum=$((sum + got))
+              '') (lib.range 1 remoteM2ShardCount)}
+              echo "total: $sum of $total"
+              [ "$sum" -eq "$total" ] || { echo "shards cover $sum tests, source has $total" >&2; exit 1; }
+              touch $out
+            '';
+          };
+
         # nixpkgs packages nilaway 0-unstable-2025-03-07, whose vendored
         # golang.org/x/tools panics ("unexpected expr: *ast.KeyValueExpr" in
         # go/ssa) under the Go 1.27 standard library. Build upstream HEAD
@@ -232,7 +414,8 @@
             ];
         };
 
-        checks = {
+        checks =
+          {
           enrich-tests =
             pkgs.runCommand "enrich-tests" {
               nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
@@ -2862,73 +3045,6 @@
               touch $out
             '';
 
-          remote-m2-integration-tests =
-            pkgs.runCommand "remote-m2-integration-tests" {
-              # Same private, config-less two-server pattern: an isolated
-              # "remote" tmux -L server plus an isolated "local" tmux -L
-              # server, wired together by the M2.1 daemon's --test-local seam
-              # (no ssh). Both binaries are prebuilt via the vendored
-              # buildGoModule (pickerChecked) so this check never invokes
-              # `go build` — a non-FOD sandbox has no network.
-              #
-              # Uses the pinned next-3.9 tmux (mkTmux), not pkgs.tmux (3.7c):
-              # The live tests in tests/remote-m2-integration.bats rely on the
-              # pinned build deferring notifications out of guard blocks
-              # (tmux 6db5175e). The M2 bridge is a next-3.8 effort and its
-              # control-mode notification behavior (e.g. %window-close on
-              # kill-window) differs from 3.7c, so the mirror is exercised
-              # against the version it — and production, local + remote —
-              # actually runs.
-              # procps supplies ps, which the #482 reconnect cases use to find
-              # the daemon's own transport child (not the daemon_pid itself)
-              # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
-              # unixtools' shim — ps/sysctl/top/watch, no pgrep — which is why
-              # transport_child reads the process table rather than pgrepping.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
-              DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
-              RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
-              # M2.3 structural input: the tests drive ctl straight at the
-              # daemon's socket, since these vanilla -L servers carry no
-              # tmux-og keybindings for a gate to intercept.
-              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
-              # The agent-usage integration test runs the real statusline
-              # against DST's mirror session, same prebuilt-binary pattern.
-              STATUSLINE = "${pickerChecked}/bin/tmux-statusline";
-              # Only tests/ is copied in, so a ../scripts path would not resolve.
-              # The raw source file is what ships: this script carries no
-              # build-time placeholder substitution.
-              DETACH = ./scripts/og-remote-detach.sh;
-              # Same "raw source ships" reasoning as DETACH: og-open needs no
-              # build-time placeholder substitution either.
-              OG_OPEN = ./scripts/og-open.sh;
-              # The dwindle mirror cases extract the real window-layout-changed[20]
-              # hook (it embeds the store path of tmux-dwindle) from this conf.
-              TMUX_OG_CONF = tmuxConfig.tmuxConf;
-              # A per-test bound turns a hung test into `not ok N <name> # timeout
-              # after 180s` and moves on, instead of holding the build until the
-              # 30-min CI job cap. bats kills the test's whole process tree (the
-              # daemons) on timeout and still runs teardown. 180s is ~8x the
-              # slowest passing Linux test (21s), leaving headroom for darwin
-              # runners at 1.5-2x slower.
-              BATS_TEST_TIMEOUT = "180";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              # --timing puts per-test durations in the log so slow tests name
-              # themselves. The outer timeout is the backstop for a hang that
-              # bats' own timeout cannot see: it ends the run with the TAP so far,
-              # instead of the CI job being cancelled with no output. It is sized
-              # to fire before the 30-min job cap, given the suite starts 13-15 min
-              # into a cold macOS job. When it fires no test names itself (the
-              # hung one is the first after the last TAP line), hence the echo.
-              timeout --kill-after=15s 14m bats --timing tests/remote-m2-integration.bats || {
-                s=$?
-                [ "$s" -ge 124 ] && echo "remote-m2: suite exceeded 14m; the hung test is the one after the last TAP line above" >&2
-                exit "$s"
-              }
-              touch $out
-            '';
-
           # A keypress, not the conf text: `prefix + ,` inside a mirror window is
           # driven for real (#367) — the wrapped tmux with the emitted config, a
           # second -L server supplying the attached client a keybind needs, and a
@@ -3337,8 +3453,8 @@
               touch $out
             '';
 
-          # The gate itself, not a keypress: remote-m2-integration-tests above
-          # drives vanilla -L servers with no tmux-og keybindings for a gate to
+            # The gate itself, not a keypress: the remote-m2-integration-tests-<n> shards
+            # drive vanilla -L servers with no tmux-og keybindings for a gate to
           # intercept (comment on that check), so it can only exercise the
           # `carousel` ctl verb directly. Proving both bind I branches exist in
           # the REAL generated config is what actually covers carouselBind.
@@ -3400,7 +3516,8 @@
               grep -qF "$loop" ${./picker/remotebridge/daemon/ctl.go}
               touch $out
             '';
-        };
+          }
+          // remoteM2Checks;
 
         packages = {
           default = tmuxConfig.tmux-wrapped;
