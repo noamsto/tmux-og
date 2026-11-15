@@ -20,8 +20,8 @@ import (
 //	  - verb: one or two space-separated bare words, "<noun>" or "<noun> <verb>".
 //	  - target: absolute path of the executable.
 //	  - summary: one line shown in help and completions.
-//	  - model: optional name of a Go-backed verb (see models.go); og then parses
-//	    the arguments with that verb's flag set before exec'ing the target.
+//	  - model: optional name of a Go-backed verb (see models.go) whose flags and
+//	    --help text og shows; the target still gets its argv untouched.
 type Verb struct {
 	Verb    string `json:"verb"`
 	Target  string `json:"target"`
