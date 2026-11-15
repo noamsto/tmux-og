@@ -1,7 +1,6 @@
 package remoteopen
 
 import (
-	"bufio"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -13,17 +12,15 @@ import (
 // lowercase hex of the input bytes (empty for empty input), bash's
 // `printf %q` output under LC_ALL=C, and a "." sentinel that is ignored.
 func TestBashQuote(t *testing.T) {
-	f, err := os.Open("testdata/quote.tsv")
+	data, err := os.ReadFile("testdata/quote.tsv")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
 	rows := 0
-	for sc.Scan() {
-		fields := strings.Split(sc.Text(), "\t")
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(data), "\n"), "\n") {
+		fields := strings.Split(line, "\t")
 		if len(fields) != 3 {
-			t.Fatalf("bad row %q", sc.Text())
+			t.Fatalf("bad row %q", line)
 		}
 		in, err := hex.DecodeString(fields[0])
 		if err != nil {
