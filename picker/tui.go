@@ -1924,8 +1924,7 @@ func placeTarget() (currentSession, bool) {
 // placeDecision decides Enter on a remote window row from the picker's current
 // window. No current window or a failed lookup keeps the dedicated open, and so
 // does a dedicated mirror as the current session: the launcher refuses --into
-// there (the daemon kills its session on teardown, placed windows included), and
-// the dedicated open is what the user asked to see anyway.
+// there (the daemon kills its session on teardown, placed windows included).
 func placeDecision(item listItem) placeDecisionResult {
 	sess, ok := placeTarget()
 	if !ok {
