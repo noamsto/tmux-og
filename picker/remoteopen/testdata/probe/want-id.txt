@@ -1,0 +1,19 @@
+: og-probe;
+os=$(uname -s)
+uid=$(id -u)
+tmux_bin=$(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux)
+case "$os" in
+	Darwin) tmpdir="/tmp" ;;
+	*) tmpdir="/run/user/$uid" ;;
+esac
+sess_lit='work'
+sess="$sess_lit"
+want_lit='@5'
+want="$want_lit"
+win=""
+want_ok=""
+if [ -n "$sess" ]; then
+	win=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "=$sess" -F '#{window_index} #{window_active}' 2>/dev/null | awk '$2==1{print $1; exit}')
+	want_ok=$(env TMUX_TMPDIR="$tmpdir" "$tmux_bin" list-windows -t "=$sess" -F '#{window_id} #{window_index}' 2>/dev/null | awk -v w="$want" '$1==w||$2==w{print $2; exit}')
+fi
+printf 'os=%s\nuid=%s\ntmux=%s\ntmpdir=%s\nsess=%s\nwin=%s\nwant=%s\n' "$os" "$uid" "$tmux_bin" "$tmpdir" "$sess" "$win" "$want_ok"

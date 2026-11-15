@@ -116,8 +116,8 @@ func TestThemeToggleAvailableErrorReply(t *testing.T) {
 	}
 }
 
-// retryNotifyLocal is what scripts/og-remote-open.sh's daemon-then-switch-
-// client ordering needs: the mirror session may have no client yet the moment
+// retryNotifyLocal is what the launcher's (picker/remoteopen) daemon-then-
+// switch-client ordering needs: the mirror session may have no client yet the moment
 // Run() calls this, so the loop must keep trying rather than giving up on the
 // first empty list-clients.
 func TestRetryNotifyLocalStopsOnceAClientAttaches(t *testing.T) {

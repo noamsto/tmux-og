@@ -2743,13 +2743,12 @@
                 [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux (mkTmux pkgs)]
                 # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
                 ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
-              # The shell and Go halves of the mirror-name mapping (#783) are
-              # pinned to one shared vector file; remote.bats loops it too.
-              MIRROR_NAME_VECTORS = ./picker/mirrorname/testdata/vectors.tsv;
+              # bats runs the shim unsubstituted; the nohup-fallback case's PATH holds
+              # only fakes and a few coreutils, so the launcher is named by path.
+              OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
             } ''
               cp -r ${./scripts} scripts
               cp -r ${./tests} tests
-              bats tests/remote.bats
               bats tests/remote-cold-start.bats
               bats tests/remote-picker.bats
               bats tests/remote-auth.bats
@@ -3030,12 +3029,11 @@
           # MouseDown3StatusLeft/M-MouseDown3StatusLeft session-pill menu
           # (#783): the same real-attached-client reasoning as
           # rename-bind-integration-tests above, but a right-click, not a
-          # keybind, and the real og-remote-open launcher (fake ssh/daemon/
-          # ctl/renderer, `tmux` execing this same wrapped binary against a
-          # private -L server) rather than a hand-set window option — the
+          # keybind, and the real og-remote-open shim plus Go launcher (fake
+          # ssh/daemon/ctl/renderer, `tmux` execing this same wrapped binary
+          # against a private -L server) rather than a hand-set window option — the
           # vulnerability is in what og-remote-open NAMES the local mirror
-          # session, not in anything the daemon touches. util-linux for
-          # `setsid`, so the launcher takes its Linux daemon-launch path.
+          # session, not in anything the daemon touches.
           mirror-session-name-integration-tests = let
             mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
               inherit pkgs lib;
@@ -3050,6 +3048,8 @@
             pkgs.runCommand "mirror-session-name-integration-tests" {
               nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.util-linux];
               TMUX_BIN = "${mirrorNameTmuxConfig.tmux-wrapped}/bin/tmux";
+              # The shim runs unsubstituted under bats; name the Go launcher by path.
+              OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
               LANG = "C.UTF-8";
               LC_ALL = "C.UTF-8";
             } ''

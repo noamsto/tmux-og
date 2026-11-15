@@ -111,7 +111,7 @@ func localWindowSet(cfg Config) (map[string]bool, bool) {
 // with any other status, is a question that could not be asked, and nothing may
 // be torn down on it. Positive evidence only, the same rule as localWindowGone.
 //
-// -t "=<name>" is the exact match og-remote-open.sh's own liveness check uses,
+// -t "=<name>" is the exact match og-remote-open (picker/remoteopen)'s own liveness check uses,
 // so a sibling session whose name has ours as a prefix cannot read here as
 // alive. A placed host session is asked by its "$N" id instead, so renaming
 // it does not end the mirror; a killed or never-existing id exits 1 the same

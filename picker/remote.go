@@ -973,7 +973,7 @@ func bridgeCtlKillWindow(tmuxOpts map[string]string, sock, pane string) error {
 
 // launchRemoteBridgeDetached fires og-remote-open without waiting for it.
 // Setsid so tmux tearing down this popup's pane doesn't take the launcher (and
-// the daemon it backgrounds) with it — the same reason og-remote-open.sh
+// the daemon it backgrounds) with it — the same reason og-remote-launcher
 // setsids the daemon it starts.
 func launchRemoteBridgeDetached(tmuxOpts map[string]string, host, sess string, restore bool) {
 	args := []string{host}
@@ -1355,7 +1355,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 // bridgePIDFromFile parses a bridge daemon pidfile's raw contents into a
 // validated PID. Pure logic split out for unit testing; malformed or empty
 // content returns ok=false rather than erroring, matching how
-// scripts/lib-remote.sh's remote_daemon_alive treats an unreadable pidfile.
+// remoteopen's remoteDaemonAlive treats an unreadable pidfile.
 func bridgePIDFromFile(raw string) (pid int, ok bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1373,7 +1373,7 @@ func bridgePIDFromFile(raw string) (pid int, ok bool) {
 // dedicated mode (one daemon), on its own windows in a shared session (one
 // per placed mirror, all of which die with the session). All failures are
 // swallowed: this is opportunistic cleanup, not a required step —
-// og-remote-open.sh's stale-daemon check self-heals on the next reopen
+// og-remote-open's stale-daemon check self-heals on the next reopen
 // regardless of whether this signal lands. The daemon's own SIGTERM handler
 // already tears itself down (removes its socket/pidfile, exits), so this only
 // needs to deliver the signal.

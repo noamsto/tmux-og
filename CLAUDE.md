@@ -14,7 +14,7 @@ This file holds only what every task needs. The measured evidence, invariants an
 | `picker/` TUI layout, header/pinned line, key input, which-key ranking | `docs/agents/picker.md` |
 | `@issue_*`/`@pr_*`, `tmux-pr-enrich`, agent usage segment, `@window_cwd_seen` | `docs/agents/enrichment.md` |
 | Anything a mirror window *displays* about the remote: `@bridge_*` labels, remote agent status, `@bridge_res` CPU/Mem, the enrich card in a mirror; URL opens forwarded to the controller (`og-open`, `@og_open_url`) | `docs/agents/bridge-shipped-state.md` |
-| `picker/remotebridge/daemon`: reconnect, session pinning, renderers, reseed, zoom, float mirroring, reply ordinals/barriers, `get-clipboard`; what a remote host needs on PATH | `docs/agents/bridge-daemon.md` |
+| `picker/remotebridge/daemon` and `picker/remoteopen` (the `og-remote-open` launcher; its behaviour is in `scripts.md`, `rg og-remote-open`): reconnect, session pinning, renderers, reseed, zoom, float mirroring, reply ordinals/barriers, `get-clipboard`; what a remote host needs on PATH | `docs/agents/bridge-daemon.md` |
 | Kitty/sixel graphics across the bridge, `prefix + I` carousel, `ctrl+v` image paste | `docs/agents/bridge-graphics-paste.md` |
 | Float binds, `@float_geom`, `@og_float_target_<tool>`, popup-floats / the modal-pane chrome rule (any new `list-panes` or `pane_active` consumer) | `docs/agents/floats.md` |
 | Light/dark, `@catppuccin_flavor`, `theme-state.json`, client theme hooks | `docs/agents/theme.md` |
@@ -91,7 +91,7 @@ The repo doubles as a CC plugin marketplace: `.claude-plugin/marketplace.json` �
 - **A `@bridge_win` mirror window is daemon-owned.** Local scripts skip it; the daemon writes `@bridge_*`, never the real option names (a same-name write is a two-writer race reflow wins). Every consumer naming a mirror pane's command prefers `@bridge_proc`.
 - **Remote-derived values are sanitized daemon-side before any local format renders them** — `#(…)` in a carried value would execute here. The one launcher-side case is the mirror's session name: `og-remote-open` maps it to `[A-Za-z0-9_-]`, because stock `run-shell -C` menus parse session names as commands; the raw name lives in `@bridge_session`.
 - **Every float bind stamps `@float_geom`** and pins `remain-on-exit off` (`float-conf-assertions` fails the build otherwise).
-- **Duplicated tables must stay byte-identical**: `ENRICH_PIE_GLYPHS` (shell) ↔ `enrichstate.PieSlices` (Go); the draft-badge rule in `build_window_label`, `enrichstate.Draft` and the picker's `colorPRBadge`; agent priority order in `claude_priority_state` ↔ `agentPriority`; the mirror session-name mapping `mirror_name_part` (`lib-remote.sh`) ↔ `mirrorname.Part`, pinned by `picker/mirrorname/testdata/vectors.tsv`.
+- **Duplicated tables must stay byte-identical**: `ENRICH_PIE_GLYPHS` (shell) ↔ `enrichstate.PieSlices` (Go); the draft-badge rule in `build_window_label`, `enrichstate.Draft` and the picker's `colorPRBadge`; agent priority order in `claude_priority_state` ↔ `agentPriority`.
 - **Picker cells are sized with `visibleWidth`, never `len`**; a typed key is `printableKeyText`, never `len(key) == 1`.
 - **A resident tmux server may predate the rebuilt binary** (#407) — version-gate on the live `#{version}`, never `tmux -V`.
 

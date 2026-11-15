@@ -785,38 +785,6 @@ run_launcher_bg() {
 	[ "$status" -ne 0 ]
 }
 
-@test "shell_quote is plain POSIX single-quoting: correct for quotes, backslash-bearing input is unchanged (rejected upstream, not doubled)" {
-	# shellcheck disable=SC1090
-	eval "$(sed -n '/^shell_quote()/,/^}/p' "$LAUNCHER")"
-
-	local input quoted result
-
-	# Single-quote correctness, round-tripped under sh — the case shell_quote
-	# still has to get right in every dialect.
-	input="it's/a path"
-	quoted="$(shell_quote "$input")"
-	result="$(sh -c "printf '%s' $quoted")"
-	[ "$result" = "$input" ]
-
-	# A literal backslash now passes through inert (no longer doubled):
-	# backslash-bearing values are rejected at the launcher's entry before they
-	# ever reach shell_quote (see the rejection tests below), so this guards
-	# only against reintroducing backslash-doubling here directly.
-	quoted="$(shell_quote 'a\b')"
-	[ "$quoted" = "'a\\b'" ]
-
-	# fish round-trips the same single-quote case identically — `nix flake
-	# check`'s sandbox has no fish (see flake.nix's remote-tests
-	# nativeBuildInputs), so this leg only strengthens local runs; it must never
-	# skip the sh assertions above, which are what the CI gate actually relies
-	# on.
-	if command -v fish >/dev/null 2>&1; then
-		quoted="$(shell_quote "$input")"
-		result="$(fish -c "echo $quoted")"
-		[ "$result" = "$input" ]
-	fi
-}
-
 # The launcher makes at most one combined ssh probe (resolving whichever of
 # session/window the caller didn't already name) before ever reaching the
 # daemon. These assert that, for each combination of what the caller knows.

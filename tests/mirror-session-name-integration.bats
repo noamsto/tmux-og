@@ -115,8 +115,12 @@ setup() {
 		"${OPEN_SRC:-scripts/og-remote-open.sh}" >"$LAUNCHER"
 	export LAUNCHER
 
-	# shellcheck source=/dev/null
-	source "$PWD/scripts/lib-remote.sh"
+	# Mirror session names are `h-<part>`, where <part> is the remote name with
+	# every byte outside [A-Za-z0-9_-] mapped to `_` (mirrorname.Part, pinned
+	# by picker/mirrorname/testdata/vectors.tsv). Spelled out literally below.
+	QUOTE_NAME='h-x__________run-shell__touch__S_A___'
+	SUBST_NAME='h-x___touch__S_B_'
+	LITERAL_NAME='h-x_______run-shell__touch__S_C____display-menu_-T__y'
 
 	# The issue's two payloads (spec A1/A2): a quote break-out (executes when
 	# format-expanded as the menu TITLE, or as a "Switch To" LOOP item) and a
@@ -381,14 +385,7 @@ open_into() { # remote-sess-name local-sess-name
 	run open_remote "$LITERAL"
 	[ "$status" -eq 0 ]
 
-	mirror_name_part h
-	local hpart="$REPLY"
-	mirror_name_part "$QUOTE"
-	local qsess="${hpart}-${REPLY}"
-	mirror_name_part "$SUBST"
-	local ssess="${hpart}-${REPLY}"
-	mirror_name_part "$LITERAL"
-	local lsess="${hpart}-${REPLY}"
+	local qsess="$QUOTE_NAME" ssess="$SUBST_NAME" lsess="$LITERAL_NAME"
 
 	local sessions
 	sessions="$(inner list-sessions -F '#{session_name}')"
@@ -428,10 +425,7 @@ open_into() { # remote-sess-name local-sess-name
 # --- identity: the raw pair, not the name, is what's found again ------------
 
 @test "identity: colliding names get distinct mirrors, found again by pair" {
-	mirror_name_part h
-	local hpart="$REPLY"
-	mirror_name_part "a.b"
-	local base="${hpart}-${REPLY}"
+	local base="h-a_b"
 	local suffixed="${base}-remote"
 
 	run open_remote "a.b" 1
@@ -485,10 +479,7 @@ open_into() { # remote-sess-name local-sess-name
 	run open_remote 'x##(y)' 1
 	[ "$status" -eq 0 ]
 
-	mirror_name_part h
-	local hpart="$REPLY"
-	mirror_name_part 'x##(y)'
-	local newsess="${hpart}-${REPLY}"
+	local newsess="h-x___y_"
 
 	run inner has-session -t '=h-x#(y)'
 	[ "$status" -ne 0 ]
