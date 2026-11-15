@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Shim for the PR enrichment poller, which lives in Go (picker/prenrich, binary
 # tmux-pr-enrich-go). It bakes the build-time config into flags and keeps the
-# `tmux-pr-enrich` name every caller uses: the @og-pr-tick hook,
-# tmux-issue-stamp, the bridge daemon's enrich-refresh and `og pr`.
+# `tmux-pr-enrich` name callers invoke.
 # Modes:
 #   --tick | --tick-run | --tick-run-pending
 #   --target T --branch B [--dir D] [--force]

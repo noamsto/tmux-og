@@ -96,9 +96,9 @@ make_notify_center() {
 # Builds a runnable tmux-pr-enrich shim that execs the Go poller. The binary is
 # PR_ENRICH_BIN (set by the flake to the picker/prenrich build); without it, bats
 # builds picker/prenrich once per run. Every placeholder the shim contains must be
-# stubbed: @pr_enrich_bin@, the icon placeholders (@enrich_icon_*@), and the refresh
-# placeholders, which the Go flags parse. @reflow@ is passed through as a flag,
-# so the notify tests see the real change path. @notify@ is deliberately left raw —
+# stubbed: the refresh placeholders are parsed as integers, and @reflow@ is
+# executed on exactly the change path the notify tests exercise (left raw, the
+# poller would exec the literal string). @notify@ is deliberately left raw —
 # OG_NOTIFY_BIN overrides it at run time, and its raw form is what "notifications
 # disabled" looks like. Sets PR_ENRICH_SCRIPT.
 make_pr_enrich() {

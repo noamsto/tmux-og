@@ -30,8 +30,8 @@ type enricher struct {
 // fetchPRCached returns the identity cache path, refreshing it via gh when the
 // cache decision says fetch. states is "open+all" (open PR first, then
 // merged/closed) or "all". A dir that is not a directory fails every gh call
-// (cmd.Dir), which is bash's `cd "$d" || exit 0`. A failed fetch never touches the cache, so the
-// last-known PR keeps showing instead of wiping to "none".
+// (cmd.Dir). A failed fetch never touches the cache, so the last-known PR keeps
+// showing instead of wiping to "none".
 func (e *enricher) fetchPRCached(dir, branch, key, states string, noneTTL int64) string {
 	cache := filepath.Join(e.cacheDir, key+".json")
 	if e.serveCache(cache, noneTTL) || !e.r.lookPath("gh") {

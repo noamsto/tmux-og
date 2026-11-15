@@ -25,8 +25,8 @@ type opts struct {
 	cfgArgs []string
 }
 
-// parseArgs mirrors the bash argv loop: a later mode flag wins, unknown tokens
-// are skipped, and a value flag with no value is ignored.
+// parseArgs: a later mode flag wins, unknown tokens are skipped, and a value
+// flag with no value is ignored.
 func parseArgs(argv []string) opts {
 	o := opts{mode: "tick"}
 	for i := 0; i < len(argv); i++ {
