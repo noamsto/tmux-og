@@ -63,6 +63,15 @@ wait_cmd() {
 	return 1
 }
 
+wait_cmd_not() {
+	local tries=30
+	while ((tries-- > 0)); do
+		[ "$(tmux display-message -p -t "$PANE" '#{pane_current_command}')" != "$1" ] && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
 display_of() { tmux show -wv -t "$WIN" @window_icon_display 2>/dev/null || true; }
 
 @test "no runner pane: update-icons reads no process table" {
@@ -90,11 +99,13 @@ display_of() { tmux show -wv -t "$WIN" @window_icon_display 2>/dev/null || true;
 	[ "$(tmux show -v -t S @active_pane_icon)" = "Z" ]
 
 	tmux respawn-pane -k -t "$PANE" -- sh -c 'sleep 30'
-	wait_cmd sh || wait_cmd sleep
+	# Darwin names `sh -c 'sleep 30'` differently from Linux (sh vs sleep).
+	wait_cmd_not just
 	run bash "$TDIR/update-icons.sh" S
+	[ "$status" -eq 0 ]
 	after="$(display_of)"
 	echo "after: [$after]"
-	[ "$after" != "J" ]
+	[[ $after == S || $after == Z ]]
 }
 
 @test "idle just pane keeps the runner's own icon" {
