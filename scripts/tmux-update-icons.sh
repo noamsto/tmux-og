@@ -461,7 +461,7 @@ main() {
 		[[ $window_active == 1 ]] && sess_active_win[$sess]="$idx"
 		# Track each session's active pane command (active pane in that session's
 		# active window) — @active_pane_icon is session-scoped.
-		# A task runner's name is swapped for its child's after the loop (#1136):
+		# A task runner's name is swapped for its child's after the loop:
 		# a placeholder holds its slot so icon order is unchanged, and the one
 		# ps read happens only if a runner pane exists.
 		if [[ -z $bridge_proc && $pane_pid =~ ^[0-9]+$ ]]; then
@@ -484,7 +484,7 @@ main() {
 		# docs/agents/floats.md.
 	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{s/[|]/ /:@crew_id}|#{@og_dispatchers}|#{pane_pid}|#{@window_task}')
 
-	# Resolve runner placeholders (#1136): one ps for the whole tick, none when
+	# Resolve runner placeholders: one ps for the whole tick, none when
 	# no pane runs a task runner.
 	if ((${#runner_panes[@]} > 0)); then
 		# Captured first: bash reads a pipe a byte at a time, a here-string is buffered.

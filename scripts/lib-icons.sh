@@ -86,7 +86,7 @@ build_proc_icons() {
 }
 
 # Task runners run their recipes in their own process group, so tmux's
-# pane_current_command reports the runner for the whole recipe (#1136).
+# pane_current_command reports the runner for the whole recipe.
 # resolve_runner_child swaps it for the command the runner is executing.
 RUNNER_CMDS=" just make gmake "
 SHELL_CMDS=" sh bash dash zsh fish "
