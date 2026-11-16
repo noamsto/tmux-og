@@ -48,6 +48,8 @@ var RequiredScripts = []string{
 	"tmux-default-size",
 	"tmux-float-refit",
 	"tmux-float-nudge",
+	"tmux-float-group",
+	"tmux-crew-dash",
 	"tmux-grid-refit",
 	"tmux-issue-stamp",
 	"tmux-kill-pane-guard",

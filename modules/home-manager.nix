@@ -1162,6 +1162,10 @@ in {
           ++ lib.optionals resumeCodexEnable [tmuxConfig.script.codex-relaunch-stamp]
           ++ lib.optionals resumeCursorEnable [tmuxConfig.script.cursor-relaunch-stamp tmuxConfig.script.cursor-relaunch-hooks-install]
           ++ lib.optionals resumeCarouselEnable [tmuxConfig.script.tmux-carousel-restore]
+          # The dispatcher finds the launcher with `command -v tmux-crew-dash` from a
+          # pane shell, whose PATH may be rebuilt from the profile without the tmux
+          # wrapper's script dir. The H bind pins the store path and needs none of this.
+          ++ [tmuxConfig.script.tmux-crew-dash]
           ++ lib.optionals cfg.enrich.enable [
             tmuxConfig.script.tmux-issue-stamp
             tmuxConfig.script.tmux-issue-stamp-linear

@@ -878,7 +878,16 @@
               pkgs.runCommand "float-conf-assertions" {
                 nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
                 CONF = tmuxConfig.tmuxConf;
+                CREW_DASH = "${tmuxConfig.script.tmux-crew-dash}/bin/tmux-crew-dash";
+                FLOAT_GROUP = "${tmuxConfig.script.tmux-float-group}/bin/tmux-float-group";
               } ''
+                # The crew-dash launcher reaches tmux-float-group by a substituted
+                # store path (a pane shell may not carry the wrapper's PATH). Its
+                # bats suite overrides the path through OG_FLOAT_GROUP_BIN, so a
+                # placeholder-name drift would build clean and test green.
+                ! grep -qF '@float_group@' "$CREW_DASH"
+                grep -qF "$FLOAT_GROUP" "$CREW_DASH"
+
                 # Join backslash-continued lines: the enrich card's bind spans
                 # several, with its stamp on the last one.
                 sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
@@ -2747,6 +2756,30 @@
                 cp -r ${./tests} tests
                 export HOME=$TMPDIR
                 bats tests/float-nudge.bats
+                touch $out
+              '';
+
+            float-group-tests =
+              pkgs.runCommand "float-group-tests" {
+                # mkTmux for the same reason as float-nudge-tests: the group
+                # state lives on real floating panes.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/float-group.bats
+                touch $out
+              '';
+
+            crew-dash-launch-tests =
+              pkgs.runCommand "crew-dash-launch-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/crew-dash-launch.bats
                 touch $out
               '';
 
