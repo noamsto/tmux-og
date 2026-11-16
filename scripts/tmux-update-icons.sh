@@ -352,6 +352,7 @@ main() {
 	declare -A pane_to_win win_procs win_pane_path win_cur_branch win_active_pane win_cur_task win_cur_name pane_cur_relaunch pane_img_src pane_idx
 	declare -A win_cur_display win_cur_padded win_cur_ago win_cur_rename win_cur_crew win_cur_crew_seen win_cur_bridge
 	declare -A win_panes win_cur_has_agent win_cur_manual win_cur_naming_dirty win_cur_crew_id
+	declare -A runner_panes
 	declare -A all_sess sess_cur_active_icon sess_cur_session_fg sess_active_proc sess_active_win
 	# cwd-move re-stamp (#596): win_cwd/win_cwd_pane/win_worktree/win_cwd_seen are
 	# captured on the window's first NON-floating pane — a separate authority from
@@ -382,6 +383,7 @@ main() {
 	# @crew_id is a plain option, so it is s/[|]/ /-wrapped like the task's.
 	# @og_dispatchers is our own global write (space-joined state tokens, never
 	# '|') read back for change-gating; it repeats on every row.
+	# pane_pid is a closed numeric token, so it sits before the task too.
 	# @claude_img_src is aeye's own pane option (a "<server pid>-<pane>" key, or
 	# empty) — no '|', so it too stays a fixed middle field before the task.
 	# @window_has_agent, @window_manual_name and @window_naming_dirty (#671/#692)
@@ -397,7 +399,7 @@ main() {
 	# '|' exposure pane_current_path already does, so both sit ahead of
 	# pane_active/window_active — a '|' in either then cannot shift the flags the
 	# rest of this script trusts as fixed-format.
-	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_crew_id cur_og_dispatchers cur_task; do
+	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_crew_id cur_og_dispatchers pane_pid cur_task; do
 		[[ -n $pane_id ]] || continue
 		# A mirror pane runs the bridge renderer; @bridge_proc carries what the
 		# remote pane is actually running, which is what the icons should show.
@@ -459,6 +461,16 @@ main() {
 		[[ $window_active == 1 ]] && sess_active_win[$sess]="$idx"
 		# Track each session's active pane command (active pane in that session's
 		# active window) — @active_pane_icon is session-scoped.
+		# A task runner's name is swapped for its child's after the loop:
+		# a placeholder holds its slot so icon order is unchanged, and the one
+		# ps read happens only if a runner pane exists.
+		if [[ -z $bridge_proc && $pane_pid =~ ^[0-9]+$ ]]; then
+			normalize_wrapped_cmd "$proc"
+			if is_runner "$REPLY"; then
+				runner_panes[$pane_id]="$pane_pid $REPLY"
+				proc="@R$pane_id."
+			fi
+		fi
 		[[ $pane_active == 1 && $window_active == 1 ]] && sess_active_proc[$sess]="$proc"
 		# Collect unique processes per window
 		[[ -z $proc ]] && continue
@@ -470,7 +482,25 @@ main() {
 		# A modal float is chrome, not window content: excluded from this pass
 		# entirely, and the pane under it counts as active while it's open. See
 		# docs/agents/floats.md.
-	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{s/[|]/ /:@crew_id}|#{@og_dispatchers}|#{@window_task}')
+	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{s/[|]/ /:@crew_id}|#{@og_dispatchers}|#{pane_pid}|#{@window_task}')
+
+	# Resolve runner placeholders: one ps for the whole tick, none when
+	# no pane runs a task runner.
+	if ((${#runner_panes[@]} > 0)); then
+		# Captured first: bash reads a pipe a byte at a time, a here-string is buffered.
+		proc_table=$(ps -wwAo pid=,ppid=,args= 2>/dev/null)
+		load_proc_table <<<"$proc_table"
+		for pane_id in "${!runner_panes[@]}"; do
+			read -r pane_pid runner_name <<<"${runner_panes[$pane_id]}"
+			resolve_runner_child "$pane_pid" "$runner_name"
+			for wkey in "${!win_procs[@]}"; do
+				[[ ${win_procs[$wkey]} == *"@R$pane_id."* ]] && win_procs[$wkey]="${win_procs[$wkey]//"@R$pane_id."/"$REPLY"}"
+			done
+			for s in "${!sess_active_proc[@]}"; do
+				[[ ${sess_active_proc[$s]} == "@R$pane_id." ]] && sess_active_proc[$s]="$REPLY"
+			done
+		done
+	fi
 
 	arm_agent_detect
 

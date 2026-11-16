@@ -2470,6 +2470,18 @@
                 touch $out
               '';
 
+            # #1136: runner -> real command resolution (stubbed process table) plus
+            # the update-icons wiring against a private tmux server.
+            runner-child-tests =
+              pkgs.runCommand "runner-child-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.procps pkgs.git (mkTmux pkgs) pkgs.bash];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/runner-child.bats tests/runner-child-wiring.bats
+                touch $out
+              '';
+
             carousel-restore-tests =
               pkgs.runCommand "carousel-restore-tests" {
                 # tmux: drives a private, config-less server (like
