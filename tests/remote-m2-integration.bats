@@ -960,8 +960,18 @@ two_controllers_up() {
 
 	# S must be idle before it is stopped: past activityRecency (3s), one 1s
 	# reveal tick and the 1s stamp truncation, so no S key is still pending and
-	# S cannot legitimately reclaim on CONT.
-	sleep 5
+	# S cannot legitimately reclaim on CONT. The guarded stamp is obs-s's client
+	# on DST, so wait until it is 6s old (3 + 1 + 1, +1 margin).
+	idle=no
+	for _ in $(seq 1 100); do
+		stamp="$($DST list-clients -t host-sess -F '#{client_control_mode}|#{client_activity}' | awk -F'|' '$1 == 0 && $2 > m {m = $2} END {print m + 0}')"
+		if [ "$stamp" -gt 0 ] && [ $(($(date +%s) - stamp)) -ge 6 ]; then
+			idle=yes
+			break
+		fi
+		sleep 0.1
+	done
+	[ "$idle" = yes ]
 	src_all_are "$small"
 
 	# B takes over while S is stopped; S wakes on its old connection to a backlog
@@ -4283,9 +4293,36 @@ og1034_failed() {
 }
 
 # og1034_open <path> runs og-open in the remote pane, with the remote's stub
-# first on PATH in case the pane's shell reset it.
+# first on PATH in case the pane's shell reset it, then prints OGDONE_<path>
+# so og1034_sync can tell the record has been written.
 og1034_open() {
-	$SRC send-keys -t rem "PATH=$BATS_TEST_TMPDIR/stub-r:\$PATH bash '$OG_OPEN' https://example.invalid/$1" Enter
+	$SRC send-keys -t rem "PATH=$BATS_TEST_TMPDIR/stub-r:\$PATH bash '$OG_OPEN' https://example.invalid/$1; printf 'OGDONE_%s\\n' $1" Enter
+}
+
+# og_wait_pane_done <tag> polls until the remote pane printed OGDONE_<tag> on a
+# line of its own (the typed command line only shows the printf format).
+og_wait_pane_done() {
+	for _ in $(seq 1 100); do
+		$SRC capture-pane -p -t rem 2>/dev/null | grep -qx "OGDONE_$1" && return 0
+		sleep 0.1
+	done
+	printf 'og_wait_pane_done: OGDONE_%s never appeared in the remote pane\n' "$1" >&3
+	return 1
+}
+
+# og1034_sync <path> <n> <s|b>... waits for og1034_open's <path> to finish, then
+# appends an untagged sentinel record and waits until every named daemon has
+# opened it. A daemon handles @og_open_url reports in order, so by then it has
+# also handled <path>'s record: a negative check after this needs no sleep.
+# <n> must be unique per call and is the sentinel's nonce suffix.
+og1034_sync() {
+	local path=$1 n=$2 m
+	shift 2
+	og_wait_pane_done "$path" || return 1
+	$SRC set-option -a -t rem @og_open_url " 2-$n|https://example.invalid/sync-$n"
+	for m in "$@"; do
+		og1034_wait_opened "$m" "sync-$n" || return 1
+	done
 }
 
 # og1034_wait_owner <client> polls until @og_bridge_owner names that client.
@@ -4357,7 +4394,7 @@ og1034_not_opened() {
 	og1034_wait_owner "$s_client"
 	og1034_open s
 	og1034_wait_opened s s
-	sleep 2.5
+	og1034_sync s 1 s b
 	og1034_not_opened b s
 	og1034_not_opened r s
 
@@ -4365,7 +4402,7 @@ og1034_not_opened() {
 	og1034_wait_owner "$b_client"
 	og1034_open b
 	og1034_wait_opened b b
-	sleep 2.5
+	og1034_sync b 2 s b
 	og1034_not_opened s b
 	og1034_not_opened r b
 
@@ -4387,7 +4424,8 @@ og1034_not_opened() {
 	$SRC set-option -a -t rem @og_open_url " 1-1|https://example.invalid/old"
 	og1034_wait_opened s old
 	og1034_wait_opened b old
-	sleep 2.5
+	# r records only through og-open's unbridged fallback, which a direct
+	# set-option never runs, so there is nothing left to wait out.
 	og1034_not_opened r old
 	size_daemons_stop
 }
@@ -4416,7 +4454,7 @@ og1034_not_opened() {
 	}
 	og1034_open after
 	og1034_wait_opened s after
-	sleep 2.5
+	og1034_sync after 4 s
 	og1034_not_opened r after
 	# The owner record may still name B, so this pins the survivor path: the
 	# record is untagged, not routed to a client that is gone.
@@ -4433,6 +4471,25 @@ og1034_not_opened() {
 # @og_open_url / @og_open_client (#854): registered_client mirrors the
 # script's own bridged check so a wrong registration fails loud instead of a
 # silent unbridged fallback. openbin stubs stand in for xdg-open/open.
+# The single-daemon test below counts $opened's lines, so its sentinel records
+# (URL .../sync-N) are filtered out of every read.
+og_real_opens() {
+	grep -v /sync- "$opened" 2>/dev/null || true
+}
+
+# og_sync_single <n> appends an untagged sentinel record and waits for the
+# daemon to open it; the daemon handles the log's records in order, so every
+# record written before it has been handled by then.
+og_sync_single() {
+	$SRC set-option -a -t rem @og_open_url " 3-$1|https://example.invalid/sync-$1"
+	for _ in $(seq 1 100); do
+		grep -qxF "https://example.invalid/sync-$1" "$opened" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	printf 'og_sync_single: sync-%s never opened\n' "$1" >&3
+	return 1
+}
+
 @test "og-open in a remote pane opens on the controller once, in bulk, and never again after a reattach" {
 	OG_OPEN="${OG_OPEN:-$BATS_TEST_DIRNAME/../scripts/og-open.sh}"
 
@@ -4466,24 +4523,25 @@ og1034_not_opened() {
 	[ -n "$control_client" ]
 	[ "$registered" = "$control_client" ]
 
-	$SRC send-keys -t rem "bash '$OG_OPEN' https://example.invalid/x" Enter
+	$SRC send-keys -t rem "bash '$OG_OPEN' https://example.invalid/x; printf 'OGDONE_%s\\n' x" Enter
 	n_opened=0
 	for _ in $(seq 1 80); do
-		n_opened="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+		n_opened="$(og_real_opens | wc -l)"
 		[ "$n_opened" -ge 1 ] && break
 		sleep 0.1
 	done
-	sleep 2.5
-	single="$(cat "$opened" 2>/dev/null || true)"
+	og_wait_pane_done x
+	og_sync_single 1
+	single="$(og_real_opens)"
 
 	$SRC send-keys -t rem "for i in 1 2 3; do bash '$OG_OPEN' https://example.invalid/b\$i; done" Enter
 	n_opened=0
 	for _ in $(seq 1 80); do
-		n_opened="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+		n_opened="$(og_real_opens | wc -l)"
 		[ "$n_opened" -ge 4 ] && break
 		sleep 0.1
 	done
-	bulk="$(sed -n '2,4p' "$opened" | sort)"
+	bulk="$(og_real_opens | sed -n '2,4p' | sort)"
 
 	old_transport="$(transport_child)"
 	[ -n "$old_transport" ]
@@ -4513,19 +4571,20 @@ og1034_not_opened() {
 	done
 	[ -n "$new_control_client" ]
 	[ "$reregistered" = "$new_control_client" ]
-	sleep 2.5
-	lines_after_reattach="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+	og_sync_single 2
+	lines_after_reattach="$(og_real_opens | wc -l)"
 
-	$SRC send-keys -t rem "bash '$OG_OPEN' https://example.invalid/after" Enter
+	$SRC send-keys -t rem "bash '$OG_OPEN' https://example.invalid/after; printf 'OGDONE_%s\\n' after" Enter
 	n_opened=0
 	for _ in $(seq 1 80); do
-		n_opened="$(wc -l <"$opened" 2>/dev/null || echo 0)"
+		n_opened="$(og_real_opens | wc -l)"
 		[ "$n_opened" -ge 5 ] && break
 		sleep 0.1
 	done
-	sleep 2.5
-	final_lines="$(wc -l <"$opened" 2>/dev/null || echo 0)"
-	last="$(tail -1 "$opened" 2>/dev/null || true)"
+	og_wait_pane_done after
+	og_sync_single 3
+	final_lines="$(og_real_opens | wc -l)"
+	last="$(og_real_opens | tail -1)"
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
@@ -7577,7 +7636,7 @@ mirror_of_remote() {
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		i=$((i + 1))
 		$SRC set-option -g @og900evil "x$i$(printf '\n%%begin 999999 999999 1')"
-		sleep 1
+		sleep 0.3
 		$SRC split-window -d -t rem 2>/dev/null || true
 		if grep -Eq 'reply deadline|write deadline' "$log"; then
 			wedged=yes
@@ -7637,11 +7696,18 @@ mirror_of_remote() {
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		i=$((i + 1))
 		$SRC set-option -g @og900evil2 "x$i$(printf '\n%%begin 999998 999998 1')"
-		sleep 1
+		sleep 0.3
 		$SRC split-window -d -t rem 2>/dev/null || true
-		sleep 1
-		src_n="$($SRC list-panes -t rem -F x | wc -l)"
-		dst_n="$($DST list-panes -t host-sess:1 -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+		# Right after the split the remote has n+1 panes and the mirror n until a
+		# live daemon mirrors it, so the first unequal sample proves nothing:
+		# equality means the daemon is live (next iteration, early); only an
+		# inequality that survives the old 1s beat means it is parked.
+		for _ in $(seq 1 10); do
+			sleep 0.1
+			src_n="$($SRC list-panes -t rem -F x | wc -l)"
+			dst_n="$($DST list-panes -t host-sess:1 -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
+			[ "$src_n" -eq "$dst_n" ] && break
+		done
 		if [ "$src_n" -ne "$dst_n" ]; then
 			parked=yes
 			break
