@@ -4430,7 +4430,7 @@ og1034_not_opened() {
 	# set-option never runs, so there is nothing left to wait out.
 	og1034_not_opened r old
 	# Re-check the earlier negatives: a wrong open's goroutine may have landed
-	# after the sentinel that stood in for the old fixed wait.
+	# after the sentinel that proved those records were decided.
 	og1034_not_opened b s
 	og1034_not_opened r s
 	og1034_not_opened s b
@@ -7711,7 +7711,7 @@ mirror_of_remote() {
 		# Right after the split the remote has n+1 panes and the mirror n until a
 		# live daemon mirrors it, so the first unequal sample proves nothing:
 		# equality means the daemon is live (next iteration, early); only an
-		# inequality that survives the old 1s beat means it is parked.
+		# inequality that survives the full 1s window means it is parked.
 		for _ in $(seq 1 10); do
 			sleep 0.1
 			src_n="$($SRC list-panes -t rem -F x | wc -l)"
