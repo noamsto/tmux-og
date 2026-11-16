@@ -2750,6 +2750,30 @@
                 touch $out
               '';
 
+            float-group-tests =
+              pkgs.runCommand "float-group-tests" {
+                # mkTmux for the same reason as float-nudge-tests: the group
+                # state lives on real floating panes.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/float-group.bats
+                touch $out
+              '';
+
+            crew-dash-launch-tests =
+              pkgs.runCommand "crew-dash-launch-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/crew-dash-launch.bats
+                touch $out
+              '';
+
             float-nudge-drag-tests =
               pkgs.runCommand "float-nudge-drag-tests" {
                 # A real attached client fed SGR mouse reports from a pty host

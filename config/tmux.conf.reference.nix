@@ -725,6 +725,10 @@
     # which is what this script's `$1 == --client` parsing needs (no = form).
     bind -N 'Open scratchpad session' S run-shell '${script.tmux-scratchpad}/bin/tmux-scratchpad #{?client_name,--client #{q:client_name},} #{qs:session_name}'
     ${carouselBind}
+    # run-shell does not export TMUX_PANE, so the pressed pane is passed explicitly
+    # (same reason as the carousel bind above).
+    bind -N 'Open crew dash' H run-shell '${script.tmux-crew-dash}/bin/tmux-crew-dash #{q:pane_id}'
+    bind -N 'Toggle floating pane group' G run-shell '${script.tmux-float-group}/bin/tmux-float-group toggle crew #{q:pane_id}'
 
     # Yank pane's current working directory to system clipboard
     bind -N 'Copy pane path to clipboard' Y run-shell 'tmux display-message -p #{qs:pane_current_path} | wl-copy'
