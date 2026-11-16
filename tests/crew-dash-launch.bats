@@ -57,7 +57,8 @@ EOF
 teardown() {
 	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
 	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
-	tmux kill-server 2>/dev/null || true
+	# The real binary, not the PATH shim: a broken shim must not leak the server.
+	"$REAL_TMUX" kill-server 2>/dev/null || true
 	rm -rf "${OG_TMUX_DIR:-}"
 }
 
