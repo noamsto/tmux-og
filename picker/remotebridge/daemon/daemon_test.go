@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -662,7 +663,7 @@ func TestWaitHellosTimesOutWhenRenderersDontConnect(t *testing.T) {
 
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
-	pump := startCtlPump(controlmode.NewReader(pr))
+	pump := startCtlPump(controlmode.NewReader(pr), new(atomic.Bool))
 
 	start := time.Now()
 	_, err = waitHellos(pump.lines, NewRouter(), &asyncQueue{}, testStream(), connCh, []string{"%1"}, 100*time.Millisecond, nil)

@@ -7633,25 +7633,33 @@ mirror_of_remote() {
 	# The daemon's own control client: the only client in control mode.
 	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)"
 	[ -n "$cc" ]
-	$SRC set-option -g @og900evil "$(printf 'x\n%%begin 999999 999999 1')"
+	$SRC set-option -g @og900evil x
 	$SRC refresh-client -t "$cc" -B 'og900evil::#{@og900evil}'
 
-	# Each option change re-reports through the replaced format; after a
-	# settle beat the forged lines land at top level, and the next split's
-	# round trip is the one they hold. Retrying converges if a report was
-	# swallowed as the body of an in-flight reply.
+	# tmux writes a subscription change only from a 1s timer, so the forged
+	# report cannot be ordered against the daemon's own replies. Holding the
+	# daemon off its stream queues the split's %layout-change first and the
+	# forged %begin behind it within one tick: the daemon reads the
+	# notification and parks in the round trip it starts for it. Nothing
+	# between STOP and CONT may fail, or a stopped daemon would outlive the
+	# test.
+	kill -STOP "$daemon_pid"
+	$SRC split-window -d -t rem || true
+	$SRC set-option -g @og900evil "x$(printf '\n%%begin 999999 999999 1')" || true
+	sleep 1.5
+	kill -CONT "$daemon_pid"
+
+	# A starved server that writes the report only after the CONT leaves the
+	# daemon deaf and idle; the 30s agent-status backstop then wedges it, so
+	# the budget covers that path.
 	wedged=no
-	i=0
 	deadline=$((SECONDS + 40))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		i=$((i + 1))
-		$SRC set-option -g @og900evil "x$i$(printf '\n%%begin 999999 999999 1')"
-		sleep 0.3
-		$SRC split-window -d -t rem 2>/dev/null || true
 		if grep -Eq 'reply deadline|write deadline' "$log"; then
 			wedged=yes
 			break
 		fi
+		sleep 0.1
 	done
 	[ "$wedged" = yes ] || {
 		printf -- '--- daemon log ---\n' >&3
@@ -7673,7 +7681,17 @@ mirror_of_remote() {
 		done
 	done
 
-	[ "$painted" = yes ]
+	[ "$painted" = yes ] || {
+		printf -- '--- @bridge_state ---\n' >&3
+		$DST show-options -v -t host-sess -q @bridge_state >&3 2>&1 || true
+		printf -- '--- mirror panes (index|@bridge_pane|dead) ---\n' >&3
+		$DST list-panes -t host-sess:1 -F '#{pane_index}|#{@bridge_pane}|#{pane_dead}' >&3 2>&1 || true
+		printf -- '--- remote active pane ---\n' >&3
+		$SRC display-message -p -t rem '#{pane_id}' >&3 2>&1 || true
+		printf -- '--- daemon log tail ---\n' >&3
+		tail -40 "$log" >&3 2>&1 || true
+		false
+	}
 	wait_bridge_state "" replydl "$log"
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
@@ -7689,39 +7707,53 @@ mirror_of_remote() {
 	bridge_up 1 sessgone --reply-timeout 2s --seed-timeout 2s
 	log="$BATS_TEST_TMPDIR/sessgone.log"
 
-	cc="$($SRC list-clients -F '#{client_name}|#{client_control_mode}' | grep '|1$' | cut -d'|' -f1)"
-	[ -n "$cc" ]
-	$SRC set-option -g @og900evil2 "$(printf 'x\n%%begin 999998 999998 1')"
-	$SRC refresh-client -t "$cc" -B 'og900evil2::#{@og900evil2}'
+	$SRC set-option -g @og900evil2 x
 
 	# Provoke the round trip that the forged block will hold: each option
-	# change re-reports, the settle beat lets that report land at top level,
-	# and the split's layout read is then the wait the deadline must end. The
-	# session goes away (by name, what #680's probe reads) only once the
-	# mirror has stopped following the remote: an idle daemon's probe would
-	# otherwise end it before any wedge.
+	# change re-reports through the replaced format, the 1.5s beat (one 1s
+	# subscription tick plus margin) lets that report land before the split,
+	# and the split's layout read is then the wait the deadline must end.
+	# Every control client is armed once, since refresh-client -B is per
+	# client: a wedge the probe cannot see (the report landing after the new
+	# pane is wired, while its seed is in flight) ends in a deadline and a
+	# fresh control client that carries no subscription. A park counts only
+	# if no deadline fired during the iteration, since a mismatch seen while
+	# the daemon reattaches is not a wedge. Parked means the pane the split
+	# just created never shows up among the mirror's @bridge_pane ids within
+	# 1s (tmux never reuses a pane id); counts alone can match by coincidence
+	# once a kill runs against a deaf daemon. An iteration that does not park
+	# kills its split pane to leave room for the next. The session goes away
+	# (by name, what #680's probe reads) only once the mirror has stopped
+	# following the remote: an idle daemon's probe would otherwise end it
+	# before any wedge.
 	parked=no
-	i=0
+	armed=
 	deadline=$((SECONDS + 40))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		i=$((i + 1))
-		$SRC set-option -g @og900evil2 "x$i$(printf '\n%%begin 999998 999998 1')"
-		sleep 0.3
-		$SRC split-window -d -t rem 2>/dev/null || true
-		# Right after the split the remote has n+1 panes and the mirror n until a
-		# live daemon mirrors it, so the first unequal sample proves nothing:
-		# equality means the daemon is live (next iteration, early); only an
-		# inequality that survives the full 1s window means it is parked.
+		for cc in $($SRC list-clients -F '#{client_name}|#{client_control_mode}' | sed -n 's/|1$//p'); do
+			case " $armed " in
+			*" $cc "*) continue ;;
+			esac
+			$SRC refresh-client -t "$cc" -B 'og900evil2::#{@og900evil2}' && armed="$armed $cc"
+		done
+		drops="$(grep -Ec 'reply deadline|write deadline' "$log" || true)"
+		$SRC set-option -g @og900evil2 "x$SECONDS$(printf '\n%%begin 999998 999998 1')"
+		sleep 1.5
+		split="$($SRC split-window -d -P -F '#{pane_id}' -t rem 2>/dev/null || true)"
+		wired=no
 		for _ in $(seq 1 10); do
 			sleep 0.1
-			src_n="$($SRC list-panes -t rem -F x | wc -l)"
-			dst_n="$($DST list-panes -t host-sess:1 -F '#{@bridge_pane}' 2>/dev/null | grep -c '^%' || true)"
-			[ "$src_n" -eq "$dst_n" ] && break
+			if $DST list-panes -t host-sess:1 -F '#{@bridge_pane}' 2>/dev/null | grep -qx -- "$split"; then
+				wired=yes
+				break
+			fi
 		done
-		if [ "$src_n" -ne "$dst_n" ]; then
+		if [ -n "$split" ] && [ "$wired" = no ] &&
+			[ "$(grep -Ec 'reply deadline|write deadline' "$log" || true)" -eq "$drops" ]; then
 			parked=yes
 			break
 		fi
+		[ -z "$split" ] || $SRC kill-pane -t "$split" 2>/dev/null || true
 	done
 	[ "$parked" = yes ] || {
 		printf -- '--- daemon log ---\n' >&3

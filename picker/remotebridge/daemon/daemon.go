@@ -2348,7 +2348,7 @@ type ctlPump struct {
 	done atomic.Bool
 }
 
-func startCtlPump(rd *controlmode.Reader) *ctlPump {
+func startCtlPump(rd *controlmode.Reader, closed *atomic.Bool) *ctlPump {
 	p := &ctlPump{lines: make(chan controlmode.Line, ctlPumpBuf)}
 	go func() {
 		defer p.done.Store(true)
@@ -2357,6 +2357,13 @@ func startCtlPump(rd *controlmode.Reader) *ctlPump {
 			l, ok := rd.Next()
 			if !ok {
 				return
+			}
+			// Once the daemon has closed the connection itself, a %exit is the
+			// transport client's echo of that close, not the remote ending it;
+			// delivering it would turn a reattachable drop into a teardown. A
+			// genuine %exit racing the close degrades to a drop.
+			if l.Kind == controlmode.Exit && closed.Load() {
+				continue
 			}
 			p.lines <- l
 		}
