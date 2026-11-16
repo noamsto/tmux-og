@@ -142,6 +142,188 @@
           '';
         });
 
+        # tests/remote-m2-integration.bats is split across remoteM2ShardCount
+        # derivations so its ~8.5 min serial tail runs in parallel (#1132). Every
+        # shard sees the whole file, with the `@test "..." {` line of each test
+        # it does not own rewritten to a dead `__unrun_<n>() {` function: bats
+        # never registers it, and the helpers defined between tests, setup and
+        # teardown stay byte-identical. Test names and ordinals are read from the
+        # file with bats' own `@test` line pattern, so a new test needs no
+        # registration. Assignment is greedy longest-processing-time over
+        # tests/remote-m2-weights.json (name -> ms, measured with `bats --timing`);
+        # a test missing from the table weighs the median.
+        remoteM2ShardCount = 4;
+        remoteM2Src = ./tests/remote-m2-integration.bats;
+        remoteM2TestLine = ''[[:blank:]]*@test "(.*)" \{'';
+        remoteM2Names = lib.concatMap (l: let
+          m = builtins.match remoteM2TestLine l;
+        in
+          lib.optional (m != null) (builtins.head m)) (builtins.filter builtins.isString (builtins.split "\n" (builtins.readFile remoteM2Src)));
+        remoteM2Weights = builtins.fromJSON (builtins.readFile ./tests/remote-m2-weights.json);
+        remoteM2MedianWeight = let
+          sorted = lib.sort (a: b: a < b) (lib.attrValues remoteM2Weights);
+        in
+          builtins.elemAt sorted (builtins.length sorted / 2);
+        # The .bats source spells an embedded quote as \", the JSON key as ".
+        remoteM2Weight = name: remoteM2Weights.${builtins.replaceStrings [''\"''] [''"''] name} or remoteM2MedianWeight;
+        remoteM2Shards = let
+          items =
+            lib.imap1 (ord: name: {
+              inherit ord;
+              weight = remoteM2Weight name;
+            })
+            remoteM2Names;
+          heaviestFirst = lib.sort (a: b: a.weight > b.weight || (a.weight == b.weight && a.ord < b.ord)) items;
+          lightest = shards:
+            lib.foldl' (best: s:
+              if s.weight < best.weight
+              then s
+              else best) (builtins.head shards)
+            shards;
+          assign = shards: item: let
+            target = (lightest (lib.imap0 (idx: s: s // {inherit idx;}) shards)).idx;
+          in
+            lib.imap0 (idx: s:
+              if idx == target
+              then {
+                ords = s.ords ++ [item.ord];
+                weight = s.weight + item.weight;
+              }
+              else s)
+            shards;
+        in
+          map (s: s // {ords = lib.sort (a: b: a < b) s.ords;}) (lib.foldl' assign (lib.genList (_: {
+              ords = [];
+              weight = 0;
+            })
+            remoteM2ShardCount)
+          heaviestFirst);
+        remoteM2ShardFile = n: let
+          shard = builtins.elemAt remoteM2Shards (n - 1);
+        in
+          pkgs.runCommand "remote-m2-shard-${toString n}.bats" {
+            nativeBuildInputs = [pkgs.gawk];
+            keep = " ${lib.concatMapStringsSep " " toString shard.ords} ";
+          } ''
+            awk -v keep="$keep" '
+              /^[[:blank:]]*@test ".*" \{$/ {
+                k++
+                if (index(keep, " " k " ")) print
+                else print "__unrun_" k "() {"
+                next
+              }
+              { print }
+            ' ${remoteM2Src} > $out
+          '';
+        remoteM2Env = {
+          # Same private, config-less two-server pattern: an isolated
+          # "remote" tmux -L server plus an isolated "local" tmux -L
+          # server, wired together by the M2.1 daemon's --test-local seam
+          # (no ssh). Both binaries are prebuilt via the vendored
+          # buildGoModule (pickerChecked) so this check never invokes
+          # `go build` — a non-FOD sandbox has no network.
+          #
+          # Uses the pinned next-3.9 tmux (mkTmux), not pkgs.tmux (3.7c):
+          # The live tests in tests/remote-m2-integration.bats rely on the
+          # pinned build deferring notifications out of guard blocks
+          # (tmux 6db5175e). The M2 bridge is a next-3.8 effort and its
+          # control-mode notification behavior (e.g. %window-close on
+          # kill-window) differs from 3.7c, so the mirror is exercised
+          # against the version it — and production, local + remote —
+          # actually runs.
+          # procps supplies ps, which the #482 reconnect cases use to find
+          # the daemon's own transport child (not the daemon_pid itself)
+          # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
+          # unixtools' shim — ps/sysctl/top/watch, no pgrep — which is why
+          # transport_child reads the process table rather than pgrepping.
+          nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
+          DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
+          RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+          # M2.3 structural input: the tests drive ctl straight at the
+          # daemon's socket, since these vanilla -L servers carry no
+          # tmux-og keybindings for a gate to intercept.
+          CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+          # The agent-usage integration test runs the real statusline
+          # against DST's mirror session, same prebuilt-binary pattern.
+          STATUSLINE = "${pickerChecked}/bin/tmux-statusline";
+          # Only tests/ is copied in, so a ../scripts path would not resolve.
+          # The raw source file is what ships: this script carries no
+          # build-time placeholder substitution.
+          DETACH = ./scripts/og-remote-detach.sh;
+          # Same "raw source ships" reasoning as DETACH: og-open needs no
+          # build-time placeholder substitution either.
+          OG_OPEN = ./scripts/og-open.sh;
+          # The dwindle mirror cases extract the real window-layout-changed[20]
+          # hook (it embeds the store path of tmux-dwindle) from this conf.
+          TMUX_OG_CONF = tmuxConfig.tmuxConf;
+          # A per-test bound turns a hung test into `not ok N <name> # timeout
+          # after 180s` and moves on, instead of holding the build until the
+          # 30-min CI job cap. bats kills the test's whole process tree (the
+          # daemons) on timeout and still runs teardown. 180s is ~8x the
+          # slowest passing Linux test (21s), leaving headroom for darwin
+          # runners at 1.5-2x slower.
+          BATS_TEST_TIMEOUT = "180";
+        };
+        # The rewritten file is copied beside the tests so $BATS_TEST_DIRNAME
+        # (../picker, ../scripts) resolves as it does for the original.
+        remoteM2Shard = n:
+          pkgs.runCommand "remote-m2-integration-tests-${toString n}" remoteM2Env ''
+            cp -r ${./tests} tests
+            chmod -R u+w tests
+            cp ${remoteM2ShardFile n} tests/remote-m2-shard.bats
+            export HOME=$TMPDIR
+            # --timing puts per-test durations in the log so slow tests name
+            # themselves. The outer timeout is the backstop for a hang that
+            # bats' own timeout cannot see: it ends the run with the TAP so far,
+            # instead of the CI job being cancelled with no output. It is sized
+            # to fire before the 30-min job cap, given the suite starts 13-15 min
+            # into a cold macOS job. When it fires no test names itself (the
+            # hung one is the first after the last TAP line), hence the echo.
+            timeout --kill-after=15s 14m bats --timing tests/remote-m2-shard.bats || {
+              s=$?
+              [ "$s" -ge 124 ] && echo "remote-m2 shard ${toString n}: suite exceeded 14m; the hung test is the one after the last TAP line above" >&2
+              exit "$s"
+            }
+            touch $out
+          '';
+        remoteM2Checks =
+          lib.listToAttrs (map (n: lib.nameValuePair "remote-m2-integration-tests-${toString n}" (remoteM2Shard n)) (lib.range 1 remoteM2ShardCount))
+          // {
+            # A test in no shard (or two) would pass CI unrun or run twice, so
+            # count what each shard's rewritten file registers, the very file
+            # the shard check runs.
+            remote-m2-shard-coverage = pkgs.runCommand "remote-m2-shard-coverage" (remoteM2Env
+              // {
+                passthru = {
+                  shardSizes = map (s: builtins.length s.ords) remoteM2Shards;
+                  shardWeights = map (s: s.weight) remoteM2Shards;
+                };
+              }) ''
+              cp -r ${./tests} tests
+              chmod -R u+w tests
+              total=$(grep -cE '^[[:blank:]]*@test ' ${remoteM2Src})
+              dups=$(grep -E '^[[:blank:]]*@test ' ${remoteM2Src} | sort | uniq -d)
+              if [ -n "$dups" ]; then
+                echo "duplicate @test names:" >&2
+                echo "$dups" >&2
+                exit 1
+              fi
+              sum=0
+              ${lib.concatMapStrings (n: let
+                shard = builtins.elemAt remoteM2Shards (n - 1);
+              in ''
+                cp ${remoteM2ShardFile n} tests/shard-${toString n}.bats
+                got=$(bats --count tests/shard-${toString n}.bats)
+                echo "shard ${toString n}: $got tests (expected ${toString (builtins.length shard.ords)}, est ${toString (shard.weight / 1000)}s)"
+                [ "$got" -eq ${toString (builtins.length shard.ords)} ] || { echo "shard ${toString n} count mismatch" >&2; exit 1; }
+                sum=$((sum + got))
+              '') (lib.range 1 remoteM2ShardCount)}
+              echo "total: $sum of $total"
+              [ "$sum" -eq "$total" ] || { echo "shards cover $sum tests, source has $total" >&2; exit 1; }
+              touch $out
+            '';
+          };
+
         # nixpkgs packages nilaway 0-unstable-2025-03-07, whose vendored
         # golang.org/x/tools panics ("unexpected expr: *ast.KeyValueExpr" in
         # go/ssa) under the Go 1.27 standard library. Build upstream HEAD
@@ -232,3175 +414,3110 @@
             ];
         };
 
-        checks = {
-          enrich-tests =
-            pkgs.runCommand "enrich-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
-              # truncate_ellipsis appends a multibyte "…"; bash's ${#REPLY}
-              # only counts it as one char under a UTF-8 locale.
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-              SANITIZE_TITLE_VECTORS = ./picker/prenrich/testdata/sanitize-title.tsv;
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/enrich.bats
-              touch $out
-            '';
+        checks =
+          {
+            enrich-tests =
+              pkgs.runCommand "enrich-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
+                # truncate_ellipsis appends a multibyte "…"; bash's ${#REPLY}
+                # only counts it as one char under a UTF-8 locale.
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+                SANITIZE_TITLE_VECTORS = ./picker/prenrich/testdata/sanitize-title.tsv;
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/enrich.bats
+                touch $out
+              '';
 
-          enrich-budget-tests =
-            pkgs.runCommand "enrich-budget-tests" {
-              # git: the pass groups windows by `git rev-parse --git-common-dir`,
-              # so the fixture needs a real repo.
-              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/enrich-budget.bats
-              touch $out
-            '';
+            enrich-budget-tests =
+              pkgs.runCommand "enrich-budget-tests" {
+                # git: the pass groups windows by `git rev-parse --git-common-dir`,
+                # so the fixture needs a real repo.
+                PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/enrich-budget.bats
+                touch $out
+              '';
 
-          enrich-url-tests =
-            pkgs.runCommand "enrich-url-tests" {
-              # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
-              # for the pass's repo resolution.
-              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/enrich-url.bats
-              touch $out
-            '';
+            enrich-url-tests =
+              pkgs.runCommand "enrich-url-tests" {
+                # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
+                # for the pass's repo resolution.
+                PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/enrich-url.bats
+                touch $out
+              '';
 
-          enrich-fork-tests =
-            pkgs.runCommand "enrich-fork-tests" {
-              # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
-              # for the pass's repo resolution.
-              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/enrich-fork.bats
-              touch $out
-            '';
+            enrich-fork-tests =
+              pkgs.runCommand "enrich-fork-tests" {
+                # A real scratch tmux server (the test owns its TMUX_TMPDIR) and git
+                # for the pass's repo resolution.
+                PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/enrich-fork.bats
+                touch $out
+              '';
 
-          agent-usage-gate-tests =
-            pkgs.runCommand "agent-usage-gate-tests" {
-              # tmux: the multi-line @og_pane_agent case needs a real server to
-              # exercise the ctlSafe wrap the fake tmux's verbatim output skips.
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-usage-gate.bats
-              touch $out
-            '';
+            agent-usage-gate-tests =
+              pkgs.runCommand "agent-usage-gate-tests" {
+                # tmux: the multi-line @og_pane_agent case needs a real server to
+                # exercise the ctlSafe wrap the fake tmux's verbatim output skips.
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-usage-gate.bats
+                touch $out
+              '';
 
-          agent-usage-provider-tests =
-            pkgs.runCommand "agent-usage-provider-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-usage-providers.bats
-              # bats runs the raw script, so only the built bin proves the
-              # cursor provider's tool pin was substituted.
-              CUR="${tmuxConfig.script.tmux-agent-usage-cursor}/bin/tmux-agent-usage-cursor"
-              ! grep -q '@cursor_path@' "$CUR"
-              grep -q '${pkgs.jq.bin}/bin' "$CUR"
-              touch $out
-            '';
+            agent-usage-provider-tests =
+              pkgs.runCommand "agent-usage-provider-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-usage-providers.bats
+                # bats runs the raw script, so only the built bin proves the
+                # cursor provider's tool pin was substituted.
+                CUR="${tmuxConfig.script.tmux-agent-usage-cursor}/bin/tmux-agent-usage-cursor"
+                ! grep -q '@cursor_path@' "$CUR"
+                grep -q '${pkgs.jq.bin}/bin' "$CUR"
+                touch $out
+              '';
 
-          teardown-isolation-tests =
-            pkgs.runCommand "teardown-isolation-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.gawk];
-            } ''
-              cp -r ${./tests} tests
-              bats tests/teardown-isolation.bats
-              touch $out
-            '';
+            teardown-isolation-tests =
+              pkgs.runCommand "teardown-isolation-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.gawk];
+              } ''
+                cp -r ${./tests} tests
+                bats tests/teardown-isolation.bats
+                touch $out
+              '';
 
-          reflow-tests =
-            pkgs.runCommand "reflow-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/reflow.bats
-              touch $out
-            '';
+            reflow-tests =
+              pkgs.runCommand "reflow-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/reflow.bats
+                touch $out
+              '';
 
-          fingers-patterns-tests =
-            pkgs.runCommand "fingers-patterns-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.bash];
-            } ''
-              cp -r ${./tests} tests
-              cp -r ${./config} config
-              bats tests/fingers-patterns.bats
-              touch $out
-            '';
+            fingers-patterns-tests =
+              pkgs.runCommand "fingers-patterns-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.bash];
+              } ''
+                cp -r ${./tests} tests
+                cp -r ${./config} config
+                bats tests/fingers-patterns.bats
+                touch $out
+              '';
 
-          og-open-tests =
-            pkgs.runCommand "og-open-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.bash];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/og-open.bats
-              touch $out
-            '';
+            og-open-tests =
+              pkgs.runCommand "og-open-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.bash];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/og-open.bats
+                touch $out
+              '';
 
-          icons-tests =
-            pkgs.runCommand "icons-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
-              # measure_display_width classifies multibyte codepoints; bash's
-              # per-char indexing only works under a UTF-8 locale.
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/icons.bats
-              touch $out
-            '';
+            icons-tests =
+              pkgs.runCommand "icons-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
+                # measure_display_width classifies multibyte codepoints; bash's
+                # per-char indexing only works under a UTF-8 locale.
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/icons.bats
+                touch $out
+              '';
 
-          claude-issues-tests =
-            pkgs.runCommand "claude-issues-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/claude-issues.bats
-              touch $out
-            '';
+            claude-issues-tests =
+              pkgs.runCommand "claude-issues-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/claude-issues.bats
+                touch $out
+              '';
 
-          claude-status-dir-tests =
-            pkgs.runCommand "claude-status-dir-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-              CLAUDE_STATUS_DIR_VECTOR = ./picker/claudestatus/testdata/default-dir.txt;
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/claude-status-dir.bats
-              touch $out
-            '';
+            claude-status-dir-tests =
+              pkgs.runCommand "claude-status-dir-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+                CLAUDE_STATUS_DIR_VECTOR = ./picker/claudestatus/testdata/default-dir.txt;
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/claude-status-dir.bats
+                touch $out
+              '';
 
-          claude-progress-tests =
-            pkgs.runCommand "claude-progress-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/claude-progress.bats
-              touch $out
-            '';
+            claude-progress-tests =
+              pkgs.runCommand "claude-progress-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/claude-progress.bats
+                touch $out
+              '';
 
-          mark-seen-tests =
-            pkgs.runCommand "mark-seen-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/mark-seen.bats
-              touch $out
-            '';
+            mark-seen-tests =
+              pkgs.runCommand "mark-seen-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/mark-seen.bats
+                touch $out
+              '';
 
-          codex-relaunch-stamp-tests =
-            pkgs.runCommand "codex-relaunch-stamp-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/codex-relaunch-stamp.bats
-              touch $out
-            '';
+            codex-relaunch-stamp-tests =
+              pkgs.runCommand "codex-relaunch-stamp-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/codex-relaunch-stamp.bats
+                touch $out
+              '';
 
-          codex-status-hooks-tests =
-            pkgs.runCommand "codex-status-hooks-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnused];
-            } ''
-              cp -r ${./tests} tests
-              mkdir modules
-              cp ${./modules/home-manager.nix} modules/home-manager.nix
-              bats tests/codex-status-hooks.bats
-              touch $out
-            '';
+            codex-status-hooks-tests =
+              pkgs.runCommand "codex-status-hooks-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnused];
+              } ''
+                cp -r ${./tests} tests
+                mkdir modules
+                cp ${./modules/home-manager.nix} modules/home-manager.nix
+                bats tests/codex-status-hooks.bats
+                touch $out
+              '';
 
-          startup-session-tests =
-            pkgs.runCommand "startup-session-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused];
-            } ''
-              cp -r ${./tests} tests
-              mkdir modules
-              cp ${./modules/home-manager.nix} modules/home-manager.nix
-              bats tests/startup-session.bats
-              touch $out
-            '';
+            startup-session-tests =
+              pkgs.runCommand "startup-session-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused];
+              } ''
+                cp -r ${./tests} tests
+                mkdir modules
+                cp ${./modules/home-manager.nix} modules/home-manager.nix
+                bats tests/startup-session.bats
+                touch $out
+              '';
 
-          picker-launcher-tests =
-            pkgs.runCommand "picker-launcher-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.bash];
-            } ''
-              cp -r ${./tests} tests
-              cp -r ${./scripts} scripts
-              bats tests/picker-launcher.bats
-              touch $out
-            '';
+            picker-launcher-tests =
+              pkgs.runCommand "picker-launcher-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.bash];
+              } ''
+                cp -r ${./tests} tests
+                cp -r ${./scripts} scripts
+                bats tests/picker-launcher.bats
+                touch $out
+              '';
 
-          cursor-status-hooks-tests =
-            pkgs.runCommand "cursor-status-hooks-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
-            } ''
-              cp -r ${./tests} tests
-              cp -r ${./scripts} scripts
-              mkdir modules
-              cp ${./modules/home-manager.nix} modules/home-manager.nix
-              bats tests/cursor-status-hooks.bats
-              touch $out
-            '';
+            cursor-status-hooks-tests =
+              pkgs.runCommand "cursor-status-hooks-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
+              } ''
+                cp -r ${./tests} tests
+                cp -r ${./scripts} scripts
+                mkdir modules
+                cp ${./modules/home-manager.nix} modules/home-manager.nix
+                bats tests/cursor-status-hooks.bats
+                touch $out
+              '';
 
-          cursor-relaunch-stamp-tests =
-            pkgs.runCommand "cursor-relaunch-stamp-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/cursor-relaunch-stamp.bats
-              touch $out
-            '';
+            cursor-relaunch-stamp-tests =
+              pkgs.runCommand "cursor-relaunch-stamp-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/cursor-relaunch-stamp.bats
+                touch $out
+              '';
 
-          pi-relaunch-stamp-tests =
-            pkgs.runCommand "pi-relaunch-stamp-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/pi-relaunch-stamp.bats
-              touch $out
-            '';
+            pi-relaunch-stamp-tests =
+              pkgs.runCommand "pi-relaunch-stamp-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/pi-relaunch-stamp.bats
+                touch $out
+              '';
 
-          cursor-relaunch-hooks-install-tests =
-            pkgs.runCommand "cursor-relaunch-hooks-install-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
-            } ''
-              cp -r ${./tests} tests
-              cp -r ${./scripts} scripts
-              mkdir modules
-              cp ${./modules/home-manager.nix} modules/home-manager.nix
-              bats tests/cursor-relaunch-hooks-install.bats
-              touch $out
-            '';
+            cursor-relaunch-hooks-install-tests =
+              pkgs.runCommand "cursor-relaunch-hooks-install-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
+              } ''
+                cp -r ${./tests} tests
+                cp -r ${./scripts} scripts
+                mkdir modules
+                cp ${./modules/home-manager.nix} modules/home-manager.nix
+                bats tests/cursor-relaunch-hooks-install.bats
+                touch $out
+              '';
 
-          prune-stale-state-tests =
-            pkgs.runCommand "prune-stale-state-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/prune-stale-state.bats
-              touch $out
-            '';
+            prune-stale-state-tests =
+              pkgs.runCommand "prune-stale-state-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/prune-stale-state.bats
+                touch $out
+              '';
 
-          # Deliberately no LANG/LC_ALL. Nothing in these suites asserts a
-          # character count or a display width — the multibyte values are only
-          # ever compared as bytes — and C.UTF-8 does not exist on darwin, where
-          # bash's setlocale warning lands on stderr. bats folds stderr into
-          # $output, so pinning a locale here buys nothing and breaks the
-          # center's line-count assertions on macOS.
-          notify-router-tests =
-            pkgs.runCommand "notify-router-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/notify-router.bats
-              touch $out
-            '';
+            # Deliberately no LANG/LC_ALL. Nothing in these suites asserts a
+            # character count or a display width — the multibyte values are only
+            # ever compared as bytes — and C.UTF-8 does not exist on darwin, where
+            # bash's setlocale warning lands on stderr. bats folds stderr into
+            # $output, so pinning a locale here buys nothing and breaks the
+            # center's line-count assertions on macOS.
+            notify-router-tests =
+              pkgs.runCommand "notify-router-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/notify-router.bats
+                touch $out
+              '';
 
-          notify-producers-tests =
-            pkgs.runCommand "notify-producers-tests" {
-              PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/notify-producers.bats
-              touch $out
-            '';
+            notify-producers-tests =
+              pkgs.runCommand "notify-producers-tests" {
+                PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/notify-producers.bats
+                touch $out
+              '';
 
-          notify-center-tests =
-            pkgs.runCommand "notify-center-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/notify-center.bats
-              touch $out
-            '';
+            notify-center-tests =
+              pkgs.runCommand "notify-center-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/notify-center.bats
+                touch $out
+              '';
 
-          # The bell/activity WIRING, asserted on the generated conf rather than
-          # by inspection: hooks present at the free [20] index, both commands
-          # pinned to a store path (a bare name resolves against the tmux
-          # server's frozen PATH and would make prefix+r an incomplete deploy),
-          # both passing #{q:window_id} (never #{session_id} — run-shell's sh -c
-          # re-expands a leading $), matching -gu clears for reload idempotence,
-          # and the n bind running a store-path center.
-          #
-          # Two things here are the ONLY automated coverage of their failure mode
-          # and must not be softened:
-          #   * hook ORDER — a bare `set-hook -gu alert-bell` clears every index,
-          #     so a setter above it is erased on every load. Presence greps pass
-          #     either way; only the line-number comparison catches it.
-          #   * @notify@ SUBSTITUTION — both bats suites override the seam via
-          #     OG_NOTIFY_BIN, so a placeholder-name drift would build clean,
-          #     test green, and never notify in production. The store paths are
-          #     bound straight out of tmuxConfig, so nothing is globbed or guessed.
-          notify-conf-assertions =
-            pkgs.runCommand "notify-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-              CSU = "${tmuxConfig.script.claude-status-update}/bin/claude-status-update";
-              PRE = "${tmuxConfig.script.tmux-pr-enrich}/bin/tmux-pr-enrich";
-            } ''
-              grep -q 'set-hook -g alert-bell\[20\]' "$CONF"
-              grep -q 'set-hook -g alert-activity\[20\]' "$CONF"
-              grep -q 'set-hook -gu alert-bell' "$CONF"
-              grep -q 'set-hook -gu alert-activity' "$CONF"
-              grep -E 'alert-bell\[20\].*/nix/store/[^ ]*/bin/og-notify .*--window #\{q:window_id\}' "$CONF"
-              grep -E 'alert-activity\[20\].*/nix/store/[^ ]*/bin/og-notify .*--window #\{q:window_id\}' "$CONF"
-              grep -E "bind-key( -N '[^']*')? n display-popup -E .*/nix/store/[^ ]*/bin/og-notify-center" "$CONF"
+            # The bell/activity WIRING, asserted on the generated conf rather than
+            # by inspection: hooks present at the free [20] index, both commands
+            # pinned to a store path (a bare name resolves against the tmux
+            # server's frozen PATH and would make prefix+r an incomplete deploy),
+            # both passing #{q:window_id} (never #{session_id} — run-shell's sh -c
+            # re-expands a leading $), matching -gu clears for reload idempotence,
+            # and the n bind running a store-path center.
+            #
+            # Two things here are the ONLY automated coverage of their failure mode
+            # and must not be softened:
+            #   * hook ORDER — a bare `set-hook -gu alert-bell` clears every index,
+            #     so a setter above it is erased on every load. Presence greps pass
+            #     either way; only the line-number comparison catches it.
+            #   * @notify@ SUBSTITUTION — both bats suites override the seam via
+            #     OG_NOTIFY_BIN, so a placeholder-name drift would build clean,
+            #     test green, and never notify in production. The store paths are
+            #     bound straight out of tmuxConfig, so nothing is globbed or guessed.
+            notify-conf-assertions =
+              pkgs.runCommand "notify-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+                CSU = "${tmuxConfig.script.claude-status-update}/bin/claude-status-update";
+                PRE = "${tmuxConfig.script.tmux-pr-enrich}/bin/tmux-pr-enrich";
+              } ''
+                grep -q 'set-hook -g alert-bell\[20\]' "$CONF"
+                grep -q 'set-hook -g alert-activity\[20\]' "$CONF"
+                grep -q 'set-hook -gu alert-bell' "$CONF"
+                grep -q 'set-hook -gu alert-activity' "$CONF"
+                grep -E 'alert-bell\[20\].*/nix/store/[^ ]*/bin/og-notify .*--window #\{q:window_id\}' "$CONF"
+                grep -E 'alert-activity\[20\].*/nix/store/[^ ]*/bin/og-notify .*--window #\{q:window_id\}' "$CONF"
+                grep -E "bind-key( -N '[^']*')? n display-popup -E .*/nix/store/[^ ]*/bin/og-notify-center" "$CONF"
 
-              # ORDER, not just presence: the clear must precede the setter, or
-              # every config load (fresh server AND prefix+r) erases the hook.
-              bell_clear=$(grep -n 'set-hook -gu alert-bell' "$CONF" | head -1 | cut -d: -f1)
-              bell_set=$(grep -n 'alert-bell\[20\]' "$CONF" | head -1 | cut -d: -f1)
-              [ "$bell_clear" -lt "$bell_set" ]
-              act_clear=$(grep -n 'set-hook -gu alert-activity' "$CONF" | head -1 | cut -d: -f1)
-              act_set=$(grep -n 'alert-activity\[20\]' "$CONF" | head -1 | cut -d: -f1)
-              [ "$act_clear" -lt "$act_set" ]
+                # ORDER, not just presence: the clear must precede the setter, or
+                # every config load (fresh server AND prefix+r) erases the hook.
+                bell_clear=$(grep -n 'set-hook -gu alert-bell' "$CONF" | head -1 | cut -d: -f1)
+                bell_set=$(grep -n 'alert-bell\[20\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$bell_clear" -lt "$bell_set" ]
+                act_clear=$(grep -n 'set-hook -gu alert-activity' "$CONF" | head -1 | cut -d: -f1)
+                act_set=$(grep -n 'alert-activity\[20\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$act_clear" -lt "$act_set" ]
 
-              # The producer seam actually resolved to the router's store path.
-              grep -qE '/nix/store/[^ ]*/bin/og-notify' "$CSU"
-              grep -qE '/nix/store/[^ ]*/bin/og-notify' "$PRE"
-              ! grep -q '@notify@' "$CSU"
-              ! grep -q '@notify@' "$PRE"
+                # The producer seam actually resolved to the router's store path.
+                grep -qE '/nix/store/[^ ]*/bin/og-notify' "$CSU"
+                grep -qE '/nix/store/[^ ]*/bin/og-notify' "$PRE"
+                ! grep -q '@notify@' "$CSU"
+                ! grep -q '@notify@' "$PRE"
 
-              # monitor-activity stays off by design (a working Claude pane would
-              # be a continuous activity event), and monitor-bell is already on.
-              ! grep -q 'set -g monitor-activity on' "$CONF"
-              ! grep -q 'set -g monitor-bell' "$CONF"
-              touch $out
-            '';
+                # monitor-activity stays off by design (a working Claude pane would
+                # be a continuous activity event), and monitor-bell is already on.
+                ! grep -q 'set -g monitor-activity on' "$CONF"
+                ! grep -q 'set -g monitor-bell' "$CONF"
+                touch $out
+              '';
 
-          update-environment-conf-assertions =
-            pkgs.runCommand "update-environment-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              grep -q 'set -gu update-environment' "$CONF"
-              clear=$(grep -n 'set -gu update-environment' "$CONF" | head -1 | cut -d: -f1)
-              first_append=$(grep -n 'set -ga update-environment' "$CONF" | head -1 | cut -d: -f1)
-              [ "$clear" -lt "$first_append" ]
+            update-environment-conf-assertions =
+              pkgs.runCommand "update-environment-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                grep -q 'set -gu update-environment' "$CONF"
+                clear=$(grep -n 'set -gu update-environment' "$CONF" | head -1 | cut -d: -f1)
+                first_append=$(grep -n 'set -ga update-environment' "$CONF" | head -1 | cut -d: -f1)
+                [ "$clear" -lt "$first_append" ]
 
-              # The per-machine vars stay in update-environment (single-client
-              # behaviour is unchanged); the record-and-restore hook undoes an
-              # ssh client's overwrite of them (#1037).
-              for var in DISPLAY WAYLAND_DISPLAY WINDOWID XAUTHORITY KITTY_LISTEN_ON AEYE_HOST; do
-                for hook in 'client-attached\[30\]' 'after-new-session\[40\]'; do
-                  line=$(grep "^set-hook -g $hook " "$CONF")
-                  case "$line" in
-                    *"set -F @og_local_$var \""*"#{I/e:$var}"*) ;;
-                    *) echo "$hook does not record $var" >&2; exit 1 ;;
+                # The per-machine vars stay in update-environment (single-client
+                # behaviour is unchanged); the record-and-restore hook undoes an
+                # ssh client's overwrite of them (#1037).
+                for var in DISPLAY WAYLAND_DISPLAY WINDOWID XAUTHORITY KITTY_LISTEN_ON AEYE_HOST; do
+                  for hook in 'client-attached\[30\]' 'after-new-session\[40\]'; do
+                    line=$(grep "^set-hook -g $hook " "$CONF")
+                    case "$line" in
+                      *"set -F @og_local_$var \""*"#{I/e:$var}"*) ;;
+                      *) echo "$hook does not record $var" >&2; exit 1 ;;
+                    esac
+                    case "$line" in
+                      *"set-environment -F $var \"#{@og_local_$var}\""*"{ if -F \"#{@og_local_seen}\" { set-environment -r $var } }"*) ;;
+                      *) echo "$hook does not restore $var" >&2; exit 1 ;;
+                    esac
+                    case "$line" in
+                      *'set -F @og_local_seen 1'*) ;;
+                      *) echo "$hook does not stamp @og_local_seen" >&2; exit 1 ;;
+                    esac
+                    # Records are per session: a global write would cross sessions.
+                    case "$line" in
+                      *'set -gF @og_local_'*) echo "$hook records globally" >&2; exit 1 ;;
+                    esac
+                    if printf '%s' "$line" | grep -q 'set-environment [^"]*-t'; then
+                      echo "$hook must not pass -t to set-environment" >&2
+                      exit 1
+                    fi
+                  done
+                done
+                # client-attached resolves the attaching client by #{hook_client}.
+                line=$(grep '^set-hook -g client-attached\[30\] ' "$CONF")
+                case "$line" in
+                  *'set -gF @og_attach_client "#{hook_client}"'*) ;;
+                  *) echo "client-attached[30] does not stash #{hook_client}" >&2; exit 1 ;;
+                esac
+                # new-session -d has no client of its own: only an attached creator
+                # may record or restore.
+                line=$(grep '^set-hook -g after-new-session\[40\] ' "$CONF")
+                case "$line" in
+                  *"'if -F \"#{==:#{client_session},#{session_name}}\" {"*) ;;
+                  *) echo "after-new-session[40] is not gated on an attached creator" >&2; exit 1 ;;
+                esac
+                for hook in client-attached after-new-session; do
+                  hook_clear=$(grep -n "^set-hook -gu $hook\$" "$CONF" | head -1 | cut -d: -f1)
+                  hook_set=$(grep -n "^set-hook -g $hook\[[34]0\] .*@og_local_" "$CONF" | head -1 | cut -d: -f1)
+                  [ -n "$hook_clear" ] && [ -n "$hook_set" ] && [ "$hook_clear" -lt "$hook_set" ]
+                done
+                touch $out
+              '';
+
+            # The window picker opens on and marks the client's current window
+            # (#903): both of its binds must hand the picker the window id.
+            window-picker-current-conf-assertions =
+              pkgs.runCommand "window-picker-current-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                [ "$(grep -Ec "^bind -N 'Open window picker.*' [wa] run-shell .*tmux-window-picker .*--current #\{q:window_id\}" "$CONF")" -eq 2 ]
+                touch $out
+              '';
+
+            # Keep every directional bind's float-presence probe and geometry
+            # inputs wired together. Otherwise floats silently disappear from
+            # Ctrl-h/j/k/l while native select-pane continues to look plausible.
+            smart-nav-conf-assertions =
+              pkgs.runCommand "smart-nav-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                for direction in \
+                  'L left pane_at_left' \
+                  'D down pane_at_bottom' \
+                  'U up pane_at_top' \
+                  'R right pane_at_right'; do
+                  set -- $direction
+                  grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'" "$CONF"
+                done
+                [ "$(grep -c 'tmux-smart-nav .*#{q:window_id} client=#{?client_name,#{q:client_name},}' "$CONF")" -eq 4 ]
+                touch $out
+              '';
+
+            # The float-refit WIRING (#371). tmux bakes a float's percentage
+            # geometry into cells at creation and never revisits it, so every
+            # float bind must hand its percentages to @float_geom for the
+            # window-resized hook to reassert. A bind that forgets the stamp
+            # builds clean and looks right until the client resizes — nothing
+            # else catches it, which is why it is asserted on the generated conf.
+            float-conf-assertions =
+              pkgs.runCommand "float-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                # Join backslash-continued lines: the enrich card's bind spans
+                # several, with its stamp on the last one.
+                sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
+
+                [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
+
+                # The stock Empty menu (#769's non-mirror branch) carries tmux's own
+                # `new-pane ; join-pane`, tiled at once — never a float. Strip that
+                # exact item text, not the bindings, so a changed upstream item
+                # is still scanned.
+                sed 's/\\"New Pane\\" p { new-pane ; join-pane }//g' joined >scrubbed
+
+                if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v '@float_geom'; then
+                  echo "float bind above has no @float_geom stamp — tmux-float-refit cannot refit it" >&2
+                  exit 1
+                fi
+
+                # And the remain-on-exit pin (#587), asserted for the same reason:
+                # a bind that forgets it looks right until it is pressed inside a
+                # mirror window, whose own remain-on-exit the pane inherits.
+                if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v 'remain-on-exit off'; then
+                  echo "float bind above does not pin remain-on-exit off — its pane will linger dead inside a mirror window" >&2
+                  exit 1
+                fi
+
+                # OSC 52 reads must cross the bridge (#694): default `buffer` would
+                # answer from the remote server's own stale paste buffer.
+                grep -qx 'set -s get-clipboard request' "$CONF"
+
+                grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
+
+                # ORDER, as for the alert hooks above: the clear must precede the
+                # setter, or every config load erases the hook it just set.
+                clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
+                setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
+                [ "$clear" -lt "$setter" ]
+                touch $out
+              '';
+
+            # The grid-refit WIRING (#749, extended by #760). Indexed [10] so the
+            # responsive grid setter coexists with the float refit at index 0 — a
+            # bare `set-hook -g window-resized` (index 0) is the trap this guards,
+            # since the second setter would silently replace it. The bare `-gu`
+            # clear must still precede both, as for the alert hooks. The
+            # window-layout-changed setter (the carousel-toggle trigger) carries no
+            # index and needs its own clear-before-set ordering check.
+            grid-conf-assertions =
+              pkgs.runCommand "grid-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
+                grep -E 'set-hook -g window-resized\[10\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
+                grep -E 'set-hook -g window-layout-changed[[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
+
+                clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
+                setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
+                [ "$clear" -lt "$setter" ]
+                lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
+                lsetter=$(grep -n 'set-hook -g window-layout-changed ' "$CONF" | head -1 | cut -d: -f1)
+                [ "$lclear" -lt "$lsetter" ]
+                touch $out
+              '';
+
+            # The carousel-guard WIRING (#1056). Both setters are indexed [30] so
+            # they coexist with grid-refit at index 0 (layout-changed) and 10
+            # (resized), dwindle [20], float-refit at 0 and nudge [20]: an
+            # unindexed second setter would silently replace those. The bare `-gu`
+            # clears must still precede them, or they would wipe the [30] hooks
+            # on every config reload.
+            carousel-guard-conf-assertions =
+              pkgs.runCommand "carousel-guard-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                grep -E 'set-hook -g window-layout-changed\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
+                grep -E 'set-hook -g window-resized\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
+
+                lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
+                lsetter=$(grep -n 'set-hook -g window-layout-changed\[30\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$lclear" -lt "$lsetter" ]
+                clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
+                setter=$(grep -n 'set-hook -g window-resized\[30\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$clear" -lt "$setter" ]
+                touch $out
+              '';
+
+            # Layout gestures on a mirror (#787). Every stock layout key
+            # (prefix M-1..M-7, Space, E, C-o, M-o) must be re-bound behind
+            # bridgeGate, with its else-branch the stock command verbatim: a
+            # normal window is then unchanged, and a mirror window sends the
+            # gesture to the remote instead of reshaping only its renderer panes.
+            # A bind that kept acting locally builds clean and looks right until
+            # the next remote %layout-change reverts it.
+            layout-conf-assertions =
+              pkgs.runCommand "layout-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                gate="#{&&:#{@bridge_win},#{@bridge_pane}}"
+
+                check_layout() {
+                  key=$1
+                  ctl=$2
+                  stock=$3
+                  n=$(grep -E "^bind-key -N '[^']*' $key if-shell -F " "$CONF" | wc -l)
+                  if [ "$n" -ne 1 ]; then
+                    echo "layout-conf: expected exactly one gated bind for $key, got $n" >&2
+                    exit 1
+                  fi
+                  line=$(grep -E "^bind-key -N '[^']*' $key if-shell -F " "$CONF")
+                  printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
+                    { echo "layout-conf: $key is not gated on bridgeGate" >&2; exit 1; }
+                  printf '%s' "$line" | grep -qF -- "og-remote-bridge-ctl" ||
+                    { echo "layout-conf: $key has no bridge ctl invocation" >&2; exit 1; }
+                  printf '%s' "$line" | grep -qF -- 'run-shell "' ||
+                    { echo "layout-conf: $key mirror branch is not a run-shell" >&2; exit 1; }
+                  printf '%s' "$line" | grep -qF -- "$ctl\"" ||
+                    { echo "layout-conf: $key does not send '$ctl'" >&2; exit 1; }
+                  printf '%s' "$line" | grep -qF -- "{ $stock }" ||
+                    { echo "layout-conf: $key else-branch is not the stock '$stock'" >&2; exit 1; }
+                }
+
+                check_layout M-1 "layout #{q:@bridge_pane} even-horizontal" "select-layout even-horizontal"
+                check_layout M-2 "layout #{q:@bridge_pane} even-vertical" "select-layout even-vertical"
+                check_layout M-3 "layout #{q:@bridge_pane} main-horizontal" "select-layout main-horizontal"
+                check_layout M-4 "layout #{q:@bridge_pane} main-vertical" "select-layout main-vertical"
+                check_layout M-5 "layout #{q:@bridge_pane} tiled" "select-layout tiled"
+                check_layout M-6 "layout #{q:@bridge_pane} main-horizontal-mirrored" "select-layout main-horizontal-mirrored"
+                check_layout M-7 "layout #{q:@bridge_pane} main-vertical-mirrored" "select-layout main-vertical-mirrored"
+                check_layout Space "layout #{q:@bridge_pane} next" "next-layout"
+                check_layout E "layout #{q:@bridge_pane} spread" "select-layout -E"
+                check_layout C-o "rotate #{q:@bridge_pane}" "rotate-window"
+                check_layout M-o "rotate #{q:@bridge_pane} D" "rotate-window -D"
+                touch $out
+              '';
+
+            # The two pane keybinds that change the remote's pane set (#922).
+            # `prefix !` (break-pane) must route through the ctl `break-pane` verb
+            # — the mirror then follows the remote's new window and selection.
+            # `prefix @` is next-3.9's float/tile toggle, and there is no faithful
+            # ctl verb for float/tile (a float is mirrored FROM the remote;
+            # float-geom/tile-layout only reshape an existing remote object), so by
+            # the #769 rule it must be a no-op on a mirror — never a ctl guess,
+            # never the local stock toggle. Same grep-a-derivation shape as
+            # layout-conf-assertions above; the `@` bind sits in a %if block, so it
+            # is asserted as emitted.
+            break-pane-conf-assertions =
+              pkgs.runCommand "break-pane-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                gate="#{&&:#{@bridge_win},#{@bridge_pane}}"
+
+                n=$(grep -E "^bind-key -N '[^']*' ! if-shell -F " "$CONF" | wc -l)
+                if [ "$n" -ne 1 ]; then
+                  echo "break-pane-conf: expected exactly one gated '!' bind, got $n" >&2
+                  exit 1
+                fi
+                line=$(grep -E "^bind-key -N '[^']*' ! if-shell -F " "$CONF")
+                printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
+                  { echo "break-pane-conf: '!' is not gated on bridgeGate" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- 'break-pane #{q:@bridge_pane}"' ||
+                  { echo "break-pane-conf: '!' does not send the break-pane verb" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- '{ break-pane }' ||
+                  { echo "break-pane-conf: '!' else-branch is not the stock break-pane" >&2; exit 1; }
+
+                n=$(grep -E "^bind-key -N '[^']*' @ if-shell -F " "$CONF" | wc -l)
+                if [ "$n" -ne 1 ]; then
+                  echo "break-pane-conf: expected exactly one gated '@' bind, got $n" >&2
+                  exit 1
+                fi
+                line=$(grep -E "^bind-key -N '[^']*' @ if-shell -F " "$CONF")
+                printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
+                  { echo "break-pane-conf: '@' is not gated on bridgeGate" >&2; exit 1; }
+                printf '%s' "$line" | grep -qF -- '{ display-message ' ||
+                  { echo "break-pane-conf: '@' mirror branch is not a display-message no-op" >&2; exit 1; }
+                if printf '%s' "$line" | grep -qF -- 'og-remote-bridge-ctl'; then
+                  echo "break-pane-conf: '@' must not send a ctl verb (no faithful verb exists)" >&2
+                  exit 1
+                fi
+                printf '%s' "$line" | grep -qF -- "{ if-shell -F '#{pane_floating_flag}' { join-pane } { break-pane -W } }" ||
+                  { echo "break-pane-conf: '@' else-branch is not the stock float/tile toggle" >&2; exit 1; }
+
+                touch $out
+              '';
+
+            # Crew badge display gate (#671). status-format[1]'s single-line
+            # window list wraps the existing bridge-aware crew-name ternary
+            # (bridgeOpts() in generator/render/status.go: for name "crew_name",
+            # #{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}) in an `&&`
+            # against @window_has_agent — but the inner
+            # #{?#{@bridge_win},1,#{@window_has_agent}} collapses to literal `1`
+            # for a bridge window, so its `&&` reduces to exactly the pre-#671
+            # crew-name check, unchanged. Asserted here as a static text check
+            # (not a bats suite: tests/pane-border-format.bats starts a live
+            # scratch server against /dev/null and has no access to the
+            # generated conf text to grep at all), modeled on
+            # float-conf-assertions above — same CONF, same grep-a-derivation
+            # shape.
+            crew-badge-conf-assertions =
+              pkgs.runCommand "crew-badge-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                if ! grep -qF '#{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},#{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}},' "$CONF"; then
+                  echo "status-format[1]'s crew badge condition does not collapse to a no-op for a bridge window — see CLAUDE.md's #671 note" >&2
+                  exit 1
+                fi
+                touch $out
+              '';
+
+            # status-format[1]'s host badge (per-host colour, peach fallback) is
+            # gated on @bridge_placed, so no other window, dedicated mirrors
+            # included, shows it.
+            host-badge-conf-assertions =
+              pkgs.runCommand "host-badge-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                if ! grep -qF '#{?#{@bridge_placed},#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}' "$CONF"; then
+                  echo "status-format[1] has no @bridge_placed-gated per-host-coloured host badge — see docs/agents/status-bar.md" >&2
+                  exit 1
+                fi
+                touch $out
+              '';
+
+            # "Every bind has a description" (#629's which-key popup reads -N to
+            # build its rows): fails on any bind/bind-key line with no -N flag.
+            # Same joined-lines technique as float-conf-assertions above, since a
+            # note-bearing bind can itself span a backslash continuation (the
+            # enrich card).
+            #
+            # Scope limits, both accepted rather than worked around:
+            #   * CONF is tmuxConfig.tmuxConf, the single default build (every
+            #     {{if}}-gated bind block here — splash, notify, enrich, carousel —
+            #     defaults to enabled, so this already covers them in practice; it
+            #     is not the full off/on matrix tmux-conf-extraction-assertions
+            #     builds, so a bind newly hidden behind a toggle that defaults off
+            #     would not be caught here).
+            #   * extraConfText (config/tmux.conf.nix's passthrough for downstream
+            #     home-manager callers) is copied verbatim into CONF and could
+            #     carry an unrelated caller's own unnoted bind; the default build's
+            #     extraConfText is empty, so this doesn't block anything today, but
+            #     a caller who sets it and adds a bind of their own would trip this
+            #     check on content this repo doesn't own.
+            bind-note-assertions =
+              pkgs.runCommand "bind-note-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
+
+                if grep -E '^bind(-key)? ' joined | grep -vE -- "-N ('[^']*'|\"[^\"]*\")"; then
+                  echo "bind above has no -N description — the which-key popup reads it" >&2
+                  exit 1
+                fi
+                touch $out
+              '';
+
+            # nix build .#default cannot verify this: it imports tmux.conf.nix
+            # with no terminal options at all, so terminalConfig is already
+            # empty there and a default-build grep would be green whether or
+            # not the sixel line is ever emitted. Import with sixelTerminals
+            # set instead, the way float-conf-assertions imports tmux.conf.nix
+            # above.
+            sixel-conf-assertions = let
+              mkSixelConf = args:
+                (import ./config/tmux.conf.nix ({
+                    inherit pkgs lib;
+                    tmuxPkg = mkTmux pkgs;
+                    carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                    carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                    prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                  }
+                  // args))
+              .tmuxConf;
+            in
+              pkgs.runCommand "sixel-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep];
+                # No preset active, so terminalTerm is null. This is the case the
+                # option exists for -- kitty and ghostty are the only presets and
+                # neither speaks sixel -- so it must emit on its own.
+                ALONE = mkSixelConf {sixelTerminals = ["foot"];};
+                # Two entries beside a preset: pins the per-entry expansion (a
+                # regression that only shows at N>1) and the join with the
+                # RGB:extkeys line the preset emits.
+                BOTH = mkSixelConf {
+                  terminalTerm = "xterm-ghostty";
+                  sixelTerminals = ["foot" "wezterm"];
+                };
+              } ''
+                grep -F "set -as terminal-features 'foot*:sixel'" "$ALONE"
+                grep -F "set -as terminal-features 'xterm-ghostty*:RGB:extkeys'" "$BOTH"
+                grep -F "set -as terminal-features 'foot*:sixel'" "$BOTH"
+                grep -F "set -as terminal-features 'wezterm*:sixel'" "$BOTH"
+                touch $out
+              '';
+
+            # The extraction gate (§ The extraction check in
+            # docs/superpowers/specs/2026-09-10-og-generate-extract-config-generation-design.md):
+            # render the tmux.conf both ways from the same arguments and diff.
+            # The matrix is defined here rather than inherited from the flake's own
+            # four direct imports, which cover only defaults, sixelTerminals and
+            # enrich+ agentUsage off -- never the off branch of splashEnable,
+            # notifyEnable or carousel-toggle/prdash, five of the de-indent hazard
+            # sites.
+            #
+            # The template is complete, so this is a whole-file diff: every byte
+            # of the candidate comes from Go. The positive control is what shows
+            # the diff bites at all -- a stray byte in the template must turn
+            # every entry red.
+            tmux-conf-extraction-assertions = let
+              # A real store path, so entry 10's persist grep asserts the shape
+              # the module produces rather than a placeholder string.
+              persistStub = pkgs.writeShellScript "persist-wire-stub" ''
+                exit 0
+              '';
+
+              mkEntry = {
+                name,
+                args ? {},
+                extra ? "",
+              }: let
+                cfg = import ./config/tmux.conf.nix ({
+                    inherit pkgs lib;
+                    tmuxPkg = mkTmux pkgs;
+                    carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                    carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                    prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                  }
+                  // args);
+              in {
+                inherit name extra;
+                inherit (cfg) generatedConf referenceConf configToml;
+              };
+
+              # Every flag both ways: entry 12 exists because aiNamingFlag and
+              # resumeCarouselFlag are hand-transcribed bool->string maps whose
+              # arguments both default to false, so entries 1 and 11 render the
+              # same string for each and an inverted map would be invisible.
+              matrix = map mkEntry [
+                {name = "01-defaults";}
+                {
+                  name = "02-splash-off";
+                  args.splashEnable = false;
+                }
+                {
+                  name = "03-notify-off";
+                  args.notifyEnable = false;
+                }
+                {
+                  name = "04-enrich-off";
+                  args.enrichEnable = false;
+                }
+                {
+                  name = "05-agent-usage-off";
+                  args.agentUsageEnable = false;
+                }
+                {
+                  name = "06-no-optional-tools";
+                  args = {
+                    carousel-toggle = null;
+                    carousel-aeye = null;
+                    prdash = null;
+                  };
+                }
+                {
+                  name = "07-terminals";
+                  args = {
+                    sixelTerminals = ["foot" "wezterm"];
+                    terminalTerm = "xterm-ghostty";
+                  };
+                }
+                {
+                  name = "08a-splash-remote-static";
+                  args.splashRemote = "static";
+                }
+                {
+                  name = "08b-splash-remote-skip";
+                  args.splashRemote = "skip";
+                }
+                {
+                  name = "09-values";
+                  args = {
+                    # Raw dialect (I8): this entry imports tmux.conf.nix directly,
+                    # so it never passes through the module's '#' doubling.
+                    enrichIcons = {
+                      linear = "L#";
+                      github = "G#";
+                    };
+                    defaultShell = "/run/current-system/sw/bin/fish";
+                    copyModeLineNumbers = "hybrid";
+                    focusFollowsMouse = true;
+                  };
+                  # I8's only cover. No check imports the module, so the two
+                  # dialects are asserted here, per site: `L#` is a substring of
+                  # `L##`, so each grep carries the closing quote and is scoped to
+                  # its own line rather than the whole file.
+                  extra = ''
+                    if ! grep -F 'set -g status-format[0]' candidate \
+                      | grep -Fq -- "--icon-linear 'L##' --icon-github 'G##'"; then
+                      echo "entry 9: status-format[0] must carry the doubled dialect (--icon-linear 'L##')" >&2
+                      exit 1
+                    fi
+                    if ! grep -F -- '--icon-linear' candidate \
+                      | grep -Fv 'set -g status-format[0]' \
+                      | grep -Fq -- "--icon-linear 'L#' --icon-github 'G#'"; then
+                      echo "entry 9: the enrich card must carry the raw dialect (--icon-linear 'L#')" >&2
+                      exit 1
+                    fi
+                  '';
+                }
+                {
+                  name = "10-persist";
+                  args = {
+                    extraConfText = ''
+                      # matrix entry 10
+                      set -g @matrix "quoted \"value\" and a # hash"
+                    '';
+                    persistWireScript = persistStub;
+                  };
+                  # I7's deliberate third copy of the persist block's bytes. The
+                  # reference and the generator are otherwise compared only to
+                  # each other, so a transcription error shared by both passes
+                  # the diff; only a literal written here catches it.
+                  extra = ''
+                    marker='# === tmux-remux (Phase 2a, opt-in via programs.tmux-og.persist) ==='
+                    # Exactly one, not merely at least one: a doubled block makes
+                    # $n multi-line and the arithmetic below dies with a generic
+                    # error instead of naming the regression it just found.
+                    hits=$(grep -c -Fx "$marker" candidate) || true
+                    if [ "$hits" != 1 ]; then
+                      echo "entry 10: persist block comment line appears $hits times, want 1" >&2
+                      exit 1
+                    fi
+                    n=$(grep -n -Fx "$marker" candidate | cut -d: -f1)
+                    # The block's other two literal lines, in position: a blank
+                    # line above and the run-shell below.
+                    if [ "$n" -lt 2 ]; then
+                      echo "entry 10: persist block is on line 1, so nothing precedes it" >&2
+                      exit 1
+                    fi
+                    if [ -n "$(sed -n "$((n - 1))p" candidate)" ]; then
+                      echo "entry 10: persist block is not preceded by a blank line" >&2
+                      exit 1
+                    fi
+                    if ! sed -n "$((n + 1))p" candidate | grep -Fxq 'run-shell "${persistStub} #{q:version}"'; then
+                      echo "entry 10: persist block run-shell line does not match" >&2
+                      exit 1
+                    fi
+                  '';
+                }
+                {
+                  name = "11-all-off";
+                  args = {
+                    splashEnable = false;
+                    notifyEnable = false;
+                    enrichEnable = false;
+                    agentUsageEnable = false;
+                    aiNamingEnable = false;
+                    resumeClaudeEnable = false;
+                    resumeCarouselEnable = false;
+                    dwindleEnable = false;
+                    focusFollowsMouse = false;
+                    carousel-toggle = null;
+                    carousel-aeye = null;
+                    prdash = null;
+                  };
+                }
+                {
+                  name = "12-all-on";
+                  args = {
+                    splashEnable = true;
+                    notifyEnable = true;
+                    enrichEnable = true;
+                    agentUsageEnable = true;
+                    aiNamingEnable = true;
+                    resumeClaudeEnable = true;
+                    resumeCarouselEnable = true;
+                    dwindleEnable = true;
+                    focusFollowsMouse = true;
+                  };
+                }
+                # Entry 12's hole, one level down: the leaf values no other entry
+                # moves off its default. The gate's whole proof is "render both
+                # ways and diff", so a field pinned at its default renders the
+                # same bytes whether its plumbing is right or entirely dead, and a
+                # wrong hard-coded Go default is invisible.
+                #
+                # Five of the thirteen are carried for the Nix->TOML key spelling
+                # only and reach no tmux.conf byte: enrichProviders, the two
+                # enrich refresh seconds, agentUsageRefreshSeconds and
+                # claudeStatusAssumeDeadAfter are baked into scripts on the Nix
+                # side, so no render diff can witness them.
+                {
+                  name = "13-leaf-values";
+                  args = {
+                    enrichProviders = ["github" "linear"];
+                    enrichPrRefreshSeconds = 45;
+                    enrichPrCheckRefreshSeconds = 90;
+                    zoxideExclude = "*/.ssh,/tmp/*";
+                    pickerListRatio = 35;
+                    pickerLayout = "list";
+                    remoteBridgeHosts = "halo mbp";
+                    remoteAuthPersistSeconds = 3600;
+                    prefix = "a";
+                    agentUsageRefreshSeconds = 60;
+                    agentUsageMonthlyThreshold = 75;
+                    claudeStatusAssumeDeadAfter = 30;
+                    # Only the three agent keys reach tmux.conf, via the usage
+                    # segment's icons; the rest of the map is script-side.
+                    extraProcessIcons.claude = "C";
+                  };
+                  # The entry asserts nothing if its values happen to render the
+                  # defaults' bytes, which a later change to any of those defaults
+                  # would quietly make true.
+                  extra = ''
+                    if cmp -s ${(mkEntry {name = "01-defaults";}).generatedConf} candidate; then
+                      echo "entry 13: renders the defaults' bytes, so it varies nothing" >&2
+                      exit 1
+                    fi
+                  '';
+                }
+              ];
+
+              # --prefix resolves the optional tools by existence under DIR/bin,
+              # and DIR does not exist in the smoke, so every optional renders off.
+              # Entry 6 is the one that also has them off, so it is the only entry
+              # line-for-line comparable with that render. Selected from the built
+              # matrix: re-running mkEntry on a bare name rebuilds the DEFAULTS
+              # entry under that label, optionals and all.
+              smokeEntry =
+                lib.findFirst (e: e.name == "06-no-optional-tools")
+                (throw "extraction smoke: matrix has no 06-no-optional-tools entry")
+                matrix;
+
+              # Shared by every store-path assertion. `[ -s ]` first, because an
+              # empty file passes a negative grep vacuously; and grep's exit 2 (an
+              # unreadable path, say) is a real error, not "no match" -- reading it
+              # as clean is how a broken check reports success.
+              storePathHelper = ''
+                no_store_path() {
+                  label=$1
+                  file=$2
+                  if [ ! -s "$file" ]; then
+                    echo "$label: $file is empty" >&2
+                    exit 1
+                  fi
+                  rc=0
+                  grep -F /nix/store "$file" >&2 || rc=$?
+                  case $rc in
+                    0)
+                      echo "$label: carries a store path" >&2
+                      exit 1
+                      ;;
+                    1) ;;
+                    *)
+                      echo "$label: grep failed on $file (exit $rc)" >&2
+                      exit 1
+                      ;;
                   esac
-                  case "$line" in
-                    *"set-environment -F $var \"#{@og_local_$var}\""*"{ if -F \"#{@og_local_seen}\" { set-environment -r $var } }"*) ;;
-                    *) echo "$hook does not restore $var" >&2; exit 1 ;;
-                  esac
-                  case "$line" in
-                    *'set -F @og_local_seen 1'*) ;;
-                    *) echo "$hook does not stamp @og_local_seen" >&2; exit 1 ;;
-                  esac
-                  # Records are per session: a global write would cross sessions.
-                  case "$line" in
-                    *'set -gF @og_local_'*) echo "$hook records globally" >&2; exit 1 ;;
-                  esac
-                  if printf '%s' "$line" | grep -q 'set-environment [^"]*-t'; then
-                    echo "$hook must not pass -t to set-environment" >&2
+                }
+              '';
+
+              entryCheck = e: ''
+                echo "=== ${e.name}"
+                cat ${e.generatedConf} >candidate
+                if ! diff -u ${e.referenceConf} candidate >delta; then
+                  echo "${e.name}: generated tmux.conf differs from the frozen reference" >&2
+                  head -200 delta >&2
+                  exit 1
+                fi
+
+                # Scoped to the matrix's own config.toml files on purpose: this is
+                # NOT an invariant of config.toml in general, because extra_config
+                # copies cfg.extraConfig verbatim and a Nix user may legitimately
+                # interpolate a store path into it.
+                no_store_path "${e.name} config.toml" ${e.configToml}
+
+                # The one property tests/verify-extraction.sh structurally cannot
+                # see: every consumer of tmuxConf, tests/test-display.sh's wrapper
+                # scrape included, needs a regular file named *-tmux.conf.
+                conf=${e.generatedConf}
+                [ -f "$conf" ]
+                case "$conf" in
+                  *-tmux.conf) ;;
+                  *)
+                    echo "${e.name}: $conf is not a *-tmux.conf store path" >&2
+                    exit 1
+                    ;;
+                esac
+
+                ${e.extra}
+              '';
+            in
+              pkgs.runCommand "tmux-conf-extraction-assertions" {
+                nativeBuildInputs = [pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+                # Same derivation packages.og-generate builds; identical inputs, one
+                # store path, so this costs nothing extra.
+                OG_GENERATE = "${pkgs.callPackage ./generator {}}/bin/og-generate";
+                OG_INIT = "${pkgs.callPackage ./generator {}}/bin/og-init";
+                SMOKE_CONFIG = smokeEntry.configToml;
+                SMOKE_REFERENCE = smokeEntry.referenceConf;
+                TEMPLATE = ./config/tmux.conf.tmpl;
+              } (storePathHelper
+                + lib.concatMapStrings entryCheck matrix
+                + ''
+                  # --prefix is the resolver's second mode; the smoke proves it
+                  # renders and that nothing store-shaped leaks into the output.
+                  # It is the one render path with no reference diff behind it, so
+                  # the assertions have to be positive: an empty file passes both
+                  # `-f` and a negative grep, which made a render-nothing
+                  # regression read as a clean pass.
+                  echo "=== --prefix smoke"
+                  mkdir -p prefixout
+                  "$OG_GENERATE" --config "$SMOKE_CONFIG" --prefix /opt/tmux-og \
+                    --template "$TEMPLATE" --out prefixout
+                  if ! grep -q '^set -g ' prefixout/tmux.conf; then
+                    echo "--prefix render carries no 'set -g' line" >&2
+                    exit 1
+                  fi
+                  if ! grep -Fq /opt/tmux-og/bin/ prefixout/tmux.conf; then
+                    echo "--prefix render carries no path under the given prefix" >&2
+                    exit 1
+                  fi
+                  if ! grep -Fq 'set-environment -g BROWSER "/opt/tmux-og/bin/og-open"' prefixout/tmux.conf; then
+                    echo "--prefix render carries no og-open BROWSER line" >&2
+                    exit 1
+                  fi
+                  # Presence is not completeness: the two greps above sit at lines
+                  # 2 and 32 of a ~550-line render, so a truncation past those
+                  # still satisfies them. The prefix render differs from its
+                  # reference only in path text, and a path holds no newline, so
+                  # the line counts must agree exactly.
+                  want=$(wc -l <"$SMOKE_REFERENCE")
+                  got=$(wc -l <prefixout/tmux.conf)
+                  if [ "$got" != "$want" ]; then
+                    echo "--prefix render is $got lines, reference is $want" >&2
+                    exit 1
+                  fi
+
+                  no_store_path "--prefix render" prefixout/tmux.conf
+
+                  # og init's own output, fed straight into og generate --prefix:
+                  # the one place the pair is proven to work end to end, since a
+                  # Go-level test can't reach the real template (generator/'s
+                  # buildGoModule src is scoped to generator/ alone, so
+                  # config/tmux.conf.tmpl sits outside its sandbox).
+                  echo "=== og init -> og generate --prefix"
+                  "$OG_INIT" --out init.toml
+                  mkdir -p initout
+                  "$OG_GENERATE" --config init.toml --prefix /opt/tmux-og \
+                    --template "$TEMPLATE" --out initout
+                  if ! grep -q '^set -g ' initout/tmux.conf; then
+                    echo "og init render carries no 'set -g' line" >&2
+                    exit 1
+                  fi
+                  if ! grep -Fq /opt/tmux-og/bin/ initout/tmux.conf; then
+                    echo "og init render carries no path under the given prefix" >&2
+                    exit 1
+                  fi
+                  no_store_path "og init render" initout/tmux.conf
+
+                  touch $out
+                '');
+
+            # og's fish completions, generated by mkOg from the same table as the
+            # dispatcher. Asserts over a stub table (quote/paren/`--`/backslash
+            # summaries, a subverb-only noun, a noun with bare verb + subverbs)
+            # and over every key of the real ogVerbSpec, so a verb added to the
+            # table without landing in the completions fails here.
+            og-completion-assertions = let
+              stubTarget = "/nonexistent/stub";
+              ogStub = tmuxConfig.mkOg {
+                "q" = {
+                  target = stubTarget;
+                  summary = "it's (quoted) -- with \\ backslash";
+                };
+                "q sub" = {
+                  target = stubTarget;
+                  summary = "sub 'one'";
+                };
+                "g a" = {
+                  target = stubTarget;
+                  summary = "ga";
+                };
+                "g b" = {
+                  target = stubTarget;
+                  summary = "gb";
+                };
+                # A Go-backed verb: its flags are completed, gated on the verb.
+                "r go" = {
+                  target = stubTarget;
+                  summary = "rgo";
+                  model = "remote-open";
+                };
+              };
+              realOg = tmuxConfig.og;
+            in
+              pkgs.runCommand "og-completion-assertions" {
+                nativeBuildInputs = [pkgs.fish pkgs.gnugrep pkgs.coreutils];
+                STUB = "${ogStub}/share/fish/vendor_completions.d/og.fish";
+                REAL = "${realOg}/share/fish/vendor_completions.d/og.fish";
+                VERBS = lib.concatStringsSep "\n" (builtins.attrNames tmuxConfig.ogVerbSpec);
+              } ''
+                comp() { # <file> <line>
+                  fish --no-config -c 'source "$argv[1]"; complete -C "$argv[2]"' "$1" "$2"
+                }
+
+                sq="'"
+                top=$(comp "$STUB" "og ")
+                grep -qxF "q"$'\t'"it''${sq}s (quoted) -- with \\ backslash" <<<"$top"
+                grep -qxF "$(printf 'g\t2 subcommands')" <<<"$top"
+                grep -qxF "$(printf 'help\tList every verb')" <<<"$top"
+                q=$(comp "$STUB" "og q ")
+                grep -qxF "sub"$'\t'"sub ''${sq}one''${sq}" <<<"$q"
+                g=$(comp "$STUB" "og g ")
+                grep -qxF "$(printf 'a\tga')" <<<"$g"
+                grep -qxF "$(printf 'b\tgb')" <<<"$g"
+                # past the verb fish falls back to files: no subverb names.
+                past=$(comp "$STUB" "og g a " | cut -f1)
+                if grep -qxE 'a|b' <<<"$past"; then
+                  echo "subverbs offered past the verb" >&2
+                  exit 1
+                fi
+
+                # A Go-backed verb's flags are offered after the verb, and only
+                # there: not at the noun, not after a bash-backed verb.
+                grep -qxF -- "--into" <<<"$(comp "$STUB" "og r go --" | cut -f1)"
+                grep -qxF -- "--window" <<<"$(comp "$STUB" "og r go --" | cut -f1)"
+                for line in "og r --" "og r " "og q sub --" "og g a --"; do
+                  if comp "$STUB" "$line" | cut -f1 | grep -qxE -- '--into|--window'; then
+                    echo "go-backed flags offered at: $line" >&2
                     exit 1
                   fi
                 done
-              done
-              # client-attached resolves the attaching client by #{hook_client}.
-              line=$(grep '^set-hook -g client-attached\[30\] ' "$CONF")
-              case "$line" in
-                *'set -gF @og_attach_client "#{hook_client}"'*) ;;
-                *) echo "client-attached[30] does not stash #{hook_client}" >&2; exit 1 ;;
-              esac
-              # new-session -d has no client of its own: only an attached creator
-              # may record or restore.
-              line=$(grep '^set-hook -g after-new-session\[40\] ' "$CONF")
-              case "$line" in
-                *"'if -F \"#{==:#{client_session},#{session_name}}\" {"*) ;;
-                *) echo "after-new-session[40] is not gated on an attached creator" >&2; exit 1 ;;
-              esac
-              for hook in client-attached after-new-session; do
-                hook_clear=$(grep -n "^set-hook -gu $hook\$" "$CONF" | head -1 | cut -d: -f1)
-                hook_set=$(grep -n "^set-hook -g $hook\[[34]0\] .*@og_local_" "$CONF" | head -1 | cut -d: -f1)
-                [ -n "$hook_clear" ] && [ -n "$hook_set" ] && [ "$hook_clear" -lt "$hook_set" ]
-              done
-              touch $out
-            '';
 
-          # The window picker opens on and marks the client's current window
-          # (#903): both of its binds must hand the picker the window id.
-          window-picker-current-conf-assertions =
-            pkgs.runCommand "window-picker-current-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              [ "$(grep -Ec "^bind -N 'Open window picker.*' [wa] run-shell .*tmux-window-picker .*--current #\{q:window_id\}" "$CONF")" -eq 2 ]
-              touch $out
-            '';
+                # every real verb is completable: noun at `og `, subverb at `og <noun> `.
+                real_top=$(comp "$REAL" "og " | cut -f1)
+                while read -r v; do
+                  noun=''${v%% *}
+                  grep -qxF "$noun" <<<"$real_top"
+                  case "$v" in
+                    *' '*)
+                      sub=''${v#* }
+                      comp "$REAL" "og $noun " | cut -f1 | grep -qxF "$sub"
+                      ;;
+                  esac
+                done <<<"$VERBS"
 
-          # Keep every directional bind's float-presence probe and geometry
-          # inputs wired together. Otherwise floats silently disappear from
-          # Ctrl-h/j/k/l while native select-pane continues to look plausible.
-          smart-nav-conf-assertions =
-            pkgs.runCommand "smart-nav-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              for direction in \
-                'L left pane_at_left' \
-                'D down pane_at_bottom' \
-                'U up pane_at_top' \
-                'R right pane_at_right'; do
-                set -- $direction
-                grep -Fq "tmux-smart-nav $1 $2 #{q:window_zoomed_flag} #{q:$3} #{q:pane_floating_flag} #{q:pane_id} #{q:window_id} client=#{?client_name,#{q:client_name},}'" "$CONF"
-              done
-              [ "$(grep -c 'tmux-smart-nav .*#{q:window_id} client=#{?client_name,#{q:client_name},}' "$CONF")" -eq 4 ]
-              touch $out
-            '';
-
-          # The float-refit WIRING (#371). tmux bakes a float's percentage
-          # geometry into cells at creation and never revisits it, so every
-          # float bind must hand its percentages to @float_geom for the
-          # window-resized hook to reassert. A bind that forgets the stamp
-          # builds clean and looks right until the client resizes — nothing
-          # else catches it, which is why it is asserted on the generated conf.
-          float-conf-assertions =
-            pkgs.runCommand "float-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              # Join backslash-continued lines: the enrich card's bind spans
-              # several, with its stamp on the last one.
-              sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
-
-              [ "$(grep -cE '^bind(-key)? .*new-pane' joined)" -ge 1 ]
-
-              # The stock Empty menu (#769's non-mirror branch) carries tmux's own
-              # `new-pane ; join-pane`, tiled at once — never a float. Strip that
-              # exact item text, not the bindings, so a changed upstream item
-              # is still scanned.
-              sed 's/\\"New Pane\\" p { new-pane ; join-pane }//g' joined >scrubbed
-
-              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v '@float_geom'; then
-                echo "float bind above has no @float_geom stamp — tmux-float-refit cannot refit it" >&2
-                exit 1
-              fi
-
-              # And the remain-on-exit pin (#587), asserted for the same reason:
-              # a bind that forgets it looks right until it is pressed inside a
-              # mirror window, whose own remain-on-exit the pane inherits.
-              if grep -E '^bind(-key)? .*new-pane' scrubbed | grep -v 'remain-on-exit off'; then
-                echo "float bind above does not pin remain-on-exit off — its pane will linger dead inside a mirror window" >&2
-                exit 1
-              fi
-
-              # OSC 52 reads must cross the bridge (#694): default `buffer` would
-              # answer from the remote server's own stale paste buffer.
-              grep -qx 'set -s get-clipboard request' "$CONF"
-
-              grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
-
-              # ORDER, as for the alert hooks above: the clear must precede the
-              # setter, or every config load erases the hook it just set.
-              clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
-              setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
-              [ "$clear" -lt "$setter" ]
-              touch $out
-            '';
-
-          # The grid-refit WIRING (#749, extended by #760). Indexed [10] so the
-          # responsive grid setter coexists with the float refit at index 0 — a
-          # bare `set-hook -g window-resized` (index 0) is the trap this guards,
-          # since the second setter would silently replace it. The bare `-gu`
-          # clear must still precede both, as for the alert hooks. The
-          # window-layout-changed setter (the carousel-toggle trigger) carries no
-          # index and needs its own clear-before-set ordering check.
-          grid-conf-assertions =
-            pkgs.runCommand "grid-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              grep -E 'set-hook -g window-resized .*/nix/store/[^ ]*/bin/tmux-float-refit #\{q:window_id\}' "$CONF"
-              grep -E 'set-hook -g window-resized\[10\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
-              grep -E 'set-hook -g window-layout-changed[[:space:]]+.*/nix/store/[^ ]*/bin/tmux-grid-refit #\{q:window_id\}' "$CONF"
-
-              clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
-              setter=$(grep -n 'set-hook -g window-resized ' "$CONF" | head -1 | cut -d: -f1)
-              [ "$clear" -lt "$setter" ]
-              lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
-              lsetter=$(grep -n 'set-hook -g window-layout-changed ' "$CONF" | head -1 | cut -d: -f1)
-              [ "$lclear" -lt "$lsetter" ]
-              touch $out
-            '';
-
-          # The carousel-guard WIRING (#1056). Both setters are indexed [30] so
-          # they coexist with grid-refit at index 0 (layout-changed) and 10
-          # (resized), dwindle [20], float-refit at 0 and nudge [20]: an
-          # unindexed second setter would silently replace those. The bare `-gu`
-          # clears must still precede them, or they would wipe the [30] hooks
-          # on every config reload.
-          carousel-guard-conf-assertions =
-            pkgs.runCommand "carousel-guard-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              grep -E 'set-hook -g window-layout-changed\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
-              grep -E 'set-hook -g window-resized\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
-
-              lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
-              lsetter=$(grep -n 'set-hook -g window-layout-changed\[30\]' "$CONF" | head -1 | cut -d: -f1)
-              [ "$lclear" -lt "$lsetter" ]
-              clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
-              setter=$(grep -n 'set-hook -g window-resized\[30\]' "$CONF" | head -1 | cut -d: -f1)
-              [ "$clear" -lt "$setter" ]
-              touch $out
-            '';
-
-          # Layout gestures on a mirror (#787). Every stock layout key
-          # (prefix M-1..M-7, Space, E, C-o, M-o) must be re-bound behind
-          # bridgeGate, with its else-branch the stock command verbatim: a
-          # normal window is then unchanged, and a mirror window sends the
-          # gesture to the remote instead of reshaping only its renderer panes.
-          # A bind that kept acting locally builds clean and looks right until
-          # the next remote %layout-change reverts it.
-          layout-conf-assertions =
-            pkgs.runCommand "layout-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              gate="#{&&:#{@bridge_win},#{@bridge_pane}}"
-
-              check_layout() {
-                key=$1
-                ctl=$2
-                stock=$3
-                n=$(grep -E "^bind-key -N '[^']*' $key if-shell -F " "$CONF" | wc -l)
-                if [ "$n" -ne 1 ]; then
-                  echo "layout-conf: expected exactly one gated bind for $key, got $n" >&2
+                # the real Go-backed verb completes its flags, with descriptions.
+                real_flags=$(comp "$REAL" "og remote open --")
+                grep -qxE -- '--into'$'\t'.+ <<<"$real_flags"
+                grep -qxE -- '--window'$'\t'.+ <<<"$real_flags"
+                if comp "$REAL" "og remote picker --" | cut -f1 | grep -qxE -- '--into|--window'; then
+                  echo "remote open's flags offered for another verb" >&2
                   exit 1
                 fi
-                line=$(grep -E "^bind-key -N '[^']*' $key if-shell -F " "$CONF")
-                printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
-                  { echo "layout-conf: $key is not gated on bridgeGate" >&2; exit 1; }
-                printf '%s' "$line" | grep -qF -- "og-remote-bridge-ctl" ||
-                  { echo "layout-conf: $key has no bridge ctl invocation" >&2; exit 1; }
-                printf '%s' "$line" | grep -qF -- 'run-shell "' ||
-                  { echo "layout-conf: $key mirror branch is not a run-shell" >&2; exit 1; }
-                printf '%s' "$line" | grep -qF -- "$ctl\"" ||
-                  { echo "layout-conf: $key does not send '$ctl'" >&2; exit 1; }
-                printf '%s' "$line" | grep -qF -- "{ $stock }" ||
-                  { echo "layout-conf: $key else-branch is not the stock '$stock'" >&2; exit 1; }
-              }
-
-              check_layout M-1 "layout #{q:@bridge_pane} even-horizontal" "select-layout even-horizontal"
-              check_layout M-2 "layout #{q:@bridge_pane} even-vertical" "select-layout even-vertical"
-              check_layout M-3 "layout #{q:@bridge_pane} main-horizontal" "select-layout main-horizontal"
-              check_layout M-4 "layout #{q:@bridge_pane} main-vertical" "select-layout main-vertical"
-              check_layout M-5 "layout #{q:@bridge_pane} tiled" "select-layout tiled"
-              check_layout M-6 "layout #{q:@bridge_pane} main-horizontal-mirrored" "select-layout main-horizontal-mirrored"
-              check_layout M-7 "layout #{q:@bridge_pane} main-vertical-mirrored" "select-layout main-vertical-mirrored"
-              check_layout Space "layout #{q:@bridge_pane} next" "next-layout"
-              check_layout E "layout #{q:@bridge_pane} spread" "select-layout -E"
-              check_layout C-o "rotate #{q:@bridge_pane}" "rotate-window"
-              check_layout M-o "rotate #{q:@bridge_pane} D" "rotate-window -D"
-              touch $out
-            '';
-
-          # The two pane keybinds that change the remote's pane set (#922).
-          # `prefix !` (break-pane) must route through the ctl `break-pane` verb
-          # — the mirror then follows the remote's new window and selection.
-          # `prefix @` is next-3.9's float/tile toggle, and there is no faithful
-          # ctl verb for float/tile (a float is mirrored FROM the remote;
-          # float-geom/tile-layout only reshape an existing remote object), so by
-          # the #769 rule it must be a no-op on a mirror — never a ctl guess,
-          # never the local stock toggle. Same grep-a-derivation shape as
-          # layout-conf-assertions above; the `@` bind sits in a %if block, so it
-          # is asserted as emitted.
-          break-pane-conf-assertions =
-            pkgs.runCommand "break-pane-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              gate="#{&&:#{@bridge_win},#{@bridge_pane}}"
-
-              n=$(grep -E "^bind-key -N '[^']*' ! if-shell -F " "$CONF" | wc -l)
-              if [ "$n" -ne 1 ]; then
-                echo "break-pane-conf: expected exactly one gated '!' bind, got $n" >&2
-                exit 1
-              fi
-              line=$(grep -E "^bind-key -N '[^']*' ! if-shell -F " "$CONF")
-              printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
-                { echo "break-pane-conf: '!' is not gated on bridgeGate" >&2; exit 1; }
-              printf '%s' "$line" | grep -qF -- 'break-pane #{q:@bridge_pane}"' ||
-                { echo "break-pane-conf: '!' does not send the break-pane verb" >&2; exit 1; }
-              printf '%s' "$line" | grep -qF -- '{ break-pane }' ||
-                { echo "break-pane-conf: '!' else-branch is not the stock break-pane" >&2; exit 1; }
-
-              n=$(grep -E "^bind-key -N '[^']*' @ if-shell -F " "$CONF" | wc -l)
-              if [ "$n" -ne 1 ]; then
-                echo "break-pane-conf: expected exactly one gated '@' bind, got $n" >&2
-                exit 1
-              fi
-              line=$(grep -E "^bind-key -N '[^']*' @ if-shell -F " "$CONF")
-              printf '%s' "$line" | grep -qF -- "if-shell -F '$gate'" ||
-                { echo "break-pane-conf: '@' is not gated on bridgeGate" >&2; exit 1; }
-              printf '%s' "$line" | grep -qF -- '{ display-message ' ||
-                { echo "break-pane-conf: '@' mirror branch is not a display-message no-op" >&2; exit 1; }
-              if printf '%s' "$line" | grep -qF -- 'og-remote-bridge-ctl'; then
-                echo "break-pane-conf: '@' must not send a ctl verb (no faithful verb exists)" >&2
-                exit 1
-              fi
-              printf '%s' "$line" | grep -qF -- "{ if-shell -F '#{pane_floating_flag}' { join-pane } { break-pane -W } }" ||
-                { echo "break-pane-conf: '@' else-branch is not the stock float/tile toggle" >&2; exit 1; }
-
-              touch $out
-            '';
-
-          # Crew badge display gate (#671). status-format[1]'s single-line
-          # window list wraps the existing bridge-aware crew-name ternary
-          # (bridgeOpts() in generator/render/status.go: for name "crew_name",
-          # #{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}) in an `&&`
-          # against @window_has_agent — but the inner
-          # #{?#{@bridge_win},1,#{@window_has_agent}} collapses to literal `1`
-          # for a bridge window, so its `&&` reduces to exactly the pre-#671
-          # crew-name check, unchanged. Asserted here as a static text check
-          # (not a bats suite: tests/pane-border-format.bats starts a live
-          # scratch server against /dev/null and has no access to the
-          # generated conf text to grep at all), modeled on
-          # float-conf-assertions above — same CONF, same grep-a-derivation
-          # shape.
-          crew-badge-conf-assertions =
-            pkgs.runCommand "crew-badge-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              if ! grep -qF '#{?#{&&:#{?#{@bridge_win},1,#{@window_has_agent}},#{?#{@bridge_win},#{@bridge_crew_name},#{@crew_name}}},' "$CONF"; then
-                echo "status-format[1]'s crew badge condition does not collapse to a no-op for a bridge window — see CLAUDE.md's #671 note" >&2
-                exit 1
-              fi
-              touch $out
-            '';
-
-          # status-format[1]'s host badge (per-host colour, peach fallback) is
-          # gated on @bridge_placed, so no other window, dedicated mirrors
-          # included, shows it.
-          host-badge-conf-assertions =
-            pkgs.runCommand "host-badge-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              if ! grep -qF '#{?#{@bridge_placed},#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}' "$CONF"; then
-                echo "status-format[1] has no @bridge_placed-gated per-host-coloured host badge — see docs/agents/status-bar.md" >&2
-                exit 1
-              fi
-              touch $out
-            '';
-
-          # "Every bind has a description" (#629's which-key popup reads -N to
-          # build its rows): fails on any bind/bind-key line with no -N flag.
-          # Same joined-lines technique as float-conf-assertions above, since a
-          # note-bearing bind can itself span a backslash continuation (the
-          # enrich card).
-          #
-          # Scope limits, both accepted rather than worked around:
-          #   * CONF is tmuxConfig.tmuxConf, the single default build (every
-          #     {{if}}-gated bind block here — splash, notify, enrich, carousel —
-          #     defaults to enabled, so this already covers them in practice; it
-          #     is not the full off/on matrix tmux-conf-extraction-assertions
-          #     builds, so a bind newly hidden behind a toggle that defaults off
-          #     would not be caught here).
-          #   * extraConfText (config/tmux.conf.nix's passthrough for downstream
-          #     home-manager callers) is copied verbatim into CONF and could
-          #     carry an unrelated caller's own unnoted bind; the default build's
-          #     extraConfText is empty, so this doesn't block anything today, but
-          #     a caller who sets it and adds a bind of their own would trip this
-          #     check on content this repo doesn't own.
-          bind-note-assertions =
-            pkgs.runCommand "bind-note-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.gnused];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
-
-              if grep -E '^bind(-key)? ' joined | grep -vE -- "-N ('[^']*'|\"[^\"]*\")"; then
-                echo "bind above has no -N description — the which-key popup reads it" >&2
-                exit 1
-              fi
-              touch $out
-            '';
-
-          # nix build .#default cannot verify this: it imports tmux.conf.nix
-          # with no terminal options at all, so terminalConfig is already
-          # empty there and a default-build grep would be green whether or
-          # not the sixel line is ever emitted. Import with sixelTerminals
-          # set instead, the way float-conf-assertions imports tmux.conf.nix
-          # above.
-          sixel-conf-assertions = let
-            mkSixelConf = args:
-              (import ./config/tmux.conf.nix ({
-                  inherit pkgs lib;
-                  tmuxPkg = mkTmux pkgs;
-                  carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-                  carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-                  prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-                }
-                // args))
-              .tmuxConf;
-          in
-            pkgs.runCommand "sixel-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
-              # No preset active, so terminalTerm is null. This is the case the
-              # option exists for -- kitty and ghostty are the only presets and
-              # neither speaks sixel -- so it must emit on its own.
-              ALONE = mkSixelConf {sixelTerminals = ["foot"];};
-              # Two entries beside a preset: pins the per-entry expansion (a
-              # regression that only shows at N>1) and the join with the
-              # RGB:extkeys line the preset emits.
-              BOTH = mkSixelConf {
-                terminalTerm = "xterm-ghostty";
-                sixelTerminals = ["foot" "wezterm"];
-              };
-            } ''
-              grep -F "set -as terminal-features 'foot*:sixel'" "$ALONE"
-              grep -F "set -as terminal-features 'xterm-ghostty*:RGB:extkeys'" "$BOTH"
-              grep -F "set -as terminal-features 'foot*:sixel'" "$BOTH"
-              grep -F "set -as terminal-features 'wezterm*:sixel'" "$BOTH"
-              touch $out
-            '';
-
-          # The extraction gate (§ The extraction check in
-          # docs/superpowers/specs/2026-09-10-og-generate-extract-config-generation-design.md):
-          # render the tmux.conf both ways from the same arguments and diff.
-          # The matrix is defined here rather than inherited from the flake's own
-          # four direct imports, which cover only defaults, sixelTerminals and
-          # enrich+ agentUsage off -- never the off branch of splashEnable,
-          # notifyEnable or carousel-toggle/prdash, five of the de-indent hazard
-          # sites.
-          #
-          # The template is complete, so this is a whole-file diff: every byte
-          # of the candidate comes from Go. The positive control is what shows
-          # the diff bites at all -- a stray byte in the template must turn
-          # every entry red.
-          tmux-conf-extraction-assertions = let
-            # A real store path, so entry 10's persist grep asserts the shape
-            # the module produces rather than a placeholder string.
-            persistStub = pkgs.writeShellScript "persist-wire-stub" ''
-              exit 0
-            '';
-
-            mkEntry = {
-              name,
-              args ? {},
-              extra ? "",
-            }: let
-              cfg = import ./config/tmux.conf.nix ({
-                  inherit pkgs lib;
-                  tmuxPkg = mkTmux pkgs;
-                  carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-                  carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-                  prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-                }
-                // args);
-            in {
-              inherit name extra;
-              inherit (cfg) generatedConf referenceConf configToml;
-            };
-
-            # Every flag both ways: entry 12 exists because aiNamingFlag and
-            # resumeCarouselFlag are hand-transcribed bool->string maps whose
-            # arguments both default to false, so entries 1 and 11 render the
-            # same string for each and an inverted map would be invisible.
-            matrix = map mkEntry [
-              {name = "01-defaults";}
-              {
-                name = "02-splash-off";
-                args.splashEnable = false;
-              }
-              {
-                name = "03-notify-off";
-                args.notifyEnable = false;
-              }
-              {
-                name = "04-enrich-off";
-                args.enrichEnable = false;
-              }
-              {
-                name = "05-agent-usage-off";
-                args.agentUsageEnable = false;
-              }
-              {
-                name = "06-no-optional-tools";
-                args = {
-                  carousel-toggle = null;
-                  carousel-aeye = null;
-                  prdash = null;
-                };
-              }
-              {
-                name = "07-terminals";
-                args = {
-                  sixelTerminals = ["foot" "wezterm"];
-                  terminalTerm = "xterm-ghostty";
-                };
-              }
-              {
-                name = "08a-splash-remote-static";
-                args.splashRemote = "static";
-              }
-              {
-                name = "08b-splash-remote-skip";
-                args.splashRemote = "skip";
-              }
-              {
-                name = "09-values";
-                args = {
-                  # Raw dialect (I8): this entry imports tmux.conf.nix directly,
-                  # so it never passes through the module's '#' doubling.
-                  enrichIcons = {
-                    linear = "L#";
-                    github = "G#";
-                  };
-                  defaultShell = "/run/current-system/sw/bin/fish";
-                  copyModeLineNumbers = "hybrid";
-                  focusFollowsMouse = true;
-                };
-                # I8's only cover. No check imports the module, so the two
-                # dialects are asserted here, per site: `L#` is a substring of
-                # `L##`, so each grep carries the closing quote and is scoped to
-                # its own line rather than the whole file.
-                extra = ''
-                  if ! grep -F 'set -g status-format[0]' candidate \
-                    | grep -Fq -- "--icon-linear 'L##' --icon-github 'G##'"; then
-                    echo "entry 9: status-format[0] must carry the doubled dialect (--icon-linear 'L##')" >&2
-                    exit 1
-                  fi
-                  if ! grep -F -- '--icon-linear' candidate \
-                    | grep -Fv 'set -g status-format[0]' \
-                    | grep -Fq -- "--icon-linear 'L#' --icon-github 'G#'"; then
-                    echo "entry 9: the enrich card must carry the raw dialect (--icon-linear 'L#')" >&2
-                    exit 1
-                  fi
-                '';
-              }
-              {
-                name = "10-persist";
-                args = {
-                  extraConfText = ''
-                    # matrix entry 10
-                    set -g @matrix "quoted \"value\" and a # hash"
-                  '';
-                  persistWireScript = persistStub;
-                };
-                # I7's deliberate third copy of the persist block's bytes. The
-                # reference and the generator are otherwise compared only to
-                # each other, so a transcription error shared by both passes
-                # the diff; only a literal written here catches it.
-                extra = ''
-                  marker='# === tmux-remux (Phase 2a, opt-in via programs.tmux-og.persist) ==='
-                  # Exactly one, not merely at least one: a doubled block makes
-                  # $n multi-line and the arithmetic below dies with a generic
-                  # error instead of naming the regression it just found.
-                  hits=$(grep -c -Fx "$marker" candidate) || true
-                  if [ "$hits" != 1 ]; then
-                    echo "entry 10: persist block comment line appears $hits times, want 1" >&2
-                    exit 1
-                  fi
-                  n=$(grep -n -Fx "$marker" candidate | cut -d: -f1)
-                  # The block's other two literal lines, in position: a blank
-                  # line above and the run-shell below.
-                  if [ "$n" -lt 2 ]; then
-                    echo "entry 10: persist block is on line 1, so nothing precedes it" >&2
-                    exit 1
-                  fi
-                  if [ -n "$(sed -n "$((n - 1))p" candidate)" ]; then
-                    echo "entry 10: persist block is not preceded by a blank line" >&2
-                    exit 1
-                  fi
-                  if ! sed -n "$((n + 1))p" candidate | grep -Fxq 'run-shell "${persistStub} #{q:version}"'; then
-                    echo "entry 10: persist block run-shell line does not match" >&2
-                    exit 1
-                  fi
-                '';
-              }
-              {
-                name = "11-all-off";
-                args = {
-                  splashEnable = false;
-                  notifyEnable = false;
-                  enrichEnable = false;
-                  agentUsageEnable = false;
-                  aiNamingEnable = false;
-                  resumeClaudeEnable = false;
-                  resumeCarouselEnable = false;
-                  dwindleEnable = false;
-                  focusFollowsMouse = false;
-                  carousel-toggle = null;
-                  carousel-aeye = null;
-                  prdash = null;
-                };
-              }
-              {
-                name = "12-all-on";
-                args = {
-                  splashEnable = true;
-                  notifyEnable = true;
-                  enrichEnable = true;
-                  agentUsageEnable = true;
-                  aiNamingEnable = true;
-                  resumeClaudeEnable = true;
-                  resumeCarouselEnable = true;
-                  dwindleEnable = true;
-                  focusFollowsMouse = true;
-                };
-              }
-              # Entry 12's hole, one level down: the leaf values no other entry
-              # moves off its default. The gate's whole proof is "render both
-              # ways and diff", so a field pinned at its default renders the
-              # same bytes whether its plumbing is right or entirely dead, and a
-              # wrong hard-coded Go default is invisible.
-              #
-              # Five of the thirteen are carried for the Nix->TOML key spelling
-              # only and reach no tmux.conf byte: enrichProviders, the two
-              # enrich refresh seconds, agentUsageRefreshSeconds and
-              # claudeStatusAssumeDeadAfter are baked into scripts on the Nix
-              # side, so no render diff can witness them.
-              {
-                name = "13-leaf-values";
-                args = {
-                  enrichProviders = ["github" "linear"];
-                  enrichPrRefreshSeconds = 45;
-                  enrichPrCheckRefreshSeconds = 90;
-                  zoxideExclude = "*/.ssh,/tmp/*";
-                  pickerListRatio = 35;
-                  pickerLayout = "list";
-                  remoteBridgeHosts = "halo mbp";
-                  remoteAuthPersistSeconds = 3600;
-                  prefix = "a";
-                  agentUsageRefreshSeconds = 60;
-                  agentUsageMonthlyThreshold = 75;
-                  claudeStatusAssumeDeadAfter = 30;
-                  # Only the three agent keys reach tmux.conf, via the usage
-                  # segment's icons; the rest of the map is script-side.
-                  extraProcessIcons.claude = "C";
-                };
-                # The entry asserts nothing if its values happen to render the
-                # defaults' bytes, which a later change to any of those defaults
-                # would quietly make true.
-                extra = ''
-                  if cmp -s ${(mkEntry {name = "01-defaults";}).generatedConf} candidate; then
-                    echo "entry 13: renders the defaults' bytes, so it varies nothing" >&2
-                    exit 1
-                  fi
-                '';
-              }
-            ];
-
-            # --prefix resolves the optional tools by existence under DIR/bin,
-            # and DIR does not exist in the smoke, so every optional renders off.
-            # Entry 6 is the one that also has them off, so it is the only entry
-            # line-for-line comparable with that render. Selected from the built
-            # matrix: re-running mkEntry on a bare name rebuilds the DEFAULTS
-            # entry under that label, optionals and all.
-            smokeEntry =
-              lib.findFirst (e: e.name == "06-no-optional-tools")
-              (throw "extraction smoke: matrix has no 06-no-optional-tools entry")
-              matrix;
-
-            # Shared by every store-path assertion. `[ -s ]` first, because an
-            # empty file passes a negative grep vacuously; and grep's exit 2 (an
-            # unreadable path, say) is a real error, not "no match" -- reading it
-            # as clean is how a broken check reports success.
-            storePathHelper = ''
-              no_store_path() {
-                label=$1
-                file=$2
-                if [ ! -s "$file" ]; then
-                  echo "$label: $file is empty" >&2
-                  exit 1
-                fi
-                rc=0
-                grep -F /nix/store "$file" >&2 || rc=$?
-                case $rc in
-                  0)
-                    echo "$label: carries a store path" >&2
-                    exit 1
-                    ;;
-                  1) ;;
-                  *)
-                    echo "$label: grep failed on $file (exit $rc)" >&2
-                    exit 1
-                    ;;
-                esac
-              }
-            '';
-
-            entryCheck = e: ''
-              echo "=== ${e.name}"
-              cat ${e.generatedConf} >candidate
-              if ! diff -u ${e.referenceConf} candidate >delta; then
-                echo "${e.name}: generated tmux.conf differs from the frozen reference" >&2
-                head -200 delta >&2
-                exit 1
-              fi
-
-              # Scoped to the matrix's own config.toml files on purpose: this is
-              # NOT an invariant of config.toml in general, because extra_config
-              # copies cfg.extraConfig verbatim and a Nix user may legitimately
-              # interpolate a store path into it.
-              no_store_path "${e.name} config.toml" ${e.configToml}
-
-              # The one property tests/verify-extraction.sh structurally cannot
-              # see: every consumer of tmuxConf, tests/test-display.sh's wrapper
-              # scrape included, needs a regular file named *-tmux.conf.
-              conf=${e.generatedConf}
-              [ -f "$conf" ]
-              case "$conf" in
-                *-tmux.conf) ;;
-                *)
-                  echo "${e.name}: $conf is not a *-tmux.conf store path" >&2
-                  exit 1
-                  ;;
-              esac
-
-              ${e.extra}
-            '';
-          in
-            pkgs.runCommand "tmux-conf-extraction-assertions" {
-              nativeBuildInputs = [pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-              # Same derivation packages.og-generate builds; identical inputs, one
-              # store path, so this costs nothing extra.
-              OG_GENERATE = "${pkgs.callPackage ./generator {}}/bin/og-generate";
-              OG_INIT = "${pkgs.callPackage ./generator {}}/bin/og-init";
-              SMOKE_CONFIG = smokeEntry.configToml;
-              SMOKE_REFERENCE = smokeEntry.referenceConf;
-              TEMPLATE = ./config/tmux.conf.tmpl;
-            } (storePathHelper
-              + lib.concatMapStrings entryCheck matrix
-              + ''
-                # --prefix is the resolver's second mode; the smoke proves it
-                # renders and that nothing store-shaped leaks into the output.
-                # It is the one render path with no reference diff behind it, so
-                # the assertions have to be positive: an empty file passes both
-                # `-f` and a negative grep, which made a render-nothing
-                # regression read as a clean pass.
-                echo "=== --prefix smoke"
-                mkdir -p prefixout
-                "$OG_GENERATE" --config "$SMOKE_CONFIG" --prefix /opt/tmux-og \
-                  --template "$TEMPLATE" --out prefixout
-                if ! grep -q '^set -g ' prefixout/tmux.conf; then
-                  echo "--prefix render carries no 'set -g' line" >&2
-                  exit 1
-                fi
-                if ! grep -Fq /opt/tmux-og/bin/ prefixout/tmux.conf; then
-                  echo "--prefix render carries no path under the given prefix" >&2
-                  exit 1
-                fi
-                if ! grep -Fq 'set-environment -g BROWSER "/opt/tmux-og/bin/og-open"' prefixout/tmux.conf; then
-                  echo "--prefix render carries no og-open BROWSER line" >&2
-                  exit 1
-                fi
-                # Presence is not completeness: the two greps above sit at lines
-                # 2 and 32 of a ~550-line render, so a truncation past those
-                # still satisfies them. The prefix render differs from its
-                # reference only in path text, and a path holds no newline, so
-                # the line counts must agree exactly.
-                want=$(wc -l <"$SMOKE_REFERENCE")
-                got=$(wc -l <prefixout/tmux.conf)
-                if [ "$got" != "$want" ]; then
-                  echo "--prefix render is $got lines, reference is $want" >&2
-                  exit 1
-                fi
-
-                no_store_path "--prefix render" prefixout/tmux.conf
-
-                # og init's own output, fed straight into og generate --prefix:
-                # the one place the pair is proven to work end to end, since a
-                # Go-level test can't reach the real template (generator/'s
-                # buildGoModule src is scoped to generator/ alone, so
-                # config/tmux.conf.tmpl sits outside its sandbox).
-                echo "=== og init -> og generate --prefix"
-                "$OG_INIT" --out init.toml
-                mkdir -p initout
-                "$OG_GENERATE" --config init.toml --prefix /opt/tmux-og \
-                  --template "$TEMPLATE" --out initout
-                if ! grep -q '^set -g ' initout/tmux.conf; then
-                  echo "og init render carries no 'set -g' line" >&2
-                  exit 1
-                fi
-                if ! grep -Fq /opt/tmux-og/bin/ initout/tmux.conf; then
-                  echo "og init render carries no path under the given prefix" >&2
-                  exit 1
-                fi
-                no_store_path "og init render" initout/tmux.conf
 
                 touch $out
-              '');
+              '';
 
-          # og's fish completions, generated by mkOg from the same table as the
-          # dispatcher. Asserts over a stub table (quote/paren/`--`/backslash
-          # summaries, a subverb-only noun, a noun with bare verb + subverbs)
-          # and over every key of the real ogVerbSpec, so a verb added to the
-          # table without landing in the completions fails here.
-          og-completion-assertions = let
-            stubTarget = "/nonexistent/stub";
-            ogStub = tmuxConfig.mkOg {
-              "q" = {
-                target = stubTarget;
-                summary = "it's (quoted) -- with \\ backslash";
-              };
-              "q sub" = {
-                target = stubTarget;
-                summary = "sub 'one'";
-              };
-              "g a" = {
-                target = stubTarget;
-                summary = "ga";
-              };
-              "g b" = {
-                target = stubTarget;
-                summary = "gb";
-              };
-              # A Go-backed verb: its flags are completed, gated on the verb.
-              "r go" = {
-                target = stubTarget;
-                summary = "rgo";
-                model = "remote-open";
-              };
-            };
-            realOg = tmuxConfig.og;
-          in
-            pkgs.runCommand "og-completion-assertions" {
-              nativeBuildInputs = [pkgs.fish pkgs.gnugrep pkgs.coreutils];
-              STUB = "${ogStub}/share/fish/vendor_completions.d/og.fish";
-              REAL = "${realOg}/share/fish/vendor_completions.d/og.fish";
-              VERBS = lib.concatStringsSep "\n" (builtins.attrNames tmuxConfig.ogVerbSpec);
-            } ''
-              comp() { # <file> <line>
-                fish --no-config -c 'source "$argv[1]"; complete -C "$argv[2]"' "$1" "$2"
-              }
-
-              sq="'"
-              top=$(comp "$STUB" "og ")
-              grep -qxF "q"$'\t'"it''${sq}s (quoted) -- with \\ backslash" <<<"$top"
-              grep -qxF "$(printf 'g\t2 subcommands')" <<<"$top"
-              grep -qxF "$(printf 'help\tList every verb')" <<<"$top"
-              q=$(comp "$STUB" "og q ")
-              grep -qxF "sub"$'\t'"sub ''${sq}one''${sq}" <<<"$q"
-              g=$(comp "$STUB" "og g ")
-              grep -qxF "$(printf 'a\tga')" <<<"$g"
-              grep -qxF "$(printf 'b\tgb')" <<<"$g"
-              # past the verb fish falls back to files: no subverb names.
-              past=$(comp "$STUB" "og g a " | cut -f1)
-              if grep -qxE 'a|b' <<<"$past"; then
-                echo "subverbs offered past the verb" >&2
-                exit 1
-              fi
-
-              # A Go-backed verb's flags are offered after the verb, and only
-              # there: not at the noun, not after a bash-backed verb.
-              grep -qxF -- "--into" <<<"$(comp "$STUB" "og r go --" | cut -f1)"
-              grep -qxF -- "--window" <<<"$(comp "$STUB" "og r go --" | cut -f1)"
-              for line in "og r --" "og r " "og q sub --" "og g a --"; do
-                if comp "$STUB" "$line" | cut -f1 | grep -qxE -- '--into|--window'; then
-                  echo "go-backed flags offered at: $line" >&2
+            # og-dispatch is the dispatcher's binary, a separate derivation from
+            # go-tools so it never reaches the tmux server's PATH. wrapperBinDir
+            # is a symlinkJoin, so the check looks at link targets and names, and
+            # at the generated conf. The find positive control proves -lname can
+            # match a link the join is known to hold.
+            og-dispatch-binary-assertions =
+              pkgs.runCommand "og-dispatch-binary-assertions" {
+                nativeBuildInputs = [pkgs.findutils pkgs.gnugrep pkgs.coreutils];
+                BINDIR = "${tmuxConfig.wrapperBinDir}/bin";
+                DISPATCH = tmuxConfig.ogDispatchBin;
+                OG = tmuxConfig.og;
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                if [ -z "$(find "$BINDIR" -lname '*tmux-picker-generate*')" ]; then
+                  echo "positive control failed: find -lname matches no go-tools link in $BINDIR" >&2
                   exit 1
                 fi
-              done
+                if [ -n "$(find "$BINDIR" -lname '*og-dispatch*')" ] \
+                  || [ -n "$(find "$BINDIR" -lname "*$DISPATCH*")" ]; then
+                  echo "og-dispatch is linked into the tmux wrapper bin dir" >&2
+                  exit 1
+                fi
+                if ls "$BINDIR" | grep -qxE 'og|og-dispatch'; then
+                  echo "og or og-dispatch is on the tmux wrapper PATH" >&2
+                  exit 1
+                fi
+                if [ -n "$(find "$BINDIR" -lname "*$OG*")" ]; then
+                  echo "og is linked into the tmux wrapper bin dir" >&2
+                  exit 1
+                fi
+                if grep -qF "$DISPATCH" "$CONF"; then
+                  echo "og-dispatch's store path is in the generated tmux.conf" >&2
+                  exit 1
+                fi
+                touch $out
+              '';
 
-              # every real verb is completable: noun at `og `, subverb at `og <noun> `.
-              real_top=$(comp "$REAL" "og " | cut -f1)
-              while read -r v; do
-                noun=''${v%% *}
-                grep -qxF "$noun" <<<"$real_top"
-                case "$v" in
-                  *' '*)
-                    sub=''${v#* }
-                    comp "$REAL" "og $noun " | cut -f1 | grep -qxF "$sub"
-                    ;;
-                esac
-              done <<<"$VERBS"
-
-              # the real Go-backed verb completes its flags, with descriptions.
-              real_flags=$(comp "$REAL" "og remote open --")
-              grep -qxE -- '--into'$'\t'.+ <<<"$real_flags"
-              grep -qxE -- '--window'$'\t'.+ <<<"$real_flags"
-              if comp "$REAL" "og remote picker --" | cut -f1 | grep -qxE -- '--into|--window'; then
-                echo "remote open's flags offered for another verb" >&2
-                exit 1
-              fi
-
-              touch $out
-            '';
-
-          # og-dispatch is the dispatcher's binary, a separate derivation from
-          # go-tools so it never reaches the tmux server's PATH. wrapperBinDir
-          # is a symlinkJoin, so the check looks at link targets and names, and
-          # at the generated conf. The find positive control proves -lname can
-          # match a link the join is known to hold.
-          og-dispatch-binary-assertions =
-            pkgs.runCommand "og-dispatch-binary-assertions" {
-              nativeBuildInputs = [pkgs.findutils pkgs.gnugrep pkgs.coreutils];
-              BINDIR = "${tmuxConfig.wrapperBinDir}/bin";
-              DISPATCH = tmuxConfig.ogDispatchBin;
-              OG = tmuxConfig.og;
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              if [ -z "$(find "$BINDIR" -lname '*tmux-picker-generate*')" ]; then
-                echo "positive control failed: find -lname matches no go-tools link in $BINDIR" >&2
-                exit 1
-              fi
-              if [ -n "$(find "$BINDIR" -lname '*og-dispatch*')" ] \
-                || [ -n "$(find "$BINDIR" -lname "*$DISPATCH*")" ]; then
-                echo "og-dispatch is linked into the tmux wrapper bin dir" >&2
-                exit 1
-              fi
-              if ls "$BINDIR" | grep -qxE 'og|og-dispatch'; then
-                echo "og or og-dispatch is on the tmux wrapper PATH" >&2
-                exit 1
-              fi
-              if [ -n "$(find "$BINDIR" -lname "*$OG*")" ]; then
-                echo "og is linked into the tmux wrapper bin dir" >&2
-                exit 1
-              fi
-              if grep -qF "$DISPATCH" "$CONF"; then
-                echo "og-dispatch's store path is in the generated tmux.conf" >&2
-                exit 1
-              fi
-              touch $out
-            '';
-
-          # The og dispatcher's contract
-          # (docs/superpowers/specs/2026-09-10-og-dispatcher-design.md). Never
-          # parses the generated table file -- every target assertion goes
-          # through `og <verb> --help`, whose last line is the absolute
-          # target path alone (scripts/og.sh's pinned help shape). Argument
-          # passthrough is checked by re-instantiating mkOg over a stub
-          # table.
-          og-dispatch-assertions = let
-            stub = pkgs.writeShellScriptBin "stub" ''
-              echo "$#"
-              printf '[%s]\n' "$@"
-            '';
-            ogStub = tmuxConfig.mkOg {
-              "t echo" = {
-                target = "${stub}/bin/stub";
-                summary = "stub";
+            # The og dispatcher's contract
+            # (docs/superpowers/specs/2026-09-10-og-dispatcher-design.md). Never
+            # parses the generated table file -- every target assertion goes
+            # through `og <verb> --help`, whose last line is the absolute
+            # target path alone (scripts/og.sh's pinned help shape). Argument
+            # passthrough is checked by re-instantiating mkOg over a stub
+            # table.
+            og-dispatch-assertions = let
+              stub = pkgs.writeShellScriptBin "stub" ''
+                echo "$#"
+                printf '[%s]\n' "$@"
+              '';
+              ogStub = tmuxConfig.mkOg {
+                "t echo" = {
+                  target = "${stub}/bin/stub";
+                  summary = "stub";
+                };
+                # A noun with both a bare verb and a subverb, mirroring status/
+                # notify's shape -- proves the flag-vs-subverb distinction
+                # without depending on a real script's own argument grammar.
+                "s" = {
+                  target = "${stub}/bin/stub";
+                  summary = "stub bare";
+                };
+                "s x" = {
+                  target = "${stub}/bin/stub";
+                  summary = "stub sub";
+                };
               };
-              # A noun with both a bare verb and a subverb, mirroring status/
-              # notify's shape -- proves the flag-vs-subverb distinction
-              # without depending on a real script's own argument grammar.
-              "s" = {
-                target = "${stub}/bin/stub";
-                summary = "stub bare";
-              };
-              "s x" = {
-                target = "${stub}/bin/stub";
-                summary = "stub sub";
-              };
-            };
-          in
-            pkgs.runCommand "og-dispatch-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              OG = tmuxConfig.og;
-              # og.bin is og itself (a copied binary, no join); kept so a leak check names the path the user's PATH carries.
-              OG_INNER = tmuxConfig.og.bin;
-              OG_STUB = ogStub;
-              CONF = tmuxConfig.tmuxConf;
-              TMUX_WRAPPED = tmuxConfig.tmux-wrapped;
-              REMOTE_PICKER = "${tmuxConfig.script.og-remote-picker}/bin/og-remote-picker";
-              # Derived from ogVerbSpec itself (not retyped here) so a verb
-              # added there is asserted on automatically instead of silently
-              # skipping coverage.
-              VERBS = lib.concatStringsSep "\n" (builtins.attrNames tmuxConfig.ogVerbSpec);
-            } ''
-              OG_BIN="$OG/bin/og"
-              OG_STUB_BIN="$OG_STUB/bin/og"
+            in
+              pkgs.runCommand "og-dispatch-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                OG = tmuxConfig.og;
+                # og.bin is og itself (a copied binary, no join); kept so a leak check names the path the user's PATH carries.
+                OG_INNER = tmuxConfig.og.bin;
+                OG_STUB = ogStub;
+                CONF = tmuxConfig.tmuxConf;
+                TMUX_WRAPPED = tmuxConfig.tmux-wrapped;
+                REMOTE_PICKER = "${tmuxConfig.script.og-remote-picker}/bin/og-remote-picker";
+                # Derived from ogVerbSpec itself (not retyped here) so a verb
+                # added there is asserted on automatically instead of silently
+                # skipping coverage.
+                VERBS = lib.concatStringsSep "\n" (builtins.attrNames tmuxConfig.ogVerbSpec);
+              } ''
+                OG_BIN="$OG/bin/og"
+                OG_STUB_BIN="$OG_STUB/bin/og"
 
-              verbs="$VERBS"
+                verbs="$VERBS"
 
-              # 1: bare `og` and `og help` both list every verb, exit 0.
-              bare_out=$("$OG_BIN")
-              help_out=$("$OG_BIN" help)
-              while read -r v; do
-                grep -qE "^  $v( |\$)" <<<"$bare_out"
-                grep -qE "^  $v( |\$)" <<<"$help_out"
-              done <<<"$verbs"
+                # 1: bare `og` and `og help` both list every verb, exit 0.
+                bare_out=$("$OG_BIN")
+                help_out=$("$OG_BIN" help)
+                while read -r v; do
+                  grep -qE "^  $v( |\$)" <<<"$bare_out"
+                  grep -qE "^  $v( |\$)" <<<"$help_out"
+                done <<<"$verbs"
 
-              # `og remote` prints exactly that noun's 5 verbs, exit 0.
-              remote_out=$("$OG_BIN" remote)
-              for v in "remote open" "remote picker" "remote detach" "remote auth" "remote theme"; do
-                grep -qE "^  $v( |\$)" <<<"$remote_out"
-              done
-              remote_count=$(grep -cE '^  ' <<<"$remote_out")
-              [ "$remote_count" -eq 5 ]
+                # `og remote` prints exactly that noun's 5 verbs, exit 0.
+                remote_out=$("$OG_BIN" remote)
+                for v in "remote open" "remote picker" "remote detach" "remote auth" "remote theme"; do
+                  grep -qE "^  $v( |\$)" <<<"$remote_out"
+                done
+                remote_count=$(grep -cE '^  ' <<<"$remote_out")
+                [ "$remote_count" -eq 5 ]
 
-              # 2: every target printed by --help is executable -- except a
-              # bare noun that also owns subverbs (status, notify), where
-              # "--help" means noun help (see check 12) rather than this
-              # verb's own summary/target.
-              while read -r v; do
-                case "$v" in
-                  *' '*) ;;
+                # 2: every target printed by --help is executable -- except a
+                # bare noun that also owns subverbs (status, notify), where
+                # "--help" means noun help (see check 12) rather than this
+                # verb's own summary/target.
+                while read -r v; do
+                  case "$v" in
+                    *' '*) ;;
+                    *)
+                      if grep -qE "^$v " <<<"$verbs"; then
+                        continue
+                      fi
+                      ;;
+                  esac
+                  # shellcheck disable=SC2086
+                  target=$("$OG_BIN" $v --help | tail -1)
+                  [ -x "$target" ]
+                done <<<"$verbs"
+
+                # 3: two-token verbs resolve to the two-token target, not the
+                # one-token noun with the second token as a stray argument.
+                su_target=$("$OG_BIN" status update --help | tail -1)
+                case "$su_target" in
+                  */bin/claude-status-update) ;;
                   *)
-                    if grep -qE "^$v " <<<"$verbs"; then
-                      continue
-                    fi
-                    ;;
-                esac
-                # shellcheck disable=SC2086
-                target=$("$OG_BIN" $v --help | tail -1)
-                [ -x "$target" ]
-              done <<<"$verbs"
-
-              # 3: two-token verbs resolve to the two-token target, not the
-              # one-token noun with the second token as a stray argument.
-              su_target=$("$OG_BIN" status update --help | tail -1)
-              case "$su_target" in
-                */bin/claude-status-update) ;;
-                *)
-                  echo "og status update resolved to $su_target" >&2
-                  exit 1
-                  ;;
-              esac
-              nc_target=$("$OG_BIN" notify center --help | tail -1)
-              case "$nc_target" in
-                */bin/og-notify-center) ;;
-                *)
-                  echo "og notify center resolved to $nc_target" >&2
-                  exit 1
-                  ;;
-              esac
-
-              # 4: `og remote picker` execs the same derivation
-              # exposePickOnPath puts on PATH.
-              rp_target=$("$OG_BIN" remote picker --help | tail -1)
-              [ "$rp_target" = "$REMOTE_PICKER" ]
-
-              # 5: `og remote open --help` exits 0, prints the target,
-              # never execs it (no ssh in the sandbox to attempt).
-              ro_target=$("$OG_BIN" remote open --help | tail -1)
-              [ -x "$ro_target" ]
-
-              # 6: an unknown token exits 2 with empty stdout.
-              rc=0
-              bogus_out=$("$OG_BIN" bogus 2>/dev/null) || rc=$?
-              [ "$rc" -eq 2 ]
-              [ -z "$bogus_out" ]
-
-              # 7: arguments after the verb reach the target verbatim --
-              # a flag, a `--`, and an empty argument all survive.
-              stub_out=$("$OG_STUB_BIN" t echo foo --flag -- bar "")
-              stub_count=$(head -n1 <<<"$stub_out")
-              [ "$stub_count" = "5" ]
-              grep -qxF '[foo]' <<<"$stub_out"
-              grep -qxF '[--flag]' <<<"$stub_out"
-              grep -qxF '[--]' <<<"$stub_out"
-              grep -qxF '[bar]' <<<"$stub_out"
-              grep -qxF '[]' <<<"$stub_out"
-
-              # 8: og "" (bug: an empty first token used to hit bash's
-              # "bad array subscript") exits 2 with empty stdout.
-              rc=0
-              empty_out=$("$OG_BIN" "" 2>/dev/null) || rc=$?
-              [ "$rc" -eq 2 ]
-              [ -z "$empty_out" ]
-
-              # 9: og remote --help (bug: any noun-help spelling other than
-              # bare `og remote` used to hit unknown_command) exits 0 and
-              # lists the same 5 remote verbs.
-              rc=0
-              remote_help_out=$("$OG_BIN" remote --help) || rc=$?
-              [ "$rc" -eq 0 ]
-              for v in "remote open" "remote picker" "remote detach" "remote auth" "remote theme"; do
-                grep -qE "^  $v( |\$)" <<<"$remote_help_out"
-              done
-              remote_help_count=$(grep -cE '^  ' <<<"$remote_help_out")
-              [ "$remote_help_count" -eq 5 ]
-
-              # 12: a noun that owns both a bare one-token verb and subverbs
-              # (status, notify) must not let the bare match swallow a second
-              # token -- that bypassed unknown_command/print_noun_help below
-              # for exactly those two nouns.
-              rc=0
-              status_bogus_out=$("$OG_BIN" status frobnicate 2>&1 >/dev/null) || rc=$?
-              [ "$rc" -eq 2 ]
-              grep -qF "unknown command: status frobnicate" <<<"$status_bogus_out"
-
-              status_help_out=$("$OG_BIN" status --help)
-              grep -qE "^  status update( |\$)" <<<"$status_help_out"
-
-              # notify goes through the identical code path as status; cover
-              # it too rather than asserting on one representative noun.
-              rc=0
-              notify_bogus_out=$("$OG_BIN" notify frobnicate 2>&1 >/dev/null) || rc=$?
-              [ "$rc" -eq 2 ]
-              grep -qF "unknown command: notify frobnicate" <<<"$notify_bogus_out"
-
-              notify_help_out=$("$OG_BIN" notify --help)
-              grep -qE "^  notify center( |\$)" <<<"$notify_help_out"
-
-              # a flag after the bare verb still passes through -- only a
-              # bare word is ambiguous with a subverb attempt. Exercised on
-              # the stub table (see ogStub's "s"/"s x" pair above) rather
-              # than the real status/notify scripts, whose own argument
-              # grammar this derivation has no business asserting on.
-              stub_flag_out=$("$OG_STUB_BIN" s --flag foo)
-              stub_flag_count=$(head -n1 <<<"$stub_flag_out")
-              [ "$stub_flag_count" = "2" ]
-              grep -qxF '[--flag]' <<<"$stub_flag_out"
-              grep -qxF '[foo]' <<<"$stub_flag_out"
-
-              rc=0
-              stub_bogus_out=$("$OG_STUB_BIN" s frobnicate 2>&1 >/dev/null) || rc=$?
-              [ "$rc" -eq 2 ]
-              grep -qF "unknown command: s frobnicate" <<<"$stub_bogus_out"
-
-              # the existing `remote` noun (subverbs only, no bare verb) is
-              # unchanged by the guard above.
-              rc=0
-              remote_bogus_out=$("$OG_BIN" remote frobnicate 2>&1 >/dev/null) || rc=$?
-              [ "$rc" -eq 2 ]
-              grep -qF "unknown command: remote frobnicate" <<<"$remote_bogus_out"
-
-              # 10: `og` never appears in the generated tmux config.
-              if grep -qF "$OG" "$CONF" || grep -qF "$OG_INNER" "$CONF"; then
-                echo "og store path leaked into the generated tmux config" >&2
-                exit 1
-              fi
-
-              # 11: `og` also never reaches the tmux server's own PATH --
-              # only scripts partitioned into ogVerbSpec/ogInternal do.
-              # wrapProgram moves the pristine binary to bin/.tmux-wrapped and
-              # writes the PATH-bearing wrapper script to bin/tmux -- grepping
-              # the pristine binary would never see the PATH text at all.
-              if grep -qF "$OG" "$TMUX_WRAPPED/bin/tmux" || grep -qF "$OG_INNER" "$TMUX_WRAPPED/bin/tmux"; then
-                echo "og store path leaked into the tmux wrapper's PATH" >&2
-                exit 1
-              fi
-
-              touch $out
-            '';
-
-          default-size-conf-assertions =
-            pkgs.runCommand "default-size-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              grep -q 'set-hook -g client-attached\[20\]' "$CONF"
-              grep -q 'set-hook -g client-resized\[20\]' "$CONF"
-              grep -q 'set-hook -gu client-attached\[20\]' "$CONF"
-              grep -q 'set-hook -gu client-resized\[20\]' "$CONF"
-              grep -E 'client-attached\[20\].*/nix/store/[^ ]*/bin/tmux-default-size' "$CONF"
-              grep -E 'client-resized\[20\].*/nix/store/[^ ]*/bin/tmux-default-size' "$CONF"
-
-              attach_clear=$(grep -n 'set-hook -gu client-attached\[20\]' "$CONF" | head -1 | cut -d: -f1)
-              attach_set=$(grep -n 'set-hook -g client-attached\[20\]' "$CONF" | head -1 | cut -d: -f1)
-              [ "$attach_clear" -lt "$attach_set" ]
-              resize_clear=$(grep -n 'set-hook -gu client-resized\[20\]' "$CONF" | head -1 | cut -d: -f1)
-              resize_set=$(grep -n 'set-hook -g client-resized\[20\]' "$CONF" | head -1 | cut -d: -f1)
-              [ "$resize_clear" -lt "$resize_set" ]
-              touch $out
-            '';
-
-          # Build-time guard for the #603 tick floor's wiring in
-          # config/tmux.conf.nix: four `-B` session monitors driving the
-          # former status-format[0] poller jobs. Modelled on
-          # default-size-conf-assertions above. The store-path setter strings
-          # are built from tmuxConfig.script so a future binary rename can't
-          # silently desync the check from the config.
-          tick-floor-conf-assertions = let
-            # \\\" (not \") -- the emitted conf wraps each run-shell command in
-            # BACKSLASH-escaped quotes (it's itself quoted by the outer
-            # if-shell body string), so the literal substring to match is
-            # backslash-quote, not a bare quote.
-            prSetter = "set-hook -g -B '@og-pr-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-pr-enrich}/bin/tmux-pr-enrich --tick\\\"'";
-            backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
-            usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
-            sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${tmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
-            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-session-res-bin} --tick\\\"'";
-          in
-            pkgs.runCommand "tick-floor-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.gawk pkgs.gnused pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-              TICK_OPT = "set -g @og_tick '%s'";
-              PR_CLEAR_B = "set-hook -g -u -B '@og-pr-tick'";
-              PR_CLEAR_OPT = "set -gu '@og-pr-tick'";
-              BACKFILL_CLEAR_B = "set-hook -g -u -B '@og-backfill-tick'";
-              BACKFILL_CLEAR_OPT = "set -gu '@og-backfill-tick'";
-              USAGE_CLEAR_B = "set-hook -g -u -B '@og-usage-tick'";
-              USAGE_CLEAR_OPT = "set -gu '@og-usage-tick'";
-              SWEEP_CLEAR_B = "set-hook -g -u -B '@og-sweep-tick'";
-              SWEEP_CLEAR_OPT = "set -gu '@og-sweep-tick'";
-              RES_CLEAR_B = "set-hook -g -u -B '@og-res-tick'";
-              RES_CLEAR_OPT = "set -gu '@og-res-tick'";
-              PR_SETTER = prSetter;
-              BACKFILL_SETTER = backfillSetter;
-              USAGE_SETTER = usageSetter;
-              SWEEP_SETTER = sweepSetter;
-              RES_SETTER = resSetter;
-              # The guard's condition-close / string-branch-open join, which
-              # only exists when the hooks sit inside if-shell's STRING form
-              # ("..." "...") rather than a brace block -- tmux parses every
-              # branch of a { } block at source time, so -B would be rejected
-              # even on the untaken branch of a pre-3.8 server.
-              GUARD_JOIN = "grep -q -- -B\" \"set-hook -g -u -B '@og-pr-tick'";
-            } ''
-              grep -qF "$TICK_OPT" "$CONF"
-
-              for v in PR_CLEAR_B PR_CLEAR_OPT BACKFILL_CLEAR_B BACKFILL_CLEAR_OPT \
-                       USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT \
-                       RES_CLEAR_B RES_CLEAR_OPT \
-                       PR_SETTER BACKFILL_SETTER USAGE_SETTER SWEEP_SETTER RES_SETTER GUARD_JOIN; do
-                pat="''${!v}"
-                grep -qF "$pat" "$CONF" || {
-                  echo "missing from conf ($v): $pat" >&2
-                  exit 1
-                }
-              done
-
-              # Highest-value line in this check (upstream 557967c3): the
-              # empty-target monitor spec ('@name::') is the only spelling
-              # that survives a flake.lock bump past that commit, and
-              # ':session:' must never appear anywhere in the emitted conf.
-              # Written as an explicit if/exit, not a bare `! grep ...`: bash's
-              # errexit never fires on a command whose status is inverted by
-              # `!`, so that form would silently never catch a regression.
-              if grep -qF ':session:' "$CONF"; then
-                echo "a -B monitor spec uses ':session:' -- only the empty target ('::') survives upstream 557967c3" >&2
-                exit 1
-              fi
-
-              # status-format[0] no longer smuggles the poller jobs through.
-              fmt0="$(grep -F 'set -g status-format[0]' "$CONF")"
-              case "$fmt0" in
-                *--tick*|*--backfill*)
-                  echo "status-format[0] still carries a --tick/--backfill job" >&2
-                  exit 1
-                  ;;
-              esac
-
-              # Every clear precedes every setter in the emitted text -- the
-              # ordering is what makes a disable (enrich.enable = false, etc.)
-              # actually take effect rather than leave a stale monitor firing
-              # at a store path GC will remove.
-              line="$(grep -F 'if-shell "tmux list-commands set-hook' "$CONF")"
-              [ -n "$line" ] || { echo "tick-floor guard line not found" >&2; exit 1; }
-
-              clear_max=-1
-              for v in "$PR_CLEAR_B" "$PR_CLEAR_OPT" "$BACKFILL_CLEAR_B" "$BACKFILL_CLEAR_OPT" \
-                       "$USAGE_CLEAR_B" "$USAGE_CLEAR_OPT" "$SWEEP_CLEAR_B" "$SWEEP_CLEAR_OPT" \
-                       "$RES_CLEAR_B" "$RES_CLEAR_OPT"; do
-                prefix="''${line%%"$v"*}"
-                [ "$prefix" != "$line" ] || { echo "clear not found in guard line: $v" >&2; exit 1; }
-                [ "''${#prefix}" -gt "$clear_max" ] && clear_max="''${#prefix}"
-              done
-              setter_min=-1
-              for v in "$PR_SETTER" "$BACKFILL_SETTER" "$USAGE_SETTER" "$SWEEP_SETTER" "$RES_SETTER"; do
-                prefix="''${line%%"$v"*}"
-                [ "$prefix" != "$line" ] || { echo "setter not found in guard line: $v" >&2; exit 1; }
-                if [ "$setter_min" -eq -1 ] || [ "''${#prefix}" -lt "$setter_min" ]; then
-                  setter_min="''${#prefix}"
-                fi
-              done
-              [ "$clear_max" -lt "$setter_min" ] || {
-                echo "a clear (offset $clear_max) does not precede every setter (offset $setter_min)" >&2
-                exit 1
-              }
-
-              # A hook COMMAND (not the monitor spec, which is legitimately a
-              # bare #{T:...} format evaluated by hooks_monitor_add itself)
-              # must carry NO #{ at all, not merely a #{q: form. -B monitor
-              # hooks format-expand their action string and then re-lex the
-              # result with tmux's own command parser -- which strips the
-              # very backslashes #{q:} inserts -- before run-shell expands a
-              # second time; #{q:start_time} was inert only because a start
-              # time is pure digits, the kind of idiom someone copies next
-              # for a format that isn't. All five commands are pure store paths
-              # plus literal flags, so the invariant is enforceable as written.
-              cmds="$(echo "$line" | awk -F'\\\\"' '{for(i=2;i<NF;i+=2) print $i}')"
-              [ -n "$cmds" ] || { echo "no hook commands extracted from guard line" >&2; exit 1; }
-              n=0
-              while IFS= read -r cmd; do
-                n=$((n + 1))
-                case "$cmd" in
-                  *'#{'*)
-                    echo "bare #{ in hook command: $cmd" >&2
+                    echo "og status update resolved to $su_target" >&2
                     exit 1
                     ;;
                 esac
-              done <<<"$cmds"
-              # Still 5, not 10, with twenty clear literals above: n counts the
-              # \"-wrapped run-shell payloads (awk's odd fields), and a clear
-              # carries no command payload at all.
-              [ "$n" -eq 5 ] || { echo "expected 5 hook commands, got $n" >&2; exit 1; }
+                nc_target=$("$OG_BIN" notify center --help | tail -1)
+                case "$nc_target" in
+                  */bin/og-notify-center) ;;
+                  *)
+                    echo "og notify center resolved to $nc_target" >&2
+                    exit 1
+                    ;;
+                esac
 
-              touch $out
-            '';
+                # 4: `og remote picker` execs the same derivation
+                # exposePickOnPath puts on PATH.
+                rp_target=$("$OG_BIN" remote picker --help | tail -1)
+                [ "$rp_target" = "$REMOTE_PICKER" ]
 
-          # nix build .#default cannot verify the disabled path: enrichEnable
-          # and agentUsageEnable both default true there, so a regression that
-          # made the clears conditional on a feature flag (leaving a stale
-          # monitor pointed at a store path GC will remove) would pass every
-          # existing check. Modelled on sixel-conf-assertions above: import
-          # tmux.conf.nix directly with the flags off, the way
-          # nix build .#default never does.
-          tick-floor-disabled-conf-assertions = let
-            disabledTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-            disabledConf = disabledTmuxConfig.tmuxConf;
-            # The pr/backfill/usage setters are built off the DEFAULT
-            # tmuxConfig.script -- they must be absent regardless of exact
-            # store path, since the whole setHook line is omitted when its
-            # flag is off. The sweep setter is NOT optional, so it must be
-            # built off disabledTmuxConfig.script instead: tmux-update-icons's
-            # OWN @issue_stamp@ substitution differs with enrichEnable off,
-            # which changes its store path independently of this setter list.
-            prSetter = "set-hook -g -B '@og-pr-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-pr-enrich}/bin/tmux-pr-enrich --tick\\\"'";
-            backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
-            usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
-            sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${disabledTmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
-            # Unconditional like the sweep, but built off the DEFAULT config,
-            # the opposite of the case above: the poller is a picker-generate
-            # binary, whose only inputs are the process icons and the splash
-            # tips, so neither enrichEnable nor agentUsageEnable moves its
-            # store path and both configs name the same one.
-            resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-session-res-bin} --tick\\\"'";
-          in
-            pkgs.runCommand "tick-floor-disabled-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
-              CONF = disabledConf;
-              PR_CLEAR_B = "set-hook -g -u -B '@og-pr-tick'";
-              PR_CLEAR_OPT = "set -gu '@og-pr-tick'";
-              BACKFILL_CLEAR_B = "set-hook -g -u -B '@og-backfill-tick'";
-              BACKFILL_CLEAR_OPT = "set -gu '@og-backfill-tick'";
-              USAGE_CLEAR_B = "set-hook -g -u -B '@og-usage-tick'";
-              USAGE_CLEAR_OPT = "set -gu '@og-usage-tick'";
-              SWEEP_CLEAR_B = "set-hook -g -u -B '@og-sweep-tick'";
-              SWEEP_CLEAR_OPT = "set -gu '@og-sweep-tick'";
-              RES_CLEAR_B = "set-hook -g -u -B '@og-res-tick'";
-              RES_CLEAR_OPT = "set -gu '@og-res-tick'";
-              PR_SETTER = prSetter;
-              BACKFILL_SETTER = backfillSetter;
-              USAGE_SETTER = usageSetter;
-              SWEEP_SETTER = sweepSetter;
-              RES_SETTER = resSetter;
-            } ''
-              # All ten clears survive a disabled feature -- five names times
-              # the -B and option forms. They're keyed off the fixed hookNames
-              # list, never the enable flags, which is what makes disabling a
-              # feature actually drop its stale monitor on reload instead of
-              # leaving argv's previous generation armed.
-              for v in PR_CLEAR_B PR_CLEAR_OPT BACKFILL_CLEAR_B BACKFILL_CLEAR_OPT \
-                       USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT \
-                       RES_CLEAR_B RES_CLEAR_OPT; do
-                pat="''${!v}"
-                grep -qF "$pat" "$CONF" || {
-                  echo "disabled conf is missing a clear ($v): $pat" >&2
-                  exit 1
-                }
-              done
+                # 5: `og remote open --help` exits 0, prints the target,
+                # never execs it (no ssh in the sandbox to attempt).
+                ro_target=$("$OG_BIN" remote open --help | tail -1)
+                [ -x "$ro_target" ]
 
-              for v in SWEEP_SETTER RES_SETTER; do
-                pat="''${!v}"
-                grep -qF "$pat" "$CONF" || {
-                  echo "disabled conf is missing an unconditional setter ($v): $pat" >&2
-                  exit 1
-                }
-              done
+                # 6: an unknown token exits 2 with empty stdout.
+                rc=0
+                bogus_out=$("$OG_BIN" bogus 2>/dev/null) || rc=$?
+                [ "$rc" -eq 2 ]
+                [ -z "$bogus_out" ]
 
-              for v in PR_SETTER BACKFILL_SETTER USAGE_SETTER; do
-                pat="''${!v}"
-                if grep -qF "$pat" "$CONF"; then
-                  echo "disabled conf still emits a gated setter ($v): $pat" >&2
+                # 7: arguments after the verb reach the target verbatim --
+                # a flag, a `--`, and an empty argument all survive.
+                stub_out=$("$OG_STUB_BIN" t echo foo --flag -- bar "")
+                stub_count=$(head -n1 <<<"$stub_out")
+                [ "$stub_count" = "5" ]
+                grep -qxF '[foo]' <<<"$stub_out"
+                grep -qxF '[--flag]' <<<"$stub_out"
+                grep -qxF '[--]' <<<"$stub_out"
+                grep -qxF '[bar]' <<<"$stub_out"
+                grep -qxF '[]' <<<"$stub_out"
+
+                # 8: og "" (bug: an empty first token used to hit bash's
+                # "bad array subscript") exits 2 with empty stdout.
+                rc=0
+                empty_out=$("$OG_BIN" "" 2>/dev/null) || rc=$?
+                [ "$rc" -eq 2 ]
+                [ -z "$empty_out" ]
+
+                # 9: og remote --help (bug: any noun-help spelling other than
+                # bare `og remote` used to hit unknown_command) exits 0 and
+                # lists the same 5 remote verbs.
+                rc=0
+                remote_help_out=$("$OG_BIN" remote --help) || rc=$?
+                [ "$rc" -eq 0 ]
+                for v in "remote open" "remote picker" "remote detach" "remote auth" "remote theme"; do
+                  grep -qE "^  $v( |\$)" <<<"$remote_help_out"
+                done
+                remote_help_count=$(grep -cE '^  ' <<<"$remote_help_out")
+                [ "$remote_help_count" -eq 5 ]
+
+                # 12: a noun that owns both a bare one-token verb and subverbs
+                # (status, notify) must not let the bare match swallow a second
+                # token -- that bypassed unknown_command/print_noun_help below
+                # for exactly those two nouns.
+                rc=0
+                status_bogus_out=$("$OG_BIN" status frobnicate 2>&1 >/dev/null) || rc=$?
+                [ "$rc" -eq 2 ]
+                grep -qF "unknown command: status frobnicate" <<<"$status_bogus_out"
+
+                status_help_out=$("$OG_BIN" status --help)
+                grep -qE "^  status update( |\$)" <<<"$status_help_out"
+
+                # notify goes through the identical code path as status; cover
+                # it too rather than asserting on one representative noun.
+                rc=0
+                notify_bogus_out=$("$OG_BIN" notify frobnicate 2>&1 >/dev/null) || rc=$?
+                [ "$rc" -eq 2 ]
+                grep -qF "unknown command: notify frobnicate" <<<"$notify_bogus_out"
+
+                notify_help_out=$("$OG_BIN" notify --help)
+                grep -qE "^  notify center( |\$)" <<<"$notify_help_out"
+
+                # a flag after the bare verb still passes through -- only a
+                # bare word is ambiguous with a subverb attempt. Exercised on
+                # the stub table (see ogStub's "s"/"s x" pair above) rather
+                # than the real status/notify scripts, whose own argument
+                # grammar this derivation has no business asserting on.
+                stub_flag_out=$("$OG_STUB_BIN" s --flag foo)
+                stub_flag_count=$(head -n1 <<<"$stub_flag_out")
+                [ "$stub_flag_count" = "2" ]
+                grep -qxF '[--flag]' <<<"$stub_flag_out"
+                grep -qxF '[foo]' <<<"$stub_flag_out"
+
+                rc=0
+                stub_bogus_out=$("$OG_STUB_BIN" s frobnicate 2>&1 >/dev/null) || rc=$?
+                [ "$rc" -eq 2 ]
+                grep -qF "unknown command: s frobnicate" <<<"$stub_bogus_out"
+
+                # the existing `remote` noun (subverbs only, no bare verb) is
+                # unchanged by the guard above.
+                rc=0
+                remote_bogus_out=$("$OG_BIN" remote frobnicate 2>&1 >/dev/null) || rc=$?
+                [ "$rc" -eq 2 ]
+                grep -qF "unknown command: remote frobnicate" <<<"$remote_bogus_out"
+
+                # 10: `og` never appears in the generated tmux config.
+                if grep -qF "$OG" "$CONF" || grep -qF "$OG_INNER" "$CONF"; then
+                  echo "og store path leaked into the generated tmux config" >&2
                   exit 1
                 fi
-              done
 
-              touch $out
-            '';
+                # 11: `og` also never reaches the tmux server's own PATH --
+                # only scripts partitioned into ogVerbSpec/ogInternal do.
+                # wrapProgram moves the pristine binary to bin/.tmux-wrapped and
+                # writes the PATH-bearing wrapper script to bin/tmux -- grepping
+                # the pristine binary would never see the PATH text at all.
+                if grep -qF "$OG" "$TMUX_WRAPPED/bin/tmux" || grep -qF "$OG_INNER" "$TMUX_WRAPPED/bin/tmux"; then
+                  echo "og store path leaked into the tmux wrapper's PATH" >&2
+                  exit 1
+                fi
 
-          # The #603 tick floor's poller and sweep hooks fire inside any server
-          # started from tmuxConfig.tmux-wrapped and reach functions that delete
-          # files under CLAUDE_STATUS_DIR, OG_ENRICH_CACHE_DIR,
-          # OG_AGENT_USAGE_DIR and OG_ENRICH_LOCK_DIR — whose defaults are the
-          # developer's real /tmp trees (CLAUDE_STATUS_DIR: /tmp/claude-status-<uid>,
-          # #850). XDG_DATA_HOME is the fifth: tmux-fingers writes, and
-          # tmux-fingers-prune deletes, tmux-<pid> dirs under
-          # $XDG_DATA_HOME/tmux-fingers (#1066). A bats suite that sets TMUX_BIN
-          # loads that config, so it must
-          # export all five in its own setup() or a future one added without
-          # isolation is destructive the moment it runs locally, while nix flake
-          # check stays green (the sandbox's own per-uid dir is empty, and the
-          # build user's uid there is never the developer's).
-          #
-          # The second loop covers suites that start a server with the bare PATH
-          # `tmux` (the wrapper on a dev box) without a TMUX_BIN reference: they
-          # still load tmux-fingers, so they must export XDG_DATA_HOME. It matches
-          # real invocations only (a line that starts with a tmux command word and
-          # names new-session/start-server), so string fixtures and log greps in
-          # remote-picker and conf-shell-quoting do not trip it.
-          wrapped-tmux-suite-isolation-assertions =
-            pkgs.runCommand "wrapped-tmux-suite-isolation-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
-            } ''
-              fail=0
-              for f in ${./tests}/*.bats; do
-                grep -q 'TMUX_BIN' "$f" || continue
-                for var in CLAUDE_STATUS_DIR OG_ENRICH_CACHE_DIR OG_AGENT_USAGE_DIR OG_ENRICH_LOCK_DIR XDG_DATA_HOME; do
-                  grep -q "export $var=" "$f" || {
-                    echo "$(basename "$f") references TMUX_BIN but does not export $var" >&2
+                touch $out
+              '';
+
+            default-size-conf-assertions =
+              pkgs.runCommand "default-size-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                grep -q 'set-hook -g client-attached\[20\]' "$CONF"
+                grep -q 'set-hook -g client-resized\[20\]' "$CONF"
+                grep -q 'set-hook -gu client-attached\[20\]' "$CONF"
+                grep -q 'set-hook -gu client-resized\[20\]' "$CONF"
+                grep -E 'client-attached\[20\].*/nix/store/[^ ]*/bin/tmux-default-size' "$CONF"
+                grep -E 'client-resized\[20\].*/nix/store/[^ ]*/bin/tmux-default-size' "$CONF"
+
+                attach_clear=$(grep -n 'set-hook -gu client-attached\[20\]' "$CONF" | head -1 | cut -d: -f1)
+                attach_set=$(grep -n 'set-hook -g client-attached\[20\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$attach_clear" -lt "$attach_set" ]
+                resize_clear=$(grep -n 'set-hook -gu client-resized\[20\]' "$CONF" | head -1 | cut -d: -f1)
+                resize_set=$(grep -n 'set-hook -g client-resized\[20\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$resize_clear" -lt "$resize_set" ]
+                touch $out
+              '';
+
+            # Build-time guard for the #603 tick floor's wiring in
+            # config/tmux.conf.nix: four `-B` session monitors driving the
+            # former status-format[0] poller jobs. Modelled on
+            # default-size-conf-assertions above. The store-path setter strings
+            # are built from tmuxConfig.script so a future binary rename can't
+            # silently desync the check from the config.
+            tick-floor-conf-assertions = let
+              # \\\" (not \") -- the emitted conf wraps each run-shell command in
+              # BACKSLASH-escaped quotes (it's itself quoted by the outer
+              # if-shell body string), so the literal substring to match is
+              # backslash-quote, not a bare quote.
+              prSetter = "set-hook -g -B '@og-pr-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-pr-enrich}/bin/tmux-pr-enrich --tick\\\"'";
+              backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
+              usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
+              sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${tmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
+              resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-session-res-bin} --tick\\\"'";
+            in
+              pkgs.runCommand "tick-floor-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.gawk pkgs.gnused pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+                TICK_OPT = "set -g @og_tick '%s'";
+                PR_CLEAR_B = "set-hook -g -u -B '@og-pr-tick'";
+                PR_CLEAR_OPT = "set -gu '@og-pr-tick'";
+                BACKFILL_CLEAR_B = "set-hook -g -u -B '@og-backfill-tick'";
+                BACKFILL_CLEAR_OPT = "set -gu '@og-backfill-tick'";
+                USAGE_CLEAR_B = "set-hook -g -u -B '@og-usage-tick'";
+                USAGE_CLEAR_OPT = "set -gu '@og-usage-tick'";
+                SWEEP_CLEAR_B = "set-hook -g -u -B '@og-sweep-tick'";
+                SWEEP_CLEAR_OPT = "set -gu '@og-sweep-tick'";
+                RES_CLEAR_B = "set-hook -g -u -B '@og-res-tick'";
+                RES_CLEAR_OPT = "set -gu '@og-res-tick'";
+                PR_SETTER = prSetter;
+                BACKFILL_SETTER = backfillSetter;
+                USAGE_SETTER = usageSetter;
+                SWEEP_SETTER = sweepSetter;
+                RES_SETTER = resSetter;
+                # The guard's condition-close / string-branch-open join, which
+                # only exists when the hooks sit inside if-shell's STRING form
+                # ("..." "...") rather than a brace block -- tmux parses every
+                # branch of a { } block at source time, so -B would be rejected
+                # even on the untaken branch of a pre-3.8 server.
+                GUARD_JOIN = "grep -q -- -B\" \"set-hook -g -u -B '@og-pr-tick'";
+              } ''
+                grep -qF "$TICK_OPT" "$CONF"
+
+                for v in PR_CLEAR_B PR_CLEAR_OPT BACKFILL_CLEAR_B BACKFILL_CLEAR_OPT \
+                         USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT \
+                         RES_CLEAR_B RES_CLEAR_OPT \
+                         PR_SETTER BACKFILL_SETTER USAGE_SETTER SWEEP_SETTER RES_SETTER GUARD_JOIN; do
+                  pat="''${!v}"
+                  grep -qF "$pat" "$CONF" || {
+                    echo "missing from conf ($v): $pat" >&2
+                    exit 1
+                  }
+                done
+
+                # Highest-value line in this check (upstream 557967c3): the
+                # empty-target monitor spec ('@name::') is the only spelling
+                # that survives a flake.lock bump past that commit, and
+                # ':session:' must never appear anywhere in the emitted conf.
+                # Written as an explicit if/exit, not a bare `! grep ...`: bash's
+                # errexit never fires on a command whose status is inverted by
+                # `!`, so that form would silently never catch a regression.
+                if grep -qF ':session:' "$CONF"; then
+                  echo "a -B monitor spec uses ':session:' -- only the empty target ('::') survives upstream 557967c3" >&2
+                  exit 1
+                fi
+
+                # status-format[0] no longer smuggles the poller jobs through.
+                fmt0="$(grep -F 'set -g status-format[0]' "$CONF")"
+                case "$fmt0" in
+                  *--tick*|*--backfill*)
+                    echo "status-format[0] still carries a --tick/--backfill job" >&2
+                    exit 1
+                    ;;
+                esac
+
+                # Every clear precedes every setter in the emitted text -- the
+                # ordering is what makes a disable (enrich.enable = false, etc.)
+                # actually take effect rather than leave a stale monitor firing
+                # at a store path GC will remove.
+                line="$(grep -F 'if-shell "tmux list-commands set-hook' "$CONF")"
+                [ -n "$line" ] || { echo "tick-floor guard line not found" >&2; exit 1; }
+
+                clear_max=-1
+                for v in "$PR_CLEAR_B" "$PR_CLEAR_OPT" "$BACKFILL_CLEAR_B" "$BACKFILL_CLEAR_OPT" \
+                         "$USAGE_CLEAR_B" "$USAGE_CLEAR_OPT" "$SWEEP_CLEAR_B" "$SWEEP_CLEAR_OPT" \
+                         "$RES_CLEAR_B" "$RES_CLEAR_OPT"; do
+                  prefix="''${line%%"$v"*}"
+                  [ "$prefix" != "$line" ] || { echo "clear not found in guard line: $v" >&2; exit 1; }
+                  [ "''${#prefix}" -gt "$clear_max" ] && clear_max="''${#prefix}"
+                done
+                setter_min=-1
+                for v in "$PR_SETTER" "$BACKFILL_SETTER" "$USAGE_SETTER" "$SWEEP_SETTER" "$RES_SETTER"; do
+                  prefix="''${line%%"$v"*}"
+                  [ "$prefix" != "$line" ] || { echo "setter not found in guard line: $v" >&2; exit 1; }
+                  if [ "$setter_min" -eq -1 ] || [ "''${#prefix}" -lt "$setter_min" ]; then
+                    setter_min="''${#prefix}"
+                  fi
+                done
+                [ "$clear_max" -lt "$setter_min" ] || {
+                  echo "a clear (offset $clear_max) does not precede every setter (offset $setter_min)" >&2
+                  exit 1
+                }
+
+                # A hook COMMAND (not the monitor spec, which is legitimately a
+                # bare #{T:...} format evaluated by hooks_monitor_add itself)
+                # must carry NO #{ at all, not merely a #{q: form. -B monitor
+                # hooks format-expand their action string and then re-lex the
+                # result with tmux's own command parser -- which strips the
+                # very backslashes #{q:} inserts -- before run-shell expands a
+                # second time; #{q:start_time} was inert only because a start
+                # time is pure digits, the kind of idiom someone copies next
+                # for a format that isn't. All five commands are pure store paths
+                # plus literal flags, so the invariant is enforceable as written.
+                cmds="$(echo "$line" | awk -F'\\\\"' '{for(i=2;i<NF;i+=2) print $i}')"
+                [ -n "$cmds" ] || { echo "no hook commands extracted from guard line" >&2; exit 1; }
+                n=0
+                while IFS= read -r cmd; do
+                  n=$((n + 1))
+                  case "$cmd" in
+                    *'#{'*)
+                      echo "bare #{ in hook command: $cmd" >&2
+                      exit 1
+                      ;;
+                  esac
+                done <<<"$cmds"
+                # Still 5, not 10, with twenty clear literals above: n counts the
+                # \"-wrapped run-shell payloads (awk's odd fields), and a clear
+                # carries no command payload at all.
+                [ "$n" -eq 5 ] || { echo "expected 5 hook commands, got $n" >&2; exit 1; }
+
+                touch $out
+              '';
+
+            # nix build .#default cannot verify the disabled path: enrichEnable
+            # and agentUsageEnable both default true there, so a regression that
+            # made the clears conditional on a feature flag (leaving a stale
+            # monitor pointed at a store path GC will remove) would pass every
+            # existing check. Modelled on sixel-conf-assertions above: import
+            # tmux.conf.nix directly with the flags off, the way
+            # nix build .#default never does.
+            tick-floor-disabled-conf-assertions = let
+              disabledTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+              disabledConf = disabledTmuxConfig.tmuxConf;
+              # The pr/backfill/usage setters are built off the DEFAULT
+              # tmuxConfig.script -- they must be absent regardless of exact
+              # store path, since the whole setHook line is omitted when its
+              # flag is off. The sweep setter is NOT optional, so it must be
+              # built off disabledTmuxConfig.script instead: tmux-update-icons's
+              # OWN @issue_stamp@ substitution differs with enrichEnable off,
+              # which changes its store path independently of this setter list.
+              prSetter = "set-hook -g -B '@og-pr-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-pr-enrich}/bin/tmux-pr-enrich --tick\\\"'";
+              backfillSetter = "set-hook -g -B '@og-backfill-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-issue-stamp}/bin/tmux-issue-stamp --backfill\\\"'";
+              usageSetter = "set-hook -g -B '@og-usage-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.script.tmux-agent-usage}/bin/tmux-agent-usage --tick\\\"'";
+              sweepSetter = "set-hook -g -B '@og-sweep-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"OG_TICK_SWEEP=1 ${disabledTmuxConfig.script.tmux-update-icons}/bin/tmux-update-icons\\\"'";
+              # Unconditional like the sweep, but built off the DEFAULT config,
+              # the opposite of the case above: the poller is a picker-generate
+              # binary, whose only inputs are the process icons and the splash
+              # tips, so neither enrichEnable nor agentUsageEnable moves its
+              # store path and both configs name the same one.
+              resSetter = "set-hook -g -B '@og-res-tick::#{e|/|:#{T:@og_tick},5}' 'run-shell -b \\\"${tmuxConfig.picker-session-res-bin} --tick\\\"'";
+            in
+              pkgs.runCommand "tick-floor-disabled-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep];
+                CONF = disabledConf;
+                PR_CLEAR_B = "set-hook -g -u -B '@og-pr-tick'";
+                PR_CLEAR_OPT = "set -gu '@og-pr-tick'";
+                BACKFILL_CLEAR_B = "set-hook -g -u -B '@og-backfill-tick'";
+                BACKFILL_CLEAR_OPT = "set -gu '@og-backfill-tick'";
+                USAGE_CLEAR_B = "set-hook -g -u -B '@og-usage-tick'";
+                USAGE_CLEAR_OPT = "set -gu '@og-usage-tick'";
+                SWEEP_CLEAR_B = "set-hook -g -u -B '@og-sweep-tick'";
+                SWEEP_CLEAR_OPT = "set -gu '@og-sweep-tick'";
+                RES_CLEAR_B = "set-hook -g -u -B '@og-res-tick'";
+                RES_CLEAR_OPT = "set -gu '@og-res-tick'";
+                PR_SETTER = prSetter;
+                BACKFILL_SETTER = backfillSetter;
+                USAGE_SETTER = usageSetter;
+                SWEEP_SETTER = sweepSetter;
+                RES_SETTER = resSetter;
+              } ''
+                # All ten clears survive a disabled feature -- five names times
+                # the -B and option forms. They're keyed off the fixed hookNames
+                # list, never the enable flags, which is what makes disabling a
+                # feature actually drop its stale monitor on reload instead of
+                # leaving argv's previous generation armed.
+                for v in PR_CLEAR_B PR_CLEAR_OPT BACKFILL_CLEAR_B BACKFILL_CLEAR_OPT \
+                         USAGE_CLEAR_B USAGE_CLEAR_OPT SWEEP_CLEAR_B SWEEP_CLEAR_OPT \
+                         RES_CLEAR_B RES_CLEAR_OPT; do
+                  pat="''${!v}"
+                  grep -qF "$pat" "$CONF" || {
+                    echo "disabled conf is missing a clear ($v): $pat" >&2
+                    exit 1
+                  }
+                done
+
+                for v in SWEEP_SETTER RES_SETTER; do
+                  pat="''${!v}"
+                  grep -qF "$pat" "$CONF" || {
+                    echo "disabled conf is missing an unconditional setter ($v): $pat" >&2
+                    exit 1
+                  }
+                done
+
+                for v in PR_SETTER BACKFILL_SETTER USAGE_SETTER; do
+                  pat="''${!v}"
+                  if grep -qF "$pat" "$CONF"; then
+                    echo "disabled conf still emits a gated setter ($v): $pat" >&2
+                    exit 1
+                  fi
+                done
+
+                touch $out
+              '';
+
+            # The #603 tick floor's poller and sweep hooks fire inside any server
+            # started from tmuxConfig.tmux-wrapped and reach functions that delete
+            # files under CLAUDE_STATUS_DIR, OG_ENRICH_CACHE_DIR,
+            # OG_AGENT_USAGE_DIR and OG_ENRICH_LOCK_DIR — whose defaults are the
+            # developer's real /tmp trees (CLAUDE_STATUS_DIR: /tmp/claude-status-<uid>,
+            # #850). XDG_DATA_HOME is the fifth: tmux-fingers writes, and
+            # tmux-fingers-prune deletes, tmux-<pid> dirs under
+            # $XDG_DATA_HOME/tmux-fingers (#1066). A bats suite that sets TMUX_BIN
+            # loads that config, so it must
+            # export all five in its own setup() or a future one added without
+            # isolation is destructive the moment it runs locally, while nix flake
+            # check stays green (the sandbox's own per-uid dir is empty, and the
+            # build user's uid there is never the developer's).
+            #
+            # The second loop covers suites that start a server with the bare PATH
+            # `tmux` (the wrapper on a dev box) without a TMUX_BIN reference: they
+            # still load tmux-fingers, so they must export XDG_DATA_HOME. It matches
+            # real invocations only (a line that starts with a tmux command word and
+            # names new-session/start-server), so string fixtures and log greps in
+            # remote-picker and conf-shell-quoting do not trip it.
+            wrapped-tmux-suite-isolation-assertions =
+              pkgs.runCommand "wrapped-tmux-suite-isolation-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep];
+              } ''
+                fail=0
+                for f in ${./tests}/*.bats; do
+                  grep -q 'TMUX_BIN' "$f" || continue
+                  for var in CLAUDE_STATUS_DIR OG_ENRICH_CACHE_DIR OG_AGENT_USAGE_DIR OG_ENRICH_LOCK_DIR XDG_DATA_HOME; do
+                    grep -q "export $var=" "$f" || {
+                      echo "$(basename "$f") references TMUX_BIN but does not export $var" >&2
+                      fail=1
+                    }
+                  done
+                done
+                for f in ${./tests}/*.bats; do
+                  grep -qE '^[[:space:]]*(tmux|probe_tmux|"\$\{TM\[@\]\}"|"\$real_tmux"|\$SRC|\$DST)[[:space:]].*(new-session|start-server)' "$f" || continue
+                  grep -q 'export XDG_DATA_HOME=' "$f" || {
+                    echo "$(basename "$f") starts a tmux server but does not export XDG_DATA_HOME" >&2
                     fail=1
                   }
                 done
-              done
-              for f in ${./tests}/*.bats; do
-                grep -qE '^[[:space:]]*(tmux|probe_tmux|"\$\{TM\[@\]\}"|"\$real_tmux"|\$SRC|\$DST)[[:space:]].*(new-session|start-server)' "$f" || continue
-                grep -q 'export XDG_DATA_HOME=' "$f" || {
-                  echo "$(basename "$f") starts a tmux server but does not export XDG_DATA_HOME" >&2
+                [ "$fail" -eq 0 ]
+                touch $out
+              '';
+
+            # #809: the wrapper's --prefix PATH now names one merged bin dir
+            # instead of 66 packages. Prove nothing was dropped by the merge
+            # (every name reachable on the old per-package PATH still resolves,
+            # to the same target) and that precedence held (tmux resolves to
+            # tmuxPkg's pristine binary, not some other package's file).
+            wrapper-bin-merge-assertions =
+              pkgs.runCommand "wrapper-bin-merge-assertions" {
+                nativeBuildInputs = [pkgs.coreutils pkgs.findutils];
+                OLD_PATH = lib.makeBinPath tmuxConfig.wrapperBinPkgs;
+                NEW_BIN = "${tmuxConfig.wrapperBinDir}/bin";
+                TMUX_PRISTINE = "${builtins.head tmuxConfig.wrapperBinPkgs}/bin/tmux";
+              } ''
+                fail=0
+                names=$(
+                  IFS=:
+                  for d in $OLD_PATH; do
+                    find "$d" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null || true
+                  done | sort -u
+                )
+                for name in $names; do
+                  old_target=$(PATH="$OLD_PATH" command -v "$name" || true)
+                  new_target=$(PATH="$NEW_BIN" command -v "$name" || true)
+                  if [ -z "$old_target" ]; then
+                    continue
+                  fi
+                  if [ -z "$new_target" ]; then
+                    echo "binary dropped from merged wrapper bin dir: $name" >&2
+                    fail=1
+                    continue
+                  fi
+                  if [ "$(readlink -f "$old_target")" != "$(readlink -f "$new_target")" ]; then
+                    echo "precedence changed for $name: $old_target -> $new_target" >&2
+                    fail=1
+                  fi
+                done
+                tmux_new=$(readlink -f "$NEW_BIN/tmux")
+                tmux_pristine=$(readlink -f "$TMUX_PRISTINE")
+                if [ "$tmux_new" != "$tmux_pristine" ]; then
+                  echo "tmux in the merged bin dir is not tmuxPkg's pristine binary: $tmux_new" >&2
                   fail=1
-                }
-              done
-              [ "$fail" -eq 0 ]
-              touch $out
-            '';
-
-          # #809: the wrapper's --prefix PATH now names one merged bin dir
-          # instead of 66 packages. Prove nothing was dropped by the merge
-          # (every name reachable on the old per-package PATH still resolves,
-          # to the same target) and that precedence held (tmux resolves to
-          # tmuxPkg's pristine binary, not some other package's file).
-          wrapper-bin-merge-assertions =
-            pkgs.runCommand "wrapper-bin-merge-assertions" {
-              nativeBuildInputs = [pkgs.coreutils pkgs.findutils];
-              OLD_PATH = lib.makeBinPath tmuxConfig.wrapperBinPkgs;
-              NEW_BIN = "${tmuxConfig.wrapperBinDir}/bin";
-              TMUX_PRISTINE = "${builtins.head tmuxConfig.wrapperBinPkgs}/bin/tmux";
-            } ''
-              fail=0
-              names=$(
-                IFS=:
-                for d in $OLD_PATH; do
-                  find "$d" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null || true
-                done | sort -u
-              )
-              for name in $names; do
-                old_target=$(PATH="$OLD_PATH" command -v "$name" || true)
-                new_target=$(PATH="$NEW_BIN" command -v "$name" || true)
-                if [ -z "$old_target" ]; then
-                  continue
                 fi
-                if [ -z "$new_target" ]; then
-                  echo "binary dropped from merged wrapper bin dir: $name" >&2
-                  fail=1
-                  continue
-                fi
-                if [ "$(readlink -f "$old_target")" != "$(readlink -f "$new_target")" ]; then
-                  echo "precedence changed for $name: $old_target -> $new_target" >&2
-                  fail=1
-                fi
-              done
-              tmux_new=$(readlink -f "$NEW_BIN/tmux")
-              tmux_pristine=$(readlink -f "$TMUX_PRISTINE")
-              if [ "$tmux_new" != "$tmux_pristine" ]; then
-                echo "tmux in the merged bin dir is not tmuxPkg's pristine binary: $tmux_new" >&2
-                fail=1
-              fi
-              [ "$fail" -eq 0 ]
-              touch $out
-            '';
+                [ "$fail" -eq 0 ]
+                touch $out
+              '';
 
-          # A control byte is invisible in review and only misbehaves for clients
-          # without a UTF-8 locale, so the delimiter rule needs a build-time gate
-          # rather than vigilance (#373). Shell sources: scripts/, config/, modules/.
-          # picker/ is gated by go test ./tmuxformat/... inside picker-go-tests.
-          tmux-format-delimiter-assertions =
-            pkgs.runCommand "tmux-format-delimiter-assertions" {
-              nativeBuildInputs = [pkgs.bash pkgs.coreutils pkgs.findutils];
-            } ''
-              # `bash "$scan"`, not "$scan": the scanner's shebang is
-              # /usr/bin/env bash and the Linux build sandbox has no /usr/bin.
-              scan=${./tests/check-tmux-format-delimiters.sh}
-              bash "$scan" ${./scripts}
-              bash "$scan" ${./config}
-              bash "$scan" ${./modules}
+            # A control byte is invisible in review and only misbehaves for clients
+            # without a UTF-8 locale, so the delimiter rule needs a build-time gate
+            # rather than vigilance (#373). Shell sources: scripts/, config/, modules/.
+            # picker/ is gated by go test ./tmuxformat/... inside picker-go-tests.
+            tmux-format-delimiter-assertions =
+              pkgs.runCommand "tmux-format-delimiter-assertions" {
+                nativeBuildInputs = [pkgs.bash pkgs.coreutils pkgs.findutils];
+              } ''
+                # `bash "$scan"`, not "$scan": the scanner's shebang is
+                # /usr/bin/env bash and the Linux build sandbox has no /usr/bin.
+                scan=${./tests/check-tmux-format-delimiters.sh}
+                bash "$scan" ${./scripts}
+                bash "$scan" ${./config}
+                bash "$scan" ${./modules}
 
-              # Prove the scanner can actually fail, and that EACH rule pulls its
-              # weight: a single non-zero exit would let an inverted rule ship.
-              if report=$(bash "$scan" ${./tests/fixtures/tmux-format-delimiters} 2>&1); then
-                echo "scanner accepted the deliberately-broken fixtures" >&2
-                exit 1
-              fi
-              for f in literal-tab escaped-tab var-indirect newline-escape us-escape hex-tab-escape; do
-                case "$report" in
-                  *"$f"*) ;;
-                  *) echo "scanner missed fixture $f:" >&2; echo "$report" >&2; exit 1 ;;
-                esac
-              done
-              touch $out
-            '';
-
-          # #925: the activation body is lifted from modules/home-manager.nix
-          # and run against real scratch servers, so the suite needs the
-          # shipped tmux (mkTmux) and a sed/grep-capable coreutils.
-          reload-tmux-xdg-tests =
-            pkgs.runCommand "reload-tmux-xdg-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused (mkTmux pkgs)];
-              # The test reads TMUX_BIN and exports the four scratch dirs, so
-              # wrapped-tmux-suite-isolation-assertions stays satisfied.
-              TMUX_BIN = "${mkTmux pkgs}/bin/tmux";
-            } ''
-              cp -r ${./modules} modules
-              cp -r ${./tests} tests
-              bats tests/reload-tmux-xdg.bats
-              touch $out
-            '';
-
-          notify-bell-integration-tests =
-            pkgs.runCommand "notify-bell-integration-tests" {
-              # mkTmux, not pkgs.tmux: the hook behavior this pins must be the
-              # tmux that actually ships.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/notify-bell-integration.bats
-              touch $out
-            '';
-
-          log-tests =
-            pkgs.runCommand "log-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.util-linux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/log.bats
-              touch $out
-            '';
-
-          splash-tests =
-            pkgs.runCommand "splash-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/splash.bats
-              touch $out
-            '';
-
-          # Regression guard for the command-injection class of issue #355,
-          # which has now been introduced three times. Asserted on the EMITTED
-          # conf, never the Nix source — that layer plus tmux's own quoting make
-          # the source unreliable to eyeball. A presence grep for today's
-          # #{q:...} would not hold: this has to reject the NEXT bare one, which
-          # is why it is a scanner rather than a grep. Rule and scope live in
-          # tests/conf-shell-quoting.bats.
-          conf-shell-quoting-tests =
-            pkgs.runCommand "conf-shell-quoting-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              cp -r ${./tests} tests
-              bats tests/conf-shell-quoting.bats
-              touch $out
-            '';
-
-          interrupt-tests =
-            pkgs.runCommand "interrupt-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/interrupt.bats
-              touch $out
-            '';
-
-          naming-seed-tests =
-            pkgs.runCommand "naming-seed-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
-            } ''
-              cp -r ${./claude-plugin} claude-plugin
-              cp -r ${./tests} tests
-              bats tests/naming-seed.bats
-              touch $out
-            '';
-
-          reconcile-tests =
-            pkgs.runCommand "reconcile-tests" {
-              # git: the test derives tags from a real repo it builds in $HOME.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/reconcile.bats
-              touch $out
-            '';
-
-          issue-stamp-tests =
-            pkgs.runCommand "issue-stamp-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/issue-stamp.bats
-              bats tests/issue-stamp-linear-provider.bats
-              touch $out
-            '';
-
-          issue-backfill-tests =
-            pkgs.runCommand "issue-backfill-tests" {
-              # git: one test builds a real repo in $HOME to exercise the
-              # live-branch-vs-stale-argument override (like reconcile-tests).
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/issue-backfill.bats
-              touch $out
-            '';
-
-          enrich-command-tests =
-            pkgs.runCommand "enrich-command-tests" {
-              # git: the test derives worktree/branch from a real repo it builds
-              # in $HOME (like reconcile-tests).
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/enrich-command.bats
-              touch $out
-            '';
-
-          update-icons-enrich-trigger-tests =
-            pkgs.runCommand "update-icons-enrich-trigger-tests" {
-              # tmux: drives a private, config-less server (like reflow-fanout-tests);
-              # git: builds a real repo in $HOME to exercise a real branch transition.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/update-icons-enrich-trigger.bats
-              touch $out
-            '';
-
-          update-icons-cwd-move-tests =
-            pkgs.runCommand "update-icons-cwd-move-tests" {
-              # tmux: drives a private, config-less server (like reflow-fanout-tests);
-              # git: builds two real repos to exercise a genuine cwd move.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/update-icons-cwd-move.bats
-              touch $out
-            '';
-
-          update-icons-resume-guard-tests =
-            pkgs.runCommand "update-icons-resume-guard-tests" {
-              # tmux: drives a private, config-less server (like reflow-fanout-tests);
-              # git: builds a real repo in $HOME to exercise a real branch transition.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/update-icons-resume-guard.bats
-              touch $out
-            '';
-
-          update-icons-all-windows-tests =
-            pkgs.runCommand "update-icons-all-windows-tests" {
-              # tmux: drives a private, config-less server (like reflow-fanout-tests);
-              # git: builds a real repo so unseeded @branch seeding has a cwd.
-              # bash: copied to a binary named `claude` so pane_current_command is literal.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/update-icons-all-windows.bats
-              touch $out
-            '';
-
-          update-icons-dispatcher-tests =
-            pkgs.runCommand "update-icons-dispatcher-tests" {
-              # tmux: drives a private, config-less server (like update-icons-all-windows-tests);
-              # git: builds a real repo so unseeded @branch seeding has a cwd.
-              # bash: copied to a binary named `claude` so pane_current_command is literal.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/update-icons-dispatcher.bats
-              touch $out
-            '';
-
-          # #725: the modal-skip / EFF_ACTIVE chrome rule (docs/agents/floats.md
-          # "Popups are modal floats") needs a server that actually has
-          # pane_modal_flag/window_modal_pane, so this drives the pinned wrapper
-          # instead of nixpkgs' tmux — the only difference from
-          # update-icons-all-windows-tests above.
-          update-icons-modal-tests =
-            pkgs.runCommand "update-icons-modal-tests" {
-              # tmux: drives a private, config-less server (like reflow-fanout-tests);
-              # git: builds a real repo so unseeded @branch seeding has a cwd.
-              # bash: copied to a binary named `claude` so pane_current_command is literal.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git (mkTmux pkgs) pkgs.bash];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/update-icons-modal.bats
-              touch $out
-            '';
-
-          carousel-restore-tests =
-            pkgs.runCommand "carousel-restore-tests" {
-              # tmux: drives a private, config-less server (like
-              # update-icons-resume-guard-tests above). No gnused: both
-              # @carousel_aeye@ and @AGENT_COMMANDS@ have documented
-              # env-var test seams (AEYE_BIN / AGENT_COMMANDS), so the raw
-              # script runs unsubstituted.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.tmux];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/carousel-restore.bats
-              touch $out
-            '';
-
-          # tmux-carousel-restore recomputes aeye's manifest key itself, so a
-          # change on aeye's side breaks the carousel silently — it opens, finds
-          # nothing, and reads as an unrelated bug. Pinned BEHAVIOURALLY: ask
-          # aeye's own shipped launcher what key it derives (`--resolve` is that
-          # script's documented seam and needs no tmux server, it parses $TMUX as
-          # a string) and compare against the shape this repo hardcodes. A
-          # substring grep for `="$srv-` stays green through a key EXTENSION
-          # (`$srv-$pane-$winid`), which is the drift that matters. Reads
-          # ${inputs.aeye}, never a local checkout, which would pass here and
-          # still miss the drift.
-          carousel-key-formula-pin =
-            pkgs.runCommand "carousel-key-formula-pin" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle];
-            } ''
-              # Two distinct pairs, so a reordering ("<pane>-<srv>") cannot pass
-              # by coincidence on a single sample.
-              for pair in "12345 %7 12345-7" "999 %0 999-0"; do
-                set -- $pair
-                got="$(TMUX="/tmp/sock,$1,0" TMUX_PANE="$2" tmux-claude-images --resolve | cut -f2)"
-                if [ "$got" != "$3" ]; then
-                  echo "aeye's manifest key formula changed: TMUX_PANE=$2 srv=$1 now derives '$got', expected '$3'." >&2
-                  echo "scripts/tmux-carousel-restore.sh computes <srv>-<pane sans %> and must be updated to match." >&2
+                # Prove the scanner can actually fail, and that EACH rule pulls its
+                # weight: a single non-zero exit would let an inverted rule ship.
+                if report=$(bash "$scan" ${./tests/fixtures/tmux-format-delimiters} 2>&1); then
+                  echo "scanner accepted the deliberately-broken fixtures" >&2
                   exit 1
                 fi
-              done
+                for f in literal-tab escaped-tab var-indirect newline-escape us-escape hex-tab-escape; do
+                  case "$report" in
+                    *"$f"*) ;;
+                    *) echo "scanner missed fixture $f:" >&2; echo "$report" >&2; exit 1 ;;
+                  esac
+                done
+                touch $out
+              '';
 
-              # And pin our side, so a change here without one there is equally
-              # loud. Anchored on the assignment, not a bare substring.
-              grep -qF 'key="$srv-''${HOST#%}"' ${./scripts/tmux-carousel-restore.sh}
-              touch $out
-            '';
+            # #925: the activation body is lifted from modules/home-manager.nix
+            # and run against real scratch servers, so the suite needs the
+            # shipped tmux (mkTmux) and a sed/grep-capable coreutils.
+            reload-tmux-xdg-tests =
+              pkgs.runCommand "reload-tmux-xdg-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused (mkTmux pkgs)];
+                # The test reads TMUX_BIN and exports the four scratch dirs, so
+                # wrapped-tmux-suite-isolation-assertions stays satisfied.
+                TMUX_BIN = "${mkTmux pkgs}/bin/tmux";
+              } ''
+                cp -r ${./modules} modules
+                cp -r ${./tests} tests
+                bats tests/reload-tmux-xdg.bats
+                touch $out
+              '';
 
-          worktree-match-tests =
-            pkgs.runCommand "worktree-match-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/worktree-match.bats
-              touch $out
-            '';
+            notify-bell-integration-tests =
+              pkgs.runCommand "notify-bell-integration-tests" {
+                # mkTmux, not pkgs.tmux: the hook behavior this pins must be the
+                # tmux that actually ships.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/notify-bell-integration.bats
+                touch $out
+              '';
 
-          worktree-match-integration-tests =
-            pkgs.runCommand "worktree-match-integration-tests" {
-              # mkTmux, not pkgs.tmux: assert against the tmux that actually ships.
-              # No version divergence is known here (both report window options on
-              # pane rows); the derivation is already built for the m2 check anyway.
-              # Deliberately no LANG/LC_ALL: the sandbox's stripped locale is the
-              # hostile case. tmux rewrites non-printable bytes to "_" without
-              # UTF-8, which is why the -F format is "|"-delimited rather than
-              # tab-delimited — pinning a UTF-8 locale here would hide a
-              # regression back to a tab everywhere except the one test that
-              # overrides the locale itself.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk (mkTmux pkgs)];
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/worktree-match-integration.bats
-              touch $out
-            '';
+            log-tests =
+              pkgs.runCommand "log-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.util-linux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/log.bats
+                touch $out
+              '';
 
-          agent-detect-arm-tests =
-            pkgs.runCommand "agent-detect-arm-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-detect-arm.bats
-              touch $out
-            '';
+            splash-tests =
+              pkgs.runCommand "splash-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/splash.bats
+                touch $out
+              '';
 
-          agent-liveness-tests =
-            pkgs.runCommand "agent-liveness-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-liveness.bats
-              touch $out
-            '';
+            # Regression guard for the command-injection class of issue #355,
+            # which has now been introduced three times. Asserted on the EMITTED
+            # conf, never the Nix source — that layer plus tmux's own quoting make
+            # the source unreliable to eyeball. A presence grep for today's
+            # #{q:...} would not hold: this has to reject the NEXT bare one, which
+            # is why it is a scanner rather than a grep. Rule and scope live in
+            # tests/conf-shell-quoting.bats.
+            conf-shell-quoting-tests =
+              pkgs.runCommand "conf-shell-quoting-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                cp -r ${./tests} tests
+                bats tests/conf-shell-quoting.bats
+                touch $out
+              '';
 
-          # #1091: launcher-hosted agent occupancy (reader side, real scratch tmux
-          # server) and the claude-status-update agent_pid writer.
-          launcher-hosted-agent-tests =
-            pkgs.runCommand "launcher-hosted-agent-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash pkgs.procps];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/launcher-hosted-agent.bats
-              bats tests/claude-status-agent-pid.bats
-              touch $out
-            '';
+            interrupt-tests =
+              pkgs.runCommand "interrupt-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/interrupt.bats
+                touch $out
+              '';
 
-          agent-detect-merge-tests =
-            pkgs.runCommand "agent-detect-merge-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-detect-merge.bats
-              touch $out
-            '';
+            naming-seed-tests =
+              pkgs.runCommand "naming-seed-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
+              } ''
+                cp -r ${./claude-plugin} claude-plugin
+                cp -r ${./tests} tests
+                bats tests/naming-seed.bats
+                touch $out
+              '';
 
-          agent-bg-badge-tests =
-            pkgs.runCommand "agent-bg-badge-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-bg-badge.bats
-              touch $out
-            '';
+            reconcile-tests =
+              pkgs.runCommand "reconcile-tests" {
+                # git: the test derives tags from a real repo it builds in $HOME.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/reconcile.bats
+                touch $out
+              '';
 
-          agent-detect-enum-tests =
-            pkgs.runCommand "agent-detect-enum-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/agent-detect-enum.bats
-              touch $out
-            '';
+            issue-stamp-tests =
+              pkgs.runCommand "issue-stamp-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/issue-stamp.bats
+                bats tests/issue-stamp-linear-provider.bats
+                touch $out
+              '';
 
-          picker-go-tests = pickerChecked;
+            issue-backfill-tests =
+              pkgs.runCommand "issue-backfill-tests" {
+                # git: one test builds a real repo in $HOME to exercise the
+                # live-branch-vs-stale-argument override (like reconcile-tests).
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/issue-backfill.bats
+                touch $out
+              '';
 
-          picker-go-lint = goLintGate {} pickerChecked;
-          generator-go-lint = goLintGate {race = true;} (pkgs.callPackage ./generator {});
+            enrich-command-tests =
+              pkgs.runCommand "enrich-command-tests" {
+                # git: the test derives worktree/branch from a real repo it builds
+                # in $HOME (like reconcile-tests).
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/enrich-command.bats
+                touch $out
+              '';
 
-          # prefix + Z (#970): the real fold script and reflow on a private,
-          # config-less server, like reflow-fanout-tests.
-          status-fold-tests =
-            pkgs.runCommand "status-fold-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.tmux];
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/status-fold.bats
-              touch $out
-            '';
+            update-icons-enrich-trigger-tests =
+              pkgs.runCommand "update-icons-enrich-trigger-tests" {
+                # tmux: drives a private, config-less server (like reflow-fanout-tests);
+                # git: builds a real repo in $HOME to exercise a real branch transition.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/update-icons-enrich-trigger.bats
+                touch $out
+              '';
 
-          # The fold bind (#970) must flip the flag and hand the fold script the
-          # session and width reflow needs; a bind that drops either builds clean
-          # and folds nothing.
-          status-fold-conf-assertions =
-            pkgs.runCommand "status-fold-conf-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
-              [ "$(grep -c "^set -g @og_icons_job \".*'#{pid}')\"\$" "$CONF")" -eq 1 ]
-              grep -Fq 'set -g status-format[0] "#{E:@og_icons_job}' "$CONF"
-              touch $out
-            '';
+            update-icons-cwd-move-tests =
+              pkgs.runCommand "update-icons-cwd-move-tests" {
+                # tmux: drives a private, config-less server (like reflow-fanout-tests);
+                # git: builds two real repos to exercise a genuine cwd move.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/update-icons-cwd-move.bats
+                touch $out
+              '';
 
-          # Per-host tab colour + session host marker (#1102). The reflow script
-          # shells out to tmux-picker-generate (the one owner of the host->colour
-          # assignment), so the plain picker package is an input here; no tmux
-          # config or pickerChecked is needed, keeping the suite cheap.
-          reflow-host-colour-tests =
-            pkgs.runCommand "reflow-host-colour-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gawk pkgs.tmux];
-              PICKER_GENERATE = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-picker-generate";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/reflow-host-colour.bats
-              touch $out
-            '';
+            update-icons-resume-guard-tests =
+              pkgs.runCommand "update-icons-resume-guard-tests" {
+                # tmux: drives a private, config-less server (like reflow-fanout-tests);
+                # git: builds a real repo in $HOME to exercise a real branch transition.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/update-icons-resume-guard.bats
+                touch $out
+              '';
 
-          reflow-fanout-tests =
-            pkgs.runCommand "reflow-fanout-tests" {
-              # tmux: the test drives a private, config-less tmux server so the
-              # scripts' bare `tmux` calls hit it, never the dev's own server.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.tmux];
-              # reflow measures display width, which needs a UTF-8 locale.
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/reflow-fanout.bats
-              touch $out
-            '';
+            update-icons-all-windows-tests =
+              pkgs.runCommand "update-icons-all-windows-tests" {
+                # tmux: drives a private, config-less server (like reflow-fanout-tests);
+                # git: builds a real repo so unseeded @branch seeding has a cwd.
+                # bash: copied to a binary named `claude` so pane_current_command is literal.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/update-icons-all-windows.bats
+                touch $out
+              '';
 
-          # #820: entering a bridge mirror (switch-client, or a fresh attach)
-          # must leave the window list reflowed, without waiting for an
-          # unrelated event. Loads the REAL conf (the wrapped tmux): the hooks
-          # under test live there, and a config-less server carries none of
-          # them. The daemon's --test-local seam supplies the mirror — no ssh,
-          # no network — with DAEMON/RENDERER the prebuilt pickerChecked
-          # binaries.
-          #
-          # The CONF greps are the static half: the generated conf must carry
-          # the gated bridge-nudge hooks (and clear client-detached), or a
-          # mirror session has no carrier for window-resized/client-detached.
-          # `-F`, because `[20]` is a basic-regex bracket expression.
-          reflow-mirror-attach-tests =
-            pkgs.runCommand "reflow-mirror-attach-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
-              DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
-              RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              REFLOW = "${tmuxConfig.wrapperBinDir}/bin/tmux-reflow-windows";
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              grep -qF 'set-hook -g window-resized[20]' "$CONF"
-              grep -qF 'set-hook -g client-detached' "$CONF"
-              grep -qE '^set-hook -gu client-detached$' "$CONF"
-              grep -qF 'set-hook -gu client-detached[10]' "$CONF"
-              grep -qE 'set-hook -g client-detached\[10\].*tmux-reflow-windows' "$CONF"
-              [ "$(grep -cF 'touch -- #{q:@bridge_nudge}' "$CONF")" -eq 2 ]
+            update-icons-dispatcher-tests =
+              pkgs.runCommand "update-icons-dispatcher-tests" {
+                # tmux: drives a private, config-less server (like update-icons-all-windows-tests);
+                # git: builds a real repo so unseeded @branch seeding has a cwd.
+                # bash: copied to a binary named `claude` so pane_current_command is literal.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/update-icons-dispatcher.bats
+                touch $out
+              '';
 
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/reflow-mirror-attach.bats
-              touch $out
-            '';
+            # #725: the modal-skip / EFF_ACTIVE chrome rule (docs/agents/floats.md
+            # "Popups are modal floats") needs a server that actually has
+            # pane_modal_flag/window_modal_pane, so this drives the pinned wrapper
+            # instead of nixpkgs' tmux — the only difference from
+            # update-icons-all-windows-tests above.
+            update-icons-modal-tests =
+              pkgs.runCommand "update-icons-modal-tests" {
+                # tmux: drives a private, config-less server (like reflow-fanout-tests);
+                # git: builds a real repo so unseeded @branch seeding has a cwd.
+                # bash: copied to a binary named `claude` so pane_current_command is literal.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git (mkTmux pkgs) pkgs.bash];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/update-icons-modal.bats
+                touch $out
+              '';
 
-          float-refit-tests =
-            pkgs.runCommand "float-refit-tests" {
-              # mkTmux, not pkgs.tmux: this test creates real floating panes
-              # (-B/-X/-Y), which nixpkgs' stock tmux only *advertises* via
-              # `list-commands new-pane` and then rejects at parse time (see
-              # pickerChecked's comment above) — a plain pkgs.tmux would make
-              # every float-creating case skip instead of run.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/float-refit.bats
-              touch $out
-            '';
+            carousel-restore-tests =
+              pkgs.runCommand "carousel-restore-tests" {
+                # tmux: drives a private, config-less server (like
+                # update-icons-resume-guard-tests above). No gnused: both
+                # @carousel_aeye@ and @AGENT_COMMANDS@ have documented
+                # env-var test seams (AEYE_BIN / AGENT_COMMANDS), so the raw
+                # script runs unsubstituted.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.tmux];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/carousel-restore.bats
+                touch $out
+              '';
 
-          float-nudge-tests =
-            pkgs.runCommand "float-nudge-tests" {
-              # mkTmux for the same reason as float-refit-tests above: the
-              # script only exists to re-derive percentages a real floating
-              # pane carried.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/float-nudge.bats
-              touch $out
-            '';
+            # tmux-carousel-restore recomputes aeye's manifest key itself, so a
+            # change on aeye's side breaks the carousel silently — it opens, finds
+            # nothing, and reads as an unrelated bug. Pinned BEHAVIOURALLY: ask
+            # aeye's own shipped launcher what key it derives (`--resolve` is that
+            # script's documented seam and needs no tmux server, it parses $TMUX as
+            # a string) and compare against the shape this repo hardcodes. A
+            # substring grep for `="$srv-` stays green through a key EXTENSION
+            # (`$srv-$pane-$winid`), which is the drift that matters. Reads
+            # ${inputs.aeye}, never a local checkout, which would pass here and
+            # still miss the drift.
+            carousel-key-formula-pin =
+              pkgs.runCommand "carousel-key-formula-pin" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle];
+              } ''
+                # Two distinct pairs, so a reordering ("<pane>-<srv>") cannot pass
+                # by coincidence on a single sample.
+                for pair in "12345 %7 12345-7" "999 %0 999-0"; do
+                  set -- $pair
+                  got="$(TMUX="/tmp/sock,$1,0" TMUX_PANE="$2" tmux-claude-images --resolve | cut -f2)"
+                  if [ "$got" != "$3" ]; then
+                    echo "aeye's manifest key formula changed: TMUX_PANE=$2 srv=$1 now derives '$got', expected '$3'." >&2
+                    echo "scripts/tmux-carousel-restore.sh computes <srv>-<pane sans %> and must be updated to match." >&2
+                    exit 1
+                  fi
+                done
 
-          float-nudge-drag-tests =
-            pkgs.runCommand "float-nudge-drag-tests" {
-              # A real attached client fed SGR mouse reports from a pty host
-              # (same shape as float-drag-integration-tests, no daemon): the
-              # wrapper's emitted conf arms the og-float-drag table, and the
-              # drag end must restamp @float_geom. mkTmux for the wrapper and
-              # the raw observer alike.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/float-nudge-drag.bats
-              touch $out
-            '';
+                # And pin our side, so a change here without one there is equally
+                # loud. Anchored on the assignment, not a bare substring.
+                grep -qF 'key="$srv-''${HOST#%}"' ${./scripts/tmux-carousel-restore.sh}
+                touch $out
+              '';
 
-          grid-refit-tests =
-            pkgs.runCommand "grid-refit-tests" {
-              # mkTmux, not pkgs.tmux: the hook-coexistence case creates a real
-              # floating pane, same trap as float-refit-tests above. The other
-              # cases only need layout/pane options, which stock tmux has.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-              # The #760 regression sources the *production* hook wiring out of
-              # the rendered conf and runs the store-built script, so the test
-              # exercises the real hook lines, not a hand-rolled copy.
-              TMUX_OG_CONF = tmuxConfig.tmuxConf;
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/grid-refit.bats
-              touch $out
-            '';
+            worktree-match-tests =
+              pkgs.runCommand "worktree-match-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/worktree-match.bats
+                touch $out
+              '';
 
-          carousel-guard-tests =
-            pkgs.runCommand "carousel-guard-tests" {
-              # mkTmux, not pkgs.tmux: the test creates a real floating pane,
-              # same trap as float-refit-tests above.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-              # The test sources the *production* [30] hook lines out of the
-              # rendered conf, so it exercises the real gate, not a hand-rolled
-              # copy; the dwindle case also runs the store-built tmux-dwindle.
-              TMUX_OG_CONF = tmuxConfig.tmuxConf;
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              cp -r ${./config} config
-              export HOME=$TMPDIR
-              bats tests/carousel-guard.bats
-              touch $out
-            '';
+            worktree-match-integration-tests =
+              pkgs.runCommand "worktree-match-integration-tests" {
+                # mkTmux, not pkgs.tmux: assert against the tmux that actually ships.
+                # No version divergence is known here (both report window options on
+                # pane rows); the derivation is already built for the m2 check anyway.
+                # Deliberately no LANG/LC_ALL: the sandbox's stripped locale is the
+                # hostile case. tmux rewrites non-printable bytes to "_" without
+                # UTF-8, which is why the -F format is "|"-delimited rather than
+                # tab-delimited — pinning a UTF-8 locale here would hide a
+                # regression back to a tab everywhere except the one test that
+                # overrides the locale itself.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk (mkTmux pkgs)];
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/worktree-match-integration.bats
+                touch $out
+              '';
 
-          agent-repaint-ready-tests =
-            pkgs.runCommand "agent-repaint-ready-tests" {
-              # mkTmux, not pkgs.tmux: the readiness read needs
-              # #{pane_last_output_time}, which nixpkgs' stock tmux lacks.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/agent-repaint-ready.bats
-              touch $out
-            '';
+            agent-detect-arm-tests =
+              pkgs.runCommand "agent-detect-arm-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-detect-arm.bats
+                touch $out
+              '';
 
-          pane-border-format-tests =
-            pkgs.runCommand "pane-border-format-tests" {
-              # mkTmux, not pkgs.tmux: this test creates a real -O/-K/-C
-              # floating pane and reads pane_floating_flag, same trap as
-              # float-refit-tests above (nixpkgs' stock tmux advertises but
-              # rejects these new-pane flags at parse time).
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-              # the drawn-flip test runs the real reflow, which measures display width.
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/pane-border-format.bats
-              touch $out
-            '';
+            agent-liveness-tests =
+              pkgs.runCommand "agent-liveness-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-liveness.bats
+                touch $out
+              '';
 
-          default-size-tests =
-            pkgs.runCommand "default-size-tests" {
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/default-size.bats
-              touch $out
-            '';
+            # #1091: launcher-hosted agent occupancy (reader side, real scratch tmux
+            # server) and the claude-status-update agent_pid writer.
+            launcher-hosted-agent-tests =
+              pkgs.runCommand "launcher-hosted-agent-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash pkgs.procps];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/launcher-hosted-agent.bats
+                bats tests/claude-status-agent-pid.bats
+                touch $out
+              '';
 
-          tmux-next38-readiness-tests =
-            pkgs.runCommand "tmux-next38-readiness-tests" {
-              # mkTmux via the wrapped default package: exercise the same
-              # generated config, plugin store paths, and PATH wrapper users run.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep pkgs.gnused];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/tmux-next38-readiness.bats
-              touch $out
-            '';
+            agent-detect-merge-tests =
+              pkgs.runCommand "agent-detect-merge-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-detect-merge.bats
+                touch $out
+              '';
 
-          # Live proof for #603: the monitor-hook floor actually fires on the
-          # wrapped server's own clock, with zero clients and with only a
-          # control-mode client, which tick-floor-conf-assertions (a text
-          # check) cannot demonstrate by itself.
-          tick-floor-tests =
-            pkgs.runCommand "tick-floor-tests" {
-              # mkTmux (not pkgs.tmux) for the same reason as every other
-              # live-tmux check here, AND because case 5 runs a second,
-              # hand-written-config server directly on the bare `tmux` this
-              # provides (deliberately NOT the wrapped TMUX_BIN, to pin plain
-              # tmux's own status-line behaviour rather than anything this
-              # repo's config does). gnugrep is NOT optional the way it is in
-              # tmux-next38-readiness-tests: the -B guard in
-              # config/tmux.conf.nix shells out to
-              # `tmux list-commands set-hook | grep -- -B`, so a PATH with no
-              # grep makes that guard fail closed and the suite would pass or
-              # fail for the wrong reason. util-linux supplies `script`, which
-              # case 5 uses to give a real attach a pty.
-              nativeBuildInputs =
-                [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux (mkTmux pkgs)]
-                # darwin only: the stand-in ps case 5 installs there needs gawk and the store
-                # ps. Linux must keep NO ps on PATH, so a regression of the poller's linked
-                # psBin still fails case 5 instead of finding one.
-                ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.gawk pkgs.ps];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/tick-floor.bats
-              touch $out
-            '';
+            agent-bg-badge-tests =
+              pkgs.runCommand "agent-bg-badge-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-bg-badge.bats
+                touch $out
+              '';
 
-          # Live proof for #647: pane-exited/pane-died on the wrapped server
-          # delete exactly one pane's claude-status files, and a second wrapped
-          # server sharing CLAUDE_STATUS_DIR cannot reap a foreign session.
-          reap-pane-hook-tests =
-            pkgs.runCommand "reap-pane-hook-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/reap-pane-hook.bats
-              touch $out
-            '';
+            agent-detect-enum-tests =
+              pkgs.runCommand "agent-detect-enum-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/agent-detect-enum.bats
+                touch $out
+              '';
 
-          # Live proof for #646: pane-shell-prompt (OSC 133;A) on the wrapped
-          # server clears an exited agent's state, its pane_current_command
-          # discriminator refuses a nested prompt inside a live agent, no OSC 133
-          # leaves state for the floor, and a colliding pane id on a second
-          # server is skipped (ownership guard). Also covers #671's window-wide
-          # naming/crew reset (the same hook's second trigger) — its cases drive
-          # tmux-reflow-windows/tmux-update-icons directly against this suite's
-          # own -L socket (via a `tmux` PATH shim, same trick as
-          # tests/test-display.sh's SHIM_DIR), so both are added to PATH here
-          # by their real, substituted package rather than grepped out of the
-          # generated conf.
-          osc-133-dead-agent-tests =
-            pkgs.runCommand "osc-133-dead-agent-tests" {
-              # scripts/ is also copied below: the writer-fixture case runs the RAW
-              # scripts/claude-status-update.sh directly (bash scripts/…), same
-              # pattern as remote-tests.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.procps (mkTmux pkgs) tmuxConfig.script.tmux-reflow-windows tmuxConfig.script.tmux-update-icons];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/pane-shell-prompt.bats
-              touch $out
-            '';
+            picker-go-tests = pickerChecked;
 
-          # Live proof for #663: the client-light-theme[40]/client-dark-theme[40]
-          # hooks on the wrapped server drive tmux-client-theme.sh end to end,
-          # via a real nested attach client fed synthetic \e[?997;{1,2}n
-          # reports through an outer, config-less scratch server (mkTmux's raw
-          # tmux, never the wrapped one -- it must never source this repo's
-          # config itself).
-          client-theme-tests =
-            pkgs.runCommand "client-theme-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              TMUX_CONF = "${tmuxConfig.tmuxConf}";
-              OUTER_TMUX = "${mkTmux pkgs}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/client-theme.bats
-              touch $out
-            '';
+            picker-go-lint = goLintGate {} pickerChecked;
+            generator-go-lint = goLintGate {race = true;} (pkgs.callPackage ./generator {});
 
-          # Live proof for #1037: a second client attaching from another machine
-          # must not overwrite the first client's per-machine env.
-          multi-client-env-tests =
-            pkgs.runCommand "multi-client-env-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/multi-client-env.bats
-              touch $out
-            '';
+            # prefix + Z (#970): the real fold script and reflow on a private,
+            # config-less server, like reflow-fanout-tests.
+            status-fold-tests =
+              pkgs.runCommand "status-fold-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.tmux];
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/status-fold.bats
+                touch $out
+              '';
 
-          # The shell claude_priority_state is generated from picker/agentstate
-          # (the one definition of the agent priority order); fail if the marked
-          # region of lib-claude.sh drifts from the Go-pinned golden.
-          agent-priority-drift =
-            pkgs.runCommand "agent-priority-drift" {
-              nativeBuildInputs = [pkgs.gawk pkgs.diffutils];
-            } ''
-              awk '/^# END generated/{f=0} f{print} /^# BEGIN generated from picker\/agentstate/{f=1}' ${./scripts/lib-claude.sh} > region
-              [ -s region ] || { echo "marker region missing in lib-claude.sh" >&2; exit 1; }
-              diff -u ${./picker/agentstate/testdata/claude_priority_state.golden} region
-              touch $out
-            '';
+            # The fold bind (#970) must flip the flag and hand the fold script the
+            # session and width reflow needs; a bind that drops either builds clean
+            # and folds nothing.
+            status-fold-conf-assertions =
+              pkgs.runCommand "status-fold-conf-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
+                [ "$(grep -c "^set -g @og_icons_job \".*'#{pid}')\"\$" "$CONF")" -eq 1 ]
+                grep -Fq 'set -g status-format[0] "#{E:@og_icons_job}' "$CONF"
+                touch $out
+              '';
 
-          # Pure unit coverage for setup_claude_colors' precedence (#663):
-          # explicit flavor argument > live $TMUX @catppuccin_flavor >
-          # theme-state.json fallback. No live tmux server needed.
-          lib-claude-theme-tests =
-            pkgs.runCommand "lib-claude-theme-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/lib-claude-theme.bats
-              touch $out
-            '';
+            # Per-host tab colour + session host marker (#1102). The reflow script
+            # shells out to tmux-picker-generate (the one owner of the host->colour
+            # assignment), so the plain picker package is an input here; no tmux
+            # config or pickerChecked is needed, keeping the suite cheap.
+            reflow-host-colour-tests =
+              pkgs.runCommand "reflow-host-colour-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gawk pkgs.tmux];
+                PICKER_GENERATE = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-picker-generate";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/reflow-host-colour.bats
+                touch $out
+              '';
 
-          remote-tests =
-            pkgs.runCommand "remote-tests" {
-              # bash: the cold-start cases run the launcher through an explicit
-              # interpreter (no /usr/bin/env in the sandbox). util-linux
-              # provides `script`, which remote-auth.bats uses to give the
-              # accept-path cases a real pty (same pattern as
-              # remote-bridge-integration-tests below). The raw tmux runs the
-              # launcher's real probe script in remote-cold-start.bats'
-              # "real probe" cases, which skip without one; the fakes stay first
-              # on PATH everywhere else.
-              nativeBuildInputs =
-                [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux (mkTmux pkgs)]
-                # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
-                ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
-              # bats runs the shim unsubstituted; the nohup-fallback case's PATH holds
-              # only fakes and a few coreutils, so the launcher is named by path.
-              OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              bats tests/remote-cold-start.bats
-              bats tests/remote-picker.bats
-              bats tests/remote-auth.bats
-              bats tests/remote-theme.bats
-              touch $out
-            '';
+            reflow-fanout-tests =
+              pkgs.runCommand "reflow-fanout-tests" {
+                # tmux: the test drives a private, config-less tmux server so the
+                # scripts' bare `tmux` calls hit it, never the dev's own server.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.tmux];
+                # reflow measures display width, which needs a UTF-8 locale.
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/reflow-fanout.bats
+                touch $out
+              '';
 
-          remote-bridge-integration-tests =
-            pkgs.runCommand "remote-bridge-integration-tests" {
-              # tmux: same private, config-less server pattern as the other
-              # integration tests. The bridge binary is prebuilt via the
-              # vendored buildGoModule (pickerChecked) so this check never
-              # invokes `go build` — a non-FOD sandbox has no network.
-              # util-linux provides `script`, which the real-tty case uses to
-              # give the bridge a pty (so refresh-client + real cursor fire).
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.tmux pkgs.util-linux];
-              BRIDGE = "${pickerChecked}/bin/og-remote-bridge";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              bats tests/remote-bridge-integration.bats
-              touch $out
-            '';
+            # #820: entering a bridge mirror (switch-client, or a fresh attach)
+            # must leave the window list reflowed, without waiting for an
+            # unrelated event. Loads the REAL conf (the wrapped tmux): the hooks
+            # under test live there, and a config-less server carries none of
+            # them. The daemon's --test-local seam supplies the mirror — no ssh,
+            # no network — with DAEMON/RENDERER the prebuilt pickerChecked
+            # binaries.
+            #
+            # The CONF greps are the static half: the generated conf must carry
+            # the gated bridge-nudge hooks (and clear client-detached), or a
+            # mirror session has no carrier for window-resized/client-detached.
+            # `-F`, because `[20]` is a basic-regex bracket expression.
+            reflow-mirror-attach-tests =
+              pkgs.runCommand "reflow-mirror-attach-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
+                DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
+                RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                REFLOW = "${tmuxConfig.wrapperBinDir}/bin/tmux-reflow-windows";
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                grep -qF 'set-hook -g window-resized[20]' "$CONF"
+                grep -qF 'set-hook -g client-detached' "$CONF"
+                grep -qE '^set-hook -gu client-detached$' "$CONF"
+                grep -qF 'set-hook -gu client-detached[10]' "$CONF"
+                grep -qE 'set-hook -g client-detached\[10\].*tmux-reflow-windows' "$CONF"
+                [ "$(grep -cF 'touch -- #{q:@bridge_nudge}' "$CONF")" -eq 2 ]
 
-          remote-m2-integration-tests =
-            pkgs.runCommand "remote-m2-integration-tests" {
-              # Same private, config-less two-server pattern: an isolated
-              # "remote" tmux -L server plus an isolated "local" tmux -L
-              # server, wired together by the M2.1 daemon's --test-local seam
-              # (no ssh). Both binaries are prebuilt via the vendored
-              # buildGoModule (pickerChecked) so this check never invokes
-              # `go build` — a non-FOD sandbox has no network.
-              #
-              # Uses the pinned next-3.9 tmux (mkTmux), not pkgs.tmux (3.7c):
-              # The live tests in tests/remote-m2-integration.bats rely on the
-              # pinned build deferring notifications out of guard blocks
-              # (tmux 6db5175e). The M2 bridge is a next-3.8 effort and its
-              # control-mode notification behavior (e.g. %window-close on
-              # kill-window) differs from 3.7c, so the mirror is exercised
-              # against the version it — and production, local + remote —
-              # actually runs.
-              # procps supplies ps, which the #482 reconnect cases use to find
-              # the daemon's own transport child (not the daemon_pid itself)
-              # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
-              # unixtools' shim — ps/sysctl/top/watch, no pgrep — which is why
-              # transport_child reads the process table rather than pgrepping.
-              nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
-              DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
-              RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
-              # M2.3 structural input: the tests drive ctl straight at the
-              # daemon's socket, since these vanilla -L servers carry no
-              # tmux-og keybindings for a gate to intercept.
-              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
-              # The agent-usage integration test runs the real statusline
-              # against DST's mirror session, same prebuilt-binary pattern.
-              STATUSLINE = "${pickerChecked}/bin/tmux-statusline";
-              # Only tests/ is copied in, so a ../scripts path would not resolve.
-              # The raw source file is what ships: this script carries no
-              # build-time placeholder substitution.
-              DETACH = ./scripts/og-remote-detach.sh;
-              # Same "raw source ships" reasoning as DETACH: og-open needs no
-              # build-time placeholder substitution either.
-              OG_OPEN = ./scripts/og-open.sh;
-              # The dwindle mirror cases extract the real window-layout-changed[20]
-              # hook (it embeds the store path of tmux-dwindle) from this conf.
-              TMUX_OG_CONF = tmuxConfig.tmuxConf;
-              # A per-test bound turns a hung test into `not ok N <name> # timeout
-              # after 180s` and moves on, instead of holding the build until the
-              # 30-min CI job cap. bats kills the test's whole process tree (the
-              # daemons) on timeout and still runs teardown. 180s is ~8x the
-              # slowest passing Linux test (21s), leaving headroom for darwin
-              # runners at 1.5-2x slower.
-              BATS_TEST_TIMEOUT = "180";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR
-              # --timing puts per-test durations in the log so slow tests name
-              # themselves. The outer timeout is the backstop for a hang that
-              # bats' own timeout cannot see: it ends the run with the TAP so far,
-              # instead of the CI job being cancelled with no output. It is sized
-              # to fire before the 30-min job cap, given the suite starts 13-15 min
-              # into a cold macOS job. When it fires no test names itself (the
-              # hung one is the first after the last TAP line), hence the echo.
-              timeout --kill-after=15s 14m bats --timing tests/remote-m2-integration.bats || {
-                s=$?
-                [ "$s" -ge 124 ] && echo "remote-m2: suite exceeded 14m; the hung test is the one after the last TAP line above" >&2
-                exit "$s"
-              }
-              touch $out
-            '';
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/reflow-mirror-attach.bats
+                touch $out
+              '';
 
-          # A keypress, not the conf text: `prefix + ,` inside a mirror window is
-          # driven for real (#367) — the wrapped tmux with the emitted config, a
-          # second -L server supplying the attached client a keybind needs, and a
-          # socat stub on @bridge_sock recording the delivered ctl frame. socat is
-          # already in the wrapper's PATH closure but is named here explicitly
-          # because the test, not the wrapper, invokes it. CTL is the real binary,
-          # which the harness self-test drives to prove the stub's ack satisfies it.
-          #
-          # TMUX_BIN is built with enrich/agent-usage OFF (same knobs as
-          # tick-floor-disabled-conf-assertions above), not tmuxConfig.tmux-wrapped:
-          # since #603 the pr/backfill/usage monitor hooks fire on the server's own
-          # 5s clock with zero clients, so leaving them on had this test's server
-          # spawning three extra `run-shell -b` jobs every 5s for the run's whole
-          # duration, on top of the one keybind under test -- enough background
-          # contention on aarch64-darwin CI to push wait_for_frame's 10s poll past
-          # its deadline. The sweep hook stays on: it's unconditional by design and
-          # a single cheap list-panes -a, not a gh/curl-touching poller.
-          rename-bind-integration-tests = let
-            renameBindTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "rename-bind-integration-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.socat];
-              TMUX_BIN = "${renameBindTmuxConfig.tmux-wrapped}/bin/tmux";
-              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
-              # A window name fixture is UTF-8, and so is the status line it is
-              # read back from.
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              # argv[0] of every ctl frame, read from the one source of truth so a
-              # protocol bump doesn't read as a wire-shape regression.
-              protocol_go=${./picker/remotebridge/wire/protocol.go}
-              CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
-              [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
-              export CTL_PROTOCOL_VERSION
-              bats tests/rename-bind-integration.bats
-              touch $out
-            '';
+            float-refit-tests =
+              pkgs.runCommand "float-refit-tests" {
+                # mkTmux, not pkgs.tmux: this test creates real floating panes
+                # (-B/-X/-Y), which nixpkgs' stock tmux only *advertises* via
+                # `list-commands new-pane` and then rejects at parse time (see
+                # pickerChecked's comment above) — a plain pkgs.tmux would make
+                # every float-creating case skip instead of run.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/float-refit.bats
+                touch $out
+              '';
 
-          # The newborn-agent repaint nudge (#883), end to end: the birth-stamp
-          # hooks, the sweep's claim and tmux-agent-repaint, all driven by the
-          # real @og-sweep-tick monitor hook of the built wrapper. Enrich and
-          # agent-usage off for the contention reason rename-bind-integration-
-          # tests spells out above; the sweep is the hook under test.
-          agent-repaint-integration-tests = let
-            agentRepaintTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "agent-repaint-integration-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
-              TMUX_BIN = "${agentRepaintTmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/agent-repaint-integration.bats
-              touch $out
-            '';
+            float-nudge-tests =
+              pkgs.runCommand "float-nudge-tests" {
+                # mkTmux for the same reason as float-refit-tests above: the
+                # script only exists to re-derive percentages a real floating
+                # pane carried.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/float-nudge.bats
+                touch $out
+              '';
 
-          # #1066: tmux-fingers leaks a tmux-<pid> state dir per config load;
-          # the real wrapped config's prune removes a dead server's. procps for
-          # the recycled-pid case (`ps` itself is not in procps-ng on darwin).
-          fingers-prune-tests = let
-            fingersPruneTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "fingers-prune-tests" {
-              nativeBuildInputs =
-                [pkgs.bash pkgs.bats pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.procps]
-                ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
-              TMUX_BIN = "${fingersPruneTmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              cp -r ${./scripts} scripts
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/fingers-prune.bats
-              touch $out
-            '';
+            float-nudge-drag-tests =
+              pkgs.runCommand "float-nudge-drag-tests" {
+                # A real attached client fed SGR mouse reports from a pty host
+                # (same shape as float-drag-integration-tests, no daemon): the
+                # wrapper's emitted conf arms the og-float-drag table, and the
+                # drag end must restamp @float_geom. mkTmux for the wrapper and
+                # the raw observer alike.
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/float-nudge-drag.bats
+                touch $out
+              '';
 
-          # A keypress AND a right-click, not the conf text: tmux's own default
-          # menus, re-bound on a mirror window (#769), driven for real through
-          # the same attached-client + recording-stub harness as
-          # rename-bind-integration-tests above, for the same reason — a
-          # keybind or a mouse binding fires only for a real attached client.
-          # TMUX_RAW, the raw pinned binary (not the wrapper, which always adds
-          # `-f <conf>`), is what the stock-tripwire and version-gate tests
-          # source a bare `%if`…`%endif` block into. enrich/agent-usage off for
-          # the same reason as rename-bind-integration-tests: their monitor
-          # hooks fire on the server's own 5s clock regardless of clients and
-          # would contend with wait_for_frame's poll.
-          menu-bind-integration-tests = let
-            menuBindTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "menu-bind-integration-tests" {
-              # gawk splits a stockmenus.txt line into its table/key fields;
-              # gnused extracts the %if…%endif block and the conf's version
-              # literal. grep -P finds the verb after `--sock=#+{q:@bridge_sock}`.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
-              TMUX_BIN = "${menuBindTmuxConfig.tmux-wrapped}/bin/tmux";
-              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
-              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
-              CONF = "${menuBindTmuxConfig.tmuxConf}";
-              STOCK_MENUS = ./generator/render/stockmenus.txt;
-              STOCK_DRAGS = ./generator/render/stockdrags.txt;
-              CTL_GO = ./picker/remotebridge/daemon/ctl.go;
-              CTL_MAIN_GO = ./picker/remotebridge/cmd/ctl/main.go;
-              # A hostile window-name fixture is UTF-8, and so is the status
-              # line it is read back from.
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              # argv[0] of every ctl frame, read from the one source of truth so a
-              # protocol bump doesn't read as a wire-shape regression.
-              protocol_go=${./picker/remotebridge/wire/protocol.go}
-              CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
-              [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
-              export CTL_PROTOCOL_VERSION
-              # A server leaked by a failing case holds bats' pipe open and
-              # stalls the run to the job timeout; bound it instead.
-              timeout 600 bats tests/menu-bind-integration.bats
-              touch $out
-            '';
+            grid-refit-tests =
+              pkgs.runCommand "grid-refit-tests" {
+                # mkTmux, not pkgs.tmux: the hook-coexistence case creates a real
+                # floating pane, same trap as float-refit-tests above. The other
+                # cases only need layout/pane options, which stock tmux has.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+                # The #760 regression sources the *production* hook wiring out of
+                # the rendered conf and runs the store-built script, so the test
+                # exercises the real hook lines, not a hand-rolled copy.
+                TMUX_OG_CONF = tmuxConfig.tmuxConf;
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/grid-refit.bats
+                touch $out
+              '';
 
-          # A border drag on a mirrored float, driven for real (#797): the
-          # M2 daemon's --test-local seam between a raw "remote" server and a
-          # local server running the emitted conf, a real attached client fed
-          # SGR mouse input, and the conf's own ctl. A drag bind, like any
-          # mouse binding, fires only for an attached client, and whether the
-          # REMOTE float follows is only visible with a live daemon. The same
-          # harness also drives a divider drag between two TILED mirror panes
-          # (#823), routed through the daemon's `tile-layout` verb. Enrich/
-          # agent-usage off for the contention reason rename-bind-integration-
-          # tests gives.
-          float-drag-integration-tests = let
-            floatDragTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "float-drag-integration-tests" {
-              # gawk maps a remote pane id to its local mirror (mirror_of).
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk];
-              TMUX_BIN = "${floatDragTmuxConfig.tmux-wrapped}/bin/tmux";
-              TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
-              DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
-              RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
-              CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/float-drag-integration.bats
-              touch $out
-            '';
+            carousel-guard-tests =
+              pkgs.runCommand "carousel-guard-tests" {
+                # mkTmux, not pkgs.tmux: the test creates a real floating pane,
+                # same trap as float-refit-tests above.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+                # The test sources the *production* [30] hook lines out of the
+                # rendered conf, so it exercises the real gate, not a hand-rolled
+                # copy; the dwindle case also runs the store-built tmux-dwindle.
+                TMUX_OG_CONF = tmuxConfig.tmuxConf;
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                cp -r ${./config} config
+                export HOME=$TMPDIR
+                bats tests/carousel-guard.bats
+                touch $out
+              '';
 
-          # A hostile remote session name reaching tmux's own stock
-          # MouseDown3StatusLeft/M-MouseDown3StatusLeft session-pill menu
-          # (#783): the same real-attached-client reasoning as
-          # rename-bind-integration-tests above, but a right-click, not a
-          # keybind, and the real og-remote-open shim plus Go launcher (fake
-          # ssh/daemon/ctl/renderer, `tmux` execing this same wrapped binary
-          # against a private -L server) rather than a hand-set window option — the
-          # vulnerability is in what og-remote-open NAMES the local mirror
-          # session, not in anything the daemon touches.
-          mirror-session-name-integration-tests = let
-            mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "mirror-session-name-integration-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.util-linux];
-              TMUX_BIN = "${mirrorNameTmuxConfig.tmux-wrapped}/bin/tmux";
-              # The shim runs unsubstituted under bats; name the Go launcher by path.
-              OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./scripts} scripts
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/mirror-session-name-integration.bats
-              touch $out
-            '';
+            agent-repaint-ready-tests =
+              pkgs.runCommand "agent-repaint-ready-tests" {
+                # mkTmux, not pkgs.tmux: the readiness read needs
+                # #{pane_last_output_time}, which nixpkgs' stock tmux lacks.
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/agent-repaint-ready.bats
+                touch $out
+              '';
 
-          # Behavioural coverage for the tool binds (#679): a second press must
-          # focus the float the window already holds for that tool instead of
-          # stacking another at the same geometry. Same attached-client harness
-          # and same reason as rename-bind-integration-tests above — a key
-          # binding fires only for a real client, so `send-keys` cannot drive
-          # it. enrich/agentUsage off is that check's noise cut; neither is
-          # under test here. gawk, for the pane-list filter.
-          float-tool-focus-tests = let
-            floatToolTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "float-tool-focus-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
-              TMUX_BIN = "${floatToolTmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/float-tool-focus.bats
-              touch $out
-            '';
+            pane-border-format-tests =
+              pkgs.runCommand "pane-border-format-tests" {
+                # mkTmux, not pkgs.tmux: this test creates a real -O/-K/-C
+                # floating pane and reads pane_floating_flag, same trap as
+                # float-refit-tests above (nixpkgs' stock tmux advertises but
+                # rejects these new-pane flags at parse time).
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+                # the drawn-flip test runs the real reflow, which measures display width.
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/pane-border-format.bats
+                touch $out
+              '';
 
-          # Behavioural coverage for dwindle auto-tiling (#1026): the smart-split
-          # bind, balance on close and its exclusions. Same attached-client
-          # harness and reduced conf as float-tool-focus-tests above — a key
-          # binding fires only for a real client. tmuxConf is exported for the
-          # conf assertion on the mirror branch of the Enter bind.
-          dwindle-tests = let
-            dwindleTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "dwindle-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
-              TMUX_BIN = "${dwindleTmuxConfig.tmux-wrapped}/bin/tmux";
-              TMUX_OG_CONF = dwindleTmuxConfig.tmuxConf;
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/dwindle.bats
-              touch $out
-            '';
+            default-size-tests =
+              pkgs.runCommand "default-size-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/default-size.bats
+                touch $out
+              '';
 
-          # Popups are modal floating panes since upstream 34cd5da4 (#725);
-          # `display-popup` survives only as an undocumented compat command,
-          # so this pins what the launchers rely on. Same attached-client
-          # harness and reduced conf as float-tool-focus-tests above, for the
-          # same reason — a key binding fires only for a real client. Notify
-          # stays on (its default): `prefix + n` is one of the popups under test.
-          popup-float-tests = let
-            popupFloatTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "popup-float-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
-              TMUX_BIN = "${popupFloatTmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/popup-float.bats
-              touch $out
-            '';
+            tmux-next38-readiness-tests =
+              pkgs.runCommand "tmux-next38-readiness-tests" {
+                # mkTmux via the wrapped default package: exercise the same
+                # generated config, plugin store paths, and PATH wrapper users run.
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep pkgs.gnused];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/tmux-next38-readiness.bats
+                touch $out
+              '';
 
-          # The session picker killing its own session (#884): the popup-float
-          # lives in the window it just killed, so display-popup exits 129 and
-          # the launcher must suppress that only when the host window is really
-          # gone. Same attached-client harness and reduced conf as
-          # popup-float-tests above — a key binding fires only for a real
-          # client, and the enrich/agent-usage pollers add run-shell contention
-          # between the signed key and the pop that observes it.
-          picker-session-kill-tests = let
-            pickerKillTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "picker-session-kill-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
-              TMUX_BIN = "${pickerKillTmuxConfig.tmux-wrapped}/bin/tmux";
-              # The launchers the tests type into a pane, by absolute path —
-              # the PATH note in tests/picker-session-kill.bats carries the why.
-              PICKER_BIN_DIR = "${pickerKillTmuxConfig.wrapperBinDir}/bin";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/picker-session-kill.bats
-              touch $out
-            '';
+            # Live proof for #603: the monitor-hook floor actually fires on the
+            # wrapped server's own clock, with zero clients and with only a
+            # control-mode client, which tick-floor-conf-assertions (a text
+            # check) cannot demonstrate by itself.
+            tick-floor-tests =
+              pkgs.runCommand "tick-floor-tests" {
+                # mkTmux (not pkgs.tmux) for the same reason as every other
+                # live-tmux check here, AND because case 5 runs a second,
+                # hand-written-config server directly on the bare `tmux` this
+                # provides (deliberately NOT the wrapped TMUX_BIN, to pin plain
+                # tmux's own status-line behaviour rather than anything this
+                # repo's config does). gnugrep is NOT optional the way it is in
+                # tmux-next38-readiness-tests: the -B guard in
+                # config/tmux.conf.nix shells out to
+                # `tmux list-commands set-hook | grep -- -B`, so a PATH with no
+                # grep makes that guard fail closed and the suite would pass or
+                # fail for the wrong reason. util-linux supplies `script`, which
+                # case 5 uses to give a real attach a pty.
+                nativeBuildInputs =
+                  [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux (mkTmux pkgs)]
+                  # darwin only: the stand-in ps case 5 installs there needs gawk and the store
+                  # ps. Linux must keep NO ps on PATH, so a regression of the poller's linked
+                  # psBin still fails case 5 instead of finding one.
+                  ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.gawk pkgs.ps];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/tick-floor.bats
+                touch $out
+              '';
 
-          # `qs:` silently degrades to a raw expansion on tmux 3.7, so the
-          # shell-word mechanism is exercised only through the pinned wrapper.
-          conf-shell-quoting-integration-tests =
-            pkgs.runCommand "conf-shell-quoting-integration-tests" {
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils];
-              TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/conf-shell-quoting-integration.bats
-              touch $out
-            '';
+            # Live proof for #647: pane-exited/pane-died on the wrapped server
+            # delete exactly one pane's claude-status files, and a second wrapped
+            # server sharing CLAUDE_STATUS_DIR cannot reap a foreign session.
+            reap-pane-hook-tests =
+              pkgs.runCommand "reap-pane-hook-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/reap-pane-hook.bats
+                touch $out
+              '';
 
-          # A keypress test, so it takes rename-bind-integration's reduced conf
-          # for the same reason: the enrich/agent-usage pollers add run-shell
-          # contention between the signed key and the poll that observes it.
-          enter-bind-integration-tests = let
-            enterBindTmuxConfig = import ./config/tmux.conf.nix {
-              inherit pkgs lib;
-              tmuxPkg = mkTmux pkgs;
-              carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
-              carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
-              enrichEnable = false;
-              agentUsageEnable = false;
-            };
-          in
-            pkgs.runCommand "enter-bind-integration-tests" {
-              # procps: the binding branches on `ps -o comm= -t <pane tty>`.
-              nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.procps];
-              TMUX_BIN = "${enterBindTmuxConfig.tmux-wrapped}/bin/tmux";
-              LANG = "C.UTF-8";
-              LC_ALL = "C.UTF-8";
-            } ''
-              cp -r ${./tests} tests
-              export HOME=$TMPDIR/home
-              mkdir -p "$HOME"
-              bats tests/enter-bind-integration.bats
-              touch $out
-            '';
+            # Live proof for #646: pane-shell-prompt (OSC 133;A) on the wrapped
+            # server clears an exited agent's state, its pane_current_command
+            # discriminator refuses a nested prompt inside a live agent, no OSC 133
+            # leaves state for the floor, and a colliding pane id on a second
+            # server is skipped (ownership guard). Also covers #671's window-wide
+            # naming/crew reset (the same hook's second trigger) — its cases drive
+            # tmux-reflow-windows/tmux-update-icons directly against this suite's
+            # own -L socket (via a `tmux` PATH shim, same trick as
+            # tests/test-display.sh's SHIM_DIR), so both are added to PATH here
+            # by their real, substituted package rather than grepped out of the
+            # generated conf.
+            osc-133-dead-agent-tests =
+              pkgs.runCommand "osc-133-dead-agent-tests" {
+                # scripts/ is also copied below: the writer-fixture case runs the RAW
+                # scripts/claude-status-update.sh directly (bash scripts/…), same
+                # pattern as remote-tests.
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.procps (mkTmux pkgs) tmuxConfig.script.tmux-reflow-windows tmuxConfig.script.tmux-update-icons];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/pane-shell-prompt.bats
+                touch $out
+              '';
 
-          # The gate itself, not a keypress: remote-m2-integration-tests above
-          # drives vanilla -L servers with no tmux-og keybindings for a gate to
-          # intercept (comment on that check), so it can only exercise the
-          # `carousel` ctl verb directly. Proving both bind I branches exist in
-          # the REAL generated config is what actually covers carouselBind.
-          bridge-carousel-bind-assertions =
-            pkgs.runCommand "bridge-carousel-bind-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              grep -qE "bind( -N '[^']*')? I if-shell -F .*@bridge_win" "$CONF"
-              grep -qE "bind( -N '[^']*')? I if-shell -F .*--display-error.*client_name" "$CONF"
-              touch $out
-            '';
+            # Live proof for #663: the client-light-theme[40]/client-dark-theme[40]
+            # hooks on the wrapped server drive tmux-client-theme.sh end to end,
+            # via a real nested attach client fed synthetic \e[?997;{1,2}n
+            # reports through an outer, config-less scratch server (mkTmux's raw
+            # tmux, never the wrapped one -- it must never source this repo's
+            # config itself).
+            client-theme-tests =
+              pkgs.runCommand "client-theme-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                TMUX_CONF = "${tmuxConfig.tmuxConf}";
+                OUTER_TMUX = "${mkTmux pkgs}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/client-theme.bats
+                touch $out
+              '';
 
-          # The cwd-bound tool binds must keep BOTH branches: the bridged one
-          # (the remote's cwd, via the ctl tool verb) and the local float body
-          # the brace block replaced — a `\;` chain flattened into a brace list
-          # is exactly the edit that silently drops the trailing commands.
-          bridge-tool-bind-assertions =
-            pkgs.runCommand "bridge-tool-bind-assertions" {
-              nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
-              CONF = tmuxConfig.tmuxConf;
-            } ''
-              # Join backslash-continued lines, so a bind is one line to assert
-              # against (same technique as float-conf-assertions).
-              sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
+            # Live proof for #1037: a second client attaching from another machine
+            # must not overwrite the first client's per-machine env.
+            multi-client-env-tests =
+              pkgs.runCommand "multi-client-env-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/multi-client-env.bats
+                touch $out
+              '';
 
-              for k in p g y; do
-                grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*@bridge_win" "$CONF"
-                grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*bridge-ctl .*tool #\{q:@bridge_pane\} [a-z]+ #\{qs:@bridge_dir\}" "$CONF"
-              done
-              grep -qE "new-pane -c '#\{pane_current_path\}'.*prdash" "$CONF"
-              for label in prdash lazygit yazi; do
-                grep -qE "set -p @pane_label $label" "$CONF"
-              done
+            # The shell claude_priority_state is generated from picker/agentstate
+            # (the one definition of the agent priority order); fail if the marked
+            # region of lib-claude.sh drifts from the Go-pinned golden.
+            agent-priority-drift =
+              pkgs.runCommand "agent-priority-drift" {
+                nativeBuildInputs = [pkgs.gawk pkgs.diffutils];
+              } ''
+                awk '/^# END generated/{f=0} f{print} /^# BEGIN generated from picker\/agentstate/{f=1}' ${./scripts/lib-claude.sh} > region
+                [ -s region ] || { echo "marker region missing in lib-claude.sh" >&2; exit 1; }
+                diff -u ${./picker/agentstate/testdata/claude_priority_state.golden} region
+                touch $out
+              '';
 
-              # #679: the reuse gate. Without a lookup every press stacked
-              # another float at the same geometry, so each tool bind must gate
-              # on the @pane_label its own create branch stamps AND hand that
-              # pane id to its focus branch through its own register. Asserted
-              # on the bind's whole (joined) line, not on the file: a gate whose
-              # label disagreed with the stamp would look right and never match,
-              # which is the failure this is here to catch.
-              for k in p g y; do
-                case $k in p) t=prdash ;; g) t=lazygit ;; y) t=yazi ;; esac
-                line=$(grep -E "^bind-key( -N '[^']*')? $k " joined)
-                printf '%s' "$line" | grep -qF "if-shell -F \"#{P:#{?#{&&:#{==:#{@pane_label},$t},#{pane_floating_flag}},#{pane_id},}}\""
-                printf '%s' "$line" | grep -qF "set -wF @og_float_target_$t"
-                printf '%s' "$line" | grep -qF "run-shell \"tmux select-pane -t #{q:@og_float_target_$t}\""
-              done
+            # Pure unit coverage for setup_claude_colors' precedence (#663):
+            # explicit flavor argument > live $TMUX @catppuccin_flavor >
+            # theme-state.json fallback. No live tmux server needed.
+            lib-claude-theme-tests =
+              pkgs.runCommand "lib-claude-theme-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/lib-claude-theme.bats
+                touch $out
+              '';
 
-              # The two Go modules are separate go.mod roots, so the reuse loop
-              # is written twice: generator/render/keys.go for the local bind and
-              # picker/remotebridge/daemon/ctl.go for the ctl tool verb. Nothing
-              # else compares them — the conf assertion above pins only the local
-              # copy — and a divergent loop would silently re-break #679 on one
-              # leg only. Pin the same format literal in both sources.
-              loop='#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}'
-              grep -qF "$loop" ${./generator/render/keys.go}
-              grep -qF "$loop" ${./picker/remotebridge/daemon/ctl.go}
-              touch $out
-            '';
-        };
+            remote-tests =
+              pkgs.runCommand "remote-tests" {
+                # bash: the cold-start cases run the launcher through an explicit
+                # interpreter (no /usr/bin/env in the sandbox). util-linux
+                # provides `script`, which remote-auth.bats uses to give the
+                # accept-path cases a real pty (same pattern as
+                # remote-bridge-integration-tests below). The raw tmux runs the
+                # launcher's real probe script in remote-cold-start.bats'
+                # "real probe" cases, which skip without one; the fakes stay first
+                # on PATH everywhere else.
+                nativeBuildInputs =
+                  [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.bash pkgs.util-linux (mkTmux pkgs)]
+                  # darwin has no /proc, so the nohup-fallback case reads its pgid through ps; Linux reads /proc.
+                  ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
+                # bats runs the shim unsubstituted; the nohup-fallback case's PATH holds
+                # only fakes and a few coreutils, so the launcher is named by path.
+                OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                bats tests/remote-cold-start.bats
+                bats tests/remote-picker.bats
+                bats tests/remote-auth.bats
+                bats tests/remote-theme.bats
+                touch $out
+              '';
+
+            remote-bridge-integration-tests =
+              pkgs.runCommand "remote-bridge-integration-tests" {
+                # tmux: same private, config-less server pattern as the other
+                # integration tests. The bridge binary is prebuilt via the
+                # vendored buildGoModule (pickerChecked) so this check never
+                # invokes `go build` — a non-FOD sandbox has no network.
+                # util-linux provides `script`, which the real-tty case uses to
+                # give the bridge a pty (so refresh-client + real cursor fire).
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.tmux pkgs.util-linux];
+                BRIDGE = "${pickerChecked}/bin/og-remote-bridge";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR
+                bats tests/remote-bridge-integration.bats
+                touch $out
+              '';
+
+            # A keypress, not the conf text: `prefix + ,` inside a mirror window is
+            # driven for real (#367) — the wrapped tmux with the emitted config, a
+            # second -L server supplying the attached client a keybind needs, and a
+            # socat stub on @bridge_sock recording the delivered ctl frame. socat is
+            # already in the wrapper's PATH closure but is named here explicitly
+            # because the test, not the wrapper, invokes it. CTL is the real binary,
+            # which the harness self-test drives to prove the stub's ack satisfies it.
+            #
+            # TMUX_BIN is built with enrich/agent-usage OFF (same knobs as
+            # tick-floor-disabled-conf-assertions above), not tmuxConfig.tmux-wrapped:
+            # since #603 the pr/backfill/usage monitor hooks fire on the server's own
+            # 5s clock with zero clients, so leaving them on had this test's server
+            # spawning three extra `run-shell -b` jobs every 5s for the run's whole
+            # duration, on top of the one keybind under test -- enough background
+            # contention on aarch64-darwin CI to push wait_for_frame's 10s poll past
+            # its deadline. The sweep hook stays on: it's unconditional by design and
+            # a single cheap list-panes -a, not a gh/curl-touching poller.
+            rename-bind-integration-tests = let
+              renameBindTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "rename-bind-integration-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.socat];
+                TMUX_BIN = "${renameBindTmuxConfig.tmux-wrapped}/bin/tmux";
+                CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+                # A window name fixture is UTF-8, and so is the status line it is
+                # read back from.
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                # argv[0] of every ctl frame, read from the one source of truth so a
+                # protocol bump doesn't read as a wire-shape regression.
+                protocol_go=${./picker/remotebridge/wire/protocol.go}
+                CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
+                [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
+                export CTL_PROTOCOL_VERSION
+                bats tests/rename-bind-integration.bats
+                touch $out
+              '';
+
+            # The newborn-agent repaint nudge (#883), end to end: the birth-stamp
+            # hooks, the sweep's claim and tmux-agent-repaint, all driven by the
+            # real @og-sweep-tick monitor hook of the built wrapper. Enrich and
+            # agent-usage off for the contention reason rename-bind-integration-
+            # tests spells out above; the sweep is the hook under test.
+            agent-repaint-integration-tests = let
+              agentRepaintTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "agent-repaint-integration-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
+                TMUX_BIN = "${agentRepaintTmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/agent-repaint-integration.bats
+                touch $out
+              '';
+
+            # #1066: tmux-fingers leaks a tmux-<pid> state dir per config load;
+            # the real wrapped config's prune removes a dead server's. procps for
+            # the recycled-pid case (`ps` itself is not in procps-ng on darwin).
+            fingers-prune-tests = let
+              fingersPruneTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "fingers-prune-tests" {
+                nativeBuildInputs =
+                  [pkgs.bash pkgs.bats pkgs.coreutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.procps]
+                  ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
+                TMUX_BIN = "${fingersPruneTmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                cp -r ${./scripts} scripts
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/fingers-prune.bats
+                touch $out
+              '';
+
+            # A keypress AND a right-click, not the conf text: tmux's own default
+            # menus, re-bound on a mirror window (#769), driven for real through
+            # the same attached-client + recording-stub harness as
+            # rename-bind-integration-tests above, for the same reason — a
+            # keybind or a mouse binding fires only for a real attached client.
+            # TMUX_RAW, the raw pinned binary (not the wrapper, which always adds
+            # `-f <conf>`), is what the stock-tripwire and version-gate tests
+            # source a bare `%if`…`%endif` block into. enrich/agent-usage off for
+            # the same reason as rename-bind-integration-tests: their monitor
+            # hooks fire on the server's own 5s clock regardless of clients and
+            # would contend with wait_for_frame's poll.
+            menu-bind-integration-tests = let
+              menuBindTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "menu-bind-integration-tests" {
+                # gawk splits a stockmenus.txt line into its table/key fields;
+                # gnused extracts the %if…%endif block and the conf's version
+                # literal. grep -P finds the verb after `--sock=#+{q:@bridge_sock}`.
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.gnugrep pkgs.gnused pkgs.gawk pkgs.socat];
+                TMUX_BIN = "${menuBindTmuxConfig.tmux-wrapped}/bin/tmux";
+                TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+                CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+                CONF = "${menuBindTmuxConfig.tmuxConf}";
+                STOCK_MENUS = ./generator/render/stockmenus.txt;
+                STOCK_DRAGS = ./generator/render/stockdrags.txt;
+                CTL_GO = ./picker/remotebridge/daemon/ctl.go;
+                CTL_MAIN_GO = ./picker/remotebridge/cmd/ctl/main.go;
+                # A hostile window-name fixture is UTF-8, and so is the status
+                # line it is read back from.
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                # argv[0] of every ctl frame, read from the one source of truth so a
+                # protocol bump doesn't read as a wire-shape regression.
+                protocol_go=${./picker/remotebridge/wire/protocol.go}
+                CTL_PROTOCOL_VERSION=$(sed -n 's/^const CtlProtocolVersion = "\(.*\)"$/\1/p' "$protocol_go")
+                [ -n "$CTL_PROTOCOL_VERSION" ] || { echo "no CtlProtocolVersion in $protocol_go" >&2; exit 1; }
+                export CTL_PROTOCOL_VERSION
+                # A server leaked by a failing case holds bats' pipe open and
+                # stalls the run to the job timeout; bound it instead.
+                timeout 600 bats tests/menu-bind-integration.bats
+                touch $out
+              '';
+
+            # A border drag on a mirrored float, driven for real (#797): the
+            # M2 daemon's --test-local seam between a raw "remote" server and a
+            # local server running the emitted conf, a real attached client fed
+            # SGR mouse input, and the conf's own ctl. A drag bind, like any
+            # mouse binding, fires only for an attached client, and whether the
+            # REMOTE float follows is only visible with a live daemon. The same
+            # harness also drives a divider drag between two TILED mirror panes
+            # (#823), routed through the daemon's `tile-layout` verb. Enrich/
+            # agent-usage off for the contention reason rename-bind-integration-
+            # tests gives.
+            float-drag-integration-tests = let
+              floatDragTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "float-drag-integration-tests" {
+                # gawk maps a remote pane id to its local mirror (mirror_of).
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gawk];
+                TMUX_BIN = "${floatDragTmuxConfig.tmux-wrapped}/bin/tmux";
+                TMUX_RAW = "${mkTmux pkgs}/bin/tmux";
+                DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
+                RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
+                CTL = "${pickerChecked}/bin/og-remote-bridge-ctl";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/float-drag-integration.bats
+                touch $out
+              '';
+
+            # A hostile remote session name reaching tmux's own stock
+            # MouseDown3StatusLeft/M-MouseDown3StatusLeft session-pill menu
+            # (#783): the same real-attached-client reasoning as
+            # rename-bind-integration-tests above, but a right-click, not a
+            # keybind, and the real og-remote-open shim plus Go launcher (fake
+            # ssh/daemon/ctl/renderer, `tmux` execing this same wrapped binary
+            # against a private -L server) rather than a hand-set window option — the
+            # vulnerability is in what og-remote-open NAMES the local mirror
+            # session, not in anything the daemon touches.
+            mirror-session-name-integration-tests = let
+              mirrorNameTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "mirror-session-name-integration-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.util-linux];
+                TMUX_BIN = "${mirrorNameTmuxConfig.tmux-wrapped}/bin/tmux";
+                # The shim runs unsubstituted under bats; name the Go launcher by path.
+                OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./scripts} scripts
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/mirror-session-name-integration.bats
+                touch $out
+              '';
+
+            # Behavioural coverage for the tool binds (#679): a second press must
+            # focus the float the window already holds for that tool instead of
+            # stacking another at the same geometry. Same attached-client harness
+            # and same reason as rename-bind-integration-tests above — a key
+            # binding fires only for a real client, so `send-keys` cannot drive
+            # it. enrich/agentUsage off is that check's noise cut; neither is
+            # under test here. gawk, for the pane-list filter.
+            float-tool-focus-tests = let
+              floatToolTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "float-tool-focus-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+                TMUX_BIN = "${floatToolTmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/float-tool-focus.bats
+                touch $out
+              '';
+
+            # Behavioural coverage for dwindle auto-tiling (#1026): the smart-split
+            # bind, balance on close and its exclusions. Same attached-client
+            # harness and reduced conf as float-tool-focus-tests above — a key
+            # binding fires only for a real client. tmuxConf is exported for the
+            # conf assertion on the mirror branch of the Enter bind.
+            dwindle-tests = let
+              dwindleTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "dwindle-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+                TMUX_BIN = "${dwindleTmuxConfig.tmux-wrapped}/bin/tmux";
+                TMUX_OG_CONF = dwindleTmuxConfig.tmuxConf;
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/dwindle.bats
+                touch $out
+              '';
+
+            # Popups are modal floating panes since upstream 34cd5da4 (#725);
+            # `display-popup` survives only as an undocumented compat command,
+            # so this pins what the launchers rely on. Same attached-client
+            # harness and reduced conf as float-tool-focus-tests above, for the
+            # same reason — a key binding fires only for a real client. Notify
+            # stays on (its default): `prefix + n` is one of the popups under test.
+            popup-float-tests = let
+              popupFloatTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "popup-float-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+                TMUX_BIN = "${popupFloatTmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/popup-float.bats
+                touch $out
+              '';
+
+            # The session picker killing its own session (#884): the popup-float
+            # lives in the window it just killed, so display-popup exits 129 and
+            # the launcher must suppress that only when the host window is really
+            # gone. Same attached-client harness and reduced conf as
+            # popup-float-tests above — a key binding fires only for a real
+            # client, and the enrich/agent-usage pollers add run-shell contention
+            # between the signed key and the pop that observes it.
+            picker-session-kill-tests = let
+              pickerKillTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "picker-session-kill-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gawk];
+                TMUX_BIN = "${pickerKillTmuxConfig.tmux-wrapped}/bin/tmux";
+                # The launchers the tests type into a pane, by absolute path —
+                # the PATH note in tests/picker-session-kill.bats carries the why.
+                PICKER_BIN_DIR = "${pickerKillTmuxConfig.wrapperBinDir}/bin";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/picker-session-kill.bats
+                touch $out
+              '';
+
+            # `qs:` silently degrades to a raw expansion on tmux 3.7, so the
+            # shell-word mechanism is exercised only through the pinned wrapper.
+            conf-shell-quoting-integration-tests =
+              pkgs.runCommand "conf-shell-quoting-integration-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils];
+                TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/conf-shell-quoting-integration.bats
+                touch $out
+              '';
+
+            # A keypress test, so it takes rename-bind-integration's reduced conf
+            # for the same reason: the enrich/agent-usage pollers add run-shell
+            # contention between the signed key and the poll that observes it.
+            enter-bind-integration-tests = let
+              enterBindTmuxConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "enter-bind-integration-tests" {
+                # procps: the binding branches on `ps -o comm= -t <pane tty>`.
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.procps];
+                TMUX_BIN = "${enterBindTmuxConfig.tmux-wrapped}/bin/tmux";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${./tests} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/enter-bind-integration.bats
+                touch $out
+              '';
+
+            # The gate itself, not a keypress: the remote-m2-integration-tests-<n> shards
+            # drive vanilla -L servers with no tmux-og keybindings for a gate to
+            # intercept (comment on that check), so it can only exercise the
+            # `carousel` ctl verb directly. Proving both bind I branches exist in
+            # the REAL generated config is what actually covers carouselBind.
+            bridge-carousel-bind-assertions =
+              pkgs.runCommand "bridge-carousel-bind-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                grep -qE "bind( -N '[^']*')? I if-shell -F .*@bridge_win" "$CONF"
+                grep -qE "bind( -N '[^']*')? I if-shell -F .*--display-error.*client_name" "$CONF"
+                touch $out
+              '';
+
+            # The cwd-bound tool binds must keep BOTH branches: the bridged one
+            # (the remote's cwd, via the ctl tool verb) and the local float body
+            # the brace block replaced — a `\;` chain flattened into a brace list
+            # is exactly the edit that silently drops the trailing commands.
+            bridge-tool-bind-assertions =
+              pkgs.runCommand "bridge-tool-bind-assertions" {
+                nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                # Join backslash-continued lines, so a bind is one line to assert
+                # against (same technique as float-conf-assertions).
+                sed -e :a -e '/\\$/N; s/\\\n//; ta' "$CONF" >joined
+
+                for k in p g y; do
+                  grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*@bridge_win" "$CONF"
+                  grep -qE "bind-key( -N '[^']*')? $k if-shell -F .*bridge-ctl .*tool #\{q:@bridge_pane\} [a-z]+ #\{qs:@bridge_dir\}" "$CONF"
+                done
+                grep -qE "new-pane -c '#\{pane_current_path\}'.*prdash" "$CONF"
+                for label in prdash lazygit yazi; do
+                  grep -qE "set -p @pane_label $label" "$CONF"
+                done
+
+                # #679: the reuse gate. Without a lookup every press stacked
+                # another float at the same geometry, so each tool bind must gate
+                # on the @pane_label its own create branch stamps AND hand that
+                # pane id to its focus branch through its own register. Asserted
+                # on the bind's whole (joined) line, not on the file: a gate whose
+                # label disagreed with the stamp would look right and never match,
+                # which is the failure this is here to catch.
+                for k in p g y; do
+                  case $k in p) t=prdash ;; g) t=lazygit ;; y) t=yazi ;; esac
+                  line=$(grep -E "^bind-key( -N '[^']*')? $k " joined)
+                  printf '%s' "$line" | grep -qF "if-shell -F \"#{P:#{?#{&&:#{==:#{@pane_label},$t},#{pane_floating_flag}},#{pane_id},}}\""
+                  printf '%s' "$line" | grep -qF "set -wF @og_float_target_$t"
+                  printf '%s' "$line" | grep -qF "run-shell \"tmux select-pane -t #{q:@og_float_target_$t}\""
+                done
+
+                # The two Go modules are separate go.mod roots, so the reuse loop
+                # is written twice: generator/render/keys.go for the local bind and
+                # picker/remotebridge/daemon/ctl.go for the ctl tool verb. Nothing
+                # else compares them — the conf assertion above pins only the local
+                # copy — and a divergent loop would silently re-break #679 on one
+                # leg only. Pin the same format literal in both sources.
+                loop='#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}'
+                grep -qF "$loop" ${./generator/render/keys.go}
+                grep -qF "$loop" ${./picker/remotebridge/daemon/ctl.go}
+                touch $out
+              '';
+          }
+          // remoteM2Checks;
 
         packages = {
           default = tmuxConfig.tmux-wrapped;
