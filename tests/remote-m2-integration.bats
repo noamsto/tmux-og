@@ -4313,7 +4313,9 @@ og_wait_pane_done() {
 # og1034_sync <path> <n> <s|b>... waits for og1034_open's <path> to finish, then
 # appends an untagged sentinel record and waits until every named daemon has
 # opened it. A daemon handles @og_open_url reports in order, so by then it has
-# also handled <path>'s record: a negative check after this needs no sleep.
+# decided on <path>'s record. The open itself runs on a goroutine, so a wrong
+# open could still land just after the sentinel's: the routes test repeats its
+# negative checks at the end for that.
 # <n> must be unique per call and is the sentinel's nonce suffix.
 og1034_sync() {
 	local path=$1 n=$2 m
@@ -4427,6 +4429,12 @@ og1034_not_opened() {
 	# r records only through og-open's unbridged fallback, which a direct
 	# set-option never runs, so there is nothing left to wait out.
 	og1034_not_opened r old
+	# Re-check the earlier negatives: a wrong open's goroutine may have landed
+	# after the sentinel that stood in for the old fixed wait.
+	og1034_not_opened b s
+	og1034_not_opened r s
+	og1034_not_opened s b
+	og1034_not_opened r b
 	size_daemons_stop
 }
 
@@ -4479,9 +4487,11 @@ og_real_opens() {
 
 # og_sync_single <n> appends an untagged sentinel record and waits for the
 # daemon to open it; the daemon handles the log's records in order, so every
-# record written before it has been handled by then.
+# record written before it has been decided by then. The nonce carries the
+# epoch and pid: the daemon's claim files outlive the run (24h, keyed on host,
+# session and nonce), so a fixed nonce would never open on a rerun.
 og_sync_single() {
-	$SRC set-option -a -t rem @og_open_url " 3-$1|https://example.invalid/sync-$1"
+	$SRC set-option -a -t rem @og_open_url " $(date +%s)$$-$1|https://example.invalid/sync-$1"
 	for _ in $(seq 1 100); do
 		grep -qxF "https://example.invalid/sync-$1" "$opened" 2>/dev/null && return 0
 		sleep 0.1
