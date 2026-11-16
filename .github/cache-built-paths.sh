@@ -16,9 +16,10 @@ path_list=$(nix-store --query --requisites --include-outputs "${drvs[@]}")
 
 paths=()
 while IFS= read -r p; do
-	[[ $p == *.drv ]] && continue
+	[[ -z $p || $p == *.drv ]] && continue
 	paths+=("$p")
 done <<<"$path_list"
+[ "${#paths[@]}" -gt 0 ] || exit 0
 
 chunk=500
 for ((i = 0; i < ${#paths[@]}; i += chunk)); do
