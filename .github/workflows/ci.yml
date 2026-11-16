@@ -48,30 +48,38 @@ jobs:
       # that nix-fast-build below does not touch.
       - run: nix flake check --no-build
       # --skip-cached: outputs already in lazytmux are neither rebuilt nor
-      # downloaded. Only packages from main are pushed to the cache (below).
+      # downloaded. Main pushes everything it built (below), so a PR re-builds
+      # only derivations whose inputs it changed.
       - run: >-
           nix run --inputs-from . nixpkgs#nix-fast-build --
           --no-nom --skip-cached
+          --result-file "$RUNNER_TEMP/nix-fast-build.json"
           --eval-workers ${{ matrix.eval-workers }}
           --flake .#
           --select 'f: f.checks.${{ matrix.system }} // {
           pkg-default = f.packages.${{ matrix.system }}.default;
           pkg-go-tools = f.packages.${{ matrix.system }}.go-tools;
           pkg-tmux-remux = f.packages.${{ matrix.system }}.tmux-remux; }'
-      # Pushes each installable package's closure, from main only. Check
-      # results and lint closures stay out of the cache.
-      - name: Push installable packages to lazytmux
+      # Main only, after a green build. The package closures carry substituted
+      # inputs (aeye, prdash) that installers pull from lazytmux; the script
+      # adds every derivation this run built, check outputs and intermediates.
+      # A check that passed on main is then not re-run by a PR with identical
+      # inputs, the same contract as a local `nix flake check`.
+      - name: Push built derivations to lazytmux
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        # pipefail: a failed nix build must fail this step, not hide behind
-        # cachix push's exit status. continue-on-error keeps the job green.
+        # `shell: bash` is `bash -eo pipefail`: a failure of either producer
+        # fails the step instead of hiding behind cachix push's exit status.
+        # continue-on-error keeps the job green.
         shell: bash
-        run: >-
-          nix build
-          .#packages.${{ matrix.system }}.default
-          .#packages.${{ matrix.system }}.go-tools
-          .#packages.${{ matrix.system }}.tmux-remux
-          --no-link --print-out-paths
-          | cachix push lazytmux
+        run: |
+          {
+            nix build \
+              .#packages.${{ matrix.system }}.default \
+              .#packages.${{ matrix.system }}.go-tools \
+              .#packages.${{ matrix.system }}.tmux-remux \
+              --no-link --print-out-paths
+            bash .github/cache-built-paths.sh "$RUNNER_TEMP/nix-fast-build.json"
+          } | cachix push lazytmux
