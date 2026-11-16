@@ -60,15 +60,11 @@ jobs:
           pkg-default = f.packages.${{ matrix.system }}.default;
           pkg-go-tools = f.packages.${{ matrix.system }}.go-tools;
           pkg-tmux-remux = f.packages.${{ matrix.system }}.tmux-remux; }'
-      # Main only, after a green build. Pushes the package closures (their
-      # runtime closures hold substituted inputs, e.g. aeye/prdash, that
-      # installers pull from lazytmux) plus every derivation this run built:
-      # check outputs (picker-go-tests, whose binaries the remote-bridge checks
-      # need) and intermediates the package closures omit (generator, overridden
-      # nilaway, Go module vendor dirs).
-      # Trade-off: a check that passed once on main is not re-run by a PR with
-      # identical inputs, as with a local `nix flake check`; any input change
-      # re-runs it.
+      # Main only, after a green build. The package closures carry substituted
+      # inputs (aeye, prdash) that installers pull from lazytmux; the script
+      # adds every derivation this run built, check outputs and intermediates.
+      # A check that passed on main is then not re-run by a PR with identical
+      # inputs, the same contract as a local `nix flake check`.
       - name: Push built derivations to lazytmux
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
