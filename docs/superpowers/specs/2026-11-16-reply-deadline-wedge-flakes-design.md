@@ -110,9 +110,10 @@ R1. A deadline drop must reattach, never tear down because of a `%exit` that
 our own close provoked. A genuine remote `%exit` the pump hands over before the
 daemon closes the connection still ends the mirror as today; one that races our
 close (read before it, delivered after, or held in an open block until the EOF
-the close causes) is treated as a drop, and the reattach then finds the session
-gone and tears down through the refused-attach path. That degradation is
-accepted and documented.
+the close causes) is treated as a drop. The reattach then ends on the refused
+attach, after its restore window (up to a minute), when the session or server
+is gone, and re-mirrors when that `%exit` was a `detach-client`, which leaves
+the session alive. That degradation is accepted and documented.
 
 R2. A Go test in `picker/remotebridge/daemon` pins R1 through the production
 pump → round trip → `connStreamEnded` path, red on main, green with the fix.
@@ -227,6 +228,25 @@ fell).
 | B at 0.3 s / 1 s, deadline 10m | main | 1 CPU, 6 hogs | 30/30 / 30/30 fail (sensitive) |
 | revised B (design above), count-based probe, beat forced to 0.3 s | pump fix | 1 CPU, 6 hogs | 14/15 pass; runs parked after 1–4 earlier deadlines (re-arm working); the 1 failure is the count coincidence fixed by item 4 |
 | revised B with identity probe, pump fix, 1 CPU + 6 hogs | pump fix | 1 CPU, 6 hogs | 1.5 s 50/50 pass; beat forced to 0.3 s 50/50 pass (7 runs recovered after 1–2 unseen wedges); 1.5 s with deadline 10m 30/30 fail |
+
+Those diagnosis batches pinned stress-ng with `taskset` but without the
+CPU-quota cap used below.
+
+### Final measurements (repo code)
+
+Focused runs of the one test, private tmux tmpdir per run, pinned
+`tmux-next-3.9`, flake-built daemon, sandbox-like `bash --norc --noprofile`
+shell, `taskset`-pinned, stress-ng hogs inside a `systemd-run --user` scope
+capped at `CPUQuota=50%`. Host 1-min load 6–47 during the runs.
+
+| run | code | load | result |
+| --- | --- | --- | --- |
+| main A at 1 s | main | CPUs 0-3, 4 capped hogs, 8 / 16 parallel | 0/60, 0/64 (the teardown race needs a preemption the capped load does not produce; the uncapped rows above and the Go test are the evidence for A) |
+| main B at 0.3 s | main | 1 CPU, 6 capped hogs, 6 / 12 parallel | 0/50, 20/50 fail (all: unseen wedge, one deadline, never parked) |
+| A | this branch | CPUs 0-3, 4 capped hogs, 16 parallel | 0/64, 4.2–8.4 s per run |
+| B | this branch | 1 CPU, 6 capped hogs, 12 parallel | 0/50, 13.1–16.6 s per run |
+| B, deadline 10m | this branch | same | 50/50 fail (sensitive) |
+| B, beat forced to 0.3 s | this branch | same | 13/50 fail: every report lands after wiring, so each iteration is an unseen wedge plus a reattach (one deadline per fresh client in the log) and the 40 s budget runs out; at 6 parallel the same variant passed 50/50 with 7 runs recovering — the 1.5 s beat is the primary fix, the re-arm the fallback for a rare miss |
 
 ## Acceptance
 

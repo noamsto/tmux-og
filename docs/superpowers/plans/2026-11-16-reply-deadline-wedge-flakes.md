@@ -124,9 +124,11 @@ tracked file.
   since the transport client prints one when its input closes and the reader
   hands it over at top level or, held in an open block, at the EOF the close
   causes; delivered, `dispatch` would read it as the remote ending the client
-  and tear the mirror down instead of reattaching. A genuine `%exit` that
-  races the close degrades to a drop, and the reattach then ends on the
-  refused attach. Pinned by `TestReplyDeadlineDropIsNotARemoteExit`. Copy the
+  and tear the mirror down instead of reattaching. A genuine `%exit` racing
+  the close degrades to a drop: the reattach then ends on the refused attach,
+  after its restore window (up to a minute), when the session or server is
+  gone, and re-mirrors when that `%exit` was a `detach-client`, which leaves
+  the session alive. Pinned by `TestReplyDeadlineDropIsNotARemoteExit`. Copy the
   accepted spec and this plan into `docs/superpowers/specs/…-design.md` and
   `docs/superpowers/plans/…md` (drop scratch-only paths from both).
 
