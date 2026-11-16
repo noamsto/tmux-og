@@ -622,6 +622,8 @@ Full passes are mostly backgrounded (`after-new-window`, `window-unlinked`, `cli
 
 Run-to-run spread is about 2 ms at 5 and 60 windows and up to 8 ms at 20 (shell tick wall 19.7-28.2). Execs per tick are 5 in both implementations (the binary, `list-sessions`, `list-panes`, `timeout`, `git`): the shell already batches its tmux reads, so the exec floor is the same. A Go tick's remaining ~7 ms is that floor; its client CPU stays flat (6-7 ms) while the shell's grows with window count (bash per-window work). `tests/perf/update-icons-cost.sh` reproduces the shell rows within about 20% (16.0 ms wall at 6 windows against 19.8 at 5, 71.4 at 121 against 64.3 at 120, with 5.2 and 6.1 execs because its mean includes the 1-in-5 arm `list-panes`): compare harness runs with each other, not with this table.
 
+**Task-runner panes add one exec (#1136).** When any pane's command is `just`/`make`, the tick also runs one `ps -Ao pid=,ppid=,args=` (~23 ms) and parses it in bash (~20 ms from a buffered here-string; piping it straight into `read` costs ~50 ms), so a long-lived runner pane roughly doubles that tick. A tick with no runner pane runs no `ps` (`tests/runner-child.bats`).
+
 **Keystroke latency.** `LOCAL_WINS=N` adds N plain windows on the local server (its mirror windows are `@bridge_win` and skipped by the job, so it would otherwise have nothing to do); `NO_ICONS=1` disables the job and its sweep hook. Removing the job entirely is the ceiling for any port. `busy`, 400 samples, three runs per cell, p95 ms (median, min-max):
 
 | LOCAL_WINS | icons job on | icons job off |

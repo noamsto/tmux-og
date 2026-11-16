@@ -487,12 +487,14 @@ main() {
 	# Resolve runner placeholders (#1136): one ps for the whole tick, none when
 	# no pane runs a task runner.
 	if ((${#runner_panes[@]} > 0)); then
-		load_proc_table < <(ps -Ao pid,ppid,comm 2>/dev/null)
+		# Captured first: bash reads a pipe a byte at a time, a here-string is buffered.
+		proc_table=$(ps -Ao pid=,ppid=,args= 2>/dev/null)
+		load_proc_table <<<"$proc_table"
 		for pane_id in "${!runner_panes[@]}"; do
 			read -r pane_pid runner_name <<<"${runner_panes[$pane_id]}"
 			resolve_runner_child "$pane_pid" "$runner_name"
 			for wkey in "${!win_procs[@]}"; do
-				[[ ${win_procs[$wkey]} == *"@R$pane_id."* ]] && win_procs[$wkey]="${win_procs[$wkey]//"@R$pane_id."/$REPLY}"
+				[[ ${win_procs[$wkey]} == *"@R$pane_id."* ]] && win_procs[$wkey]="${win_procs[$wkey]//"@R$pane_id."/"$REPLY"}"
 			done
 			for s in "${!sess_active_proc[@]}"; do
 				[[ ${sess_active_proc[$s]} == "@R$pane_id." ]] && sess_active_proc[$s]="$REPLY"

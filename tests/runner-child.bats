@@ -66,6 +66,24 @@ resolve() {
 	[ "$REPLY" = nix ]
 }
 
+@test "long wrapped child (argv[0], past ps comm's 15 chars) is unwrapped" {
+	resolve 100 just <<-'EOF'
+		100 1 just
+		101 100 .quickshell-wrapped --flag
+	EOF
+	[ "$REPLY" = quickshell ]
+}
+
+@test "login-shell dash prefix and args are stripped" {
+	resolve 100 just <<-'EOF'
+		100 1 -bash
+		101 100 just build
+		102 101 sh -c nix build
+		103 102 nix build .#x
+	EOF
+	[ "$REPLY" = nix ]
+}
+
 @test "runner is the pane process itself" {
 	resolve 100 just <<-'EOF'
 		100 1 just
@@ -117,7 +135,7 @@ setup_server() {
 
 	printf '#!/bin/sh\nexit 0\n' >"$TDIR/fake-reflow"
 	chmod +x "$TDIR/fake-reflow"
-	sed -e 's/@ICON_MAP@/["just"]="J" ["sh"]="S"/' -e 's/@FALLBACK_ICON@/F/' scripts/lib-icons.sh >"$TDIR/lib-icons.sh"
+	sed -e 's/@ICON_MAP@/["just"]="J" ["sh"]="S" ["sleep"]="Z"/' -e 's/@FALLBACK_ICON@/F/' scripts/lib-icons.sh >"$TDIR/lib-icons.sh"
 	sed \
 		-e "s|@lib_icons@|$TDIR/lib-icons.sh|g" \
 		-e "s|@lib_claude@|$PWD/scripts/lib-claude.sh|g" \
@@ -176,7 +194,8 @@ display_of() { tmux show -wv -t "$WIN" @window_icon_display 2>/dev/null || true;
 	wait_cmd just
 	local tries=30
 	while ((tries-- > 0)); do
-		pgrep -P "$(tmux display-message -p -t "$PANE" '#{pane_pid}')" >/dev/null && break
+		# shellcheck disable=SC2009  # no pgrep on darwin
+		ps -A -o ppid= | grep -qx " *$(tmux display-message -p -t "$PANE" '#{pane_pid}')" && break
 		sleep 0.1
 	done
 
@@ -185,7 +204,8 @@ display_of() { tmux show -wv -t "$WIN" @window_icon_display 2>/dev/null || true;
 	during="$(display_of)"
 	echo "during: [$during]"
 	[ "$(wc -l <"$TDIR/ps.log")" -eq 1 ]
-	[ "$during" = "F" ]
+	[ "$during" = "Z" ]
+	[ "$(tmux show -v -t S @active_pane_icon)" = "Z" ]
 
 	tmux respawn-pane -k -t "$PANE" -- sh -c 'sleep 30'
 	wait_cmd sh || wait_cmd sleep
@@ -193,4 +213,14 @@ display_of() { tmux show -wv -t "$WIN" @window_icon_display 2>/dev/null || true;
 	after="$(display_of)"
 	echo "after: [$after]"
 	[ "$after" != "J" ]
+}
+
+@test "idle just pane keeps the runner's own icon" {
+	setup_server
+	tmux respawn-pane -k -t "$PANE" -- "$TDIR/bin/just" -c 'read -r x'
+	wait_cmd just
+	run bash "$TDIR/update-icons.sh" S
+	[ "$status" -eq 0 ]
+	[ "$(display_of)" = "J" ]
+	[ "$(tmux show -v -t S @active_pane_icon)" = "J" ]
 }
