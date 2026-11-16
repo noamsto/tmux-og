@@ -3,8 +3,8 @@
 # pane, or focus or restore the one this window already has.
 #
 # Runs the real script against a private, config-less tmux server (like
-# tests/float-group.bats), with `crew` stubbed and a shim exposing the sibling
-# tmux-float-group. Needs the pinned next-3.9 tmux (mkTmux in flake.nix's check):
+# tests/float-group.bats), with `crew` stubbed and OG_FLOAT_GROUP_BIN pointing at
+# the sibling tmux-float-group (the build substitutes its store path). Needs the pinned next-3.9 tmux (mkTmux in flake.nix's check):
 # the stock tmux has no floating panes and no break-pane -W.
 
 setup() {
@@ -24,14 +24,15 @@ setup() {
 	export OG_SHIM_LOG="$BATS_TEST_TMPDIR/shim.log"
 	: >"$OG_SHIM_LOG"
 
-	# crew and tmux-float-group go on PATH before the server starts: the dash pane
-	# runs `exec crew dash` with the server's environment, not the script's.
+	# crew goes on PATH before the server starts: the dash pane runs `exec crew
+	# dash` with the server's environment, not the script's.
 	BIN_DIR="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$BIN_DIR"
 	printf '#!%s\nexec sleep 3600\n' "$BASH" >"$BIN_DIR/crew"
 	printf '#!%s\nexec bash "%s/scripts/tmux-float-group.sh" "$@"\n' "$BASH" "$PWD" >"$BIN_DIR/tmux-float-group"
 	chmod +x "$BIN_DIR/crew" "$BIN_DIR/tmux-float-group"
 	PATH="$BIN_DIR:$PATH"
+	export OG_FLOAT_GROUP_BIN="$BIN_DIR/tmux-float-group"
 
 	# -f /dev/null: the real config would arm hooks that move floats behind the
 	# assertions below.
@@ -204,20 +205,61 @@ first_dash() {
 	[ "$(active_pane "$WIN")" = "$TILE" ]
 }
 
-@test "a stashed dash with no tmux-float-group on PATH reports and creates nothing" {
+@test "a stashed dash with no executable tmux-float-group reports and creates nothing" {
 	first_dash >/dev/null
 	float_group hide crew "$TILE"
 
-	run env PATH="$SHIM_DIR:$(dirname "$(command -v bash)")" bash scripts/tmux-crew-dash.sh "$TILE"
+	run env OG_FLOAT_GROUP_BIN="$BATS_TEST_TMPDIR/missing" bash scripts/tmux-crew-dash.sh "$TILE"
 	[ "$status" -eq 0 ]
 	[ "$(dash_panes | wc -l)" -eq 1 ]
 	[ "$(dash_panes "$WIN" | wc -l)" -eq 0 ]
-	messages | grep -q 'tmux-float-group is not on PATH'
+	messages | grep -q 'tmux-float-group is not installed'
+}
+
+@test "the raw script's unsubstituted placeholder is not executable and never reaches PATH" {
+	first_dash >/dev/null
+	float_group hide crew "$TILE"
+
+	# tmux-float-group is on PATH here (setup), yet the launcher must not use it.
+	run env -u OG_FLOAT_GROUP_BIN bash scripts/tmux-crew-dash.sh "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 0 ]
+	messages | grep -q 'tmux-float-group is not installed'
+}
+
+@test "a stashed dash re-tagged to another group is not restored; a fresh dash opens" {
+	local old id
+	old="$(first_dash)"
+	float_group hide crew "$TILE"
+	tmux set-option -p -t "$old" @float_group review
+
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	id="$(dash_panes "$WIN")"
+	[[ $id == %* ]]
+	[ "$id" != "$old" ]
+	[ "$(tmux display-message -p -t "$old" '#{@float_group_home}')" = "$WIN" ]
 }
 
 @test "a normal window passes -c with the pressed pane's directory" {
 	first_dash >/dev/null
 	grep -q -- "^new-pane .* -c $BATS_TEST_TMPDIR " "$OG_SHIM_LOG"
+}
+
+@test "a directory name with tmux format syntax is passed through literally" {
+	local dir w2 p2 id
+	dir="$BATS_TEST_TMPDIR/x#{session_name}y#(false)z"
+	mkdir -p "$dir"
+	# -c is format-expanded here too, so the test escapes it as the script must.
+	w2="$(tmux new-window -d -P -F '#{window_id}' -t S: -c "${dir//#/##}")"
+	p2="$(tmux display-message -p -t "$w2" '#{pane_id}')"
+	[ "$(tmux display-message -p -t "$p2" '#{pane_current_path}')" = "$dir" ]
+
+	run crew_dash "$p2"
+	[ "$status" -eq 0 ]
+	id="$(dash_panes "$w2")"
+	[[ $id == %* ]]
+	[ "$(tmux display-message -p -t "$id" '#{pane_current_path}')" = "$dir" ]
 }
 
 @test "a @bridge_win window gets the float without -c" {

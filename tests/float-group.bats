@@ -46,7 +46,7 @@ teardown() {
 }
 
 # A tmux in front of the real one that logs notifications and can hide `-W` from
-# break-pane's usage or fail join-pane. Installed per test.
+# break-pane's usage or fail join-pane or list-windows -a. Installed per test.
 use_shim() {
 	mkdir -p "$SHIM_DIR"
 	printf '#!%s\n' "$BASH" >"$SHIM_DIR/tmux"
@@ -59,6 +59,9 @@ if [[ -n ${OG_SHIM_HIDE_W:-} && ${1:-} == list-commands && ${2:-} == break-pane 
 	exit 0
 fi
 if [[ -n ${OG_SHIM_FAIL_JOIN:-} && ${1:-} == join-pane ]]; then
+	exit 1
+fi
+if [[ -n ${OG_SHIM_FAIL_LISTWIN:-} && ${1:-} == list-windows && ${2:-} == -a ]]; then
 	exit 1
 fi
 exec "$REAL_TMUX" "$@"
@@ -88,6 +91,20 @@ in_window() { tmux list-panes -t "${2:-$WIN}" -F '#{pane_id}' | grep -qx "$1"; }
 stash_exists() { tmux has-session -t "=$STASH" 2>/dev/null; }
 float_group() { bash scripts/tmux-float-group.sh "$@"; }
 messages() { cat "$OG_SHIM_LOG"; }
+zoomed_tile() { tmux list-panes -t "${1:-$WIN}" -f '#{pane_zoomed_flag}' -F '#{pane_id}'; }
+tile_heights() { tmux list-panes -t "$WIN" -f '#{!:#{pane_floating_flag}}' -F '#{pane_height}' | tr '\n' ' '; }
+
+# A copy of the window-layout-changed[20] dwindle hook in config/tmux.conf.tmpl
+# with `tmux-dwindle balance` swapped for an even-vertical select-layout, which
+# is what it does to a stacked column.
+install_dwindle_hook() {
+	local hook
+	read -r -d '' hook <<'HOOK' || true
+if -F '#{&&:#{==:#{@dwindle},on},#{!:#{@bridge_win}}}' { if -F '#{!=:#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{s/[|].*//:@dwindle_cache}}' { if -F '#{&&:#{e|<|:#{n:#{P:#{?pane_floating_flag,,x}}},#{s/_.*//:@dwindle_cache}},#{&&:#{m/r:^[0-9]+_0_,#{@dwindle_cache}},#{&&:#{!:#{window_zoomed_flag}},#{!=:#{@crew_grid},1}}}}' { select-layout even-vertical } ; set -wF @dwindle_cache '#{n:#{P:#{?pane_floating_flag,,x}}}_#{window_zoomed_flag}_#{window_width}x#{window_height}_#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}|#{window_layout}' } } { if -F '#{@dwindle_cache}' { set -wu @dwindle_cache } }
+HOOK
+	tmux set-hook -g 'window-layout-changed[20]' "$hook"
+	tmux set -gw @dwindle on
+}
 
 @test "hide then show keeps the float flag, geometry, stamp and border" {
 	local f before
@@ -358,4 +375,104 @@ messages() { cat "$OG_SHIM_LOG"; }
 	run float_group hide crew "not-a-pane"
 	[ "$status" -eq 0 ]
 	run ! stash_exists
+}
+
+@test "hide and show keep a zoomed tile zoomed" {
+	local f
+	f="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	tmux select-pane -t "$TILE"
+	tmux resize-pane -Z -t "$TILE"
+	[ "$(zoomed_tile)" = "$TILE" ]
+
+	float_group hide crew "$TILE"
+	run ! in_window "$f"
+	[ "$(zoomed_tile)" = "$TILE" ]
+
+	float_group show crew "$TILE" --no-focus
+	in_window "$f"
+	[ "$(zoomed_tile)" = "$TILE" ]
+	[ "$(tmux display-message -p -t "$WIN" '#{pane_id}')" = "$TILE" ]
+}
+
+@test "a focused float over a zoomed tile survives hide and show, focus included" {
+	local f
+	# -A: only a float above the zoom can take focus without unzooming.
+	f="$(tmux new-pane -d -A -P -F '#{pane_id}' -t "$WIN" -x 50% -y 50% -X 5% -Y 5% -B heavy)" || skip "this tmux cannot create a floating pane"
+	tmux set -p -t "$f" @float_geom "50% 50% 5% 5%"
+	tmux set -p -t "$f" @float_group crew
+	tmux select-pane -t "$TILE"
+	tmux resize-pane -Z -t "$TILE"
+	tmux select-pane -Z -t "$f"
+	[ "$(zoomed_tile)" = "$TILE" ]
+
+	float_group hide crew "$TILE"
+	[ "$(zoomed_tile)" = "$TILE" ]
+
+	float_group show crew "$TILE"
+	[ "$(zoomed_tile)" = "$TILE" ]
+	[ "$(tmux display-message -p -t "$WIN" '#{pane_id}')" = "$f" ]
+}
+
+@test "hiding a zoomed float leaves the window unzoomed" {
+	local f
+	f="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	tmux select-pane -t "$f"
+	tmux resize-pane -Z -t "$f"
+
+	float_group hide crew "$TILE"
+
+	[ "$(tmux display-message -p -t "$WIN" '#{window_zoomed_flag}')" = 0 ]
+}
+
+@test "show keeps uneven tiled sizes when the dwindle hook is armed" {
+	local f before second
+	tmux split-window -d -t "$WIN"
+	f="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	install_dwindle_hook
+	second="$(tmux list-panes -t "$WIN" -f '#{!:#{pane_floating_flag}}' -F '#{pane_id}' | sed -n 2p)"
+	tmux resize-pane -t "$TILE" -y 25
+	tmux resize-pane -t "$second" -y 6
+	before="$(tile_heights)"
+	[ "$(echo "$before" | tr ' ' '\n' | sort -u | grep -c .)" -gt 1 ]
+
+	float_group hide crew "$TILE"
+	float_group show crew "$TILE"
+
+	in_window "$f"
+	[ "$(tile_heights)" = "$before" ]
+	[ "$(tmux display-message -p -t "$WIN" '#{@dwindle}')" = on ]
+	[ -n "$(tmux display-message -p -t "$WIN" '#{@dwindle_cache}')" ]
+}
+
+@test "show leaves a window-local @dwindle value as it was" {
+	local f
+	f="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	install_dwindle_hook
+	tmux set -w -t "$WIN" @dwindle on
+
+	float_group hide crew "$TILE"
+	float_group show crew "$TILE"
+	[ "$(tmux show-options -wqv -t "$WIN" @dwindle)" = on ]
+
+	tmux set -w -t "$WIN" -u @dwindle
+	float_group hide crew "$TILE"
+	float_group show crew "$TILE"
+	[ -z "$(tmux show-options -wqv -t "$WIN" @dwindle)" ]
+	[ "$(tmux display-message -p -t "$WIN" '#{@dwindle}')" = on ]
+}
+
+@test "a failed list-windows does not reap hidden floats" {
+	use_shim
+	local a
+	a="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	float_group hide crew "$TILE"
+	stash_exists
+
+	OG_SHIM_FAIL_LISTWIN=1 run float_group hide crew "$TILE"
+	[ "$status" -eq 0 ]
+
+	stash_exists
+	[[ " $(tmux list-panes -a -F '#{pane_id}' | tr '\n' ' ') " == *" $a "* ]]
+	float_group show crew "$TILE"
+	in_window "$a"
 }

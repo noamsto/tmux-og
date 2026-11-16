@@ -84,11 +84,52 @@ stashed() {
 # A stashed pane whose home window is gone could never be restored; its stash
 # window disappears with it.
 reap_orphans() {
-	local live id grp home rest
-	live="|$(tmux list-windows -a -F '#{window_id}' | tr '\n' '|')"
+	local wins live id grp home rest
+	# A failed list-windows must not read as "every home window is gone".
+	wins=$(tmux list-windows -a -F '#{window_id}') || return 0
+	live="|${wins//$'\n'/|}|"
 	while IFS='|' read -r id grp home rest; do
 		[[ -n $home && $live != *"|$home|"* ]] && tmux kill-pane -t "$id"
 	done < <(stashed)
+}
+
+# zoomed_pane: the window's zoomed tile in ZOOMED (empty when not zoomed). Not the
+# active pane: a focused float sits above a zoomed tile, and select-pane -Z keeps
+# the zoom while moving focus to it.
+zoomed_pane() {
+	ZOOMED=""
+	read -r ZOOMED < <(tmux list-panes -t "$win" -f '#{pane_zoomed_flag}' -F '#{pane_id}')
+}
+
+# rezoom <pane>: zoom the tile again if it is still a tile of this window.
+rezoom() {
+	[[ -n $1 ]] || return 0
+	[[ $(tmux display-message -p -t "$1" '#{window_id}|#{pane_floating_flag}|#{window_zoomed_flag}' 2>/dev/null) == "$win|0|0" ]] || return 0
+	tmux resize-pane -Z -t "$1"
+}
+
+# dwindle_pause / dwindle_resume: the dwindle hook runs on every layout change in
+# a window with @dwindle on and evens the tiles when the tiled count dropped, which
+# is what restore's join + break-pane -W looks like. @dwindle is switched off for
+# the round trip, then put back as it was (window-local value, else inherited)
+# together with @dwindle_cache, which the hook drops while the mode is off.
+dwindle_pause() {
+	DW_PAUSED=0
+	[[ $(tmux display-message -p -t "$win" '#{@dwindle}') == on ]] || return 0
+	DW_LOCAL=$(tmux show-options -wqv -t "$win" @dwindle)
+	DW_CACHE=$(tmux show-options -wqv -t "$win" @dwindle_cache)
+	tmux set-option -w -t "$win" @dwindle off
+	DW_PAUSED=1
+}
+
+dwindle_resume() {
+	((DW_PAUSED)) || return 0
+	if [[ -n $DW_LOCAL ]]; then
+		tmux set-option -w -t "$win" @dwindle "$DW_LOCAL"
+	else
+		tmux set-option -wu -t "$win" @dwindle
+	fi
+	[[ -z $DW_CACHE ]] || tmux set-option -w -t "$win" @dwindle_cache "$DW_CACHE"
 }
 
 # stash_move <pane>: park the float as the only pane of a fresh stash window.
@@ -109,8 +150,11 @@ stash_move() {
 }
 
 hide() {
-	local entry id w h x y
+	local entry id w h x y active
 	tagged
+	((${#TAGGED[@]})) || return 0
+	zoomed_pane
+	active="$(tmux display-message -p -t "$win" '#{pane_id}')"
 	for entry in "${TAGGED[@]}"; do
 		IFS='|' read -r id w h x y <<<"$entry"
 		tmux set-option -p -t "$id" @float_group_home "$win"
@@ -120,6 +164,9 @@ hide() {
 		tmux set-option -p -u -t "$id" @float_group_cells
 		notify "could not hide $id; left visible"
 	done
+	[[ -n $ZOOMED ]] || return 0
+	rezoom "$ZOOMED" && tmux select-pane -Z -t "$active" 2>/dev/null
+	return 0
 }
 
 # tile_target: the tile a restored float is joined before. A closing cell hands
@@ -151,12 +198,15 @@ restore() {
 }
 
 show() {
-	local entries=() line id grp home geom cells last="" active
+	local entries=() line id grp home geom cells last="" active zoomed
 	while IFS='|' read -r id grp home geom cells; do
 		[[ $grp == "$group" && $home == "$win" ]] && entries+=("$id|$geom|$cells")
 	done < <(stashed)
 	((${#entries[@]})) || return 0
 	active="$(tmux display-message -p -t "$win" '#{pane_id}')"
+	zoomed_pane
+	zoomed=$ZOOMED
+	dwindle_pause
 	for line in "${entries[@]}"; do
 		IFS='|' read -r id geom cells <<<"$line"
 		if restore "$id" "$geom" "$cells"; then
@@ -165,10 +215,12 @@ show() {
 			notify "could not restore $id"
 		fi
 	done
+	dwindle_resume
+	rezoom "$zoomed"
 	if ((focus)); then
-		[[ -n $last ]] && tmux select-pane -t "$last"
+		[[ -n $last ]] && tmux select-pane -Z -t "$last"
 	else
-		tmux select-pane -t "$active" 2>/dev/null
+		tmux select-pane -Z -t "$active" 2>/dev/null
 	fi
 	return 0
 }

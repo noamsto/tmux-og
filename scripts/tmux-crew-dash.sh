@@ -8,12 +8,20 @@
 # client, so the bind passes #{q:pane_id} explicitly; a dispatcher calls this from
 # a worker pane, where $TMUX_PANE is set. --detached leaves focus where it is.
 #
-# One dash per window: a float labelled crew-dash is focused, a copy hidden by
-# `tmux-float-group hide crew` is restored, else a new one is created.
+# One dash per window: a float labelled crew-dash is focused (a plain list-panes
+# scan, last match wins), a crew-group copy hidden by `tmux-float-group hide crew`
+# is restored, else a new one is created. The build substitutes the sibling's
+# store path into FLOAT_GROUP (a pane shell's PATH may not carry the scripts);
+# OG_FLOAT_GROUP_BIN is the test seam, and the raw placeholder is not executable.
+#
+# The new-pane flags and the @float_geom stamp below are separate literals nothing
+# compares: change both together.
 set -uo pipefail
 
 STASH=scratch-og-float-stash
 LABEL=crew-dash
+GROUP=crew
+FLOAT_GROUP="${OG_FLOAT_GROUP_BIN:-@float_group@}"
 
 detached=0
 pane=""
@@ -43,18 +51,19 @@ if [[ -n $id ]]; then
 	exit 0
 fi
 
+# The group is checked too: `show crew` restores only crew-group panes.
 stashed=0
-while IFS='|' read -r pid label home; do
-	[[ $label == "$LABEL" && $home == "$win" ]] && stashed=1
-done < <(tmux list-panes -s -t "$STASH" -F '#{pane_id}|#{@pane_label}|#{@float_group_home}' 2>/dev/null)
+while IFS='|' read -r pid label home grp; do
+	[[ $label == "$LABEL" && $home == "$win" && $grp == "$GROUP" ]] && stashed=1
+done < <(tmux list-panes -s -t "$STASH" -F '#{pane_id}|#{@pane_label}|#{@float_group_home}|#{@float_group}' 2>/dev/null)
 if ((stashed)); then
-	command -v tmux-float-group >/dev/null || {
-		notify "tmux-float-group is not on PATH"
+	[[ -x $FLOAT_GROUP ]] || {
+		notify "tmux-float-group is not installed"
 		exit 0
 	}
-	args=(show crew "$pane")
+	args=(show "$GROUP" "$pane")
 	((detached)) && args+=(--no-focus)
-	exec tmux-float-group "${args[@]}"
+	exec "$FLOAT_GROUP" "${args[@]}"
 fi
 
 command -v crew >/dev/null || {
@@ -67,7 +76,8 @@ args=(new-pane -t "$win" -x 90% -y 90% -X 5% -Y 5% -B heavy -P -F '#{pane_id}')
 [[ $(tmux list-commands new-pane 2>/dev/null) =~ \[-[a-zA-Z]*A[a-zA-Z]*\] ]] && args+=(-A)
 ((detached)) && args+=(-d)
 # In a mirror window pane_current_path is the daemon renderer's cwd, not the user's.
-[[ -n $bridge_win || -z $cwd ]] || args+=(-c "$cwd")
+# -c is format-expanded, so a '#' in the path is doubled.
+[[ -n $bridge_win || -z $cwd ]] || args+=(-c "${cwd//#/##}")
 
 id="$(tmux "${args[@]}" 'exec crew dash' 2>/dev/null)"
 [[ $id == %* ]] || {
@@ -79,5 +89,5 @@ id="$(tmux "${args[@]}" 'exec crew dash' 2>/dev/null)"
 tmux set-option -p -t "$id" @float_geom '90% 90% 5% 5%' \; \
 	set-option -p -t "$id" remain-on-exit off \; \
 	set-option -p -t "$id" @pane_label "$LABEL" \; \
-	set-option -p -t "$id" @float_group crew
+	set-option -p -t "$id" @float_group "$GROUP"
 exit 0
