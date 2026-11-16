@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,7 +75,7 @@ func TestApplyPaneOpsRoutesSiblingOutputDuringHelloWait(t *testing.T) {
 	// sibling's %output below, so the sink firing cannot be some other traffic.
 	pr, pw := io.Pipe()
 	defer func() { _ = pw.Close() }()
-	pump := startCtlPump(controlmode.NewReader(pr))
+	pump := startCtlPump(controlmode.NewReader(pr), new(atomic.Bool))
 
 	// One Router for both the waiter and applyPaneOps — two would leave the
 	// sibling assertion unfirable for a reason that has nothing to do with

@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
 // slowScriptConn replays scriptConn's wire script one control-mode block at a
@@ -86,6 +88,66 @@ func (c *blockingWriteConn) Write(p []byte) (int, error) {
 func (c *blockingWriteConn) Close() error {
 	c.once.Do(func() { close(c.closed) })
 	return nil
+}
+
+// exitOnCloseConn models the transport's tmux client: it prints %exit once its
+// input is closed, and the read side can still deliver that line afterwards.
+// Read returns script, then blocks until Close; after Close it returns one
+// "%exit\n", then io.EOF.
+type exitOnCloseConn struct {
+	mu     sync.Mutex
+	script string
+	exited bool
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newExitOnCloseConn(script string) *exitOnCloseConn {
+	return &exitOnCloseConn{script: script, closed: make(chan struct{})}
+}
+
+func (c *exitOnCloseConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	if c.script != "" {
+		n := copy(p, c.script)
+		c.script = c.script[n:]
+		c.mu.Unlock()
+		return n, nil
+	}
+	c.mu.Unlock()
+
+	<-c.closed
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.exited {
+		return 0, io.EOF
+	}
+	c.exited = true
+	return copy(p, "%exit\n"), nil
+}
+
+func (c *exitOnCloseConn) Write(p []byte) (int, error) { return len(p), nil }
+
+func (c *exitOnCloseConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+// A %exit that the daemon's own close provokes is not the remote ending the
+// client: a connection dropped by the reply deadline must end as a drop, which
+// reattaches, never as an exit, which tears the mirror down.
+func TestReplyDeadlineDropIsNotARemoteExit(t *testing.T) {
+	c := boundConn(t, newExitOnCloseConn("%begin 999999 999999 1\n"), 50*time.Millisecond, time.Second)
+	if _, ok := one(c.rt, "display-message -p x"); ok {
+		t.Fatal("round trip against a block that never closes succeeded")
+	}
+	verdict := c.connStreamEnded(func(l controlmode.Line, _ bool) bool {
+		return l.Kind == controlmode.Exit
+	})
+	if verdict != connDrop {
+		t.Errorf("verdict = %v, want connDrop", verdict)
+	}
 }
 
 // boundConn builds a bound control connection over conn with the given

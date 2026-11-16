@@ -49,11 +49,11 @@ func newCtlConn(rwc io.ReadWriteCloser) *ctlConn {
 	c := &ctlConn{
 		rwc:    rwc,
 		rd:     rd,
-		pump:   startCtlPump(rd),
 		st:     newStream(rwc),
 		async:  &asyncQueue{},
 		router: router,
 	}
+	c.pump = startCtlPump(rd, &c.dead)
 	c.watch = &attachWatch{rd: c.pump}
 	c.rt = newRoundTrip(c.watch, router, c.async, c.st)
 	return c
