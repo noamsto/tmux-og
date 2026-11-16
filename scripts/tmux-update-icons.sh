@@ -488,7 +488,7 @@ main() {
 	# no pane runs a task runner.
 	if ((${#runner_panes[@]} > 0)); then
 		# Captured first: bash reads a pipe a byte at a time, a here-string is buffered.
-		proc_table=$(ps -Ao pid=,ppid=,args= 2>/dev/null)
+		proc_table=$(ps -wwAo pid=,ppid=,args= 2>/dev/null)
 		load_proc_table <<<"$proc_table"
 		for pane_id in "${!runner_panes[@]}"; do
 			read -r pane_pid runner_name <<<"${runner_panes[$pane_id]}"

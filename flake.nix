@@ -2478,7 +2478,7 @@
               } ''
                 cp -r ${./scripts} scripts
                 cp -r ${./tests} tests
-                bats tests/runner-child.bats
+                bats tests/runner-child.bats tests/runner-child-wiring.bats
                 touch $out
               '';
 

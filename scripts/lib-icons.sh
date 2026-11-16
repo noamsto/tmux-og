@@ -98,7 +98,7 @@ is_runner() {
 	[[ $RUNNER_CMDS == *" $n "* ]]
 }
 
-# load_proc_table — reads `pid ppid args` rows on stdin (ps -Ao pid=,ppid=,args=)
+# load_proc_table — reads `pid ppid args` rows on stdin (ps -wwAo pid=,ppid=,args=)
 # into _pt_kids[ppid] (space-joined pids) and _pt_comm[pid]. The name is argv[0]'s
 # basename (a login shell's leading `-` dropped), which is what tmux reports as
 # pane_current_command; ps `comm` is cut to 15 chars on Linux, which would defeat
