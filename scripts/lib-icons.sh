@@ -85,6 +85,76 @@ build_proc_icons() {
 	done
 }
 
+# Task runners run their recipes in their own process group, so tmux's
+# pane_current_command reports the runner for the whole recipe (#1136).
+# resolve_runner_child swaps it for the command the runner is executing.
+RUNNER_CMDS=" just make gmake "
+SHELL_CMDS=" sh bash dash zsh fish "
+
+# is_runner NAME — true for a task runner (after .foo-wrapped unwrapping).
+is_runner() {
+	local n="$1"
+	[[ $n == .*-wrapped ]] && n="${n#.}" && n="${n%-wrapped}"
+	[[ $RUNNER_CMDS == *" $n "* ]]
+}
+
+# load_proc_table — reads `pid ppid comm` rows on stdin (ps -Ao pid,ppid,comm)
+# into _pt_kids[ppid] (space-joined pids) and _pt_comm[pid]. comm is reduced to
+# its basename (BSD ps prints the full path) and may hold spaces on macOS.
+# Non-numeric pid rows (the header) are skipped.
+load_proc_table() {
+	declare -gA _pt_kids=() _pt_comm=()
+	local pid ppid comm
+	while read -r pid ppid comm; do
+		[[ $pid =~ ^[0-9]+$ && $ppid =~ ^[0-9]+$ ]] || continue
+		_pt_comm[$pid]="${comm##*/}"
+		_pt_kids[$ppid]+="$pid "
+	done
+}
+
+# resolve_runner_child PID FALLBACK — PID is a pane's pane_pid (the shell, or
+# the runner itself). Finds the first runner at or below it, then the first
+# descendant of that runner (breadth-first) that is neither a shell nor a
+# runner. Sets REPLY to its name (.foo-wrapped unwrapped), or FALLBACK when the
+# runner has no such descendant. Needs load_proc_table first.
+resolve_runner_child() {
+	local start="$1" fallback="$2" runner="" cur n k
+	local -A seen=()
+	local -a queue=("$start")
+	local -i i=0
+	while ((i < ${#queue[@]})); do
+		cur="${queue[i++]}"
+		[[ -n ${seen[$cur]:-} ]] && continue
+		seen[$cur]=1
+		if is_runner "${_pt_comm[$cur]:-}"; then
+			runner="$cur"
+			break
+		fi
+		# shellcheck disable=SC2206  # space-joined pid list
+		queue+=(${_pt_kids[$cur]:-})
+	done
+	REPLY="$fallback"
+	[[ -n $runner ]] || return 0
+	seen=()
+	queue=("$runner")
+	i=0
+	while ((i < ${#queue[@]})); do
+		cur="${queue[i++]}"
+		[[ -n ${seen[$cur]:-} ]] && continue
+		seen[$cur]=1
+		if ((i > 1)); then
+			n="${_pt_comm[$cur]:-}"
+			[[ $n == .*-wrapped ]] && n="${n#.}" && n="${n%-wrapped}"
+			if [[ -n $n && $SHELL_CMDS != *" $n "* ]] && ! is_runner "$n"; then
+				REPLY="$n"
+				return 0
+			fi
+		fi
+		# shellcheck disable=SC2206  # space-joined pid list
+		queue+=(${_pt_kids[$cur]:-})
+	done
+}
+
 # pad_to_width STRING CURRENT_WIDTH TARGET_WIDTH
 # Pads STRING with spaces to reach TARGET_WIDTH.
 # Sets REPLY to padded string.

@@ -9,6 +9,8 @@ How the multi-line status bar is laid out and how `tmux-reflow-windows` sizes th
 
 Icon display width is computed per-icon from Unicode codepoint: nerd font PUA (U+E000-F8FF, U+F0000+) = 1 cell, emoji/other = 2 cells, plus 1 space each. `wc -L` is unreliable for nerd font glyphs (reports 0 for PUA range) and emoji with variant selectors.
 
+**Task-runner icons (#1136).** `just`/`make` run their recipe in their own process group, so `pane_current_command` names the runner for the whole recipe. `tmux-update-icons` swaps a runner pane's name (not a `@bridge_proc` mirror's) for the first descendant of the runner that is neither a shell nor another runner (`resolve_runner_child` in `lib-icons.sh`; `just → sh → nix` gives `nix`, an idle runner keeps its own name) before it feeds `win_procs` and `sess_active_proc`, so the window icon and `@active_pane_icon` agree. The loop holds a `@R<pane_id>.` placeholder to keep icon order, and **one** `ps -Ao pid,ppid,comm` runs after the loop, only when a runner pane exists (no extra fork otherwise; `tests/runner-child.bats`). `#{pane_pid}` sits before `@window_task` in the `list-panes` row (the task stays last). A resolved agent command (`just` running `claude`) now counts as an agent process for `@window_has_agent`. The picker's `icons.go` is unchanged.
+
 ## Status Bar Layout
 
 - **Line 0** (status-format[0]): Global — session name, git branch, directory, claude status (left; session agent icon is `claudeSegment` over hook+screen files — `aggregateSession` unions `panes/` and `screen/`); active pane icon + command (right)
