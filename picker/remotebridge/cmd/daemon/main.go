@@ -206,6 +206,13 @@ func pasteUploadArgs(sshCmd, ctlSock, host string) []string {
 		"sh", "-c", shellQuote(remoteStoreScript)}
 }
 
+// pasteStdin is the stdin for remoteStoreScript: a header of `<path> <byte
+// count>\n`, then the bytes. The script reads that exact layout, so the daemon
+// and the tests share this one definition.
+func pasteStdin(path string, data []byte) io.Reader {
+	return io.MultiReader(strings.NewReader(fmt.Sprintf("%s %d\n", path, len(data))), bytes.NewReader(data))
+}
+
 func main() {
 	// Flags default to OG_BRIDGE_*/OG_DAEMON_* env vars, mirroring
 	// M1's remotebridge/main.go: the launcher passes untrusted, remote-derived
@@ -449,7 +456,7 @@ func main() {
 		pasteUpload = func(ctx context.Context, path string, data []byte) error {
 			args := pasteUploadArgs(*sshCmd, tr.currentPath(), *host)
 			cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
-			cmd.Stdin = io.MultiReader(strings.NewReader(fmt.Sprintf("%s %d\n", path, len(data))), bytes.NewReader(data))
+			cmd.Stdin = pasteStdin(path, data)
 			out, err := cmd.Output()
 			if err != nil {
 				return fmt.Errorf("paste store: %w", err)

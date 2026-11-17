@@ -394,10 +394,10 @@ carries the measured evidence.
   forward-vs-swallow — and it is bounded (`clipTimeout`, one fork per tool).
   Everything after a swallow (extracting the bytes, capping at 8 MiB,
   uploading over the daemon's ControlMaster with a 5s timeout) runs async in a
-  goroutine, so a slow transfer or a wedged clipboard
-  owner never freezes the pane. The exceptions are the path send and a failure's
+  goroutine, so a slow transfer or a wedged clipboard owner never freezes the
+  pane. The exceptions are the path send and a failure's
   erase: they stay on the pump (`settle`) so they keep their order with typed
-  input, each one bounded `send-keys`. never freezes the pane.
+  input, each one bounded `send-keys`.
 - **The remote half is a path the daemon chooses.** The paste goroutine picks
   `/tmp/og-paste-<32 hex from crypto/rand>/img.<ext>` itself (`newPastePath`;
   `pastePathRe` still validates it locally) and the image rides the daemon's

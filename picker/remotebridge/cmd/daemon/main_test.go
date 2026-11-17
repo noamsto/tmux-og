@@ -362,8 +362,7 @@ func runStoreScriptRaw(t *testing.T, script string, stdin io.Reader) (string, er
 // then data.
 func runStoreScript(t *testing.T, script, path string, data []byte) (string, error) {
 	t.Helper()
-	header := fmt.Sprintf("%s %d\n", path, len(data))
-	return runStoreScriptRaw(t, script, io.MultiReader(strings.NewReader(header), bytes.NewReader(data)))
+	return runStoreScriptRaw(t, script, pasteStdin(path, data))
 }
 
 func permOf(t *testing.T, path string) os.FileMode {
