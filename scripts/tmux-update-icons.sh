@@ -362,7 +362,7 @@ main() {
 	declare -A win_cwd win_cwd_pane win_worktree win_cwd_seen win_poison
 	# Label memo (#1157): win_label_seen is @window_label_seen, win_wname the
 	# pipe-sanitized window_name; both first-pane-wins like win_cur_*.
-	declare -A win_label_seen win_wname
+	declare -A win_label_seen win_wname win_active_path
 	# '|' delimiter, not tab: tab is IFS-whitespace, so an empty middle field (a
 	# window with no @branch yet) collapses and shifts every later field left,
 	# corrupting cur_branch/active flags. session_id ($N) is the session field —
@@ -465,6 +465,7 @@ main() {
 		# The task file is keyed by the pane Claude runs in, so resolve the genuinely
 		# active pane (list-panes orders by index, not active-first).
 		[[ $pane_active == 1 ]] && win_active_pane[$wkey]="${pane_id#%}"
+		[[ $pane_active == 1 ]] && win_active_path[$wkey]="$pane_path"
 		[[ $window_active == 1 ]] && sess_active_win[$sess]="$idx"
 		# Track each session's active pane command (active pane in that session's
 		# active window) — @active_pane_icon is session-scoped.
@@ -843,12 +844,14 @@ main() {
 		# Label input no tmux hook reports (#1157): a plain `cd` or a typed rename
 		# changes what reflow renders but fires nothing. Memoize it and request a
 		# reflow on change. A manual window (automatic-rename off) is keyed on its
-		# name, every other window on its cwd.
+		# name, every other window on its cwd — the ACTIVE pane's, since that is the
+		# path reflow labels from (#{pane_current_path} in its list-windows format),
+		# unlike the first-non-floating-pane cwd-move gate above.
 		if [[ -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 ]]; then
 			if [[ ${win_cur_manual[$wkey]:-} == 1 && ${win_cur_rename[$wkey]:-} != 1 ]]; then
 				label_key="n:${win_wname[$wkey]:-}"
 			else
-				label_key="p:$pane_path"
+				label_key="p:${win_active_path[$wkey]:-$pane_path}"
 			fi
 			if [[ $label_key != "${win_label_seen[$wkey]:-}" ]]; then
 				# Direct argv, no -q: a path may contain a single quote (same hazard as

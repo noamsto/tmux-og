@@ -830,6 +830,23 @@ cd_pane() {
 	[ ! -s "$REFLOW_LOG" ]
 }
 
+@test "a cd in the active pane of a split window requests a reflow (#1157)" {
+	local dir1="$TDIR/dir-one" dir2="$TDIR/dir-two"
+	mkdir -p "$dir1" "$dir2"
+	cd_pane "$dir1"
+	local pane2
+	pane2=$(tmux split-window -P -F '#{pane_id}' -t S:0 -c "$dir1") # the new pane is active
+	[ "$(tmux display -t "$pane2" -p '#{pane_active}')" = 1 ]
+	run_update_icons
+	run_update_icons # settled
+
+	# Reflow labels from the active pane; the first pane's cwd is unchanged.
+	tmux respawn-pane -k -t "$pane2" -c "$dir2"
+	run_update_icons
+	grep -q -- '^S' "$REFLOW_LOG"
+	[ "$(tmux show -wv -t S:0 @window_label_seen)" = "p:$dir2" ]
+}
+
 @test "a manual rename requests a reflow and memoizes the typed name (#1157)" {
 	tmux set -wq -t S:0 @window_manual_name 1
 	tmux rename-window -t S:0 typed # also turns automatic-rename off

@@ -81,7 +81,7 @@ Alternative considered: `after-rename-window` hook / bind tail running reflow â€
 - [ ] **Step 7: live-style repro after fix** on the scratch server + attached client: cd shows in the tab and
   `window_name`; `prefix + ,` rename shows in the tab and survives sweeps.
 - [ ] **Step 8: docs.** Update the docs (plus `performance.md`: one reflow per `cd`, one-time memo write per
-  window after upgrade; and note the memo keys on the first non-floating pane, like the cwd-move gate) (new `@window_label_seen` shadow, manual label arm, the
+  window after upgrade; and note the memo keys on the active pane's path, what reflow labels from) (new `@window_label_seen` shadow, manual label arm, the
   "tabs render `@window_label_*`, not `window_name`" fact).
 - [ ] **Step 9: gates.** `nix build .#lint --accept-flake-config`, `nix flake check --no-build`,
   `nix flake check`, `nix build .#default`.
@@ -113,5 +113,5 @@ Alternative considered: `after-rename-window` hook / bind tail running reflow â€
 ## Notes for docs
 
 - The memo key uses the pipe-sanitized name, so `a|b` and `a b` share a key (harmless).
-- The memo keys on the first non-floating pane's path, like the cwd-move gate: a `cd` in a different active
-  split pane does not refresh the label.
+- The memo keys on the active pane's path (what reflow labels from), not the cwd-move gate's first non-floating
+  pane: a `prefix + o` between panes in different directories costs one reflow.
