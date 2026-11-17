@@ -57,6 +57,9 @@ type Data struct {
 	EnrichIconsDoubled map[string]string
 	BridgeOpt          map[string]string
 
+	// CrewRepoTag is spliced into status-format[1] after the mirror host badge.
+	CrewRepoTag string
+
 	// AgentUsageArgs is spliced mid-line into status-format[0] and carries its
 	// own leading space; TickHookIfShell is one line, no trailing newline.
 	AgentUsageArgs  string
@@ -107,6 +110,7 @@ func Build(cfg *config.Config, p *paths.Paths) Data {
 		DwindleFlag:        onOff(cfg.Dwindle.Enable),
 		EnrichIconsDoubled: enrichIconsDoubled(cfg),
 		BridgeOpt:          bridgeOpts(),
+		CrewRepoTag:        crewRepoTag,
 		AgentUsageArgs:     agentUsageArgs(cfg),
 		TickHookIfShell:    tickHookIfShell(cfg, p),
 		CarouselHooks:      carouselHooks(p),

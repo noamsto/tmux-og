@@ -10,6 +10,7 @@ pkgs.buildGoModule {
   vendorHash = "sha256-pbA/AlBz3cQYRTMnQ/qBPcinYOKokrBLNhkbRTq54gE=";
   ldflags = ["-s" "-w"];
   nativeBuildInputs = [pkgs.makeWrapper];
+  nativeCheckInputs = [pkgs.tmux];
   # Go names each main package's binary after its directory (the root package
   # takes the module directory's own name) -- this derivation now builds three
   # that way: og-generate (the root package), og-init, og-doctor. pname and

@@ -1,6 +1,9 @@
 package render
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -141,5 +144,59 @@ func TestBridgeOptsShape(t *testing.T) {
 	}
 	if got["pr_check_state"] != "#{?#{@bridge_win},#{@bridge_pr_check_state},#{@pr_check_state}}" {
 		t.Fatalf("pr_check_state = %q", got["pr_check_state"])
+	}
+}
+
+// The tag is a pure tmux format, so the only honest test is tmux evaluating it:
+// a substring check passes with the comparison inverted.
+func TestCrewRepoTagEvaluates(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(tmuxBin, append([]string{"-L", "crewrepo"}, args...)...) //nolint:gosec // tmux path from LookPath, args are test literals
+		cmd.Env = append(os.Environ(), "TMUX_TMPDIR="+dir, "TMUX=")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	sessDir := filepath.Join(dir, "tmux-og")
+	if err := os.Mkdir(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("new-session", "-d", "-s", "probe", "-c", sessDir)
+	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", "crewrepo", "kill-server").Run() }) //nolint:gosec // see run
+	eval := func() string { return run("display-message", "-p", "-t", "probe:", crewRepoTag) }
+
+	if got := eval(); got != "" {
+		t.Errorf("@crew_repo unset: %q, want empty", got)
+	}
+	run("set-option", "-w", "-t", "probe:", "@crew_repo", "tmux-og")
+	if got := eval(); got != "" {
+		t.Errorf("@crew_repo equal to the session repo: %q, want empty", got)
+	}
+	run("set-option", "-w", "-t", "probe:", "@crew_repo", "dispatcher")
+	if got := eval(); !strings.Contains(got, "dispatcher ") {
+		t.Errorf("@crew_repo different: %q, want the repo name", got)
+	}
+	run("set-option", "-w", "-t", "probe:", "@bridge_placed", "1")
+	if got := eval(); got != "" {
+		t.Errorf("placed mirror: %q, want empty (host badge already shows origin)", got)
+	}
+}
+
+func TestCrewRepoTagInStatusFormat(t *testing.T) {
+	d := Build(&config.Config{}, &paths.Paths{})
+	out, err := Execute(writeTemplate(t, "x {{.CrewRepoTag}} y\n"), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), crewRepoTag) {
+		t.Fatalf("CrewRepoTag not rendered: %s", out)
 	}
 }
