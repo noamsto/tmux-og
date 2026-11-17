@@ -71,8 +71,8 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   - *Stale checks.* The checks cache is stale when its `headRefOid` differs from
     the identity head, or has none (no cache, or the PR was outside the checks
     batch, e.g. a PR first seen late) **and** the checks file predates the
-    `.head-seen` stamp (an absent stamp counts as predating; equal mtimes do
-    not). `enrichRepoGroup` then runs one `refreshRepoChecks` for the repo even
+    `.head-seen` stamp (an absent stamp is dated by the identity cache's
+    mtime, the fetch that showed the head; equal mtimes do not). `enrichRepoGroup` then runs one `refreshRepoChecks` for the repo even
     though its checks clock is not due, and `applyCache` writes `pending` (no
     progress) until the checks cache holds the head. The stamp is dated by the
     identity fetch that revealed the head, so a PR the batch never lists (past
