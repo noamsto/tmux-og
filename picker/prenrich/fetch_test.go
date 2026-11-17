@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	listFields  = "number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest"
+	listFields  = "number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt"
 	openPRList  = `[{"number":7,"title":"t","url":"u","state":"OPEN","mergeable":"MERGEABLE","isDraft":false,"reviewDecision":"","autoMergeRequest":null,"isCrossRepository":false}]`
 	forkPRList  = `[{"number":9,"title":"fork","url":"f","state":"OPEN","isCrossRepository":true}]`
 	testNowUnix = 1_700_000_000
@@ -33,7 +33,7 @@ func testEnricher(t *testing.T, r runner, o opts) *enricher {
 func ghArgs(state string, force bool) []string {
 	f := listFields
 	if force {
-		f += ",statusCheckRollup,headRefOid"
+		f += ",statusCheckRollup"
 	}
 	return []string{"pr", "list", "--head", "feat", "--state", state, "--limit", "100", "--json", f + ",isCrossRepository"}
 }

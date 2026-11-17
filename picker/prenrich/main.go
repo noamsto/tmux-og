@@ -97,7 +97,7 @@ func (e *enricher) runSingleTarget() {
 	if e.applyCache(o.target, cache, o.branch) != "pending" {
 		return
 	}
-	e.armPendingMarker(repo, sha1Key(o.branch+"|"+headRefOid(checksPath(cache))))
+	e.armPendingMarker(repo, sha1Key(o.branch+"|"+episodeHead(cache)))
 }
 
 // hasPendingMarker reports whether this tmux server has a repo with pending checks.

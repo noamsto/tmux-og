@@ -16,7 +16,7 @@ const (
 	ttlTerminal = 3600
 )
 
-const prFields = "number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest"
+const prFields = "number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt"
 
 type enricher struct {
 	r        runner
@@ -44,7 +44,7 @@ func (e *enricher) fetchPRCached(dir, branch, key, states string, noneTTL int64)
 	defer release()
 	fields := prFields
 	if e.o.force {
-		fields += ",statusCheckRollup,headRefOid"
+		fields += ",statusCheckRollup"
 	}
 	fields += ",isCrossRepository"
 	var list []byte

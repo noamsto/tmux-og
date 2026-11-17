@@ -273,6 +273,9 @@ func (e *enricher) enrichRepoGroup(dir, repoID string, branches []string, window
 			}
 		}
 	}
+	if refreshIdentity && !refreshChecks {
+		refreshChecks = slices.ContainsFunc(branches, func(br string) bool { return headStale(cachePath(br)) })
+	}
 	if refreshChecks {
 		e.refreshRepoChecks(dir, repoID, branches)
 	}
@@ -285,8 +288,7 @@ func (e *enricher) enrichRepoGroup(dir, repoID string, branches []string, window
 				continue
 			}
 			if e.applyCache(w.target, cache, br) == "pending" {
-				// The episode's identity is the head SHA stored with the rollup.
-				pending = append(pending, br+"|"+headRefOid(checksPath(cache)))
+				pending = append(pending, br+"|"+episodeHead(cache))
 			}
 		}
 	}
@@ -434,7 +436,7 @@ func (e *enricher) fetchURLPR(url, key, cache string) {
 	if b, err := json.Marshal([]map[string]json.RawMessage{pr}); err == nil {
 		_ = writeAtomic(cache, b)
 	}
-	if b, err := json.Marshal([]map[string]json.RawMessage{{"statusCheckRollup": rollup}}); err == nil {
+	if b, err := json.Marshal([]map[string]json.RawMessage{{"statusCheckRollup": rollup, "headRefOid": pr["headRefOid"]}}); err == nil {
 		_ = writeAtomic(checksPath(cache), b)
 	}
 }

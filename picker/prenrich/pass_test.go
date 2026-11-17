@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	identBatchArgs  = "pr list --state open --limit 100 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository"
+	identBatchArgs  = "pr list --state open --limit 100 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,headRefName,isCrossRepository"
 	checksBatchArgs = "pr list --state open --limit 100 --json headRefName,statusCheckRollup,headRefOid,isCrossRepository"
-	headFields      = "number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,isCrossRepository"
-	urlViewArgs     = "pr view https://github.com/o/r/pull/5 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup"
+	headFields      = "number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,isCrossRepository"
+	urlViewArgs     = "pr view https://github.com/o/r/pull/5 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,statusCheckRollup"
 	rereadFormat    = "#{@pr_number}|#{@pr_state}|#{@pr_check_state}|#{@pr_mergeable}|#{@pr_draft}|#{@pr_check_progress}|#{@pr_glyph}"
 	prURL5          = "https://github.com/o/r/pull/5"
 	successRollup   = `[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]`

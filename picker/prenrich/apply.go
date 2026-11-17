@@ -55,6 +55,14 @@ func (e *enricher) applyCache(target, cache, branch string) string {
 	}
 	v.title = sanitizeTitle(jqStr(pr, "title"))
 	v.check, v.progress = collapseRollup(rollupFor(cache, b))
+	if v.state == "open" {
+		// headStale reads the stamp headSettling is about to write.
+		stale := headStale(cache)
+		settling := e.headSettling(cache, jqStr(pr, "headRefOid"), jqStr(pr, "createdAt"))
+		if stale || settling && (v.check == "success" || v.check == "none") {
+			v.check, v.progress = "pending", ""
+		}
+	}
 	e.writePROptions(target, v)
 	return v.check
 }
