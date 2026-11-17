@@ -246,6 +246,37 @@ wait_stable_refit() {
 	echo "$cur"
 }
 
+# dump_refit_state <delta> — prints the refit gate's state to stderr when a
+# test is about to fail with @grid_refit_layout still "stale". The darwin CI
+# flake (#1142) left no state behind; this reports whether the pending marker
+# was left set versus a later refit exit. Every command tolerates failure so
+# the dump can never replace the real assertion.
+dump_refit_state() {
+	local pending live
+	pending="$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)"
+	live="$(tmux display-message -p -t "$WIN" '#{window_width}x#{window_height}:#{@crew_grid_main_pct}:#{@grid_refit_min_role_cols}:#{@grid_refit_aspect}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height}.#{@crew_role} }}' 2>/dev/null || true)"
+	{
+		echo "dump_refit_state: delta=$1 grid_refit_jobs=$(refit_jobs tmux-grid-refit)"
+		if [ -z "$pending" ]; then
+			echo "dump_refit_state: pending=unset"
+		elif [ "$pending" = "$live" ]; then
+			echo "dump_refit_state: pending=$pending (== live signature)"
+		else
+			echo "dump_refit_state: pending=$pending (!= live signature)"
+		fi
+		echo "dump_refit_state: live_signature=$live"
+		echo "dump_refit_state: @grid_refit_sig=$(tmux show-options -wqv -t "$WIN" @grid_refit_sig 2>/dev/null || true)"
+		echo "dump_refit_state: @grid_refit_layout=$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		echo "dump_refit_state: window size: $(tmux display-message -p -t "$WIN" '#{window_width}x#{window_height}' 2>/dev/null || true)"
+		echo "dump_refit_state: panes:"
+		tmux list-panes -t "$WIN" -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width}x#{pane_height} #{@crew_role}' 2>&1 || true
+		echo "dump_refit_state: jobs started: $(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* run job ' || true)"
+		echo "dump_refit_state: jobs died: $(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* job died ' || true)"
+		echo "dump_refit_state: last refit job lifecycle and @grid_refit writes in the server log:"
+		cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -E 'job_run: cmd=.*tmux-grid-refit|run job .*tmux-grid-refit|job died .*tmux-grid-refit|hook_arguments=-(w|uw|wF) .*@grid_refit' | cut -c1-200 | tail -40 || true
+	} >&2 || true
+}
+
 # #760 reproduces only on the pinned next-3.9: upstream <=3.7c already collapses
 # the freed cells back to the pre-split sibling, so on such a tmux the behavior
 # assertions below hold with no fix at all. Skip rather than report a green that
@@ -956,6 +987,9 @@ WRAP
 		sleep 0.1
 		((tries++)) || true
 	done
+	if [ "$layout" = "stale" ]; then
+		dump_refit_state "$delta"
+	fi
 	[ "$layout" != "stale" ]
 }
 
