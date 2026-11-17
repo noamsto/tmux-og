@@ -11,7 +11,7 @@ import (
 
 // Paste progress (#1007). The swallowed ctrl+v gives no sign of the upload
 // behind it, so the paste goroutine paints a spinner on the pasting client's
-// status line until the path lands or a failure replaces it. Each frame is a
+// status line until the upload ends or a failure replaces it. Each frame is a
 // display-message with a finite ttl of a few ticks, so a stalled or dead
 // daemon leaves a message that expires by itself rather than one stuck on
 // screen.

@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -137,38 +138,39 @@ func testLocalDialArgv(outage, src, session string) []string {
 }
 
 // remoteStoreScript is the paste upload's remote half (#361): it lands the
-// image bytes (stdin) in a fresh 0700 mktemp -d directory and prints the path
-// of a plain-named file inside it. The find sweep is the cleanup answer — the
-// file must outlive prompt editing (the agent reads the path at SUBMIT,
-// possibly minutes later), so delete-on-inject is wrong and a per-paste
-// janitor needs no daemon state.
+// image bytes in a fresh 0700 directory at the path the daemon chose and
+// prints that path back. The file must outlive prompt editing (the agent reads
+// the path at SUBMIT, possibly minutes later), so delete-on-inject is wrong
+// and a janitor sweep needs no daemon state.
 //
-// The directory is per-invocation (mktemp -d's random suffix) rather than a
-// fixed shared path: a fixed path can be pre-created by another local account
-// ahead of the victim's first paste (any owner, any mode, or a symlink), which
-// escalates from image substitution to an arbitrary-file overwrite as the
-// victim's own uid. mktemp -d's create is atomic and unpredictable, so there
-// is nothing to pre-create, and its 0700 mode (by construction, not umask)
-// means no other local account can write into it at all. It also sidesteps
-// the unverified BSD/macOS mktemp question of a suffix trailing the X's,
-// since the extension no longer rides in the template.
+// The path is the first line of stdin, then the raw image bytes — never argv,
+// which any other local account can read in ps. The case guard re-checks the
+// shape the daemon already validated: this script is the last line before a
+// create and a write as the victim's own uid.
+//
+// The directory is made with a plain mkdir (no -p) under a 128-bit random name
+// the daemon picked. mkdir is atomic and fails on an existing directory or a
+// symlink, so nothing another account pre-creates ahead of the victim's paste
+// is ever written through, and the name is unguessable, so there is nothing to
+// pre-create in the first place. The 0700 mode comes from the umask, which
+// also gives the file 0600; no other local account can write into it at all.
+//
+// The sweep runs after the path is printed and detached with all three fds
+// redirected: the ssh channel closes when the last holder of its stdout/stderr
+// exits, so a sweep that kept them would put the find on the reply path.
 //
 // It runs under sh -c exactly like graphics' remoteFetch: ssh space-joins the
 // post-host argv for the remote LOGIN shell (fish on the normal host), which
-// never parses the script because shellQuote makes it one argv element.
-// $1 is the extension, validated against pasteExtRe before it is ever
-// interpolated.
+// never parses the script because shellQuote makes it one argv element. That
+// is also why it holds no single quote and no backslash.
 const remoteStoreScript = `umask 077
-d=$(mktemp -d /tmp/og-paste-XXXXXXXX) || exit 1
-find /tmp -maxdepth 1 -name "og-paste-*" -type d -mmin +60 -exec rm -rf {} + 2>/dev/null
-f="$d/img.$1"
-cat > "$f" || { rm -rf "$d"; exit 1; }
-printf "%s" "$f"`
-
-// pasteExtRe gates the extension before it reaches the remote mktemp
-// template. bmp is absent on purpose: the agent's path-inlining regex
-// excludes it, so shipping one would plant a path nothing reads.
-var pasteExtRe = regexp.MustCompile(`^(png|jpe?g|gif|webp)$`)
+IFS= read -r p || exit 1
+case $p in *..*) exit 1;; /tmp/og-paste-*/img.*) ;; *) exit 1;; esac
+d=${p%/*}
+mkdir "$d" || exit 1
+cat > "$p" || { rm -rf "$d"; exit 1; }
+printf "%s" "$p"
+( find /tmp -maxdepth 1 -name "og-paste-*" -type d -mmin +60 -exec rm -rf {} + ) </dev/null >/dev/null 2>&1 &`
 
 var (
 	intoRe       = regexp.MustCompile(`^\$[0-9]+$`)
@@ -187,10 +189,11 @@ func validPlacedHost(s string) bool { return placedHostRe.MatchString(s) }
 // pasteUploadArgs builds the ssh argv for one image upload, riding the
 // control connection's ControlMaster exactly like the graphics fetcher: no
 // second handshake, and image bytes never share the control stream with live
-// terminal output. Extracted so the argv is assertable.
-func pasteUploadArgs(sshCmd, ctlSock, host, ext string) []string {
+// terminal output. The destination path rides stdin, not argv (see
+// remoteStoreScript). Extracted so the argv is assertable.
+func pasteUploadArgs(sshCmd, ctlSock, host string) []string {
 	return []string{sshCmd, "-S", ctlSock, "-T", host, "--",
-		"sh", "-c", shellQuote(remoteStoreScript), "_", ext}
+		"sh", "-c", shellQuote(remoteStoreScript)}
 }
 
 func main() {
@@ -431,20 +434,20 @@ func main() {
 	// the path actually handed to -S is read through tr.currentPath() on every
 	// upload, so a paste started after a reconnect never dials through a
 	// ControlPath the daemon has already closed (R9).
-	var pasteUpload func(ctx context.Context, ext string, data []byte) (string, error)
+	var pasteUpload func(ctx context.Context, path string, data []byte) error
 	if ctlSock != "" {
-		pasteUpload = func(ctx context.Context, ext string, data []byte) (string, error) {
-			if !pasteExtRe.MatchString(ext) {
-				return "", fmt.Errorf("paste: bad extension %q", ext)
-			}
-			args := pasteUploadArgs(*sshCmd, tr.currentPath(), *host, ext)
+		pasteUpload = func(ctx context.Context, path string, data []byte) error {
+			args := pasteUploadArgs(*sshCmd, tr.currentPath(), *host)
 			cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
-			cmd.Stdin = bytes.NewReader(data)
+			cmd.Stdin = io.MultiReader(strings.NewReader(path+"\n"), bytes.NewReader(data))
 			out, err := cmd.Output()
 			if err != nil {
-				return "", fmt.Errorf("paste store: %w", err)
+				return fmt.Errorf("paste store: %w", err)
 			}
-			return strings.TrimSpace(string(out)), nil
+			if strings.TrimSpace(string(out)) != path {
+				return errors.New("paste store: unexpected reply")
+			}
+			return nil
 		}
 	}
 

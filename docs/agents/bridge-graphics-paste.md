@@ -396,37 +396,67 @@ carries the measured evidence.
   uploading over the daemon's ControlMaster with a 5s timeout, injecting the
   path) runs async in a goroutine, so a slow transfer or a wedged clipboard
   owner never freezes the pane.
-- **The remote half is a path.** The image rides the daemon's ControlMaster to
-  a fresh, per-paste `mktemp -d` directory (0700 by construction, unpredictable
-  name — nothing to pre-create) under `/tmp/og-paste-*` on the remote,
-  landing at a plain-named file inside it, and the daemon hex-`send-keys` the
-  path plus a trailing space into the pane. Claude Code resolves an existing
-  image path in the prompt into an attachment at submit (verified live); pi
-  — whose own `ctrl+v` also just writes the clipboard image to a temp file
+- **The remote half is a path the daemon chooses.** The paste goroutine picks
+  `/tmp/og-paste-<32 hex from crypto/rand>/img.<ext>` itself (`newPastePath`;
+  `pastePathRe` still validates it locally) and the image rides the daemon's
+  ControlMaster as ONE ssh exec whose stdin is that path on its first line, then
+  the bytes. The remote script re-checks the path, `mkdir`s its directory
+  (no `-p`: atomic, fails on an existing dir or symlink, so nothing can be
+  pre-created; 0700 by umask), writes the file and prints the path. The path
+  is on stdin, not argv, so other local accounts cannot read it from `ps`.
+  The daemon hex-`send-keys` the path plus a trailing space into the pane.
+  Claude Code resolves an existing image path in the prompt into an attachment
+  at *submit* (verified live), so the file may land after the path is typed;
+  pi — whose own `ctrl+v` also just writes the clipboard image to a temp file
   and inserts that path — reads an injected path back with its `read` tool,
   which sends the image as an attachment (verified live). Either way the
   agent receives the image exactly as if the paste were local. The trailing
   space keeps the user's next keystrokes from merging into the path token,
   which would silently break that resolution.
-- **Only submission waits for the path; the pane stays responsive.** The
-  paste goroutine never holds an input lock. While it uploads, `handle` (on the
-  pane's pump goroutine) forwards plain text — printable ASCII and UTF-8 — at
-  once, so it reaches the remote and echoes (through the predictor, #997) as
-  usual, and the path lands at the end of whatever was typed, trailing space
-  kept. The first byte that could submit or move the cursor (Enter/CR, tab,
-  backspace, any other control byte, and every escape sequence: arrows,
-  home/end, bracketed-paste markers) and everything after it is held, in order,
-  so a prompt can never submit without its image and the path is never
-  inserted mid-edit. The goroutine posts its outcome on `done`; `pumpInput`
-  selects on it, injects the path (`finish`) and replays the held bytes through
-  `deliver`, i.e. back through `handle`, so a held `ctrl+v` is intercepted like
-  any other. Everything that sends this pane's input runs on the pump goroutine,
-  which is what keeps input and path in one order. A failed or timed-out upload
-  releases the held keys at once with the failure message; nothing is held past
-  the upload's own bounds (`clipTimeout`, `pasteTimeout`). A triggering frame
-  that ends inside a bracketed paste or a partial marker holds everything
-  (`holdAll`), since its body would otherwise precede the path.
-- **A paste shows progress (#1007).** From the swallow until the path lands, the
+- **The path goes in as soon as the bytes are read; only submission waits for
+  the upload (#1158).** The paste goroutine never holds an input lock, and the
+  hold has two phases, both on the pane's pump goroutine:
+  - *Reading* (swallow until the clipboard bytes are extracted, a few ms): plain
+    text (printable ASCII and UTF-8) is forwarded at once, and the first byte
+    that is not plain text and everything after it is held. This keeps the
+    insertion point where the user pressed `ctrl+v`.
+  - *Uploading* (the path is already in the prompt): `submitHold`
+    (`pastekeys.go`) is an allowlist. Plain text, backspace/DEL, Tab,
+    ^A ^B ^E ^F ^K ^U ^W, cursor and edit sequences (CSI `A–F`/`H`/`Z`/`I`/`O`,
+    `n~` except 27/200/201, SS3 arrows/home/end) and `ESC b/f/d/DEL` pass
+    through; everything else and everything after it is held, in order: CR/LF,
+    `ESC CR`, every CSI-u (kitty Enter and friends), `CSI 27;…~`, keypad Enter,
+    bracketed-paste markers, every mouse report (a click can confirm an agent
+    dialog), lone or incomplete escapes, another `ctrl+v` and every other
+    control byte. Unknown means held, so an agent's rebound submit key waits
+    too. `holdAll` (a trigger frame that ended inside a bracketed paste or a
+    partial marker) still holds everything.
+  The invariants: (a) *no splice* — the path is inserted at the pump's point in
+  the input stream, before any pass-through key, so later cursor/edit keys act
+  on a buffer that already holds it, exactly like a local paste (the rejected
+  alternative, inserting after the upload while letting arrows through, splices
+  `ab`, `ctrl+v`, Left into `a<path>b`); (b) *no submit before the file exists*
+  — every submit-capable or unclassified byte waits for the final result, which
+  is posted only after the upload returns; (c) *failure releases everything
+  visibly* — held keys are replayed after the failure message, and the
+  inserted path is erased with `0x7f` × (len+1), synchronously on the pump
+  before the replay so a held Enter cannot overtake it, when nothing passed
+  through since insertion; otherwise it stays and the message ends
+  `(path left in the prompt)`. A refused path send (bridge reconnecting)
+  cancels the upload and shows the dropped-input message instead of
+  `image pasted`.
+  Mechanics: the goroutine posts `pasteResult{ready}` (path chosen, bytes read)
+  and later the final result on `done` (buffer 2); `pumpInput` calls `settle` for
+  each, which sends the path, replays held frames through the uploading
+  classifier at ready, and at the final does the erase, the message and the
+  replay through `handle`, so a held `ctrl+v` is intercepted like any other.
+  Passed frames skip `splitPasteDrops`: that is sound because paste markers,
+  lone ESC, incomplete escapes and `ctrl+v` are always held and every passed
+  sequence leaves the scan at rest (`TestPassedInputLeavesPasteScanAtRest`).
+  A conn close during a paste drains ready and final before `pumpInput`
+  returns (up to `clipTimeout` + `pasteTimeout`). Nothing is held past the
+  upload's own bounds.
+- **A paste shows progress (#1007).** From the swallow until the upload ends, the
   paste goroutine paints `<spinner> reading clipboard image · 0.5s`, then
   `<spinner> uploading image (1.2 MiB) · 1.5s`, as a local `display-message -c`
   refreshed every 250ms (`pasteTick`; one fork per tick, only while a paste
@@ -438,8 +468,8 @@ carries the measured evidence.
   `ssh` exec with no progress hook.
   **Client targeting:** the daemon cannot tell which client sent the byte, so
   `activeClient` takes the mirror session's highest `#{client_activity}` (first
-  listed on a tie) once at the start of `paste()` — one `list-clients` fork off
-  the input pump. Every message of that paste, failures included, goes to that
+  listed on a tie) at the start of `paste()` — one `list-clients` fork off
+  the input pump, run concurrently with the clipboard extract. Every message of that paste, failures included, goes to that
   same client, so another client of the session never sees it. With no client
   attached, or the chosen client detaches mid-upload, messages fall back to the
   session-wide `notifyLocal`. The `list-clients` lookup and the ticker's join are
@@ -448,8 +478,25 @@ carries the measured evidence.
   panes of an outer server and reads each one's screen with `capture-pane`.
 - **Cleanup is a janitor, not a delete.** The path is read at *submit*, which
   can be minutes after the paste, so the store script sweeps sibling
-  directories older than 60 minutes on each paste instead of deleting on
-  inject.
+  directories older than 60 minutes instead of deleting on inject. The sweep
+  runs after the file is written and the path printed, as a detached
+  background job with all three fds redirected, so the ssh reply never waits
+  for it (it scales with the remote `/tmp` entry count: ~20 ms inline with
+  15k entries).
+- **Where the time goes (#1158).** Measured on loopback against a private
+  `sshd` with a fish login shell, real `xclip` on `Xvfb`, median of 6, 20 KiB /
+  1 MiB. Before: ctrl+v → path in the prompt ~120 / ~114 ms (the path landed
+  after the upload); gate 3.7, TARGETS 1.9, client lookup 3.5, extract 1.5 /
+  3.9, the single ssh exec ~105 / ~98 of which ~78 is the remote login shell
+  starting (a no-op `sh -c true` exec costs the same), ~20 the inline sweep.
+  After: path in the prompt ~10 ms after the swallow; upload ~75 / ~82; full
+  gesture to a submittable prompt ~84 / ~92 ms. One ssh exec per paste
+  before and after; sequential tool listing and ticker forks contending with
+  the upload were measured and ruled out. The ~75 ms remote login-shell
+  startup is the remaining floor: only a resident remote helper would remove
+  it, at the cost of a remote process lifecycle (reconnect, orphan cleanup),
+  so it is left as a follow-up. Shipping the bytes through the control-mode
+  stream was rejected: it head-of-line blocks live pane output.
 - **Failures are visible.** After the byte is swallowed, any failure (BMP —
   which the agent's path regex excludes — oversize, timeout, unwritable
   remote dir, malformed reply, a dropped send while the bridge reconnects) is

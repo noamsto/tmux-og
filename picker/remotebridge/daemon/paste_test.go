@@ -6,13 +6,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
 func TestSplitPasteDrops(t *testing.T) {
@@ -94,31 +98,36 @@ func TestImageTarget(t *testing.T) {
 
 // pasteFixture wires a handler with fakes; every observable the async paste
 // goroutine produces arrives on a channel, so tests synchronize with it
-// instead of racing it.
+// instead of racing it. The test goroutine plays the pump: it alone calls
+// handle and settle, so the fields below that settle writes need no lock.
 type pasteFixture struct {
 	h         *pasteHandler
 	uploadErr error
-	uploadOut string
+	path      string // what newPath picks
 	sent      chan string
 	notified  chan string
 
 	mu       sync.Mutex
 	sentAll  []string
-	held     []byte // input finish released, for replay assertions
-	refuseAt int    // sendCtl returns false starting at this 0-based call index; -1 = never
+	refuseAt int // sendCtl returns false starting at this 0-based call index; -1 = never
+
+	frames     [][]byte // every frame deliver was given
+	heldFrames [][]byte // the frames the final settle released
+	held       []byte   // heldFrames joined, for replay assertions
 }
 
 func newPasteFixture() *pasteFixture {
 	f := &pasteFixture{
-		uploadOut: "/tmp/og-paste-abc123/img.png",
-		sent:      make(chan string, 8),
-		notified:  make(chan string, 8),
-		refuseAt:  -1,
+		path:     f0path,
+		sent:     make(chan string, 32),
+		notified: make(chan string, 8),
+		refuseAt: -1,
 	}
 	f.h = &pasteHandler{
-		done: make(chan pasteResult, 1),
-		upload: func(_ context.Context, _ string, _ []byte) (string, error) {
-			return f.uploadOut, f.uploadErr
+		done:    make(chan pasteResult, 2),
+		newPath: func(string) string { return f.path },
+		upload: func(context.Context, string, []byte) error {
+			return f.uploadErr
 		},
 		probeClipboard: func() (clipboardProbe, bool, error) {
 			return clipboardProbe{
@@ -150,9 +159,29 @@ func (f *pasteFixture) sendCtl(cmds ...string) bool {
 	return true
 }
 
-// awaitOutcome blocks until the async paste produces its first observable
-// (a send-keys command or a notify) and returns it with the channel it came
-// from drained into the fixture for assertion.
+// deliver stands in for pumpInput's: it records the frame, runs it through
+// handle and sends what handle forwards through the same sendCtl the path and
+// the erase use, as pumpInput's send shares one writer with them.
+func (f *pasteFixture) deliver(b []byte) {
+	f.frames = append(f.frames, b)
+	for _, args := range controlmode.SendKeysArgs("%1", f.h.handle("%1", b), controlmode.InputChunkBytes) {
+		f.sendCtl(strings.Join(args, " "))
+	}
+}
+
+// settle plays the pump for one paste result, keeping what a final released.
+func (f *pasteFixture) settle(r pasteResult) {
+	start := len(f.frames)
+	f.h.settle("%1", r, f.deliver)
+	if !r.ready {
+		f.heldFrames = f.frames[start:]
+		f.held = bytes.Join(f.heldFrames, nil)
+	}
+}
+
+// awaitOutcome plays the pump (settling the ready, then the final) until the
+// async paste produces its first observable — a send-keys command or a notify
+// — and returns it.
 func (f *pasteFixture) awaitOutcome(t *testing.T) (sent, notified string) {
 	t.Helper()
 	for {
@@ -162,7 +191,7 @@ func (f *pasteFixture) awaitOutcome(t *testing.T) (sent, notified string) {
 		case msg := <-f.notified:
 			return "", msg
 		case r := <-f.h.results():
-			f.held = bytes.Join(f.h.finish("%1", r), nil)
+			f.settle(r)
 		case <-time.After(5 * time.Second):
 			t.Fatal("paste produced no outcome")
 			return "", ""
@@ -170,16 +199,53 @@ func (f *pasteFixture) awaitOutcome(t *testing.T) (sent, notified string) {
 	}
 }
 
-// finishPaste plays the pump goroutine for the in-flight paste: it waits for
-// the goroutine's outcome and runs finish, keeping the released input in held.
-func (f *pasteFixture) finishPaste(t *testing.T) {
+// awaitReady settles the in-flight paste's ready result, which sends the path
+// while the upload runs behind it.
+func (f *pasteFixture) awaitReady(t *testing.T) {
 	t.Helper()
 	select {
 	case r := <-f.h.results():
-		f.held = bytes.Join(f.h.finish("%1", r), nil)
+		if !r.ready {
+			t.Fatalf("paste ended before its path was ready: %+v", r)
+		}
+		f.settle(r)
 	case <-time.After(5 * time.Second):
-		t.Fatal("paste goroutine never reported its outcome")
+		t.Fatal("paste never posted its ready path")
 	}
+}
+
+// finishPaste plays the pump for the in-flight paste until its final result
+// is settled, keeping the released input in held. A final already settled by
+// awaitOutcome leaves nothing in flight, so it returns at once.
+func (f *pasteFixture) finishPaste(t *testing.T) {
+	t.Helper()
+	for f.h.pumping() {
+		select {
+		case r := <-f.h.results():
+			f.settle(r)
+			if !r.ready {
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("paste goroutine never reported its outcome")
+		}
+	}
+}
+
+// sentLog is every command sendCtl was given so far, in order.
+func (f *pasteFixture) sentLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sentAll...)
+}
+
+// sendKeysCmd is the command the pump sends for b on pane %1.
+func sendKeysCmd(b string) string {
+	args := controlmode.SendKeysArgs("%1", []byte(b), controlmode.InputChunkBytes)
+	if len(args) != 1 {
+		panic("sendKeysCmd: payload spans more than one chunk")
+	}
+	return strings.Join(args[0], " ")
 }
 
 // assertNoNotify pins that a silent forward stays silent: notifies are
@@ -249,7 +315,7 @@ func TestHandleForwardsWhenNoImage(t *testing.T) {
 
 // TestHandleSwallowsAndInjectsOnImage pins the ordering: the byte is
 // swallowed, the text typed before it is returned for pumpInput to send, and
-// finish (also on the pump goroutine) then injects the path after it.
+// settle (also on the pump goroutine) then injects the path after it.
 func TestHandleSwallowsAndInjectsOnImage(t *testing.T) {
 	f := newPasteFixture()
 	got := f.h.handle("%1", []byte("x\x16"))
@@ -280,9 +346,9 @@ func blockedPaste(t *testing.T) (*pasteFixture, chan struct{}) {
 	t.Helper()
 	f := newPasteFixture()
 	release := make(chan struct{})
-	f.h.upload = func(context.Context, string, []byte) (string, error) {
+	f.h.upload = func(context.Context, string, []byte) error {
 		<-release
-		return f.uploadOut, f.uploadErr
+		return f.uploadErr
 	}
 	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
 		t.Fatalf("handle returned bytes: %q", got)
@@ -290,59 +356,123 @@ func blockedPaste(t *testing.T) (*pasteFixture, chan struct{}) {
 	return f, release
 }
 
-// TestTypingDuringUploadIsNotHeld pins the responsiveness rule: plain text
-// typed while the upload runs is returned at once for pumpInput to send, and
-// the path lands after it.
-func TestTypingDuringUploadIsNotHeld(t *testing.T) {
-	f, release := blockedPaste(t)
-	for _, in := range []string{"hello", " wörld"} {
-		if got := f.h.handle("%1", []byte(in)); string(got) != in {
-			t.Fatalf("plain text %q was held back: got %q", in, got)
+// TestReadyPathSendPrecedesUploadReturn pins the latency fix: the path the
+// daemon picked is in the prompt while the upload still runs, and the upload
+// stores the clipboard bytes at that same path.
+func TestReadyPathSendPrecedesUploadReturn(t *testing.T) {
+	f := newPasteFixture()
+	release := make(chan struct{})
+	type call struct {
+		path string
+		data []byte
+	}
+	calls := make(chan call, 1)
+	f.h.upload = func(_ context.Context, path string, data []byte) error {
+		calls <- call{path, data}
+		<-release
+		return nil
+	}
+	f.h.handle("%1", []byte("\x16"))
+	f.awaitReady(t)
+	if got, want := f.sentLog(), []string{sendKeysCmd(f0path + " ")}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent while the upload runs = %q, want the path and its trailing space %q", got, want)
+	}
+	select {
+	case c := <-calls:
+		if c.path != f0path || string(c.data) != "png-bytes" {
+			t.Errorf("upload(%q, %q), want the sent path and the clipboard bytes", c.path, c.data)
 		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("upload never started")
 	}
 	close(release)
-	cmd, _ := f.awaitOutcome(t)
-	if !strings.HasPrefix(cmd, "send-keys -H -t %1 ") || !strings.HasSuffix(cmd, " 20") {
-		t.Fatalf("path injection = %q", cmd)
-	}
-	if len(f.held) != 0 {
-		t.Errorf("nothing was held, finish released %q", f.held)
+	f.finishPaste(t)
+	if got := f.sentLog(); len(got) != 1 {
+		t.Errorf("a successful paste sent more than the path: %q", got)
 	}
 }
 
-// TestSubmissionAndCursorKeysAreHeldBehindThePath pins the serialization
-// rule, now scoped to submission: Enter, anything after it, and the first key
-// that could move the cursor are held and handed back, in order, by finish.
+// TestTypingDuringUploadIsNotHeld pins the responsiveness rule: plain text
+// typed while the bytes are read, and again once the path is in the prompt,
+// is returned at once for pumpInput to send.
+func TestTypingDuringUploadIsNotHeld(t *testing.T) {
+	f, release := blockedPaste(t)
+	if got := f.h.handle("%1", []byte("hello")); string(got) != "hello" {
+		t.Fatalf("plain text typed while reading was held back: got %q", got)
+	}
+	f.awaitReady(t)
+	if got := f.h.handle("%1", []byte(" wörld")); string(got) != " wörld" {
+		t.Fatalf("plain text typed while uploading was held back: got %q", got)
+	}
+	close(release)
+	f.finishPaste(t)
+	if len(f.held) != 0 {
+		t.Errorf("nothing was held, the final released %q", f.held)
+	}
+}
+
+// TestSubmissionAndCursorKeysAreHeldBehindThePath pins the uploading-phase
+// rule: once the path is in the prompt, cursor and edit keys pass (they act
+// on a buffer that already holds it), while anything that could submit — and
+// everything after it — waits for the upload and is released, in order, by
+// the final. Before the path is in, a cursor key waits for it.
 func TestSubmissionAndCursorKeysAreHeldBehindThePath(t *testing.T) {
 	cases := []struct{ name, in, wantFree, wantHeld string }{
 		{"enter", "ab\rcd", "ab", "\rcd"},
 		{"lone enter", "\r", "", "\r"},
-		{"left arrow", "ab\x1b[Dcd", "ab", "\x1b[Dcd"},
-		{"ctrl+a", "ab\x01c", "ab", "\x01c"},
-		{"backspace", "a\x7fb", "a", "\x7fb"},
-		{"tab", "a\tb", "a", "\tb"},
+		{"left arrow", "ab\x1b[Dcd", "ab\x1b[Dcd", ""},
+		{"ctrl+a", "ab\x01c", "ab\x01c", ""},
+		{"backspace", "a\x7fb", "a\x7fb", ""},
+		{"tab", "a\tb", "a\tb", ""},
+		{"ctrl+c", "a\x03b", "a", "\x03b"},
+		{"sgr click", "a\x1b[<0;5;5M", "a", "\x1b[<0;5;5M"},
 		{"bracketed paste", "a\x1b[200~zz\x1b[201~", "a", "\x1b[200~zz\x1b[201~"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f, release := blockedPaste(t)
+			f.awaitReady(t)
 			if got := f.h.handle("%1", []byte(c.in)); string(got) != c.wantFree {
 				t.Errorf("free = %q, want %q", got, c.wantFree)
 			}
-			// Everything after the first held byte is held too, even text.
-			if got := f.h.handle("%1", []byte("late")); c.wantHeld != "" && len(got) != 0 {
-				t.Errorf("text after a held byte was forwarded: %q", got)
+			wantHeld := c.wantHeld
+			got := f.h.handle("%1", []byte("late"))
+			switch {
+			case wantHeld == "" && string(got) != "late":
+				t.Errorf("text with nothing held was held back: got %q", got)
+			case wantHeld != "":
+				// Everything after the first held byte is held too, even text.
+				if len(got) != 0 {
+					t.Errorf("text after a held byte was forwarded: %q", got)
+				}
+				wantHeld += "late"
 			}
 			close(release)
-			cmd, _ := f.awaitOutcome(t)
-			if !strings.HasPrefix(cmd, "send-keys -H -t %1 ") {
-				t.Fatalf("path injection = %q", cmd)
-			}
-			if want := c.wantHeld + "late"; string(f.held) != want {
-				t.Errorf("released %q, want %q", f.held, want)
+			f.finishPaste(t)
+			if string(f.held) != wantHeld {
+				t.Errorf("released %q, want %q", f.held, wantHeld)
 			}
 		})
 	}
+
+	t.Run("cursor key while reading waits for the path", func(t *testing.T) {
+		f, release := blockedPaste(t)
+		for _, in := range []string{"\x1b[D", "z"} {
+			if got := f.h.handle("%1", []byte(in)); len(got) != 0 {
+				t.Fatalf("%q forwarded behind a cursor key before the path was in the prompt: %q", in, got)
+			}
+		}
+		f.awaitReady(t)
+		want := []string{sendKeysCmd(f0path + " "), sendKeysCmd("\x1b[D"), sendKeysCmd("z")}
+		if got := f.sentLog(); !reflect.DeepEqual(got, want) {
+			t.Errorf("sent = %q, want the path, then every held frame the uploading rule passes %q", got, want)
+		}
+		close(release)
+		f.finishPaste(t)
+		if len(f.held) != 0 {
+			t.Errorf("the final released %q, want nothing left held", f.held)
+		}
+	})
 }
 
 // TestHeldInputIsReleasedOnFailure pins that a failed upload still releases
@@ -352,16 +482,61 @@ func TestHeldInputIsReleasedOnFailure(t *testing.T) {
 	f.uploadErr = errors.New("exit status 1")
 	f.h.handle("%1", []byte("\r"))
 	close(release)
-	_, notified := f.awaitOutcome(t)
-	if !strings.Contains(notified, "upload to remote failed") {
-		t.Fatalf("notify = %q", notified)
-	}
 	f.finishPaste(t)
+	if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") {
+		t.Fatalf("notify = %q", msg)
+	}
 	if string(f.held) != "\r" {
 		t.Errorf("released %q, want the held Enter", f.held)
 	}
-	if string(f.h.handle("%1", []byte("x"))) != "x" || f.h.pumping {
+	if string(f.h.handle("%1", []byte("x"))) != "x" || f.h.pumping() {
 		t.Error("handler still holds input after the paste ended")
+	}
+}
+
+// TestFailedUploadErasesThePathBeforeTheHeldEnter pins the failure cleanup
+// when nothing passed since the path went in: the path and its space are
+// backspaced away on the pump, ahead of the held Enter, so the agent is never
+// asked to submit a path to a file that does not exist.
+func TestFailedUploadErasesThePathBeforeTheHeldEnter(t *testing.T) {
+	f, release := blockedPaste(t)
+	f.uploadErr = errors.New("exit status 1")
+	f.awaitReady(t)
+	if got := f.h.handle("%1", []byte("\r")); len(got) != 0 {
+		t.Fatalf("Enter forwarded during the upload: %q", got)
+	}
+	close(release)
+	f.finishPaste(t)
+	want := []string{
+		sendKeysCmd(f0path + " "),
+		sendKeysCmd(strings.Repeat("\x7f", len(f0path)+1)),
+		sendKeysCmd("\r"),
+	}
+	if got := f.sentLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("sent = %q, want the path, its erase, then the held Enter %q", got, want)
+	}
+	if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") || strings.Contains(msg, "path left") {
+		t.Errorf("notify = %q, want the upload failure without a path-left note", msg)
+	}
+}
+
+// TestFailureAfterPassThroughKeepsThePath pins the other failure branch: once
+// a key passed after the path, backspacing a fixed count could eat the user's
+// own edit, so the path stays and the message says so.
+func TestFailureAfterPassThroughKeepsThePath(t *testing.T) {
+	f, release := blockedPaste(t)
+	f.uploadErr = errors.New("exit status 1")
+	f.awaitReady(t)
+	f.deliver([]byte("\x1b[D"))
+	f.deliver([]byte("\r"))
+	close(release)
+	f.finishPaste(t)
+	want := []string{sendKeysCmd(f0path + " "), sendKeysCmd("\x1b[D"), sendKeysCmd("\r")}
+	if got := f.sentLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("sent = %q, want no erase: %q", got, want)
+	}
+	if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") || !strings.Contains(msg, "(path left in the prompt)") {
+		t.Errorf("notify = %q, want the failure and that the path was left", msg)
 	}
 }
 
@@ -373,12 +548,98 @@ func TestHeldCtrlVIsReinterceptedOnRelease(t *testing.T) {
 		t.Fatalf("second ctrl+v during an upload was forwarded: %q", got)
 	}
 	close(release)
-	f.awaitOutcome(t)
+	f.finishPaste(t)
 	if string(f.held) != "\x16" {
 		t.Fatalf("held = %q, want the second ctrl+v", f.held)
 	}
-	if got := f.h.handle("%1", f.held); len(got) != 0 {
-		t.Errorf("replayed ctrl+v was forwarded: %q", got)
+	if !f.h.pumping() {
+		t.Error("the replayed ctrl+v did not start a second paste")
+	}
+	if slices.Contains(f.sentLog(), sendKeysCmd("\x16")) {
+		t.Errorf("replayed ctrl+v was forwarded: %q", f.sentLog())
+	}
+}
+
+// TestHeldPasteAndCtrlVReplayAtFinal pins the uploading phase's handling of
+// the rest of the stream: an arrow passes, a bracketed paste waits (its
+// markers are not classified as safe) and replays at the final, and a ctrl+v
+// typed after it is still intercepted rather than reaching the remote.
+func TestHeldPasteAndCtrlVReplayAtFinal(t *testing.T) {
+	f, release := blockedPaste(t)
+	f.awaitReady(t)
+	const pasted = "\x1b[200~text\x1b[201~"
+	for _, in := range []string{"\x1b[C", pasted, "\x16"} {
+		f.deliver([]byte(in))
+	}
+	if got, want := f.sentLog(), []string{sendKeysCmd(f0path + " "), sendKeysCmd("\x1b[C")}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent during the upload = %q, want the path and the arrow %q", got, want)
+	}
+	close(release)
+	f.finishPaste(t)
+	if got, want := f.heldFrames, [][]byte{[]byte(pasted), []byte("\x16")}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the final released %q, want %q", got, want)
+	}
+	if got, want := f.sentLog(), []string{sendKeysCmd(f0path + " "), sendKeysCmd("\x1b[C"), sendKeysCmd(pasted)}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sent = %q, want %q", got, want)
+	}
+	if !f.h.pumping() {
+		t.Error("the ctrl+v replayed after the bracketed paste did not start a paste")
+	}
+}
+
+// TestHoldAllHoldsWhileUploading pins that a paste triggered from a frame
+// that ended inside a bracketed paste keeps holding everything once the path
+// is in, keys the uploading rule would otherwise pass included: the paste
+// body must not trail the path while it is still open.
+func TestHoldAllHoldsWhileUploading(t *testing.T) {
+	f := newPasteFixture()
+	release := make(chan struct{})
+	f.h.upload = func(context.Context, string, []byte) error { <-release; return nil }
+	if got := f.h.handle("%1", []byte("\x16\x1b[200~body")); len(got) != 0 {
+		t.Fatalf("handle returned %q", got)
+	}
+	f.awaitReady(t)
+	for _, in := range []string{"\x1b[D", "more\x1b[201~"} {
+		if got := f.h.handle("%1", []byte(in)); len(got) != 0 {
+			t.Errorf("%q forwarded while holding everything: %q", in, got)
+		}
+	}
+	if got, want := f.sentLog(), []string{sendKeysCmd(f0path + " ")}; !reflect.DeepEqual(got, want) {
+		t.Errorf("sent during the upload = %q, want only the path", got)
+	}
+	close(release)
+	f.finishPaste(t)
+	if want := "\x1b[200~body\x1b[Dmore\x1b[201~"; string(f.held) != want {
+		t.Errorf("the final released %q, want %q", f.held, want)
+	}
+}
+
+// TestPassedInputLeavesPasteScanAtRest pins why frames passed during an
+// upload may skip splitPasteDrops: whatever submitHold lets through, scanned
+// from rest, ends back at rest — outside a paste, with no partial marker — so
+// the scan state the final replay resumes from is the one it would have had.
+func TestPassedInputLeavesPasteScanAtRest(t *testing.T) {
+	samples := []string{
+		"plain wörld", "\x01\x02\x05\x06\x08\t\x0b\x15\x17\x7f",
+		"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[F\x1b[H\x1b[Z", "\x1b[1;5C", "\x1b[3~", "\x1b[20~", "\x1b[2001~",
+		"\x1b[I\x1b[O", "\x1bOA\x1bOH", "\x1bb\x1bf\x1bd\x1b\x7f",
+	}
+	rng := rand.New(rand.NewPCG(1158, 0))
+	alphabet := []byte("\x1b[O0129;~<ACDHMIbfu\r\x16\x7f\x01xé")
+	for range 5000 {
+		b := make([]byte, rng.IntN(12))
+		for i := range b {
+			b[i] = alphabet[rng.IntN(len(alphabet))]
+		}
+		samples = append(samples, string(b))
+	}
+	for _, s := range samples {
+		passed := []byte(s)[:submitHold([]byte(s))]
+		h := &pasteHandler{}
+		_, drops := h.splitPasteDrops(passed)
+		if drops != 0 || h.inPaste || h.matched != 0 {
+			t.Errorf("passed %q left drops=%d inPaste=%v matched=%d", passed, drops, h.inPaste, h.matched)
+		}
 	}
 }
 
@@ -387,7 +648,6 @@ func TestHeldCtrlVIsReinterceptedOnRelease(t *testing.T) {
 // otherwise reach the remote ahead of the path.
 func TestPartialMarkerAfterCtrlVHoldsEverything(t *testing.T) {
 	f := newPasteFixture()
-	f.h.upload = func(context.Context, string, []byte) (string, error) { return f.uploadOut, nil }
 	if got := f.h.handle("%1", []byte("\x16\x1b[200~body")); len(got) != 0 {
 		t.Fatalf("handle returned %q", got)
 	}
@@ -417,11 +677,8 @@ func TestPasteFailuresNotifyAndSendNothing(t *testing.T) {
 				return clipboardProbe{ext: "png", extract: func() ([]byte, error) { return make([]byte, pasteMaxBytes+1), nil }}, true, nil
 			}
 		}, "too large"},
-		{"upload error", func(f *pasteFixture) {
-			f.uploadErr = errors.New("exit status 1")
-		}, "upload to remote failed"},
-		{"bad reply path", func(f *pasteFixture) {
-			f.uploadOut = "/etc/passwd"
+		{"generated path rejected", func(f *pasteFixture) {
+			f.path = "/etc/passwd"
 		}, "unexpected paste path"},
 	}
 	for _, c := range cases {
@@ -438,7 +695,48 @@ func TestPasteFailuresNotifyAndSendNothing(t *testing.T) {
 			if !strings.Contains(notified, c.wantInMsg) {
 				t.Errorf("notify %q lacks %q", notified, c.wantInMsg)
 			}
+			// The final carries no message of its own: the goroutine said it.
+			f.finishPaste(t)
+			if got := f.sentLog(); len(got) != 0 {
+				t.Errorf("sent = %q, want nothing", got)
+			}
+			f.assertNoNotify(t)
 		})
+	}
+
+	t.Run("upload error", func(t *testing.T) {
+		f := newPasteFixture()
+		f.uploadErr = errors.New("exit status 1")
+		if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
+			t.Fatalf("byte not swallowed: %q", got)
+		}
+		f.finishPaste(t)
+		want := []string{sendKeysCmd(f0path + " "), sendKeysCmd(strings.Repeat("\x7f", len(f0path)+1))}
+		if got := f.sentLog(); !reflect.DeepEqual(got, want) {
+			t.Errorf("sent = %q, want the path then its erase %q", got, want)
+		}
+		if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") {
+			t.Errorf("notify = %q", msg)
+		}
+	})
+}
+
+// TestNewPastePath pins the daemon-chosen remote path: it passes the local
+// validation for every whitelisted extension and its directory is 32 hex
+// characters of fresh randomness, so nothing can be pre-created ahead of it.
+func TestNewPastePath(t *testing.T) {
+	for _, ext := range []string{"png", "jpg", "jpeg", "gif", "webp"} {
+		p := newPastePath(ext)
+		if !pastePathRe.MatchString(p) {
+			t.Errorf("newPastePath(%q) = %q fails pastePathRe", ext, p)
+		}
+		dir, ok := strings.CutSuffix(strings.TrimPrefix(p, "/tmp/og-paste-"), "/img."+ext)
+		if _, err := hex.DecodeString(dir); !ok || len(dir) != 32 || err != nil {
+			t.Errorf("newPastePath(%q) = %q, want /tmp/og-paste-<32 hex>/img.%s", ext, p, ext)
+		}
+	}
+	if a, b := newPastePath("png"), newPastePath("png"); a == b {
+		t.Errorf("two pastes picked the same path %q", a)
 	}
 }
 
@@ -493,7 +791,8 @@ func TestHandleNotifiesOnRefusedSend(t *testing.T) {
 	if got := f.h.handle("%1", []byte("\x16")); len(got) != 0 {
 		t.Fatalf("byte not swallowed: %q", got)
 	}
-	if _, msg := f.awaitOutcome(t); !strings.Contains(msg, "dropped") {
+	f.finishPaste(t)
+	if msg := f.awaitNotify(t); !strings.Contains(msg, "dropped") {
 		t.Errorf("notify %q does not describe the dropped send", msg)
 	}
 	select {
@@ -830,11 +1129,10 @@ func TestWrapperAgentPasteEndToEnd(t *testing.T) {
 // gesture in the same frame go out before the path, as they were typed.
 func TestBytesTypedBeforeCtrlVAreNeverHeld(t *testing.T) {
 	f := newPasteFixture()
-	f.h.upload = func(context.Context, string, []byte) (string, error) { return f.uploadOut, nil }
 	if got := f.h.handle("%1", []byte("hi\r\x16ab\rcd")); string(got) != "hi\rab" {
 		t.Fatalf("free = %q, want the pre-gesture bytes and plain text up to the first held byte", got)
 	}
-	f.awaitOutcome(t)
+	f.finishPaste(t)
 	if string(f.held) != "\rcd" {
 		t.Errorf("released %q, want only the suffix typed after the gesture", f.held)
 	}
@@ -847,15 +1145,8 @@ func TestHeldFramesKeepTheirBoundaries(t *testing.T) {
 	f.h.handle("%1", []byte("\x1b"))
 	f.h.handle("%1", []byte("hello"))
 	close(release)
-	var r pasteResult
-	select {
-	case r = <-f.h.results():
-	case <-time.After(5 * time.Second):
-		t.Fatal("no paste outcome")
-	}
-	var frames []string
-	f.h.replay(f.h.finish("%1", r), func(b []byte) { frames = append(frames, string(b)) })
-	if len(frames) != 2 || frames[0] != "\x1b" || frames[1] != "hello" {
-		t.Errorf("frames = %q, want [ESC hello]", frames)
+	f.finishPaste(t)
+	if got, want := f.heldFrames, [][]byte{[]byte("\x1b"), []byte("hello")}; !reflect.DeepEqual(got, want) {
+		t.Errorf("frames = %q, want [ESC hello]", got)
 	}
 }

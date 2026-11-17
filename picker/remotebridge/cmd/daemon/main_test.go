@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -305,10 +307,10 @@ func TestNewGraphicsGatesOnRelayOnBothTransportBranches(t *testing.T) {
 // TestPasteUploadArgs pins the upload's ssh argv: it must ride the control
 // connection's ControlMaster (-S), never allocate a tty (-T), and hand the
 // store script to sh -c as ONE quoted element — the remote login shell is
-// fish, which would otherwise parse (and mangle) it. The extension rides as
-// a separate argv element ($1), never interpolated into the script.
+// fish, which would otherwise parse (and mangle) it. The destination path
+// rides stdin, so argv carries nothing after the script.
 func TestPasteUploadArgs(t *testing.T) {
-	args := pasteUploadArgs("ssh", "/tmp/ctl.sock", "tp-g6", "png")
+	args := pasteUploadArgs("ssh", "/tmp/ctl.sock", "tp-g6")
 	joined := strings.Join(args, " ")
 
 	for _, want := range []string{"-S /tmp/ctl.sock", "-T tp-g6", "-- sh -c"} {
@@ -321,11 +323,166 @@ func TestPasteUploadArgs(t *testing.T) {
 	if scriptAt < 0 {
 		t.Fatalf("store script not shell-quoted as one element in %q", joined)
 	}
-	if args[scriptAt+1] != "_" || args[scriptAt+2] != "png" {
-		t.Errorf("argv after script = %q, want _ <ext>", args[scriptAt+1:])
+	if scriptAt != len(args)-1 {
+		t.Errorf("argv after script = %q, want nothing (path rides stdin)", args[scriptAt+1:])
 	}
-	if strings.Contains(remoteStoreScript, "'") {
-		t.Error("store script contains a single quote; shellQuote only wraps, it cannot escape one inside sh -c")
+	for _, bad := range []string{"'", `\`} {
+		if strings.Contains(remoteStoreScript, bad) {
+			t.Errorf("store script contains %q; shellQuote only wraps, and fish treats it specially", bad)
+		}
+	}
+	if !strings.Contains(remoteStoreScript, "mkdir") || strings.Contains(remoteStoreScript, "mktemp") {
+		t.Error("store script must create its directory with mkdir, not mktemp")
+	}
+	printfAt := strings.Index(remoteStoreScript, "printf")
+	sweepAt := strings.Index(remoteStoreScript, "find ")
+	if printfAt < 0 || sweepAt < printfAt {
+		t.Errorf("sweep must come after the printf reply (printf at %d, find at %d)", printfAt, sweepAt)
+	}
+	if !strings.HasSuffix(remoteStoreScript, "&") {
+		t.Error("sweep must end as a background job (&)")
+	}
+}
+
+// runStoreScript runs script (with /tmp rewritten to root) under sh with
+// stdin = path+"\n"+data, returning stdout and the run's error.
+func runStoreScript(t *testing.T, script, path string, data []byte) (string, error) {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Stdin = io.MultiReader(strings.NewReader(path+"\n"), bytes.NewReader(data))
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+func storeScriptIn(root string) string {
+	return strings.ReplaceAll(remoteStoreScript, "/tmp", root)
+}
+
+// TestStoreScript runs the real script text against a temp root instead of
+// /tmp.
+func TestStoreScript(t *testing.T) {
+	requireSh(t)
+	root := t.TempDir()
+	script := storeScriptIn(root)
+	data := []byte("\x89PNG\x00\x01bytes\n\x00")
+
+	dir := filepath.Join(root, "og-paste-abcd1234")
+	path := filepath.Join(dir, "img.png")
+
+	out, err := runStoreScript(t, script, path, data)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if out != path {
+		t.Errorf("stdout = %q, want %q", out, path)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("file = %q, %v; want the uploaded bytes", got, err)
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want 0600", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
+		t.Errorf("dir mode = %v, want 0700", fi.Mode().Perm())
+	}
+
+	t.Run("existing dir is refused", func(t *testing.T) {
+		if _, err := runStoreScript(t, script, path, []byte("other")); err == nil {
+			t.Error("second run with the same path succeeded")
+		}
+		if got, _ := os.ReadFile(path); !bytes.Equal(got, data) {
+			t.Errorf("file overwritten: %q", got)
+		}
+	})
+
+	t.Run("symlink dir is refused", func(t *testing.T) {
+		target := t.TempDir()
+		link := filepath.Join(root, "og-paste-link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runStoreScript(t, script, filepath.Join(link, "img.png"), data); err == nil {
+			t.Error("run through a pre-created symlink succeeded")
+		}
+		if _, err := os.Stat(filepath.Join(target, "img.png")); err == nil {
+			t.Error("bytes were written through the symlink")
+		}
+	})
+
+	for name, bad := range map[string]string{
+		"outside pattern": filepath.Join(root, "evil", "img.png"),
+		"dot-dot":         root + "/og-paste-x/../og-paste-y/img.png", // Join would clean the ".." away
+		"wrong basename":  filepath.Join(root, "og-paste-zz", "other.png"),
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			if _, err := runStoreScript(t, script, bad, data); err == nil {
+				t.Errorf("path %q accepted", bad)
+			}
+			if _, err := os.Stat(filepath.Join(root, "evil")); err == nil {
+				t.Error("evil dir created")
+			}
+			if _, err := os.Stat(filepath.Join(root, "og-paste-zz")); err == nil {
+				t.Error("dir created for a refused basename")
+			}
+		})
+	}
+
+	t.Run("sweeps aged dirs, keeps fresh ones", func(t *testing.T) {
+		old := filepath.Join(root, "og-paste-old")
+		if err := os.Mkdir(old, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		past := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(old, past, past); err != nil {
+			t.Fatal(err)
+		}
+		fresh := filepath.Join(root, "og-paste-fresh1234", "img.png")
+		if _, err := runStoreScript(t, script, fresh, data); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if _, err := os.Stat(old); err != nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("aged dir was not swept")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if _, err := os.Stat(fresh); err != nil {
+			t.Errorf("fresh upload was swept: %v", err)
+		}
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("earlier fresh upload was swept: %v", err)
+		}
+	})
+}
+
+// TestStoreScriptReturnsBeforeSweepEnds pins the latency contract: the sweep
+// is detached with all three fds redirected, so cmd.Output (which waits for
+// stdout to close) returns while a slow sweep is still running.
+func TestStoreScriptReturnsBeforeSweepEnds(t *testing.T) {
+	requireSh(t)
+	root := t.TempDir()
+	const sweep = "( find "
+	if !strings.Contains(remoteStoreScript, sweep) {
+		t.Fatalf("sweep marker %q not in script", sweep)
+	}
+	slow := strings.Replace(storeScriptIn(root), sweep, "( sleep 2; find ", 1)
+
+	start := time.Now()
+	out, err := runStoreScript(t, slow, filepath.Join(root, "og-paste-slow1234", "img.png"), []byte("x"))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if want := filepath.Join(root, "og-paste-slow1234", "img.png"); out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+	if elapsed > time.Second {
+		t.Errorf("run took %v with a 2s sweep, want it off the reply path", elapsed)
 	}
 }
 
@@ -513,6 +670,15 @@ func requireSleep(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skip("sleep is not available")
+	}
+}
+
+func requireSh(t *testing.T) {
+	t.Helper()
+	for _, bin := range []string{"sh", "find", "sleep"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s is not available", bin)
+		}
 	}
 }
 
