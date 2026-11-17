@@ -238,7 +238,7 @@ var (
 	// The closed set of tools a bind may launch on the remote: a name reaches a
 	// remote shell only by being a key here, so the socket peer cannot smuggle
 	// one in.
-	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true, "btop": true, "k9s": true}
+	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true, "btop": true, "k9s": true, "crew-dash": true}
 	remoteThemes = map[string]bool{"dark": true, "light": true}
 	// remoteToolFloat gives each remoteTools entry its float shape, matching
 	// config/tmux.conf.nix's floatShort/floatFull mkFloat shapes byte for byte
@@ -252,7 +252,14 @@ var (
 		"lazygit": remoteFloatFull,
 		"btop":    remoteFloatFull,
 		"k9s":     remoteFloatFull,
+		// The local crew-dash script's 90/90/5/5.
+		"crew-dash": remoteFloatFull,
 	}
+	// remoteToolBin and remoteToolExec name the binary probed on the remote and
+	// the command it runs, for a tool whose key is not its binary: crew-dash is
+	// `crew dash`. An absent key means bin = exec = the tool name.
+	remoteToolBin  = map[string]string{"crew-dash": "crew"}
+	remoteToolExec = map[string]string{"crew-dash": "crew dash"}
 )
 
 // layoutCommand is one allow-listed entry of the layout verb: the remote
@@ -576,7 +583,7 @@ var verbs = map[string]verb{
 			pane, tmuxQuote("#{==:#{@crew_grid},1}"), tmuxQuote(grid), tmuxQuote(flip))
 		return []string{carouselClearCmd(pane), cmd}, nil
 	}},
-	// The tool binds (prefix p/g/b/k/y) open a float locally, and this is the
+	// The tool binds (prefix p/g/b/k/y, and H for crew-dash) open a float locally, and this is the
 	// remote leg: it now opens a float on the remote too, at the same shape
 	// (remoteToolFloat) the local bind uses, so the mirror can reconcile it
 	// into a local float the same way it reconciles any other remote float.
@@ -777,8 +784,8 @@ const maxRemoteToolCwd = 4096
 // toolResolveScript is the POSIX body run under exec /bin/sh -c: split-window
 // runs its command through the remote's default shell (fish on the normal host),
 // and this is POSIX. Like carouselResolveScript it must contain zero single-quote
-// characters so double tmuxQuote only wraps. tool is a remoteTools key, so it is
-// [a-z-] and needs no quoting of its own.
+// characters so double tmuxQuote only wraps. tool is a remoteTools key, so it and its
+// remoteToolBin/remoteToolExec entries are [a-z -] and need no quoting of their own.
 //
 // The PATH restore is what makes the bare name resolvable at all. tmux hands a
 // new pane its global environ, which carries every store path tmux-og's wrapper
@@ -805,6 +812,13 @@ const maxRemoteToolCwd = 4096
 // tmux global BROWSER=<og-open path> and silently disable URL forwarding for
 // this tool.
 func toolResolveScript(tool string) string {
+	bin, run := tool, tool
+	if b, ok := remoteToolBin[tool]; ok {
+		bin = b
+	}
+	if e, ok := remoteToolExec[tool]; ok {
+		run = e
+	}
 	return fmt.Sprintf(
 		"p=$(tmux show-environment -g PATH 2>/dev/null); "+
 			"case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; "+
@@ -812,7 +826,7 @@ func toolResolveScript(tool string) string {
 			"case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; "+
 			"command -v %s >/dev/null 2>&1 && exec %s; "+
 			"echo tmux-og: %s is not on PATH on this host; sleep 5",
-		tool, tool, tool)
+		bin, run, bin)
 }
 
 // carouselResolveScript is the POSIX body run under exec /bin/sh -c. It must

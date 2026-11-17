@@ -616,15 +616,15 @@
   in
     pkgs.writeShellScriptBin name patched;
 
-  # tmux-crew-dash execs its sibling tmux-float-group by store path: PATH is the
-  # tmux server's, and a launcher started from a pane shell (the dispatcher) may
-  # run with a different one. Its own builder for the same reason as @reflow@
+  # tmux-crew-dash execs its sibling tmux-float-group, and a mirror window's ctl,
+  # by store path: PATH is the tmux server's, and a launcher started from a pane
+  # shell (the dispatcher) may run with a different one. Its own builder for the same reason as @reflow@
   # above: a bare name resolves against whatever PATH the caller has.
   mkScriptCrewDash = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings
-      ["@float_group@"]
-      ["${script.tmux-float-group}/bin/tmux-float-group"]
+      ["@float_group@" "@bridge_ctl@"]
+      ["${script.tmux-float-group}/bin/tmux-float-group" picker-bridge-ctl-bin]
       (builtins.readFile ../scripts/${name}.sh)
     );
 
@@ -1126,4 +1126,4 @@ in
     og dispatcher partition mismatch (see ogVerbSpec/ogInternal in config/tmux.conf.nix):
       in scriptNames but not in ogVerbSpec or ogInternal: ${lib.concatStringsSep ", " ogPartitionUndecided}
       in ogVerbSpec/ogInternal but not in scriptNames: ${lib.concatStringsSep ", " ogPartitionUnknown}
-  ''; {inherit tmux-wrapped wrapperBinDir wrapperBinPkgs tmuxConf script og mkOg ogVerbSpec ogDispatchBin referenceConf configToml pathsToml generatedConf picker-session-res-bin;}
+  ''; {inherit tmux-wrapped wrapperBinDir wrapperBinPkgs tmuxConf script og mkOg ogVerbSpec ogDispatchBin referenceConf configToml pathsToml generatedConf picker-session-res-bin picker-bridge-ctl-bin;}
