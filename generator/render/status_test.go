@@ -152,13 +152,31 @@ func TestBridgeOptsShape(t *testing.T) {
 func TestCrewRepoTagEvaluates(t *testing.T) {
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
+		if os.Getenv("OG_REQUIRE_TMUX") != "" {
+			t.Fatal("tmux is required (OG_REQUIRE_TMUX set) but not on PATH: check generator-go-lint's nativeBuildInputs in flake.nix")
+		}
 		t.Skip("tmux not on PATH")
 	}
-	dir := t.TempDir()
+	// A short socket dir: macOS sun_path is 104 bytes and t.TempDir() embeds the
+	// long test name.
+	dir, err := os.MkdirTemp("/tmp", "og-1165-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// A scratch server must not touch the live one or the shared status/data dirs,
+	// and -f /dev/null keeps a wrapped tmux from loading the full og config.
+	env := append(os.Environ(), "TMUX_TMPDIR="+dir, "TMUX=",
+		"CLAUDE_STATUS_DIR="+filepath.Join(dir, "status"), "XDG_DATA_HOME="+filepath.Join(dir, "data"))
+	t.Cleanup(func() {
+		kill := exec.Command(tmuxBin, "-L", "crewrepo", "kill-server") //nolint:gosec // tmux path from LookPath
+		kill.Env = env
+		_ = kill.Run()
+	})
 	run := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command(tmuxBin, append([]string{"-L", "crewrepo"}, args...)...) //nolint:gosec // tmux path from LookPath, args are test literals
-		cmd.Env = append(os.Environ(), "TMUX_TMPDIR="+dir, "TMUX=")
+		cmd := exec.Command(tmuxBin, append([]string{"-f", "/dev/null", "-L", "crewrepo"}, args...)...) //nolint:gosec // tmux path from LookPath, args are test literals
+		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("tmux %v: %v\n%s", args, err, out)
@@ -170,7 +188,6 @@ func TestCrewRepoTagEvaluates(t *testing.T) {
 		t.Fatal(err)
 	}
 	run("new-session", "-d", "-s", "probe", "-c", sessDir)
-	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", "crewrepo", "kill-server").Run() }) //nolint:gosec // see run
 	eval := func() string { return run("display-message", "-p", "-t", "probe:", crewRepoTag) }
 
 	if got := eval(); got != "" {

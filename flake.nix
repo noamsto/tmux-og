@@ -2676,7 +2676,13 @@
             picker-go-tests = pickerChecked;
 
             picker-go-lint = goLintGate {} pickerChecked;
-            generator-go-lint = goLintGate {race = true;} (pkgs.callPackage ./generator {});
+            # tmux: TestCrewRepoTagEvaluates (#1165) evaluates the tab format on a
+            # scratch server. Scoped to this check, on the shipped binary, like
+            # pickerChecked; OG_REQUIRE_TMUX makes a dropped dependency fail.
+            generator-go-lint = goLintGate {race = true;} ((pkgs.callPackage ./generator {}).overrideAttrs (old: {
+              nativeBuildInputs = (old.nativeBuildInputs or []) ++ [(mkTmux pkgs)];
+              OG_REQUIRE_TMUX = "1";
+            }));
 
             # prefix + Z (#970): the real fold script and reflow on a private,
             # config-less server, like reflow-fanout-tests.
