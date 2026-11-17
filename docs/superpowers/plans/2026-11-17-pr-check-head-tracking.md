@@ -138,3 +138,28 @@
 - Red/green tests → Steps 1, 3, 4.
 - lint / flake check --no-build / flake check / build → Step 6.
 - CI run URL on x86_64-linux and aarch64-darwin → after push.
+
+## Post-cap amendment (third critic pass, unresolved at the revision cap)
+
+The third pass returned `revise` with one blocking finding: an open PR outside
+the top-100 batch has a non-empty identity head (via the `--head ... --state all`
+fallback) and a permanently empty checks head, so Rule 2 would refetch every
+identity pass and pin the badge to pending. Resolution, adopted without a further
+critic pass and carried to the PR body under `## Escalated`:
+
+- One predicate, `headStale(cache)`, used both to force the refetch and to show
+  `pending`. The *empty*-checks-head case is stale only while the checks cache
+  predates our observation of the head: checks file absent, or its mtime is
+  strictly older than the `.head-seen` stamp's mtime (the stamp is rewritten only
+  when the head changes). The *differing non-empty* case is always stale. After
+  one refetch that still lacks the PR, the checks file is newer than the stamp, so the rule stops firing: at most one
+  refetch per head, and the PR keeps today's no-rollup rendering.
+- Tests: pass test with identity batch missing the branch, `--head <br> --state all`
+  returning an OPEN PR with `headRefOid`, a checks batch without it, two
+  consecutive full passes with a fresh `.last-check-tick` (`p.setTick`): assert no
+  checks-batch call on the second pass.
+- Test-setup notes from the critic: Step 1 (a)/(a3) set `.last-check-tick` to now
+  so `refreshChecks` is false (else the old tree also refetches and (a) cannot go
+  red); keep the old query-string prefixes in Step 1 and change them in Step 3;
+  (a3) is made observable by a failing checks batch (old tree: `none`, success
+  glyph); the batch-failure fallback uses `prFields`, so it does carry a head.
