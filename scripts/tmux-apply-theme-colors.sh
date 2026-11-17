@@ -91,21 +91,29 @@ DETAIL="#{?@crew_detail, · #{@crew_detail},}"
 LEAD_STATE="#{?${STATE},${STATE_GLYPH} ${STATE}${WATCHDOG}${DETAIL},}"
 LEAD_STATE_PLAIN="#{?${STATE},${STATE_GLYPH_PLAIN} ${STATE}${WATCHDOG}${DETAIL},}"
 
+# Remote host of a mirror window (placed or dedicated). Gated on @bridge_win:
+# a dedicated mirror's session-scoped @bridge_host is also visible from the
+# session's local windows. HOST_SEG colours it with the per-host colour reflow
+# stamps for placed mirrors; HOST_PLAIN is the same text for width measuring.
+HOST_PLAIN='#{?@bridge_win,#{?@bridge_host,⇄ #{@bridge_host},},}'
+HOST_SEG="#{?${HOST_PLAIN},#{?@window_host_color,#[fg=#{E:@window_host_color}]${HOST_PLAIN}#[default],${HOST_PLAIN}},}"
+HOST_W="#{?${HOST_PLAIN},#{e|+|:#{w:${HOST_PLAIN}},3},0}"
+
 # W: how many cells the title gets. The drawn label area is pane_width-2; 7
 # more cells go to the "━━ "/" ━━" wrapping and the "…" tmux appends beyond
-# the truncation limit, so pane_width-9 — minus the codename/state segments
-# (each + 3 for their " · " separator) when present. Floored at 1 so
+# the truncation limit, so pane_width-9 — minus the host/codename/state
+# segments (each + 3 for their " · " separator) when present. Floored at 1 so
 # #{=/N/…:} never sees N=0 (no clip) or negative (keeps the tail) once the
 # other segments alone fill the border.
 CN_W="#{?${CODENAME},#{e|+|:#{w:${CODENAME}},3},0}"
 ST_W="#{?${LEAD_STATE_PLAIN},#{e|+|:#{w:${LEAD_STATE_PLAIN}},3},0}"
-W_RAW="#{e|-|:#{e|-|:#{e|-|:#{pane_width},9},${CN_W}},${ST_W}}"
+W_RAW="#{e|-|:#{e|-|:#{e|-|:#{e|-|:#{pane_width},9},${HOST_W}},${CN_W}},${ST_W}}"
 W="#{?#{e|<|:${W_RAW},1},1,${W_RAW}}"
 
 # Segments join with " · ", each present only when non-empty.
-NAME_SEG="#{?${CODENAME},#[bold]${CODENAME}#[nobold],}"
-STATE_SEG="#{?${LEAD_STATE},#{?${CODENAME}, · ,}${LEAD_STATE},}"
-TITLE_SEG="#{?${TITLE_SHOWN},#{?#{||:${CODENAME},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_SHOWN}},}"
+NAME_SEG="${HOST_SEG}#{?${CODENAME},#{?${HOST_PLAIN}, · ,}#[bold]${CODENAME}#[nobold],}"
+STATE_SEG="#{?${LEAD_STATE},#{?#{||:${HOST_PLAIN},${CODENAME}}, · ,}${LEAD_STATE},}"
+TITLE_SEG="#{?${TITLE_SHOWN},#{?#{||:#{||:${HOST_PLAIN},${CODENAME}},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_SHOWN}},}"
 
 FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ #{@pane_label} ━━}"
 AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ aeye ━━}"
@@ -116,7 +124,7 @@ ANCHOR_BRANCH="━━ ${NAME_SEG}${STATE_SEG}${TITLE_SEG} ━━"
 PLAIN_BRANCH="#{?pane_active,#{?#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,},#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}"
 
 ROLE_COND="#{&&:#{!=:${ROLE_NAME},},#{!=:${ROLE_NAME},lead}}"
-ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_SHOWN},},#{||:#{!=:${CODENAME},},#{&&:#{!=:${TITLE_RAW},},#{!=:${LEAD_STATE},}}}}}"
+ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_SHOWN},},#{||:#{!=:${HOST_PLAIN},},#{||:#{!=:${CODENAME},},#{&&:#{!=:${TITLE_RAW},},#{!=:${LEAD_STATE},}}}}}}"
 
 tmux setw -g pane-border-format \
 	"#{?@pane_label,${FLOAT_BRANCH},#{?${AEYE},${AEYE_BRANCH},#{?${ROLE_COND},${ROLE_BRANCH},#{?${ANCHOR_COND},${ANCHOR_BRANCH},${PLAIN_BRANCH}}}}}"

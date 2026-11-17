@@ -879,8 +879,9 @@ reflow_manual_window() {
 	cd_pane "$TDIR/d"
 	tmux set -wq -t S:0 @window_manual_name 1
 	tmux rename-window -t S:0 "$name"
-	tmux set-window-option -t S:0 automatic-rename "$autorename"
+	# Before automatic-rename goes on: once it does, tmux may re-derive the name.
 	[ "$(tmux display -t S:0 -p '#{window_name}')" = "$name" ]
+	tmux set-window-option -t S:0 automatic-rename "$autorename"
 	bash "$REFLOW" S 200 --force >/dev/null 2>&1
 }
 

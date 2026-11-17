@@ -630,3 +630,55 @@ line1_has() {
 	[ "$status" -ne 0 ]
 	[[ $output == *"modal"* ]]
 }
+
+# --- remote host on the anchor border (#1168) ---
+
+@test "placed mirror: the anchor border leads with the remote host, uncoloured without @window_host_color" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_host halo
+	tmux setw -t "$WIN" @bridge_crew_name alpha
+	[ "$(render "$WIN")" = "━━ ⇄ halo · alpha ━━" ]
+	raw="$(tmux -u display-message -p -t "$WIN" -F "$FMT")"
+	[[ $raw != *'#[fg='*'⇄'* ]]
+}
+
+@test "placed mirror: @window_host_color colours the host, one attribute per #[]" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_host halo
+	tmux setw -t "$WIN" @window_host_color '#89b4fa'
+	raw="$(tmux -u display-message -p -t "$WIN" -F "$FMT")"
+	[[ $raw == '━━ #[fg=#89b4fa]⇄ halo#[default] ━━' ]]
+	[ "$(render "$WIN")" = "━━ ⇄ halo ━━" ]
+}
+
+@test "dedicated mirror: a session-scoped @bridge_host shows on the mirror window only" {
+	tmux set -t S @bridge_host halo
+	tmux setw -t "$WIN" @bridge_win 1
+	title
+	[ "$(render "$WIN")" = "━━ ⇄ halo · #858 feat: full title ━━" ]
+	tmux setw -t "$WIN" -u @bridge_win
+	[ "$(render "$WIN")" = "━━ #858 feat: full title ━━" ]
+}
+
+@test "local window: no host segment, border unchanged" {
+	title
+	[ "$(render "$WIN")" = "━━ #858 feat: full title ━━" ]
+}
+
+@test "a long remote host is charged against the title width" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_host averyveryverylonghostname
+	title
+	tmux setw -t "$WIN" @window_label_rest_long 'a rather long title that must be clipped hard'
+	out="$(render "$WIN")"
+	[[ $out == "━━ ⇄ averyveryverylonghostname · "* ]]
+	[ "$(printf %s "$out" | wc -m)" -le 80 ]
+}
+
+@test "a #(...) carried in the remote host renders as text, never runs" {
+	tmux setw -t "$WIN" @bridge_win 1
+	tmux setw -t "$WIN" @bridge_host "#(touch $OG_TMUX_DIR/ran-host)"
+	out="$(render "$WIN")"
+	[[ $out == *"#(touch $OG_TMUX_DIR/ran-host)"* ]]
+	[ ! -e "$OG_TMUX_DIR/ran-host" ]
+}

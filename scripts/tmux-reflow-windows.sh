@@ -684,12 +684,15 @@ for idx in "${indices[@]}"; do
 done
 flush_window_chunk
 
-# Session marker: "<icon> h1 · h2" in each host's colour, drawn on line 0
-# after the session name and on the folded line. Direct argv, not the `source -`
+# Session marker: "⇄ h1 · h2" in each host's colour, drawn on line 0 after the
+# status indicators and at the end of the folded line. The lead-in is a literal
+# dim "⇄" ("contains mirrors from"), not @icon_remote: that icon is the per-tab
+# "this window runs there" badge, and beside the session it read as "the session
+# runs there". Direct argv, not the `source -`
 # batch below: the value carries '#[' and '#{' that a re-parse would eat. Unset
 # when no placed window remains so a departed host's marker never lingers.
 if ((${#marker_hosts[@]})); then
-	marker="#[fg=#{@thm_overlay_1}]${ICON_REMOTE}"
+	marker="#[fg=#{@thm_overlay_1}]⇄"
 	marker_fallback='#{@thm_subtext_0}'
 	sep=" "
 	for h in "${marker_hosts[@]}"; do
@@ -826,7 +829,7 @@ ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${CREW}${L
 # agent test is status-format[1]'s own (a mirror window always counts).
 FOLD_LABEL="#{window_index}: #{=/40/…:#{@window_label_id}#{@window_label_rest_long}}"
 FOLD_AGENT="#{?#{?#{@bridge_win},1,#{@window_has_agent}}, #[fg=#{@thm_subtext_0}]#{window_index} #{@window_icon_display},}"
-FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name}#{?#{@session_host_marker}, #{E:@session_host_marker},} #[fg=#{@thm_subtext_0},nobold]│ #[fg=#{@thm_mauve},bold]#{W:#{?window_active,${FOLD_LABEL},}}#[nobold]#{W:#{?window_active,,${FOLD_AGENT}}}"
+FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[fg=#{@thm_mauve},bold]#{W:#{?window_active,${FOLD_LABEL},}}#[nobold]#{W:#{?window_active,,${FOLD_AGENT}}}#{?#{@session_host_marker},  #{E:@session_host_marker},}"
 if [[ $FOLDED == 1 ]]; then
 	tmux set -t "$SESSION" status-format[0] "$FOLD_FMT"
 elif ((! needs_multiline && current_line == 0)); then

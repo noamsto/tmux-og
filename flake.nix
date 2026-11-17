@@ -919,6 +919,7 @@
                 CONF = tmuxConfig.tmuxConf;
                 CREW_DASH = "${tmuxConfig.script.tmux-crew-dash}/bin/tmux-crew-dash";
                 FLOAT_GROUP = "${tmuxConfig.script.tmux-float-group}/bin/tmux-float-group";
+                BRIDGE_CTL = tmuxConfig.picker-bridge-ctl-bin;
               } ''
                 # The crew-dash launcher reaches tmux-float-group by a substituted
                 # store path (a pane shell may not carry the wrapper's PATH). Its
@@ -926,6 +927,9 @@
                 # placeholder-name drift would build clean and test green.
                 ! grep -qF '@float_group@' "$CREW_DASH"
                 grep -qF "$FLOAT_GROUP" "$CREW_DASH"
+                # Same for the bridge ctl a mirror window's press runs (OG_BRIDGE_CTL_BIN).
+                ! grep -qF '@bridge_ctl@' "$CREW_DASH"
+                grep -qF "$BRIDGE_CTL" "$CREW_DASH"
 
                 # Join backslash-continued lines: the enrich card's bind spans
                 # several, with its stamp on the last one.
@@ -1151,6 +1155,54 @@
                   echo "status-format[1] has no @bridge_placed-gated per-host-coloured host badge — see docs/agents/status-bar.md" >&2
                   exit 1
                 fi
+                touch $out
+              '';
+
+            # set-titles-string on a scratch server loaded with the built CONF:
+            # a mirror window's title carries the remote host and @bridge_proc
+            # (#1168), a local window's is unchanged.
+            titles-conf-assertions =
+              pkgs.runCommand "titles-conf-assertions" {
+                nativeBuildInputs = [pkgs.coreutils (mkTmux pkgs)];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                export TMUX_TMPDIR="$PWD/tmux"
+                export CLAUDE_STATUS_DIR="$PWD/status"
+                export XDG_DATA_HOME="$PWD/data"
+                export HOME="$PWD/home"
+                mkdir -p "$TMUX_TMPDIR" "$CLAUDE_STATUS_DIR" "$XDG_DATA_HOME" "$HOME"
+                unset TMUX
+                t() { tmux -L titles -u "$@"; }
+                t -f /dev/null new-session -d -s S -x 80 -y 24
+                t source-file "$CONF"
+                title() { t display-message -p -t "$1" '#{E:set-titles-string}'; }
+                check() {
+                  if [ "$2" != "$3" ]; then
+                    echo "$1: got '$2', want '$3'" >&2
+                    t kill-server
+                    exit 1
+                  fi
+                }
+
+                local_win=$(t display-message -p -t S '#{window_id}')
+                check local "$(title "$local_win")" "S / $(t display-message -p -t "$local_win" '#{pane_current_command}')"
+
+                placed=$(t new-window -d -P -F '#{window_id}' -t S)
+                t setw -t "$placed" @bridge_win 1
+                t setw -t "$placed" @bridge_host halo
+                t set -p -t "$placed" @bridge_proc claude
+                check placed "$(title "$placed")" "S / ⇄ halo · claude"
+
+                t set -t S @bridge_host halo
+                dedicated=$(t new-window -d -P -F '#{window_id}' -t S)
+                t setw -t "$dedicated" @bridge_win 1
+                t set -p -t "$dedicated" @bridge_proc claude
+                check dedicated "$(title "$dedicated")" "S / ⇄ halo · claude"
+                bare=$(t new-window -d -P -F '#{window_id}' -t S)
+                t setw -t "$bare" @bridge_win 1
+                check "dedicated without @bridge_proc" "$(title "$bare")" "S / ⇄ halo · $(t display-message -p -t "$bare" '#{pane_current_command}')"
+                check "session host leaks to a local window" "$(title "$local_win")" "S / $(t display-message -p -t "$local_win" '#{pane_current_command}')"
+                t kill-server
                 touch $out
               '';
 
@@ -2672,7 +2724,13 @@
             picker-go-tests = pickerChecked;
 
             picker-go-lint = goLintGate {} pickerChecked;
-            generator-go-lint = goLintGate {race = true;} (pkgs.callPackage ./generator {});
+            # tmux: TestCrewRepoTagEvaluates (#1165) evaluates the tab format on a
+            # scratch server. Scoped to this check, on the shipped binary, like
+            # pickerChecked; OG_REQUIRE_TMUX makes a dropped dependency fail.
+            generator-go-lint = goLintGate {race = true;} ((pkgs.callPackage ./generator {}).overrideAttrs (old: {
+              nativeBuildInputs = (old.nativeBuildInputs or []) ++ [(mkTmux pkgs)];
+              OG_REQUIRE_TMUX = "1";
+            }));
 
             # prefix + Z (#970): the real fold script and reflow on a private,
             # config-less server, like reflow-fanout-tests.
