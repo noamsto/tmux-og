@@ -1233,6 +1233,7 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 		{"lazygit", remoteFloatFull},
 		{"btop", remoteFloatFull},
 		{"k9s", remoteFloatFull},
+		{"crew-dash", remoteFloatFull},
 	}
 	for _, tc := range tests {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -1295,6 +1296,16 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 // the condition's context but not the branch's, so this is what makes a missing
 // -t on `set -wF` or on `run-shell` fail rather than pass by accident.
 func TestToolVerbDoesNotStackFloats(t *testing.T) {
+	for _, tc := range []struct{ tool, bin string }{
+		{"prdash", "prdash"},
+		{"crew-dash", "crew"},
+	} {
+		t.Run(tc.tool, func(t *testing.T) { toolVerbDoesNotStackFloats(t, tc.tool, tc.bin) })
+	}
+}
+
+func toolVerbDoesNotStackFloats(t *testing.T, tool, bin string) {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
@@ -1311,7 +1322,7 @@ func TestToolVerbDoesNotStackFloats(t *testing.T) {
 	// The stub has to outlive the press: the bind pins remain-on-exit off, so a
 	// command that exits closes its own pane and the assertion would read zero
 	// floats on the fixed tree as well as on the broken one.
-	writeStub(t, filepath.Join(stubDir, "prdash"), "#!/bin/sh\nsleep 600\n")
+	writeStub(t, filepath.Join(stubDir, bin), "#!/bin/sh\nsleep 600\n")
 
 	tmux := startIsolatedTmux(t, "PATH="+stubDir+":"+os.Getenv("PATH"))
 
@@ -1327,7 +1338,7 @@ func TestToolVerbDoesNotStackFloats(t *testing.T) {
 		t.Fatalf("new-window: %v\n%s", err, out)
 	}
 
-	cmds, err := v.build(base, "@0", "w", []string{"prdash"})
+	cmds, err := v.build(base, "@0", "w", []string{tool})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1383,8 +1394,8 @@ func TestToolVerbDoesNotStackFloats(t *testing.T) {
 	}
 	// The reuse has to have been keyed on @pane_label: the float the window now
 	// holds is the one the create branch stamped.
-	if second[0][1] != "prdash" {
-		t.Fatalf("reused float carries label %q, want prdash", second[0][1])
+	if second[0][1] != tool {
+		t.Fatalf("reused float carries label %q, want %s", second[0][1], tool)
 	}
 	if second[0][0] != first[0][0] || second[0][2] != "1" {
 		t.Fatalf("second press did not focus the existing float: %v (first press was %v)", second, first)
@@ -1581,6 +1592,42 @@ func TestToolVerbRejectsUnlistedTool(t *testing.T) {
 		if _, err := v.build("%5", "@2", "sess", []string{tool}); err != nil {
 			t.Fatalf("tool %q rejected: %v", tool, err)
 		}
+	}
+}
+
+func TestToolsHaveBinAndExec(t *testing.T) {
+	for tool := range remoteTools {
+		script := toolResolveScript(tool)
+		bin, run := tool, tool
+		if b, ok := remoteToolBin[tool]; ok {
+			bin = b
+		}
+		if e, ok := remoteToolExec[tool]; ok {
+			run = e
+		}
+		if bin == "" || run == "" {
+			t.Fatalf("tool %q has an empty bin or exec", tool)
+		}
+		for _, want := range []string{"command -v " + bin + " ", "exec " + run + ";", "tmux-og: " + bin + " is not on PATH on this host"} {
+			if !strings.Contains(script, want) {
+				t.Errorf("tool %q script missing %q: %q", tool, want, script)
+			}
+		}
+	}
+}
+
+func TestCrewDashScriptReportsMissingCrew(t *testing.T) {
+	empty := t.TempDir()
+	// sleep is the script's own fallback tail; a stub keeps the test instant.
+	writeStub(t, filepath.Join(empty, "sleep"), "#!/bin/sh\nexit 0\n")
+	cmd := exec.Command("/bin/sh", "-c", toolResolveScript("crew-dash"))
+	cmd.Env = []string{"PATH=" + empty}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, out)
+	}
+	if got, want := strings.TrimSpace(string(out)), "tmux-og: crew is not on PATH on this host"; got != want {
+		t.Fatalf("output %q, want %q", got, want)
 	}
 }
 

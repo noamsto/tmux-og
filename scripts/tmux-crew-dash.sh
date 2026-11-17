@@ -14,6 +14,13 @@
 # store path into FLOAT_GROUP (a pane shell's PATH may not carry the scripts);
 # OG_FLOAT_GROUP_BIN is the test seam, and the raw placeholder is not executable.
 #
+# In a mirror window (@bridge_win with @bridge_pane and @bridge_sock) the dash runs
+# on the REMOTE host: the bridge ctl `tool` verb opens it there and the mirror
+# reconciles it. Nothing is created locally, and --detached cannot suppress the
+# verb's focus. The build substitutes the ctl's store path into @bridge_ctl@;
+# OG_BRIDGE_CTL_BIN is the test seam, and the raw placeholder is not executable.
+# A @bridge_win window lacking either option keeps the local path below.
+#
 # The new-pane flags and the @float_geom stamp below are separate literals nothing
 # compares: change both together.
 set -uo pipefail
@@ -22,6 +29,7 @@ STASH=scratch-og-float-stash
 LABEL=crew-dash
 GROUP=crew
 FLOAT_GROUP="${OG_FLOAT_GROUP_BIN:-@float_group@}"
+BRIDGE_CTL="${OG_BRIDGE_CTL_BIN:-@bridge_ctl@}"
 
 detached=0
 pane=""
@@ -39,6 +47,25 @@ notify() { tmux display-message "tmux-crew-dash: $*"; }
 # The path comes last so a '|' inside it stays in the final field.
 IFS='|' read -r win bridge_win cwd <<<"$(tmux display-message -p -t "$pane" '#{window_id}|#{@bridge_win}|#{pane_current_path}' 2>/dev/null)"
 [[ $win == @* ]] || exit 0
+
+# Read apart from the line above: the sock and dir values can hold a '|'.
+if [[ -n $bridge_win ]]; then
+	bridge_pane="$(tmux display-message -p -t "$pane" '#{@bridge_pane}' 2>/dev/null)"
+	bridge_sock="$(tmux display-message -p -t "$pane" '#{@bridge_sock}' 2>/dev/null)"
+	if [[ -n $bridge_pane && -n $bridge_sock ]]; then
+		bridge_dir="$(tmux display-message -p -t "$pane" '#{@bridge_dir}' 2>/dev/null)"
+		if [[ $BRIDGE_CTL == @* ]]; then
+			notify "bridge ctl is not installed"
+			exit 0
+		fi
+		# The reason is kept: a daemon older than this build answers `unknown tool`,
+		# and reopening the bridge is the fix. '#' is doubled for display-message.
+		if ! err="$("$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" crew-dash "$bridge_dir" 2>&1 >/dev/null)"; then
+			notify "could not open crew dash on the remote host: ${err//#/##}"
+		fi
+		exit 0
+	fi
+fi
 
 focus() { ((detached)) || tmux select-pane -t "$1"; }
 
