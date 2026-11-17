@@ -143,9 +143,10 @@ func testLocalDialArgv(outage, src, session string) []string {
 // the path at SUBMIT, possibly minutes later), so delete-on-inject is wrong
 // and a janitor sweep needs no daemon state.
 //
-// The path is the first line of stdin, then the raw image bytes — never argv,
-// which any other local account can read in ps. The case guard re-checks the
-// shape the daemon already validated: this script is the last line before a
+// The first line of stdin is "<path> <byte count>", then the raw image bytes —
+// never argv, which any other local account can read in ps. The case guard
+// re-checks the shape the daemon already validated, including that the path
+// nests no deeper than <dir>/img.*: this script is the last line before a
 // create and a write as the victim's own uid.
 //
 // The directory is made with a plain mkdir (no -p) under a 128-bit random name
@@ -154,6 +155,14 @@ func testLocalDialArgv(outage, src, session string) []string {
 // is ever written through, and the name is unguessable, so there is nothing to
 // pre-create in the first place. The 0700 mode comes from the umask, which
 // also gives the file 0600; no other local account can write into it at all.
+//
+// The bytes land in .part and are renamed onto the path only when their length
+// equals the declared count: a killed ssh (timeout, cancel) makes cat see EOF
+// and exit 0, so without the count a truncated image would sit at a path the
+// user's prompt already holds. The directory is deliberately kept on failure:
+// the victim owns the name until the janitor sweeps it, so another account
+// cannot re-create it and plant a file behind a path a failed paste left in
+// the prompt (a retry of the same path is refused by mkdir for the same reason).
 //
 // The sweep runs after the path is printed and detached with all three fds
 // redirected: the ssh channel closes when the last holder of its stdout/stderr
@@ -164,11 +173,12 @@ func testLocalDialArgv(outage, src, session string) []string {
 // never parses the script because shellQuote makes it one argv element. That
 // is also why it holds no single quote and no backslash.
 const remoteStoreScript = `umask 077
-IFS= read -r p || exit 1
-case $p in *..*) exit 1;; /tmp/og-paste-*/img.*) ;; *) exit 1;; esac
+IFS=" " read -r p n || exit 1
+case $n in ""|*[!0-9]*) exit 1;; esac
+case $p in *..*) exit 1;; /tmp/og-paste-*/*/*) exit 1;; /tmp/og-paste-*/img.*) ;; *) exit 1;; esac
 d=${p%/*}
 mkdir "$d" || exit 1
-cat > "$p" || { rm -rf "$d"; exit 1; }
+cat > "$d/.part" && [ "$(wc -c < "$d/.part")" -eq "$n" ] && mv "$d/.part" "$p" || { rm -f "$d/.part"; exit 1; }
 printf "%s" "$p"
 ( find /tmp -maxdepth 1 -name "og-paste-*" -type d -mmin +60 -exec rm -rf {} + ) </dev/null >/dev/null 2>&1 &`
 
@@ -189,7 +199,7 @@ func validPlacedHost(s string) bool { return placedHostRe.MatchString(s) }
 // pasteUploadArgs builds the ssh argv for one image upload, riding the
 // control connection's ControlMaster exactly like the graphics fetcher: no
 // second handshake, and image bytes never share the control stream with live
-// terminal output. The destination path rides stdin, not argv (see
+// terminal output. The destination path and byte count ride stdin, not argv (see
 // remoteStoreScript). Extracted so the argv is assertable.
 func pasteUploadArgs(sshCmd, ctlSock, host string) []string {
 	return []string{sshCmd, "-S", ctlSock, "-T", host, "--",
@@ -439,7 +449,7 @@ func main() {
 		pasteUpload = func(ctx context.Context, path string, data []byte) error {
 			args := pasteUploadArgs(*sshCmd, tr.currentPath(), *host)
 			cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
-			cmd.Stdin = io.MultiReader(strings.NewReader(path+"\n"), bytes.NewReader(data))
+			cmd.Stdin = io.MultiReader(strings.NewReader(fmt.Sprintf("%s %d\n", path, len(data))), bytes.NewReader(data))
 			out, err := cmd.Output()
 			if err != nil {
 				return fmt.Errorf("paste store: %w", err)

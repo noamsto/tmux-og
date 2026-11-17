@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -331,6 +332,9 @@ func TestPasteUploadArgs(t *testing.T) {
 			t.Errorf("store script contains %q; shellQuote only wraps, and fish treats it specially", bad)
 		}
 	}
+	if !strings.Contains(remoteStoreScript, "wc -c") || !strings.Contains(remoteStoreScript, ".part") {
+		t.Error("store script must stage into .part and check the declared length before the rename")
+	}
 	if !strings.Contains(remoteStoreScript, "mkdir") || strings.Contains(remoteStoreScript, "mktemp") {
 		t.Error("store script must create its directory with mkdir, not mktemp")
 	}
@@ -344,14 +348,38 @@ func TestPasteUploadArgs(t *testing.T) {
 	}
 }
 
-// runStoreScript runs script (with /tmp rewritten to root) under sh with
-// stdin = path+"\n"+data, returning stdout and the run's error.
-func runStoreScript(t *testing.T, script, path string, data []byte) (string, error) {
+// runStoreScriptRaw runs script (already rewritten to a temp root) under sh
+// with the given stdin, returning stdout and the run's error.
+func runStoreScriptRaw(t *testing.T, script string, stdin io.Reader) (string, error) {
 	t.Helper()
 	cmd := exec.Command("sh", "-c", script)
-	cmd.Stdin = io.MultiReader(strings.NewReader(path+"\n"), bytes.NewReader(data))
+	cmd.Stdin = stdin
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+// runStoreScript runs script with the header the daemon sends: "<path> <len>\n"
+// then data.
+func runStoreScript(t *testing.T, script, path string, data []byte) (string, error) {
+	t.Helper()
+	header := fmt.Sprintf("%s %d\n", path, len(data))
+	return runStoreScriptRaw(t, script, io.MultiReader(strings.NewReader(header), bytes.NewReader(data)))
+}
+
+func permOf(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return fi.Mode().Perm()
+}
+
+func requireAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err == nil {
+		t.Errorf("%s exists, want it absent", path)
+	}
 }
 
 func storeScriptIn(root string) string {
@@ -380,12 +408,13 @@ func TestStoreScript(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("file = %q, %v; want the uploaded bytes", got, err)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
-		t.Errorf("file mode = %v, want 0600", fi.Mode().Perm())
+	if perm := permOf(t, path); perm != 0o600 {
+		t.Errorf("file mode = %v, want 0600", perm)
 	}
-	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
-		t.Errorf("dir mode = %v, want 0700", fi.Mode().Perm())
+	if perm := permOf(t, dir); perm != 0o700 {
+		t.Errorf("dir mode = %v, want 0700", perm)
 	}
+	requireAbsent(t, filepath.Join(dir, ".part"))
 
 	t.Run("existing dir is refused", func(t *testing.T) {
 		if _, err := runStoreScript(t, script, path, []byte("other")); err == nil {
@@ -414,11 +443,17 @@ func TestStoreScript(t *testing.T) {
 		"outside pattern": filepath.Join(root, "evil", "img.png"),
 		"dot-dot":         root + "/og-paste-x/../og-paste-y/img.png", // Join would clean the ".." away
 		"wrong basename":  filepath.Join(root, "og-paste-zz", "other.png"),
+		"nested path":     filepath.Join(root, "og-paste-abcd1234nest", "x", "img.png"),
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
+			// A nested path's parent exists, so only the shape guard can refuse it.
+			if err := os.MkdirAll(filepath.Join(root, "og-paste-abcd1234nest"), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := runStoreScript(t, script, bad, data); err == nil {
 				t.Errorf("path %q accepted", bad)
 			}
+			requireAbsent(t, bad)
 			if _, err := os.Stat(filepath.Join(root, "evil")); err == nil {
 				t.Error("evil dir created")
 			}
@@ -427,6 +462,67 @@ func TestStoreScript(t *testing.T) {
 			}
 		})
 	}
+
+	// A killed ssh makes the remote cat see EOF and exit 0: the declared length
+	// is the only thing that tells a truncated upload from a whole one.
+	for name, tc := range map[string]struct {
+		dir     string
+		declare int
+		send    []byte
+	}{
+		"fewer bytes than declared": {"og-paste-short123", len(data) + 10, data},
+		"more bytes than declared":  {"og-paste-long1234", len(data) - 3, data},
+		"empty body, nonzero count": {"og-paste-empty123", 5, nil},
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			d := filepath.Join(root, tc.dir)
+			p := filepath.Join(d, "img.png")
+			header := fmt.Sprintf("%s %d\n", p, tc.declare)
+			out, err := runStoreScriptRaw(t, script, io.MultiReader(strings.NewReader(header), bytes.NewReader(tc.send)))
+			if err == nil {
+				t.Error("length mismatch accepted")
+			}
+			if out != "" {
+				t.Errorf("stdout = %q, want no path echoed", out)
+			}
+			requireAbsent(t, p)
+			requireAbsent(t, filepath.Join(d, ".part"))
+			// The name stays reserved until the janitor sweeps it.
+			if perm := permOf(t, d); perm != 0o700 {
+				t.Errorf("dir mode = %v, want the 0700 placeholder kept", perm)
+			}
+			if _, err := runStoreScript(t, script, p, data); err == nil {
+				t.Error("retry of the same path after a failed write succeeded")
+			}
+			requireAbsent(t, p)
+		})
+	}
+
+	for name, length := range map[string]string{
+		"empty length":       "",
+		"non-numeric length": "abc",
+		"negative length":    "-1",
+		"length with suffix": "5x",
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			d := filepath.Join(root, "og-paste-badlen12")
+			p := filepath.Join(d, "img.png")
+			header := p + " " + length + "\n"
+			if _, err := runStoreScriptRaw(t, script, io.MultiReader(strings.NewReader(header), bytes.NewReader(data))); err == nil {
+				t.Errorf("header %q accepted", header)
+			}
+			requireAbsent(t, d)
+		})
+	}
+
+	t.Run("header without a length is refused", func(t *testing.T) {
+		d := filepath.Join(root, "og-paste-nolen123")
+		p := filepath.Join(d, "img.png")
+		if _, err := runStoreScriptRaw(t, script, strings.NewReader(p+"\n")); err == nil {
+			t.Error("header with no length accepted")
+		}
+		requireAbsent(t, d)
+	})
 
 	t.Run("sweeps aged dirs, keeps fresh ones", func(t *testing.T) {
 		old := filepath.Join(root, "og-paste-old")

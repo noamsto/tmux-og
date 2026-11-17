@@ -393,17 +393,25 @@ carries the measured evidence.
 - **Only the TARGETS probe runs on the input pump.** It has to — it decides
   forward-vs-swallow — and it is bounded (`clipTimeout`, one fork per tool).
   Everything after a swallow (extracting the bytes, capping at 8 MiB,
-  uploading over the daemon's ControlMaster with a 5s timeout, injecting the
-  path) runs async in a goroutine, so a slow transfer or a wedged clipboard
-  owner never freezes the pane.
+  uploading over the daemon's ControlMaster with a 5s timeout) runs async in a
+  goroutine, so a slow transfer or a wedged clipboard
+  owner never freezes the pane. The exceptions are the path send and a failure's
+  erase: they stay on the pump (`settle`) so they keep their order with typed
+  input, each one bounded `send-keys`. never freezes the pane.
 - **The remote half is a path the daemon chooses.** The paste goroutine picks
   `/tmp/og-paste-<32 hex from crypto/rand>/img.<ext>` itself (`newPastePath`;
   `pastePathRe` still validates it locally) and the image rides the daemon's
-  ControlMaster as ONE ssh exec whose stdin is that path on its first line, then
-  the bytes. The remote script re-checks the path, `mkdir`s its directory
-  (no `-p`: atomic, fails on an existing dir or symlink, so nothing can be
-  pre-created; 0700 by umask), writes the file and prints the path. The path
-  is on stdin, not argv, so other local accounts cannot read it from `ps`.
+  ControlMaster as ONE ssh exec whose stdin is `<path> <byte count>` on its first
+  line, then the bytes. The remote script re-checks the path (no `..`, no nested
+  directory), `mkdir`s its directory (no `-p`: atomic, fails on an existing dir
+  or symlink, so nothing can be pre-created; 0700 by umask), writes the bytes
+  to `.part` and `mv`s them to the path only when the byte count matches (a
+  killed ssh makes `cat` see a clean EOF, which would otherwise leave a
+  truncated image at the path already in the prompt), then prints the path. A
+  failed write removes the partial file but keeps the directory, so its name
+  stays reserved until the janitor sweeps it and no other account can
+  re-create it behind a path a failed paste left in the prompt. The path is on
+  stdin, not argv, so other local accounts cannot read it from `ps`.
   The daemon hex-`send-keys` the path plus a trailing space into the pane.
   Claude Code resolves an existing image path in the prompt into an attachment
   at *submit* (verified live), so the file may land after the path is typed;
@@ -416,7 +424,9 @@ carries the measured evidence.
 - **The path goes in as soon as the bytes are read; only submission waits for
   the upload (#1158).** The paste goroutine never holds an input lock, and the
   hold has two phases, both on the pane's pump goroutine:
-  - *Reading* (swallow until the clipboard bytes are extracted, a few ms): plain
+  - *Reading* (swallow until both the clipboard extract and the client lookup
+    have returned — run side by side, each bounded by `clipTimeout`; a few ms in
+    practice): plain
     text (printable ASCII and UTF-8) is forwarded at once, and the first byte
     that is not plain text and everything after it is held. This keeps the
     insertion point where the user pressed `ctrl+v`.
@@ -438,8 +448,8 @@ carries the measured evidence.
   `ab`, `ctrl+v`, Left into `a<path>b`); (b) *no submit before the file exists*
   — every submit-capable or unclassified byte waits for the final result, which
   is posted only after the upload returns; (c) *failure releases everything
-  visibly* — held keys are replayed after the failure message, and the
-  inserted path is erased with `0x7f` × (len+1), synchronously on the pump
+  visibly* — the failure message is shown off the pump (held keys never wait on
+  its tmux fork) and the held keys are replayed at once, and the inserted path is erased with `0x7f` × (len+1), synchronously on the pump
   before the replay so a held Enter cannot overtake it, when nothing passed
   through since insertion; otherwise it stays and the message ends
   `(path left in the prompt)`. A refused path send (bridge reconnecting)
@@ -488,11 +498,11 @@ carries the measured evidence.
   1 MiB. Before: ctrl+v → path in the prompt ~120 / ~114 ms (the path landed
   after the upload); gate 3.7, TARGETS 1.9, client lookup 3.5, extract 1.5 /
   3.9, the single ssh exec ~105 / ~98 of which ~78 is the remote login shell
-  starting (a no-op `sh -c true` exec costs the same), ~20 the inline sweep.
+  starting (a no-op `sh -c true` exec costs about the same), ~20 the inline sweep.
   After: path in the prompt ~10 ms after the swallow; upload ~75 / ~82; full
   gesture to a submittable prompt ~84 / ~92 ms. One ssh exec per paste
   before and after; sequential tool listing and ticker forks contending with
-  the upload were measured and ruled out. The ~75 ms remote login-shell
+  the upload were measured and ruled out. The ~78 ms remote login-shell
   startup is the remaining floor: only a resident remote helper would remove
   it, at the cost of a remote process lifecycle (reconnect, orphan cleanup),
   so it is left as a follow-up. Shipping the bytes through the control-mode
