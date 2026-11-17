@@ -246,11 +246,10 @@ wait_stable_refit() {
 	echo "$cur"
 }
 
-# dump_refit_state <delta> — prints the refit gate's state to stderr when a
-# test is about to fail with @grid_refit_layout still "stale". The darwin CI
-# flake (#1142) left no state behind; this reports whether the pending marker
-# was left set versus a later refit exit. Every command tolerates failure so
-# the dump can never replace the real assertion.
+# dump_refit_state <delta> — prints the refit gate's state to stderr just before
+# a test fails with @grid_refit_layout still "stale". A pending marker still
+# set means the job's snapshot call never ran; unset means it exited later.
+# Every command tolerates failure so the dump never replaces the assertion.
 dump_refit_state() {
 	local pending live
 	pending="$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)"
