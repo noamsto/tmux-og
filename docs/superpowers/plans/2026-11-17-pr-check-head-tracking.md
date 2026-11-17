@@ -18,7 +18,7 @@
 1. **Head change is visible to the identity poll.** `prFields` gains
    `headRefOid,createdAt` (the `--force` suffix drops its own `headRefOid`, which
    would otherwise duplicate). Identity caches now carry the PR's live head.
-2. **Mismatch = stale.** If the identity cache head and the checks cache head are
+2. **Mismatch = stale.** (Open PRs only.) If the identity cache head and the checks cache head are
    both non-empty and differ (open PR): the pass refetches checks now (one
    `refreshRepoChecks`, which the repo group does at most once per pass) and
    `applyCache` reports `pending` (no progress) until the checks cache matches.
@@ -28,24 +28,40 @@
    saw the identity head. Stamp absent: first-seen = the PR's `createdAt`
    (a brand-new PR is in grace, an old PR after a cache wipe is not; no
    `createdAt` → 0 → no grace). Stamp holds another oid: first-seen = now (a push).
+   Applies to open PRs only, and only when the identity head is non-empty (empty
+   head: no grace, no stamp written; covers pre-upgrade caches, the batch-failure
+   fallback and URL-mode JSON). Stamp written with `writeAtomic`.
    While `now - first-seen < headGraceSeconds` (120), a collapsed `success` or
    `none` is reported as `pending` (no progress, a failure still reads failure).
    Reasoning: head-registration lag is seconds, and a count-based rule cannot
    cover a new PR (no prior count). The pending marker then re-polls checks on
    the 30s clock until the grace ends, so the badge settles without waiting for
    a slow refresh.
-4. **`SKIPPED` alone is not success.** `collapseRollup`: a settled rollup whose
-   entries are all `SKIPPED` collapses to `none`, not `success`.
+4. **`SKIPPED` alone is not success.** `collapseRollup`: a rollup whose entries
+   are all `SKIPPED` collapses to `pending` (no progress), never `success`/`none`.
+   Why not `none`: every renderer (`enrichstate.Classify`, PRCOLOR in
+   `tmux-reflow-windows.sh`/`tmux.conf.tmpl`, `colorPRBadge`, the enrich card)
+   falls through to green for any check value other than failure/pending, so
+   `none` would still show a success glyph. `pending` reads correctly in all of
+   them with no renderer change. Trade-off, stated in the PR: a PR whose every
+   check is genuinely skipped shows a pending pie until a real check appears; it
+   polls at the bounded pending cadence (30s, 60s after 10 min, then
+   `prCheckRefreshSeconds` after 30 min). Offered as a follow-up: a neutral
+   render of "no verified checks" across the renderers.
 5. The pending-marker fingerprint uses the identity head when present (falls
    back to the checks head), so a push re-arms the fast clock even when the
-   checks refetch has not landed.
+   checks refetch has not landed. Both fingerprint sites (`pass.go`
+   `enrichRepoGroup`, `main.go` `runSingleTarget`) use the same helper.
 
 ## Budget
 
 - Mismatch refetch: +1 `gh pr list` (checks selection) per repo per pass only
-  on the pass that first sees the new head. Worst case if the checks call keeps
-  failing: +1 per identity pass (every `prRefreshSeconds`, ≥ 10s, default 120s)
-  per repo with a mismatched branch; a successful fetch ends it.
+  on the pass that first sees the new head; a successful fetch ends it. Worst
+  case if the checks call keeps failing: the mismatch reads `pending`, which arms
+  the pending marker, so checks retry on the pending clock (≈40 queries in the
+  first 30 min, then settled cadence, per the existing worst case) plus +1 per
+  identity pass (`prRefreshSeconds`, default 120s) while the mismatch persists.
+  Unchanged heads add no calls.
 - Grace: no extra gh calls beyond the existing pending clock (30s tier, ≤ 4
   polls in the 120s window); identity head costs nothing (field on an existing
   query).
@@ -56,6 +72,9 @@
 - `picker/prenrich/rollup.go`: all-`SKIPPED` → `none`.
 - `picker/prenrich/head.go` (new): `identityHead`, `headStale`, `headSettling` + stamp I/O.
 - `picker/prenrich/apply.go`: `applyCache` applies stale/grace → `pending`.
+- `tests/enrich-fork.bats`, `tests/enrich-budget.bats`: pinned gh argv strings (identity batch gains `headRefOid,createdAt`; forced per-head query ends `...autoMergeRequest,headRefOid,createdAt,statusCheckRollup,isCrossRepository`). Their batch fixtures carry no head/createdAt, so behaviour is unchanged (no mismatch, no grace). `rg -n autoMergeRequest tests/` before the gates to confirm no other pin.
+- `docs/agents/scripts.md`: add `<key>.head-seen` to the `tmux-pr-enrich` owned files.
+- `picker/prenrich/main.go`: `runSingleTarget` fingerprint uses the helper.
 - `picker/prenrich/pass.go`: `enrichRepoGroup` forces a checks refresh on mismatch; fingerprint uses identity head; `identityBatchField` follows `prFields`; `fetchURLPR` keeps working (view fields now include head).
 - Tests: `rollup_test.go`, `apply_test.go`, `pass_test.go`, `fetch_test.go` (update pinned query strings), `head_test.go` (new).
 - `docs/agents/enrichment.md`: head-tracking, grace, budget.
@@ -67,19 +86,20 @@
   checks batch reports B pending: assert one checks-batch call and
   `@pr_check_state pending`; sibling case head unchanged: zero checks-batch calls.
   (a2) checks refetch fails: `applyCache` writes `pending`, not `failure`.
-  (b) `[SKIPPED, SUCCESS]` rollup on a head first seen < 120s ago (new PR via
+  (b) `[SKIPPED, SUCCESS]` rollup (and an all-`SKIPPED` rollup, at any age: `pending`, glyph is the pending icon not `ic.Success`) on a head first seen < 120s ago (new PR via
   `createdAt`; push via stamp holding another oid) writes `pending`; the same at
   ≥ 120s writes `success`; old PR with no stamp writes `success` at once; `failure`
-  inside grace stays `failure`. Rollup test: all-`SKIPPED` → `none`.
+  inside grace stays `failure`. Rollup test: all-`SKIPPED` → `pending`. Entry points: `runFullPass(false)` for (a), `runFullPass`/`runSingleTarget` for (b), asserting `@pr_check_state` and `@pr_glyph` via the fake runner. Record these red failures on the unmodified tree; Step 4 is a second confirmation.
   Command: `cd picker && go test ./prenrich/ -run 'Head|Skipped|Stale|Grace'`;
   expect FAIL (assertion failures, not compile errors: add the new field names to
   fixtures only).
 - [ ] **Step 2: rollup rule** (`rollup.go`): count settled non-skipped entries;
-  none and not failed and not pending → `none`.
+  all entries `SKIPPED` (and not failed) → `pending`.
   `go test ./prenrich/ -run Skipped` → PASS.
 - [ ] **Step 3: head tracking** (`fetch.go`, new `head.go`, `apply.go`, `pass.go`):
   implement rules 1, 2, 3, 5. Update pinned query strings in `fetch_test.go` and
-  `pass_test.go` (`identBatchArgs`, `headFields`, `urlViewArgs`, `ghArgs`).
+  `pass_test.go` (`identBatchArgs`, `headFields`, `urlViewArgs`, `ghArgs`) and the
+  two bats files listed above.
   `go test -race ./prenrich/...` → PASS, all of Step 1 green.
 - [ ] **Step 4: counterfactual red evidence.** In a scratch copy
   (`mktemp -d` under the scratchpad, `git worktree`-free `cp -r picker`) restore
@@ -100,7 +120,8 @@
 | `fetchURLPR` (no checks head) | mismatch never fires (empty checks head); grace via `headRefOid` in view fields | compatible, test |
 | `writeFetched` (`--force`, per-head) | `headRefOid` now in `prFields`; ident keeps it, checks cache gets it | changed, existing test updated |
 | shell/picker readers of `/tmp/og-pr/*.json` | extra fields only | compatible (rg: none read identity JSON) |
-| `@pr_check_state` readers (reflow, picker, bridge) | values unchanged set (`none|failure|pending|success`) | compatible |
+| `@pr_check_state` readers (reflow PRCOLOR, `enrichstate.Classify`, `colorPRBadge`, enrich card, bridge `@bridge_pr_check_state`) | value set unchanged; all-`SKIPPED` now emits `pending`, which every reader already renders | compatible |
+| URL mode / `runURL` / single-target URL fallback | ignore `applyCache`'s return and are skipped by the pending pass, so a grace-pending badge there waits for the next full pass after its 60s TTL | compatible, documented |
 
 ## Acceptance
 
