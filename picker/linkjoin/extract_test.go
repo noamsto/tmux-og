@@ -1,6 +1,7 @@
 package linkjoin
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -261,23 +262,37 @@ func TestExtractAmbiguityPerJoin(t *testing.T) {
 	}
 }
 
-// blobBudget is TestExtractUnspacedBlobBounded's wall-clock limit;
-// race_test.go widens it under the race detector.
-var blobBudget = 2 * time.Second
-
 // TestExtractUnspacedBlobBounded pins that rejoining stays near-linear: a
 // blob of edge-filling rows used to rescan the whole growing line per join.
+// Growth is compared against a smaller run on the same machine, so the check
+// holds on a slow or loaded runner and under -race: 4x the rows costs about
+// 4x when linear and 16x or more when quadratic.
 func TestExtractUnspacedBlobBounded(t *testing.T) {
-	const width, n = 200, 2000
-	row := strings.Repeat("aaaa/", width/5)
-	rows := make([]string, n)
-	for i := range rows {
-		rows[i] = row
+	const width, small, large, trials, maxRatio = 200, 150, 600, 3, 10
+	blob := func(n int) string {
+		row := strings.Repeat("aaaa/", width/5)
+		rows := make([]string, n)
+		for i := range rows {
+			rows[i] = row
+		}
+		return lines(rows...)
 	}
-	start := time.Now()
-	links := Extract(lines(rows...), width)
-	if d := time.Since(start); d > blobBudget {
-		t.Fatalf("Extract took %v on %d rows of width %d", d, n, width)
+	smallCap, largeCap := blob(small), blob(large)
+	var links []Link
+	timeExtract := func(capture string) time.Duration {
+		start := time.Now()
+		links = Extract(capture, width)
+		return time.Since(start)
+	}
+	// Interleaved minimums: a load burst cannot land on one size only.
+	dSmall, dLarge := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+	for range trials {
+		dSmall = min(dSmall, timeExtract(smallCap))
+		dLarge = min(dLarge, timeExtract(largeCap))
+	}
+	if ratio := float64(dLarge) / float64(dSmall); ratio > maxRatio {
+		t.Fatalf("Extract took %v on %d rows and %v on %d rows (x%.1f, limit x%d) at width %d",
+			dSmall, small, dLarge, large, ratio, maxRatio, width)
 	}
 	if len(links) == 0 {
 		t.Fatal("Extract found no links in the blob")
