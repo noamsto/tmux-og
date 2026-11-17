@@ -267,7 +267,7 @@ first_dash() {
 mirror_window() {
 	MIRROR_LOG="$BATS_TEST_TMPDIR/ctl.log"
 	: >"$MIRROR_LOG"
-	printf '#!%s\nprintf "%%s\\n" "$@" >>"%s"\nexit %s\n' "$BASH" "$MIRROR_LOG" "${1:-0}" >"$BIN_DIR/ctl"
+	printf '#!%s\nprintf "%%s\\n" "$@" >>"%s"\n[ %s -eq 0 ] || echo "tool: unknown tool" >&2\nexit %s\n' "$BASH" "$MIRROR_LOG" "${1:-0}" "${1:-0}" >"$BIN_DIR/ctl"
 	chmod +x "$BIN_DIR/ctl"
 	tmux set-option -w -t "$WIN" @bridge_win 1
 	tmux set-option -w -t "$WIN" @bridge_pane '%9'
@@ -301,7 +301,7 @@ assert_ctl_argv() {
 	mirror_window 1
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh "$TILE"
 	[ "$status" -eq 0 ]
-	messages | grep -q 'could not open crew dash on the remote host'
+	messages | grep -q 'could not open crew dash on the remote host: tool: unknown tool'
 	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
 	[ "$(pane_count "$WIN")" -eq 2 ]
 }

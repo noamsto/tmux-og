@@ -58,8 +58,11 @@ if [[ -n $bridge_win ]]; then
 			notify "bridge ctl is not installed"
 			exit 0
 		fi
-		"$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" crew-dash "$bridge_dir" >/dev/null 2>&1 ||
-			notify "could not open crew dash on the remote host"
+		# The reason is kept: a daemon older than this build answers `unknown tool`,
+		# and reopening the bridge is the fix. '#' is doubled for display-message.
+		if ! err="$("$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" crew-dash "$bridge_dir" 2>&1 >/dev/null)"; then
+			notify "could not open crew dash on the remote host: ${err//#/##}"
+		fi
 		exit 0
 	fi
 fi

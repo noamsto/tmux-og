@@ -48,5 +48,6 @@ var remoteChecklist = []checkItem{
 	{"lazygit", "tool bind (prefix+g)"},
 	{"yazi", "tool bind (prefix+y)"},
 	{"prdash", "tool bind (prefix+p)"},
+	{"crew", "crew dash float (prefix+H)"},
 	{"theme-toggle", "theme fan-out"},
 }
