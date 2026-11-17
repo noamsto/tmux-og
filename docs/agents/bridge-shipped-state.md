@@ -971,3 +971,5 @@ sends the `dwindle-toggle` ctl verb, and the remote's answer (`dwindle-on` /
 (`bridge-daemon.md`). A remote without the dwindle hooks still reports on: the
 flip and the stamp are plain `set-option`s, so the message is accurate even
 when nothing there acts on the flag.
+
+- **Mirror host in the title and anchor border (#1168).** `set-titles-string` and the anchor border (`tmux-apply-theme-colors`) lead with `⇄ #{@bridge_host}`, always gated on `@bridge_win`; `@bridge_host` is session-scoped for a dedicated mirror and would otherwise leak to the session's local windows. The title prefers `@bridge_proc` over `pane_current_command` in a mirror. The border host is coloured by `@window_host_color` (placed only; reflow stamps it empty for a dedicated mirror).

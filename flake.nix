@@ -1154,6 +1154,54 @@
                 touch $out
               '';
 
+            # set-titles-string on a scratch server loaded with the built CONF:
+            # a mirror window's title carries the remote host and @bridge_proc
+            # (#1168), a local window's is unchanged.
+            titles-conf-assertions =
+              pkgs.runCommand "titles-conf-assertions" {
+                nativeBuildInputs = [pkgs.coreutils (mkTmux pkgs)];
+                CONF = tmuxConfig.tmuxConf;
+              } ''
+                export TMUX_TMPDIR="$PWD/tmux"
+                export CLAUDE_STATUS_DIR="$PWD/status"
+                export XDG_DATA_HOME="$PWD/data"
+                export HOME="$PWD/home"
+                mkdir -p "$TMUX_TMPDIR" "$CLAUDE_STATUS_DIR" "$XDG_DATA_HOME" "$HOME"
+                unset TMUX
+                t() { tmux -L titles -u "$@"; }
+                t -f /dev/null new-session -d -s S -x 80 -y 24
+                t source-file "$CONF"
+                title() { t display-message -p -t "$1" '#{E:set-titles-string}'; }
+                check() {
+                  if [ "$2" != "$3" ]; then
+                    echo "$1: got '$2', want '$3'" >&2
+                    t kill-server
+                    exit 1
+                  fi
+                }
+
+                local_win=$(t display-message -p -t S '#{window_id}')
+                check local "$(title "$local_win")" "S / $(t display-message -p -t "$local_win" '#{pane_current_command}')"
+
+                placed=$(t new-window -d -P -F '#{window_id}' -t S)
+                t setw -t "$placed" @bridge_win 1
+                t setw -t "$placed" @bridge_host halo
+                t set -p -t "$placed" @bridge_proc claude
+                check placed "$(title "$placed")" "S / ⇄ halo · claude"
+
+                t set -t S @bridge_host halo
+                dedicated=$(t new-window -d -P -F '#{window_id}' -t S)
+                t setw -t "$dedicated" @bridge_win 1
+                t set -p -t "$dedicated" @bridge_proc claude
+                check dedicated "$(title "$dedicated")" "S / ⇄ halo · claude"
+                bare=$(t new-window -d -P -F '#{window_id}' -t S)
+                t setw -t "$bare" @bridge_win 1
+                check "dedicated without @bridge_proc" "$(title "$bare")" "S / ⇄ halo · $(t display-message -p -t "$bare" '#{pane_current_command}')"
+                check "session host leaks to a local window" "$(title "$local_win")" "S / $(t display-message -p -t "$local_win" '#{pane_current_command}')"
+                t kill-server
+                touch $out
+              '';
+
             # "Every bind has a description" (#629's which-key popup reads -N to
             # build its rows): fails on any bind/bind-key line with no -N flag.
             # Same joined-lines technique as float-conf-assertions above, since a
