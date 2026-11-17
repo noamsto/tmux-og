@@ -338,7 +338,7 @@ set-option -g set-titles on
 # reports the resolved file via proc_pidpath). Rewrite at the display layer.
 # Backslashes are doubled: tmux's config-file lexer unescapes "..." once
 # (\\1 -> \1) before the format engine sees the regex backreference.
-set-option -g set-titles-string "#S / #{s|^\\.(.*)-wrapped$|\\1|:pane_current_command}"
+set-option -g set-titles-string "#S / #{?@bridge_win,#{?@bridge_host,⇄ #{@bridge_host} · ,},}#{?#{&&:#{@bridge_win},#{@bridge_proc}},#{@bridge_proc},#{s|^\\.(.*)-wrapped$|\\1|:pane_current_command}}"
 
 # === Status Bar (Catppuccin + multi-line) ===
 set -g allow-rename off
