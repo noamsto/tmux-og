@@ -61,6 +61,7 @@ var volatileFields = []string{
 	"#{@bridge_usage}",
 	"#{@og_dispatchers}",
 	"#{E:@session_host_marker}", "#{s/[|]/ /:@remote_bridge_hosts}",
+	"#{host_short}",
 }
 
 // fetchVolatile fills the volatile fields via a single display-message
@@ -93,6 +94,7 @@ func (a *args) fetchVolatile() (prefixActive, ok bool) {
 	a.bridgeUsage = f[22]
 	a.dispatchers = f[23]
 	a.hostMarker, a.remoteBridgeHosts = f[24], f[25]
+	a.localHost = f[26]
 	return f[0] == "1", true
 }
 
@@ -168,7 +170,7 @@ type args struct {
 	bridgeCrewName, bridgeCrewColor                 string
 	bridgeLabelID, bridgeLabelRestLong              string
 	bridgeUsage, dispatchers                        string
-	hostMarker, remoteBridgeHosts                   string
+	hostMarker, remoteBridgeHosts, localHost        string
 
 	// theme palette (passed pre-expanded from tmux @thm_* options)
 	thmBg, thmRed, thmMauve, thmBlue, thmText, thmSubtext0 string
@@ -235,12 +237,6 @@ func sessionSegment(a args, prefixActive bool) string {
 	// range=left marks the session name as a click target; MouseDown1StatusLeft
 	// opens the session picker.
 	b.WriteString(" #[range=left]" + a.iconSession + " " + a.session + "#[norange]  ")
-
-	// Pre-styled by the reflow: names the remote hosts this session holds a
-	// placed mirror window from, so it shows on every window of the session.
-	if a.hostMarker != "" {
-		b.WriteString(a.hostMarker + "  ")
-	}
 
 	// Remote-bridge mirror window (#167 @bridge_win opt-out): the active
 	// window's identity belongs to the remote session, not this host repo —
@@ -420,6 +416,20 @@ func themeFromFlavor(flavor string) string {
 	}
 }
 
+// hostSegment names the machine the active window runs on: a mirror window's
+// remote host in its palette colour, else the local host dimmed.
+func hostSegment(a args) string {
+	if a.bridgeWin == "1" && a.bridgeHost != "" {
+		return "#[fg=" + a.hostHex(a.bridgeHost) + "]" + clipRunes(slotSafe(a.bridgeHost), hostSegmentRunes) + "  "
+	}
+	if a.localHost != "" {
+		return "#[fg=" + a.thmOverlay1 + "]" + clipRunes(slotSafe(a.localHost), hostSegmentRunes) + "  "
+	}
+	return ""
+}
+
+const hostSegmentRunes = 16
+
 func renderLine(a args, claudeDir string, claudeTrusted bool, theme string, prefixActive bool, now int64, usage string, liveIDs map[string]bool) string {
 	var b strings.Builder
 	b.WriteString("#[align=left,bg=" + a.thmBg + "]")
@@ -435,7 +445,15 @@ func renderLine(a args, claudeDir string, claudeTrusted bool, theme string, pref
 	}
 	b.WriteString("  #[fg=" + a.thmOverlay1 + "]" + segment)
 	b.WriteString(dispatcherSegment(a.dispatchers, theme))
+	// Pre-styled by the reflow: names the remote hosts this session holds a
+	// placed mirror window from. Written here, not in sessionSegment, which
+	// returns early for a mirror window.
+	if a.hostMarker != "" {
+		b.WriteString("  " + a.hostMarker)
+	}
 	b.WriteString(" #[align=right]") // literal space mirrors `#(claude) #[align=right]` in the old format
+	// Host first: a width change here must not slide paneSlot (#260).
+	b.WriteString(hostSegment(a))
 	b.WriteString(usage)
 	b.WriteString("#[fg=" + a.thmSubtext0 + "]" + paneSlot(a.paneIcon, paneCmdDisplay(a.paneCmd, a.bridgeProc), usage != "") + " ")
 	return b.String()
