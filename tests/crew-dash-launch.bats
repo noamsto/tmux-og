@@ -262,7 +262,60 @@ first_dash() {
 	[ "$(tmux display-message -p -t "$id" '#{pane_current_path}')" = "$dir" ]
 }
 
-@test "a @bridge_win window gets the float without -c" {
+# mirror_window: mark the window a bridge mirror and stub the ctl, logging its argv
+# one word per line. $1 is the stub's exit status.
+mirror_window() {
+	MIRROR_LOG="$BATS_TEST_TMPDIR/ctl.log"
+	: >"$MIRROR_LOG"
+	printf '#!%s\nprintf "%%s\\n" "$@" >>"%s"\nexit %s\n' "$BASH" "$MIRROR_LOG" "${1:-0}" >"$BIN_DIR/ctl"
+	chmod +x "$BIN_DIR/ctl"
+	tmux set-option -w -t "$WIN" @bridge_win 1
+	tmux set-option -w -t "$WIN" @bridge_pane '%9'
+	tmux set-option -w -t "$WIN" @bridge_sock '/run/og|x/bridge.sock'
+	tmux set-option -w -t "$WIN" @bridge_dir '/home/u/proj'
+}
+
+assert_ctl_argv() {
+	[ "$(cat "$MIRROR_LOG")" = "$(printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' crew-dash /home/u/proj)" ]
+}
+
+@test "a mirror window runs the dash on the remote through the bridge ctl" {
+	mirror_window 0
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv
+	[ "$(pane_count "$WIN")" -eq 2 ]
+	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
+}
+
+@test "--detached in a mirror window routes through the bridge ctl too" {
+	mirror_window 0
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --detached "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv
+	[ "$(pane_count "$WIN")" -eq 2 ]
+	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
+}
+
+@test "a failing bridge ctl reports and opens nothing locally" {
+	mirror_window 1
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh "$TILE"
+	[ "$status" -eq 0 ]
+	messages | grep -q 'could not open crew dash on the remote host'
+	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
+	[ "$(pane_count "$WIN")" -eq 2 ]
+}
+
+@test "a mirror window with no bridge ctl reports and opens nothing locally" {
+	mirror_window 0
+	run env -u OG_BRIDGE_CTL_BIN bash scripts/tmux-crew-dash.sh "$TILE"
+	[ "$status" -eq 0 ]
+	messages | grep -q 'bridge ctl is not installed'
+	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
+	[ ! -s "$MIRROR_LOG" ]
+}
+
+@test "a @bridge_win window without @bridge_pane and @bridge_sock keeps the local float" {
 	tmux set-option -w -t "$WIN" @bridge_win 1
 	run crew_dash "$TILE"
 	[ "$status" -eq 0 ]

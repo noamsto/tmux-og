@@ -919,6 +919,7 @@
                 CONF = tmuxConfig.tmuxConf;
                 CREW_DASH = "${tmuxConfig.script.tmux-crew-dash}/bin/tmux-crew-dash";
                 FLOAT_GROUP = "${tmuxConfig.script.tmux-float-group}/bin/tmux-float-group";
+                BRIDGE_CTL = tmuxConfig.picker-bridge-ctl-bin;
               } ''
                 # The crew-dash launcher reaches tmux-float-group by a substituted
                 # store path (a pane shell may not carry the wrapper's PATH). Its
@@ -926,6 +927,9 @@
                 # placeholder-name drift would build clean and test green.
                 ! grep -qF '@float_group@' "$CREW_DASH"
                 grep -qF "$FLOAT_GROUP" "$CREW_DASH"
+                # Same for the bridge ctl a mirror window's press runs (OG_BRIDGE_CTL_BIN).
+                ! grep -qF '@bridge_ctl@' "$CREW_DASH"
+                grep -qF "$BRIDGE_CTL" "$CREW_DASH"
 
                 # Join backslash-continued lines: the enrich card's bind spans
                 # several, with its stamp on the last one.
