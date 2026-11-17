@@ -64,6 +64,44 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   pending PR arms the fast cadence immediately. Upgrade note: a one-line marker
   written by an older build has no fingerprint, so the first pass after upgrade
   restarts the window once.
+- **Head tracking (#1170).** The identity query (`prFields`) carries
+  `headRefOid,createdAt`, so the cheap identity poll sees a push before the
+  checks poll does. Rules in `head.go`, applied to open PRs only:
+  - *Stale checks.* The checks cache is stale when its `headRefOid` differs from
+    the identity head, or has none (no cache, or the PR was outside the checks
+    batch, e.g. a PR first seen late) **and** the checks file predates the
+    `.head-seen` stamp (an absent stamp counts as predating; equal mtimes do
+    not). `enrichRepoGroup` then runs one `refreshRepoChecks` for the repo even
+    though its checks clock is not due, and `applyCache` writes `pending` (no
+    progress) until the checks cache holds the head. The stamp is dated by the
+    identity fetch that revealed the head, so a PR the batch never lists (past
+    `--limit 100`) is refetched once per head, not every pass. Before this, a
+    cached `failure` for the old head outlived a push for a whole
+    `prCheckRefreshSeconds` and, not being `pending`, armed no fast poll.
+  - *Settling grace.* Right after a PR opens or a push lands, the rollup can
+    hold only already-settled entries (a `SKIPPED` job, lint) before the real
+    jobs register, which collapsed to `success`. For `headGraceSeconds` (120s)
+    after the poller first sees a head, a `success`/`none` collapse is written as
+    `pending` (a `failure` still reads failure). First sight is the
+    `<key>.head-seen` stamp's epoch; a head with no stamp counts from the PR's
+    `createdAt`, a head replacing a stamped one from now. The pending marker
+    then re-polls checks on the 30s clock, so the badge settles without waiting
+    for a slow refresh. Edges: an old PR whose stamp was lost, or a push made
+    while the poller was down, gets no grace; stamps are never pruned (like the
+    cached JSON); URL mode ignores `applyCache`'s result and is skipped by the
+    pending pass, so a grace-pending badge on a gone checkout settles at the
+    next full pass after its 60s TTL.
+  - *`SKIPPED` alone is not success.* `collapseRollup` maps a rollup whose
+    entries are all `SKIPPED` to `pending`: a `none` check still renders the
+    success glyph in every renderer, so `pending` is the only value that reads
+    right without a new rendering. A PR whose every check is genuinely skipped
+    shows pending until a real check appears (bounded by the usual pending
+    cadence).
+  - *Budget.* Unchanged heads add no calls. A head change or a brand-new PR
+    costs one extra checks query for the repo on the pass that first sees it. If
+    that query keeps failing the mismatch reads `pending`, so retries follow the
+    existing pending clock (about 40 queries over the first 30 minutes) plus one
+    per identity pass while the mismatch persists.
 - **Checkout gone:** a window whose `@worktree` and `@git_root` both fail to
   resolve a repo (a merged PR's worktree was removed, the window stayed open)
   but which carries a well-formed `@pr_url` is refreshed by that url —
