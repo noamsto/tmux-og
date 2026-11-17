@@ -154,6 +154,45 @@
         # a test missing from the table weighs the median.
         remoteM2ShardCount = 4;
         remoteM2Src = ./tests/remote-m2-integration.bats;
+        # A check copies only the files it reads, so editing one file rebuilds
+        # only the checks that depend on it, not every bats check.
+        testsSrc = files:
+          lib.fileset.toSource {
+            root = ./tests;
+            fileset = lib.fileset.unions (map (f: ./tests + "/${f}") files);
+          };
+        # The scripts that tmux-update-icons, claude-status and the reflow/enrich
+        # chain source or call at runtime; checks that drive any of them need all
+        # of them (a missing sibling fails the check).
+        coreScripts = [
+          "claude-status-update.sh"
+          "claude-status.sh"
+          "lib-claude.sh"
+          "lib-enrich.sh"
+          "lib-icons.sh"
+          "lib-log.sh"
+          "lib-reflow.sh"
+          "og-debug.sh"
+          "tmux-agent-repaint.sh"
+          "tmux-agent-usage.sh"
+          "tmux-branch-display.sh"
+          "tmux-carousel-restore.sh"
+          "tmux-issue-stamp.sh"
+          "tmux-pr-enrich.sh"
+          "tmux-reap-pane.sh"
+          "tmux-reconcile-window.sh"
+          "tmux-reflow-windows.sh"
+          "tmux-shell-prompt.sh"
+          "tmux-status-fold.sh"
+          "tmux-update-icons.sh"
+          "tmux-window-nav.sh"
+          "tmux-worktree-match.sh"
+        ];
+        scriptsSrc = files:
+          lib.fileset.toSource {
+            root = ./scripts;
+            fileset = lib.fileset.unions (map (f: ./scripts + "/${f}") files);
+          };
         remoteM2TestLine = ''[[:blank:]]*@test "(.*)" \{'';
         remoteM2Names = lib.concatMap (l: let
           m = builtins.match remoteM2TestLine l;
@@ -268,7 +307,7 @@
         # (../picker, ../scripts) resolves as it does for the original.
         remoteM2Shard = n:
           pkgs.runCommand "remote-m2-integration-tests-${toString n}" remoteM2Env ''
-            cp -r ${./tests} tests
+            cp -r ${testsSrc ["remote-m2-integration.bats"]} tests
             chmod -R u+w tests
             cp ${remoteM2ShardFile n} tests/remote-m2-shard.bats
             export HOME=$TMPDIR
@@ -299,7 +338,7 @@
                   shardWeights = map (s: s.weight) remoteM2Shards;
                 };
               }) ''
-              cp -r ${./tests} tests
+              cp -r ${testsSrc ["remote-m2-integration.bats"]} tests
               chmod -R u+w tests
               total=$(grep -cE '^[[:blank:]]*@test ' ${remoteM2Src})
               dups=$(grep -E '^[[:blank:]]*@test ' ${remoteM2Src} | sort | uniq -d)
@@ -425,8 +464,8 @@
                 LC_ALL = "C.UTF-8";
                 SANITIZE_TITLE_VECTORS = ./picker/prenrich/testdata/sanitize-title.tsv;
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["enrich.bats" "helper.bash"]} tests
                 bats tests/enrich.bats
                 touch $out
               '';
@@ -438,8 +477,8 @@
                 PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
                 nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-log.sh" "og-debug.sh" "tmux-pr-enrich.sh"]} scripts
+                cp -r ${testsSrc ["enrich-budget.bats" "helper.bash"]} tests
                 bats tests/enrich-budget.bats
                 touch $out
               '';
@@ -451,8 +490,8 @@
                 PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
                 nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-log.sh" "og-debug.sh" "tmux-pr-enrich.sh"]} scripts
+                cp -r ${testsSrc ["enrich-url.bats" "helper.bash"]} tests
                 bats tests/enrich-url.bats
                 touch $out
               '';
@@ -464,8 +503,8 @@
                 PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
                 nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.git pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-log.sh" "og-debug.sh" "tmux-pr-enrich.sh"]} scripts
+                cp -r ${testsSrc ["enrich-fork.bats" "helper.bash"]} tests
                 bats tests/enrich-fork.bats
                 touch $out
               '';
@@ -476,8 +515,8 @@
                 # exercise the ctlSafe wrap the fake tmux's verbatim output skips.
                 nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-log.sh" "og-debug.sh" "tmux-agent-usage.sh" "tmux-pr-enrich.sh"]} scripts
+                cp -r ${testsSrc ["agent-usage-gate.bats" "helper.bash"]} tests
                 bats tests/agent-usage-gate.bats
                 touch $out
               '';
@@ -486,8 +525,8 @@
               pkgs.runCommand "agent-usage-provider-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-log.sh" "og-debug.sh" "tmux-agent-usage-cursor.sh" "tmux-agent-usage-pi.sh" "tmux-agent-usage.sh" "tmux-pr-enrich.sh"]} scripts
+                cp -r ${testsSrc ["agent-usage-providers.bats"]} tests
                 bats tests/agent-usage-providers.bats
                 # bats runs the raw script, so only the built bin proves the
                 # cursor provider's tool pin was substituted.
@@ -510,8 +549,8 @@
               pkgs.runCommand "reflow-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["reflow.bats" "helper.bash"]} tests
                 bats tests/reflow.bats
                 touch $out
               '';
@@ -520,7 +559,7 @@
               pkgs.runCommand "fingers-patterns-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused pkgs.bash];
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["fingers-patterns.bats"]} tests
                 cp -r ${./config} config
                 bats tests/fingers-patterns.bats
                 touch $out
@@ -530,8 +569,8 @@
               pkgs.runCommand "og-open-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.bash];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["og-open.sh"]} scripts
+                cp -r ${testsSrc ["og-open.bats"]} tests
                 bats tests/og-open.bats
                 touch $out
               '';
@@ -544,8 +583,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-icons.sh"]} scripts
+                cp -r ${testsSrc ["icons.bats" "helper.bash"]} tests
                 bats tests/icons.bats
                 touch $out
               '';
@@ -554,8 +593,8 @@
               pkgs.runCommand "claude-issues-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["claude-issues.bats" "helper.bash"]} tests
                 bats tests/claude-issues.bats
                 touch $out
               '';
@@ -565,8 +604,8 @@
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
                 CLAUDE_STATUS_DIR_VECTOR = ./picker/claudestatus/testdata/default-dir.txt;
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["claude-status-dir.bats" "helper.bash"]} tests
                 bats tests/claude-status-dir.bats
                 touch $out
               '';
@@ -575,8 +614,8 @@
               pkgs.runCommand "claude-progress-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["claude-progress.bats" "helper.bash"]} tests
                 bats tests/claude-progress.bats
                 touch $out
               '';
@@ -585,8 +624,8 @@
               pkgs.runCommand "mark-seen-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["mark-seen.bats" "helper.bash"]} tests
                 bats tests/mark-seen.bats
                 touch $out
               '';
@@ -595,8 +634,8 @@
               pkgs.runCommand "codex-relaunch-stamp-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["codex-relaunch-stamp.sh"]} scripts
+                cp -r ${testsSrc ["codex-relaunch-stamp.bats" "helper.bash"]} tests
                 bats tests/codex-relaunch-stamp.bats
                 touch $out
               '';
@@ -605,7 +644,7 @@
               pkgs.runCommand "codex-status-hooks-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnused];
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["codex-status-hooks.bats"]} tests
                 mkdir modules
                 cp ${./modules/home-manager.nix} modules/home-manager.nix
                 bats tests/codex-status-hooks.bats
@@ -616,7 +655,7 @@
               pkgs.runCommand "startup-session-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused];
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["startup-session.bats"]} tests
                 mkdir modules
                 cp ${./modules/home-manager.nix} modules/home-manager.nix
                 bats tests/startup-session.bats
@@ -627,8 +666,8 @@
               pkgs.runCommand "picker-launcher-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.bash];
               } ''
-                cp -r ${./tests} tests
-                cp -r ${./scripts} scripts
+                cp -r ${testsSrc ["picker-launcher.bats"]} tests
+                cp -r ${scriptsSrc ["og-remote-open.sh" "tmux-link-picker.sh" "tmux-scratchpad.sh" "tmux-session-picker.sh" "tmux-which-key.sh" "tmux-window-picker.sh" "tmux-window-wall.sh"]} scripts
                 bats tests/picker-launcher.bats
                 touch $out
               '';
@@ -637,8 +676,8 @@
               pkgs.runCommand "cursor-status-hooks-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
               } ''
-                cp -r ${./tests} tests
-                cp -r ${./scripts} scripts
+                cp -r ${testsSrc ["cursor-status-hooks.bats"]} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["cursor-hooks-install.sh" "cursor-status-hook.sh"])} scripts
                 mkdir modules
                 cp ${./modules/home-manager.nix} modules/home-manager.nix
                 bats tests/cursor-status-hooks.bats
@@ -649,8 +688,8 @@
               pkgs.runCommand "cursor-relaunch-stamp-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["codex-relaunch-stamp.sh" "cursor-relaunch-stamp.sh" "cursor-status-hook.sh"])} scripts
+                cp -r ${testsSrc ["cursor-relaunch-stamp.bats" "helper.bash"]} tests
                 bats tests/cursor-relaunch-stamp.bats
                 touch $out
               '';
@@ -659,8 +698,8 @@
               pkgs.runCommand "pi-relaunch-stamp-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["pi-relaunch-stamp.sh"])} scripts
+                cp -r ${testsSrc ["pi-relaunch-stamp.bats"]} tests
                 bats tests/pi-relaunch-stamp.bats
                 touch $out
               '';
@@ -669,8 +708,8 @@
               pkgs.runCommand "cursor-relaunch-hooks-install-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.jq];
               } ''
-                cp -r ${./tests} tests
-                cp -r ${./scripts} scripts
+                cp -r ${testsSrc ["cursor-relaunch-hooks-install.bats"]} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["codex-relaunch-stamp.sh" "cursor-relaunch-hooks-install.sh" "cursor-relaunch-stamp.sh" "cursor-status-hook.sh"])} scripts
                 mkdir modules
                 cp ${./modules/home-manager.nix} modules/home-manager.nix
                 bats tests/cursor-relaunch-hooks-install.bats
@@ -681,8 +720,8 @@
               pkgs.runCommand "prune-stale-state-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["prune-stale-state.bats" "helper.bash"]} tests
                 bats tests/prune-stale-state.bats
                 touch $out
               '';
@@ -697,8 +736,8 @@
               pkgs.runCommand "notify-router-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.procps];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["lib-notify.sh" "og-notify-center.sh" "og-notify.sh" "tmux-apply-theme-colors.sh"])} scripts
+                cp -r ${testsSrc ["notify-router.bats" "helper.bash"]} tests
                 bats tests/notify-router.bats
                 touch $out
               '';
@@ -708,8 +747,8 @@
                 PR_ENRICH_BIN = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-pr-enrich-go";
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["notify-producers.bats" "helper.bash"]} tests
                 bats tests/notify-producers.bats
                 touch $out
               '';
@@ -718,8 +757,8 @@
               pkgs.runCommand "notify-center-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["lib-notify.sh" "og-notify-center.sh" "og-notify.sh" "tmux-apply-theme-colors.sh"])} scripts
+                cp -r ${testsSrc ["notify-center.bats" "helper.bash"]} tests
                 bats tests/notify-center.bats
                 touch $out
               '';
@@ -2276,7 +2315,7 @@
                 TMUX_BIN = "${mkTmux pkgs}/bin/tmux";
               } ''
                 cp -r ${./modules} modules
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["reload-tmux-xdg.bats"]} tests
                 bats tests/reload-tmux-xdg.bats
                 touch $out
               '';
@@ -2287,8 +2326,8 @@
                 # tmux that actually ships.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["lib-notify.sh" "og-notify-center.sh" "og-notify.sh" "tmux-apply-theme-colors.sh"])} scripts
+                cp -r ${testsSrc ["notify-bell-integration.bats" "helper.bash"]} tests
                 export HOME=$TMPDIR
                 bats tests/notify-bell-integration.bats
                 touch $out
@@ -2298,8 +2337,8 @@
               pkgs.runCommand "log-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.util-linux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["lib-log.sh" "og-debug.sh"]} scripts
+                cp -r ${testsSrc ["log.bats" "helper.bash"]} tests
                 bats tests/log.bats
                 touch $out
               '';
@@ -2308,8 +2347,8 @@
               pkgs.runCommand "splash-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["tmux-splash-maybe.sh"]} scripts
+                cp -r ${testsSrc ["splash.bats"]} tests
                 bats tests/splash.bats
                 touch $out
               '';
@@ -2326,7 +2365,7 @@
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
                 CONF = tmuxConfig.tmuxConf;
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["conf-shell-quoting.bats"]} tests
                 bats tests/conf-shell-quoting.bats
                 touch $out
               '';
@@ -2337,8 +2376,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["interrupt.bats" "helper.bash"]} tests
                 bats tests/interrupt.bats
                 touch $out
               '';
@@ -2348,7 +2387,7 @@
                 nativeBuildInputs = [pkgs.bats pkgs.jq pkgs.coreutils];
               } ''
                 cp -r ${./claude-plugin} claude-plugin
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["naming-seed.bats" "helper.bash"]} tests
                 bats tests/naming-seed.bats
                 touch $out
               '';
@@ -2358,8 +2397,8 @@
                 # git: the test derives tags from a real repo it builds in $HOME.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["reconcile.bats"]} tests
                 bats tests/reconcile.bats
                 touch $out
               '';
@@ -2368,8 +2407,8 @@
               pkgs.runCommand "issue-stamp-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-issue-stamp-linear.sh"])} scripts
+                cp -r ${testsSrc ["issue-stamp-linear-provider.bats" "issue-stamp.bats" "helper.bash"]} tests
                 bats tests/issue-stamp.bats
                 bats tests/issue-stamp-linear-provider.bats
                 touch $out
@@ -2381,8 +2420,8 @@
                 # live-branch-vs-stale-argument override (like reconcile-tests).
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["issue-backfill.bats"]} tests
                 bats tests/issue-backfill.bats
                 touch $out
               '';
@@ -2393,8 +2432,8 @@
                 # in $HOME (like reconcile-tests).
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.git];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["enrich-command.bats"]} tests
                 bats tests/enrich-command.bats
                 touch $out
               '';
@@ -2405,8 +2444,8 @@
                 # git: builds a real repo in $HOME to exercise a real branch transition.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["update-icons-enrich-trigger.bats"]} tests
                 bats tests/update-icons-enrich-trigger.bats
                 touch $out
               '';
@@ -2417,8 +2456,8 @@
                 # git: builds two real repos to exercise a genuine cwd move.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["update-icons-cwd-move.bats"]} tests
                 bats tests/update-icons-cwd-move.bats
                 touch $out
               '';
@@ -2429,8 +2468,8 @@
                 # git: builds a real repo in $HOME to exercise a real branch transition.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["pi-relaunch-stamp.sh"])} scripts
+                cp -r ${testsSrc ["update-icons-resume-guard.bats"]} tests
                 bats tests/update-icons-resume-guard.bats
                 touch $out
               '';
@@ -2442,8 +2481,8 @@
                 # bash: copied to a binary named `claude` so pane_current_command is literal.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["update-icons-all-windows.bats"]} tests
                 bats tests/update-icons-all-windows.bats
                 touch $out
               '';
@@ -2455,8 +2494,8 @@
                 # bash: copied to a binary named `claude` so pane_current_command is literal.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["update-icons-dispatcher.bats"]} tests
                 bats tests/update-icons-dispatcher.bats
                 touch $out
               '';
@@ -2473,8 +2512,8 @@
                 # bash: copied to a binary named `claude` so pane_current_command is literal.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git (mkTmux pkgs) pkgs.bash];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["update-icons-modal.bats"]} tests
                 bats tests/update-icons-modal.bats
                 touch $out
               '';
@@ -2485,8 +2524,8 @@
               pkgs.runCommand "runner-child-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.procps pkgs.git (mkTmux pkgs) pkgs.bash];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["runner-child-wiring.bats" "runner-child.bats" "helper.bash"]} tests
                 bats tests/runner-child.bats tests/runner-child-wiring.bats
                 touch $out
               '';
@@ -2500,8 +2539,8 @@
                 # script runs unsubstituted.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.tmux];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["carousel-restore.bats"]} tests
                 bats tests/carousel-restore.bats
                 touch $out
               '';
@@ -2542,8 +2581,8 @@
               pkgs.runCommand "worktree-match-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk pkgs.gnugrep];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["worktree-match.bats"]} tests
                 bats tests/worktree-match.bats
                 touch $out
               '';
@@ -2561,7 +2600,7 @@
                 # overrides the locale itself.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gawk (mkTmux pkgs)];
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["worktree-match-integration.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/worktree-match-integration.bats
                 touch $out
@@ -2571,8 +2610,8 @@
               pkgs.runCommand "agent-detect-arm-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["agent-detect-arm.bats"]} tests
                 bats tests/agent-detect-arm.bats
                 touch $out
               '';
@@ -2581,8 +2620,8 @@
               pkgs.runCommand "agent-liveness-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["agent-liveness.bats" "helper.bash"]} tests
                 bats tests/agent-liveness.bats
                 touch $out
               '';
@@ -2593,8 +2632,8 @@
               pkgs.runCommand "launcher-hosted-agent-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.git pkgs.tmux pkgs.bash pkgs.procps];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["claude-status-agent-pid.bats" "launcher-hosted-agent.bats" "helper.bash"]} tests
                 bats tests/launcher-hosted-agent.bats
                 bats tests/claude-status-agent-pid.bats
                 touch $out
@@ -2604,8 +2643,8 @@
               pkgs.runCommand "agent-detect-merge-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["agent-detect-merge.bats" "helper.bash"]} tests
                 bats tests/agent-detect-merge.bats
                 touch $out
               '';
@@ -2614,8 +2653,8 @@
               pkgs.runCommand "agent-bg-badge-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["agent-bg-badge.bats" "helper.bash"]} tests
                 bats tests/agent-bg-badge.bats
                 touch $out
               '';
@@ -2624,8 +2663,8 @@
               pkgs.runCommand "agent-detect-enum-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["agent-detect-enum.bats" "helper.bash"]} tests
                 bats tests/agent-detect-enum.bats
                 touch $out
               '';
@@ -2643,8 +2682,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["status-fold.bats"]} tests
                 bats tests/status-fold.bats
                 touch $out
               '';
@@ -2674,8 +2713,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["reflow-host-colour.bats"]} tests
                 bats tests/reflow-host-colour.bats
                 touch $out
               '';
@@ -2689,8 +2728,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-apply-theme-colors.sh"])} scripts
+                cp -r ${testsSrc ["reflow-fanout.bats"]} tests
                 bats tests/reflow-fanout.bats
                 touch $out
               '';
@@ -2723,7 +2762,7 @@
                 grep -qE 'set-hook -g client-detached\[10\].*tmux-reflow-windows' "$CONF"
                 [ "$(grep -cF 'touch -- #{q:@bridge_nudge}' "$CONF")" -eq 2 ]
 
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["reflow-mirror-attach.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/reflow-mirror-attach.bats
                 touch $out
@@ -2738,8 +2777,8 @@
                 # every float-creating case skip instead of run.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-float-nudge.sh" "tmux-float-refit.sh"])} scripts
+                cp -r ${testsSrc ["float-refit.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/float-refit.bats
                 touch $out
@@ -2752,8 +2791,8 @@
                 # pane carried.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-float-nudge.sh" "tmux-float-refit.sh"])} scripts
+                cp -r ${testsSrc ["float-nudge.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/float-nudge.bats
                 touch $out
@@ -2765,8 +2804,8 @@
                 # state lives on real floating panes.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-float-group.sh"])} scripts
+                cp -r ${testsSrc ["float-group.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/float-group.bats
                 touch $out
@@ -2776,8 +2815,8 @@
               pkgs.runCommand "crew-dash-launch-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-crew-dash.sh" "tmux-float-group.sh" "tmux-float-nudge.sh" "tmux-float-refit.sh"])} scripts
+                cp -r ${testsSrc ["crew-dash-launch.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/crew-dash-launch.bats
                 touch $out
@@ -2796,8 +2835,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-float-nudge.sh" "tmux-float-refit.sh"])} scripts
+                cp -r ${testsSrc ["float-nudge-drag.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/float-nudge-drag.bats
@@ -2815,8 +2854,8 @@
                 # exercises the real hook lines, not a hand-rolled copy.
                 TMUX_OG_CONF = tmuxConfig.tmuxConf;
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-float-nudge.sh" "tmux-float-refit.sh" "tmux-grid-refit.sh"])} scripts
+                cp -r ${testsSrc ["grid-refit.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/grid-refit.bats
                 touch $out
@@ -2832,8 +2871,8 @@
                 # copy; the dwindle case also runs the store-built tmux-dwindle.
                 TMUX_OG_CONF = tmuxConfig.tmuxConf;
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-carousel-guard.sh"])} scripts
+                cp -r ${testsSrc ["carousel-guard.bats"]} tests
                 cp -r ${./config} config
                 export HOME=$TMPDIR
                 bats tests/carousel-guard.bats
@@ -2846,8 +2885,8 @@
                 # #{pane_last_output_time}, which nixpkgs' stock tmux lacks.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["agent-repaint-ready.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/agent-repaint-ready.bats
                 touch $out
@@ -2864,8 +2903,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-apply-theme-colors.sh"])} scripts
+                cp -r ${testsSrc ["pane-border-format.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/pane-border-format.bats
                 touch $out
@@ -2875,8 +2914,8 @@
               pkgs.runCommand "default-size-tests" {
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["tmux-default-size.sh"]} scripts
+                cp -r ${testsSrc ["default-size.bats"]} tests
                 bats tests/default-size.bats
                 touch $out
               '';
@@ -2890,7 +2929,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["tmux-next38-readiness.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/tmux-next38-readiness.bats
@@ -2925,7 +2964,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["tick-floor.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/tick-floor.bats
@@ -2942,7 +2981,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["reap-pane-hook.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/reap-pane-hook.bats
@@ -2970,8 +3009,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["pane-shell-prompt.bats" "helper.bash"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/pane-shell-prompt.bats
@@ -2993,8 +3032,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-client-theme.sh" "tmux-splash-maybe.sh"])} scripts
+                cp -r ${testsSrc ["client-theme.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/client-theme.bats
@@ -3010,8 +3049,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc ["tmux-smart-nav.sh"]} scripts
+                cp -r ${testsSrc ["multi-client-env.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/multi-client-env.bats
@@ -3038,8 +3077,8 @@
               pkgs.runCommand "lib-claude-theme-tests" {
                 nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc coreScripts} scripts
+                cp -r ${testsSrc ["lib-claude-theme.bats" "helper.bash"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/lib-claude-theme.bats
@@ -3064,8 +3103,8 @@
                 # only fakes and a few coreutils, so the launcher is named by path.
                 OG_REMOTE_LAUNCHER = "${pickerChecked}/bin/og-remote-launcher";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["lib-remote.sh" "og-remote-auth.sh" "og-remote-loading.sh" "og-remote-open.sh" "og-remote-picker.sh" "og-remote-theme.sh"])} scripts
+                cp -r ${testsSrc ["remote-auth.bats" "remote-cold-start.bats" "remote-picker.bats" "remote-theme.bats"]} tests
                 bats tests/remote-cold-start.bats
                 bats tests/remote-picker.bats
                 bats tests/remote-auth.bats
@@ -3084,7 +3123,7 @@
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.tmux pkgs.util-linux];
                 BRIDGE = "${pickerChecked}/bin/og-remote-bridge";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["remote-bridge-integration.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/remote-bridge-integration.bats
                 touch $out
@@ -3127,7 +3166,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["rename-bind-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 # argv[0] of every ctl frame, read from the one source of truth so a
@@ -3162,7 +3201,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["agent-repaint-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/agent-repaint-integration.bats
@@ -3191,8 +3230,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
-                cp -r ${./scripts} scripts
+                cp -r ${testsSrc ["fingers-prune.bats"]} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-fingers-prune.sh"])} scripts
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/fingers-prune.bats
@@ -3239,7 +3278,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["menu-bind-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 # argv[0] of every ctl frame, read from the one source of truth so a
@@ -3286,7 +3325,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["float-drag-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/float-drag-integration.bats
@@ -3321,8 +3360,8 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./scripts} scripts
-                cp -r ${./tests} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["lib-remote.sh" "og-remote-auth.sh" "og-remote-open.sh" "og-remote-theme.sh"])} scripts
+                cp -r ${testsSrc ["mirror-session-name-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/mirror-session-name-integration.bats
@@ -3353,7 +3392,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["float-tool-focus.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/float-tool-focus.bats
@@ -3383,7 +3422,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["dwindle.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/dwindle.bats
@@ -3413,7 +3452,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["popup-float.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/popup-float.bats
@@ -3447,7 +3486,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["picker-session-kill.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/picker-session-kill.bats
@@ -3463,7 +3502,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["conf-shell-quoting-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/conf-shell-quoting-integration.bats
@@ -3491,7 +3530,7 @@
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${./tests} tests
+                cp -r ${testsSrc ["enter-bind-integration.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/enter-bind-integration.bats

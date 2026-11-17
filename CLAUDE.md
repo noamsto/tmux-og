@@ -92,6 +92,7 @@ The repo doubles as a CC plugin marketplace: `.claude-plugin/marketplace.json` �
 - **A `@bridge_win` mirror window is daemon-owned.** Local scripts skip it; the daemon writes `@bridge_*`, never the real option names (a same-name write is a two-writer race reflow wins). Every consumer naming a mirror pane's command prefers `@bridge_proc`.
 - **Remote-derived values are sanitized daemon-side before any local format renders them** — `#(…)` in a carried value would execute here. The one launcher-side case is the mirror's session name: `og-remote-open` maps it to `[A-Za-z0-9_-]`, because stock `run-shell -C` menus parse session names as commands; the raw name lives in `@bridge_session`.
 - **Every float bind stamps `@float_geom`** and pins `remain-on-exit off` (`float-conf-assertions` fails the build otherwise).
+- **A bats check copies only the files it reads**: `cp -r ${testsSrc ["x.bats" "helper.bash"]} tests` and `${scriptsSrc [...]}` (`coreScripts` for the icons/claude-status/reflow chain), never `${./tests}`/`${./scripts}`, so one edit rebuilds only its dependents. A check whose bats globs `tests/*.bats` is the exception.
 - **Duplicated tables must stay byte-identical**: `sanitize_title` (`lib-enrich.sh`) ↔ `sanitizeTitle` (`picker/prenrich`), pinned by `picker/prenrich/testdata/sanitize-title.tsv`.
 - **Picker cells are sized with `visibleWidth`, never `len`**; a typed key is `printableKeyText`, never `len(key) == 1`.
 - **A resident tmux server may predate the rebuilt binary** (#407) — version-gate on the live `#{version}`, never `tmux -V`.
