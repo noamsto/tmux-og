@@ -78,7 +78,7 @@ gh_calls() {
 	run bash "$PR_ENRICH_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ "$(gh_calls '--head feat/has-pr')" -eq 0 ]
-	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository')" -eq 1 ]
+	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,headRefName,isCrossRepository')" -eq 1 ]
 	[ "$(gh_calls '--json headRefName,statusCheckRollup,headRefOid,isCrossRepository')" -eq 1 ]
 	grep -q -- '@pr_check_state success' "$TMUX_LOG"
 }
@@ -98,7 +98,7 @@ gh_calls() {
 	# Identity stays fresh on every pass, but check state remains cached until
 	# the independent, slower cadence expires. The terminal answer for feat/no-pr
 	# is also cached for TTL_TERMINAL.
-	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository')" -eq 2 ]
+	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,headRefName,isCrossRepository')" -eq 2 ]
 	[ "$(gh_calls '--json headRefName,statusCheckRollup,headRefOid,isCrossRepository')" -eq 1 ]
 	[ "$(gh_calls '--head feat/no-pr')" -eq 1 ]
 }
@@ -106,7 +106,7 @@ gh_calls() {
 @test "force refresh fetches the current branch's check rollup immediately" {
 	run bash "$PR_ENRICH_SCRIPT" --target '$1:@1' --branch feat/has-pr --dir "$REPO" --force
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--head feat/has-pr --state open --limit 100 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,statusCheckRollup,headRefOid,isCrossRepository')" -eq 1 ]
+	[ "$(gh_calls '--head feat/has-pr --state open --limit 100 --json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,statusCheckRollup,isCrossRepository')" -eq 1 ]
 }
 
 @test "pass: a failed batch falls back to the full open-then-all lookup" {
@@ -191,7 +191,7 @@ fingerprint() {
 	touch -t 200001010000 "$(markers)"
 	GH_CHECK_JSON="$PENDING_CHECK_JSON" run bash "$PR_ENRICH_SCRIPT" --tick-run-pending
 	[ "$status" -eq 0 ]
-	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefName,isCrossRepository')" -eq 1 ]
+	[ "$(gh_calls '--json number,title,url,state,mergeable,isDraft,reviewDecision,autoMergeRequest,headRefOid,createdAt,headRefName,isCrossRepository')" -eq 1 ]
 	[ "$(gh_calls '--json headRefName,statusCheckRollup,headRefOid,isCrossRepository')" -eq 2 ]
 	grep -q -- '@pr_check_state pending' "$TMUX_LOG"
 }

@@ -30,6 +30,7 @@ func collapseRollup(raw string) (state, progress string) {
 		return "none", ""
 	}
 	pendingCount := 0
+	skipped := 0
 	failed := false
 	for _, c := range checks {
 		verdict := "conclusion"
@@ -39,6 +40,8 @@ func collapseRollup(raw string) (state, progress string) {
 		switch strings.ToUpper(jqStr(c, verdict)) {
 		case "FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE":
 			failed = true
+		case "SKIPPED":
+			skipped++
 		}
 		if checkPending(c) {
 			pendingCount++
@@ -49,6 +52,10 @@ func collapseRollup(raw string) (state, progress string) {
 		return "failure", ""
 	case pendingCount > 0:
 		return "pending", strconv.Itoa(len(checks)-pendingCount) + "/" + strconv.Itoa(len(checks))
+	case skipped == len(checks):
+		// Nothing verified: every renderer paints success for any non-failure,
+		// non-pending value, so "none" would not help.
+		return "pending", ""
 	}
 	return "success", ""
 }

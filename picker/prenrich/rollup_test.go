@@ -57,3 +57,25 @@ func TestCollapseRollupMalformed(t *testing.T) {
 		t.Fatalf("got %q, %q; want none, empty", state, progress)
 	}
 }
+
+func TestCollapseRollupSkipped(t *testing.T) {
+	skipped := `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SKIPPED"}`
+	success := `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}`
+	failure := `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}`
+	running := `{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}`
+	cases := []struct{ name, raw, wantState, wantProgress string }{
+		{"all skipped", "[" + skipped + "]", "pending", ""},
+		{"several skipped", "[" + skipped + "," + skipped + "]", "pending", ""},
+		{"skipped and success", "[" + skipped + "," + success + "]", "success", ""},
+		{"skipped and failure", "[" + skipped + "," + failure + "]", "failure", ""},
+		{"skipped and running", "[" + skipped + "," + running + "]", "pending", "1/2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state, progress := collapseRollup(c.raw)
+			if state != c.wantState || progress != c.wantProgress {
+				t.Fatalf("got %q, %q; want %q, %q", state, progress, c.wantState, c.wantProgress)
+			}
+		})
+	}
+}
