@@ -272,8 +272,11 @@ dump_refit_state() {
 		tmux list-panes -t "$WIN" -F '#{pane_id} #{pane_left} #{pane_top} #{pane_width}x#{pane_height} #{@crew_role}' 2>&1 || true
 		echo "dump_refit_state: jobs started: $(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* run job ' || true)"
 		echo "dump_refit_state: jobs died: $(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* job died ' || true)"
-		echo "dump_refit_state: last refit job lifecycle and @grid_refit writes in the server log:"
-		cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -E 'job_run: cmd=.*tmux-grid-refit|run job .*tmux-grid-refit|job died .*tmux-grid-refit|hook_arguments=-(w|uw|wF) .*@grid_refit' | cut -c1-200 | tail -40 || true
+		# The hook's own `set -wF @grid_refit_pending` is not logged (commands run
+		# from a hook fire no after-hooks): a `-uw @grid_refit_pending` line means
+		# the script's snapshot call ran.
+		echo "dump_refit_state: last refit job lifecycle and script @grid_refit writes in the server log:"
+		cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -E 'run job .*tmux-grid-refit|job died .*tmux-grid-refit|hook_arguments=-(uw|w) .*@grid_refit' | cut -c1-200 | tail -40 || true
 	} >&2 || true
 }
 
