@@ -52,11 +52,12 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
   tier, so the extra cadence costs forks, not API calls. An **episode** is the
   set of pending heads, not the repo: the marker's content holds a first-seen
   epoch and a fingerprint of the sorted pending `branch|headRefOid` set (the
-  checks query carries `headRefOid`), and a changed set — a new PR going
+  head is the identity cache's `headRefOid`, falling back to the checks cache's:
+  `episodeHead` in `head.go`), and a changed set — a new PR going
   pending, one settling, or a push moving a head — rewrites the epoch and drops
   `.last-pending-tick`, restarting the 30s tier. So a second PR is never stuck
   on an old repo clock, and a push that sends a pending PR back to pending
-  re-arms the fast window at the next checks refresh. Worst case for one repo:
+  re-arms the fast window at the identity pass that sees the push. Worst case for one repo:
   ~40 check queries over the first 30 minutes, then 12/hour, when the pending
   set is stable; a churning set restarts the 30s tier each change, so sustained
   churn can approach ~120/hour plus the full-pass baseline. A marker whose repo
@@ -86,11 +87,13 @@ line. Enabled by default via `programs.tmux-og.enrich.enable`.
     `<key>.head-seen` stamp's epoch; a head with no stamp counts from the PR's
     `createdAt`, a head replacing a stamped one from now. The pending marker
     then re-polls checks on the 30s clock, so the badge settles without waiting
-    for a slow refresh. Edges: an old PR whose stamp was lost, or a push made
-    while the poller was down, gets no grace; stamps are never pruned (like the
-    cached JSON); URL mode ignores `applyCache`'s result and is skipped by the
-    pending pass, so a grace-pending badge on a gone checkout settles at the
-    next full pass after its 60s TTL.
+    for a slow refresh. Edges: an old PR whose stamp was lost (e.g. `/tmp`
+    wiped) gets no grace; a push made while the poller was down still gets the
+    full 120s from the first pass after restart, so an already-green PR reads
+    pending that long; stamps are never pruned (like the cached JSON); URL mode
+    ignores `applyCache`'s result and is skipped by the pending pass, so a
+    grace-pending badge on a gone checkout settles at the first full pass after
+    its grace ends.
   - *`SKIPPED` alone is not success.* `collapseRollup` maps a rollup whose
     entries are all `SKIPPED` to `pending`: a `none` check still renders the
     success glyph in every renderer, so `pending` is the only value that reads
