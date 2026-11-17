@@ -642,6 +642,8 @@ The on/off difference is far inside the spread within each arm, on a host shared
 
 **Decision: not ported.** The only gain is client-side CPU, and realizing it means either rewriting six bats suites against a Go binary or carrying two implementations. Revisit if that CPU matters (many status-drawing clients on a large session set) by porting together with a migration of the suites to drive the Go binary; the prototype shows what to expect (~7 ms client CPU per tick, flat in window count; wall 8-14 ms as server CPU grows). The exec count is already at the floor, so there is no cheaper shell-side step: the remaining cost is bash per-window compute.
 
+**Label-memo reflows (#1157).** The per-tick pass compares `@window_label_seen` (`n:<window_name>` for a manual window, else `p:<first non-floating pane path>`) against the batched `list-panes -a` row it already reads: a steady window costs no extra fork (the two added row fields are `window_name` and the memo). A change costs one `set-option` plus one forced reflow for the session, so a `cd` is one reflow, not one per tick, and a typed rename is one. The first tick after an upgrade, or on a fresh server, finds no memo on any window and fires one extra reflow per session (every window is stamped in that pass). No steady-state cost was measured beyond that argument.
+
 ## Residuals (follow-ups)
 
 - **Labels/agents/res flushes.** Their `set-option` execs still hold
