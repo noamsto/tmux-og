@@ -20,8 +20,8 @@ func TestUnderModal(t *testing.T) {
 }
 
 func TestVolatileFieldsModalSwap(t *testing.T) {
-	if len(volatileFields) != 26 {
-		t.Fatalf("len = %d, want 26", len(volatileFields))
+	if len(volatileFields) != 27 {
+		t.Fatalf("len = %d, want 27", len(volatileFields))
 	}
 	for _, tc := range []struct {
 		idx  int
@@ -455,6 +455,7 @@ func TestRenderLineBridgeHost(t *testing.T) {
 		"#[fg=" + g6Hex + "]R g6  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
+		"#[fg=" + g6Hex + "]g6  " +
 		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge host\n got %q\nwant %q", got, want)
@@ -483,6 +484,7 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 		"#[fg=#f00]" + bridgeDisconnectedGlyph + "  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
+		"#[fg=" + g6Hex + "]g6  " +
 		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge disconnected\n got %q\nwant %q", got, want)
@@ -511,6 +513,7 @@ func TestRenderLineBridgeStateParked(t *testing.T) {
 		"#[fg=#777]" + bridgeParkedGlyph + " offline — press a key  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
+		"#[fg=" + g6Hex + "]g6  " +
 		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge parked\n got %q\nwant %q", got, want)
@@ -787,28 +790,112 @@ func TestSessionSegmentHostMarker(t *testing.T) {
 	base := args{
 		session: "work", panePath: "/repo", branch: "main",
 		iconSession: "S", iconRemote: "R", iconBranch: "B",
-		thmMauve: "#c6a", thmBlue: "#89b",
+		thmMauve: "#c6a", thmBlue: "#89b", thmPeach: "#fab",
 	}
 
 	local := base
 	local.hostMarker = marker
 	got := sessionSegment(local, false)
-	want := "#[fg=#c6a] #[range=left]S work#[norange]  " + marker + "  #[fg=#89b,bold]B main"
+	want := "#[fg=#c6a] #[range=left]S work#[norange]  #[fg=#89b,bold]B main"
 	if got != want {
-		t.Fatalf("local window with marker\n got %q\nwant %q", got, want)
-	}
-
-	if got := sessionSegment(base, false); strings.Contains(got, "R lab") {
-		t.Fatalf("no marker must render none, got %q", got)
+		t.Fatalf("the marker belongs after the indicators, not the session name\n got %q\nwant %q", got, want)
 	}
 
 	placed := local
 	placed.bridgeWin, placed.bridgeHost = "1", "lab"
 	got = sessionSegment(placed, false)
-	if n := strings.Count(got, "R lab"); n != 1 {
-		t.Fatalf("placed window must show the marker only, once; got %d in %q", n, got)
+	if strings.Contains(got, "R lab") || strings.Contains(got, "#[fg=#fab]") {
+		t.Fatalf("placed window must print neither marker nor a separate host badge here: %q", got)
 	}
-	if strings.Contains(got, "#[fg=#fab]") {
-		t.Fatalf("placed window must not print a separate host segment: %q", got)
+
+	dedicated := base
+	dedicated.bridgeWin, dedicated.bridgeHost = "1", "lab"
+	if got := sessionSegment(dedicated, false); !strings.Contains(got, "#[fg=#fab]R lab") {
+		t.Fatalf("dedicated mirror keeps its name-side host badge: %q", got)
+	}
+}
+
+func hostLineArgs() args {
+	return args{
+		session: "work", branch: "main", panePath: "/repo", gitRoot: "/repo",
+		iconSession: "S", iconBranch: "B", iconDir: "D", iconRemote: "R",
+		thmBg: "#000", thmMauve: "#c6a", thmBlue: "#89b", thmText: "#cdd",
+		thmSubtext0: "#9a8", thmOverlay1: "#777", thmPeach: "#fab", thmTeal: "#tea",
+		paneIcon: "I", paneCmd: "zsh",
+	}
+}
+
+func TestRenderLineHostMarkerAfterIndicators(t *testing.T) {
+	marker := "#[fg=#fab387]⇄ lab"
+	a := hostLineArgs()
+	a.hostMarker = marker
+	a.dispatchers = ""
+	got := renderLine(a, t.TempDir(), false, "dark", false, 0, "", nil)
+	if n := strings.Count(got, marker); n != 1 {
+		t.Fatalf("marker must render once, got %d in %q", n, got)
+	}
+	nameEnd := strings.Index(got, "#[norange]")
+	if i := strings.Index(got, marker); i < nameEnd {
+		t.Fatalf("marker must not sit after the session name: %q", got)
+	}
+	if !strings.Contains(got, "  "+marker+" #[align=right]") {
+		t.Fatalf("marker must close the left block, got %q", got)
+	}
+
+	two := "#[fg=#fab387]⇄ #[fg=#fab387]lab #[fg=#94e2d5]mbp"
+	a.hostMarker = two
+	if got := renderLine(a, t.TempDir(), false, "dark", false, 0, "", nil); !strings.Contains(got, "  "+two+" #[align=right]") {
+		t.Fatalf("two-host marker must pass through intact: %q", got)
+	}
+
+	a.hostMarker = ""
+	if got := renderLine(a, t.TempDir(), false, "dark", false, 0, "", nil); strings.Contains(got, "⇄") {
+		t.Fatalf("no marker must render none: %q", got)
+	}
+}
+
+func TestRenderLineHostTopRight(t *testing.T) {
+	right := func(got string) string {
+		_, r, _ := strings.Cut(got, "#[align=right]")
+		return r
+	}
+	render := func(a args) string {
+		return right(renderLine(a, t.TempDir(), false, "dark", false, 0, "", nil))
+	}
+
+	local := hostLineArgs()
+	local.localHost = "nixos"
+	if got, want := render(local), "#[fg=#777]nixos  #[fg=#9a8]"; !strings.HasPrefix(got, want) {
+		t.Fatalf("local window: got %q, want prefix %q", got, want)
+	}
+
+	placed := hostLineArgs()
+	placed.localHost = "nixos"
+	placed.bridgeWin, placed.bridgeHost = "1", "lab"
+	placed.hostMarker = "#[fg=#fab]⇄ lab"
+	placed.remoteBridgeHosts = "lab"
+	hex := placed.hostHex("lab")
+	if got, want := render(placed), "#[fg="+hex+"]lab  #[fg=#9a8]"; !strings.HasPrefix(got, want) {
+		t.Fatalf("placed mirror: got %q, want prefix %q", got, want)
+	}
+
+	dedicated := hostLineArgs()
+	dedicated.localHost = "nixos"
+	dedicated.bridgeWin, dedicated.bridgeHost = "1", "lab"
+	dedicated.remoteBridgeHosts = "lab"
+	hex = dedicated.hostHex("lab")
+	if got, want := render(dedicated), "#[fg="+hex+"]lab  #[fg=#9a8]"; !strings.HasPrefix(got, want) {
+		t.Fatalf("dedicated mirror: got %q, want prefix %q", got, want)
+	}
+
+	none := hostLineArgs()
+	if got := render(none); !strings.HasPrefix(got, "#[fg=#9a8]") {
+		t.Fatalf("no host must emit nothing before the pane slot: %q", got)
+	}
+
+	long := hostLineArgs()
+	long.localHost = "a-very-long-hostname-indeed"
+	if got := render(long); strings.Contains(got, "indeed") {
+		t.Fatalf("host must be clipped: %q", got)
 	}
 }

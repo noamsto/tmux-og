@@ -122,11 +122,11 @@ picker_token() {
 	local lab srv
 	lab="$(picker_token "lab serverless" lab)"
 	srv="$(picker_token "lab serverless" serverless)"
-	[ "$(tmux show -v @session_host_marker)" = "#[fg=#{@thm_overlay_1}]R #[fg=${lab}]lab#[fg=#{@thm_overlay_1}] · #[fg=${srv}]serverless" ]
+	[ "$(tmux show -v @session_host_marker)" = "#[fg=#{@thm_overlay_1}]⇄ #[fg=${lab}]lab#[fg=#{@thm_overlay_1}] · #[fg=${srv}]serverless" ]
 
 	local expanded
 	expanded="$(tmux display-message -t S -p '#{E:@session_host_marker}')"
-	[[ $expanded == *'#[fg=#000000]R '* ]]
+	[[ $expanded == *'#[fg=#000000]⇄ '* ]]
 	[[ $expanded =~ \#\[fg=\#[0-9a-f]{6}\]lab ]]
 	[[ $expanded =~ \#\[fg=\#[0-9a-f]{6}\]serverless ]]
 	[[ $expanded == *' · '* ]]
@@ -188,10 +188,10 @@ picker_token() {
 
 	bash "$REFLOW" S 200 --force >/dev/null 2>&1
 
-	[ "$(tmux show -v @session_host_marker | sed 's/#\[[^]]*\]//g')" = "R lab" ]
+	[ "$(tmux show -v @session_host_marker | sed 's/#\[[^]]*\]//g')" = "⇄ lab" ]
 }
 
-@test "the folded line carries the marker after the session name" {
+@test "the folded line carries the marker after the agent windows, not the session name" {
 	tmux set -g @remote_bridge_hosts "lab"
 	tmux new-window -d
 	stamp_placed 1 lab
@@ -199,7 +199,10 @@ picker_token() {
 
 	bash "$REFLOW" S 200 --force >/dev/null 2>&1
 
-	[[ "$(tmux show -v status-format[0])" == *'#{session_name}#{?#{@session_host_marker}, #{E:@session_host_marker},}'* ]]
+	local fmt
+	fmt="$(tmux show -v status-format[0])"
+	[[ $fmt == *'#{W:#{?window_active,,'*'}}#{?#{@session_host_marker},  #{E:@session_host_marker},}' ]]
+	[[ $fmt != *'#{session_name}#{?#{@session_host_marker}'* ]]
 	[[ "$(tmux display-message -t S -p '#{E:@session_host_marker}')" == *lab* ]]
 }
 

@@ -8073,7 +8073,7 @@ local_win_intact() {
 	local_win_intact
 }
 
-@test "into: line 0 carries the session host marker on every window, never a placed-window host segment" {
+@test "into: line 0 carries the session host marker after the status indicators on every window, the active window host top right" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	into_host_up
 	bridge_up_into in5 rem --host lab
@@ -8088,11 +8088,23 @@ local_win_intact() {
 	$DST select-window -t "$local_win"
 	on_local="$(into_statusline)"
 
-	# Right after the session pill, on both windows.
-	[[ $on_placed == *'#[norange]  #[fg=#fab387]⇄ lab  '* ]]
-	[[ $on_local == *'#[norange]  #[fg=#fab387]⇄ lab  '* ]]
-	# The marker covers the placed window: no separate host segment beside it.
-	[ "$(grep -o 'lab' <<<"$on_placed" | wc -l | tr -d ' ')" -eq 1 ]
+	# After the agent/dispatcher segment and left of the right block, on both
+	# windows, exactly once.
+	local win line left right local_host
+	local_host="$($DST display-message -p '#{host_short}')"
+	for win in placed local; do
+		if [ "$win" = placed ]; then line="$on_placed"; else line="$on_local"; fi
+		left="${line%%#\[align=right\]*}"
+		right="${line#*#\[align=right\]}"
+		[[ $left == *'#[fg=#7f849c]'*'  #[fg=#fab387]⇄ lab '* ]]
+		[ "$(grep -o '⇄ lab' <<<"$left" | wc -l | tr -d ' ')" -eq 1 ]
+		[[ $right != *'⇄'* ]]
+		if [ "$win" = placed ]; then
+			[[ $right == *'lab'* ]]
+		else
+			[[ $right == *"$local_host"* ]]
+		fi
+	done
 
 	$DST set-option -u -t host @session_host_marker
 	on_none="$(into_statusline)"
