@@ -360,6 +360,9 @@ main() {
 	# sits in a different directory. win_poison fails a window closed when a '|' in
 	# a path has shifted its fields (see the read loop below).
 	declare -A win_cwd win_cwd_pane win_worktree win_cwd_seen win_poison
+	# Label memo (#1157): win_label_seen is @window_label_seen, win_wname the
+	# pipe-sanitized window_name; both first-pane-wins like win_cur_*.
+	declare -A win_label_seen win_wname win_active_path
 	# '|' delimiter, not tab: tab is IFS-whitespace, so an empty middle field (a
 	# window with no @branch yet) collapses and shifts every later field left,
 	# corrupting cur_branch/active flags. session_id ($N) is the session field —
@@ -395,11 +398,13 @@ main() {
 	# like session_id — they're safe as fixed middle fields no matter what's in
 	# neighboring paths; win_poison below fails a window closed when either reads
 	# outside that set, since a shifted row can never be told apart from a
-	# genuine one. @worktree and @window_cwd_seen are paths and carry the same
-	# '|' exposure pane_current_path already does, so both sit ahead of
-	# pane_active/window_active — a '|' in either then cannot shift the flags the
-	# rest of this script trusts as fixed-format.
-	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_crew_id cur_og_dispatchers pane_pid cur_task; do
+	# genuine one. @worktree, @window_cwd_seen and @window_label_seen are paths
+	# (the last may be "n:<window_name>") and carry the same '|' exposure
+	# pane_current_path already does, so all three sit ahead of
+	# pane_active/window_active — a '|' in any then cannot shift the flags the
+	# rest of this script trusts as fixed-format. window_name is free-form, so it
+	# is s/[|]/ /-wrapped and sits after that canary.
+	while IFS='|' read -r pane_id sess idx pidx pane_path proc cur_branch pane_floating cur_worktree cur_cwd_seen cur_label_seen pane_active window_active cur_ai_name cur_relaunch cur_display cur_padded cur_ago cur_rename opt_active_icon opt_session_fg cur_crew cur_crew_seen cur_bridge bridge_proc cur_img_src cur_has_agent cur_manual cur_naming_dirty cur_crew_id cur_wname cur_og_dispatchers pane_pid cur_task; do
 		[[ -n $pane_id ]] || continue
 		# A mirror pane runs the bridge renderer; @bridge_proc carries what the
 		# remote pane is actually running, which is what the icons should show.
@@ -442,6 +447,8 @@ main() {
 			win_cur_manual[$wkey]="$cur_manual"
 			win_cur_naming_dirty[$wkey]="$cur_naming_dirty"
 			win_cur_crew_id[$wkey]="$cur_crew_id"
+			win_label_seen[$wkey]="$cur_label_seen"
+			win_wname[$wkey]="$cur_wname"
 		fi
 		# cwd authority (#596): the FIRST NON-FLOATING pane, not the first pane full
 		# stop and not the active pane — a floating scratch pane commonly sits in a
@@ -458,6 +465,7 @@ main() {
 		# The task file is keyed by the pane Claude runs in, so resolve the genuinely
 		# active pane (list-panes orders by index, not active-first).
 		[[ $pane_active == 1 ]] && win_active_pane[$wkey]="${pane_id#%}"
+		[[ $pane_active == 1 ]] && win_active_path[$wkey]="$pane_path"
 		[[ $window_active == 1 ]] && sess_active_win[$sess]="$idx"
 		# Track each session's active pane command (active pane in that session's
 		# active window) — @active_pane_icon is session-scoped.
@@ -482,7 +490,7 @@ main() {
 		# A modal float is chrome, not window content: excluded from this pass
 		# entirely, and the pane under it counts as active while it's open. See
 		# docs/agents/floats.md.
-	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{s/[|]/ /:@crew_id}|#{@og_dispatchers}|#{pane_pid}|#{@window_task}')
+	done < <(tmux list-panes -a -f '#{!:#{pane_modal_flag}}' -F '#{pane_id}|#{session_id}|#{window_index}|#{pane_index}|#{pane_current_path}|#{pane_current_command}|#{@branch}|#{pane_floating_flag}|#{@worktree}|#{@window_cwd_seen}|#{@window_label_seen}|#{?window_modal_pane,#{pane_last},#{pane_active}}|#{window_active}|#{s/[|]/ /:@window_ai_name}|#{s/[|]/ /:@remux_relaunch}|#{@window_icon_display}|#{@window_icon_padded}|#{@window_claude_ago}|#{automatic-rename}|#{@active_pane_icon}|#{@claude_session_fg}|#{@crew_name}#{?#{@crew_dispatcher_host}, #{s/[|]/ /:@crew_dispatcher_host},}|#{@crew_seen}|#{@bridge_win}|#{@bridge_proc}|#{@claude_img_src}|#{@window_has_agent}|#{@window_manual_name}|#{@window_naming_dirty}|#{s/[|]/ /:@crew_id}|#{s/[|]/ /:window_name}|#{@og_dispatchers}|#{pane_pid}|#{@window_task}')
 
 	# Resolve runner placeholders: one ps for the whole tick, none when
 	# no pane runs a task runner.
@@ -801,8 +809,10 @@ main() {
 		# delegate the actual re-tagging to the reconciler, which already knows how
 		# to derive @worktree/@branch/@git_root/@issue_* from a target pane and
 		# bails on a bridge mirror itself — this gate only decides WHEN to fire it.
-		# No sess_need_reflow here: the reconciler forces its own reflow, and one
-		# fired from here would race ahead of the stamps it is meant to render.
+		# No sess_need_reflow here: the reconciler forces its own reflow after its
+		# stamps land. The label memo below requests a separate reflow for a cd,
+		# which can run ahead of those stamps; the reconciler's reflow follows and
+		# settles the end state.
 		if [[ $RECONCILE_BIN != @* && -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 && -n ${win_cwd[$wkey]:-} ]]; then
 			cwd="${win_cwd[$wkey]}"
 			# Free path: a cwd already inside its stamped worktree (same repo, or a
@@ -828,6 +838,26 @@ main() {
 					"$RECONCILE_BIN" "${win_cwd_pane[$wkey]}" --cwd-move >/dev/null 2>&1 &
 					disown 2>/dev/null || true
 				fi
+			fi
+		fi
+
+		# Label input no tmux hook reports (#1157): a plain `cd` or a typed rename
+		# changes what reflow renders but fires nothing. Memoize it and request a
+		# reflow on change. A manual window (automatic-rename off) is keyed on its
+		# name, every other window on its cwd — the ACTIVE pane's, since that is the
+		# path reflow labels from (#{pane_current_path} in its list-windows format),
+		# unlike the first-non-floating-pane cwd-move gate above.
+		if [[ -z ${win_poison[$wkey]:-} && ${win_cur_bridge[$wkey]:-} != 1 ]]; then
+			if [[ ${win_cur_manual[$wkey]:-} == 1 && ${win_cur_rename[$wkey]:-} != 1 ]]; then
+				label_key="n:${win_wname[$wkey]:-}"
+			else
+				label_key="p:${win_active_path[$wkey]:-$pane_path}"
+			fi
+			if [[ $label_key != "${win_label_seen[$wkey]:-}" ]]; then
+				# Direct argv, no -q: a path may contain a single quote (same hazard as
+				# the @window_cwd_seen write above).
+				tmux set-option -t "${win_cwd_pane[$wkey]:-$target}" -w @window_label_seen "$label_key"
+				sess_need_reflow[$s]=1
 			fi
 		fi
 

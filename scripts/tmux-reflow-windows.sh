@@ -182,8 +182,11 @@ has_zoom=0
 # local) is read beside it, '|' squashed, and suffixed to the badge as "⇄<host>".
 # @window_has_agent (#671) is a closed "1"/"" token, same shape, so it sits
 # right beside @crew_name — it gates the non-bridge crew badge below.
-# @bridge_win/window_name sit after it: bridge_win is "1" or empty, and a
-# window_name containing '|' is no worse off here than at the very end.
+# @window_manual_name and automatic-rename (#1157) are closed tokens too and
+# follow it. @bridge_win/window_name sit after them: bridge_win is "1" or
+# empty. window_name is the label of a manually renamed window, so it is
+# s/[|]/ /-wrapped to keep the trailing @window_bridge_name/@window_task fields
+# in place; the bridge arm's bwname fallback sees the sanitized value too.
 # @bridge_host is read only for a @bridge_placed window (a mirror placed into a
 # local session): every other window yields an empty field, so a '|' in a stray
 # window-scoped value cannot shift the columns after it.
@@ -191,7 +194,7 @@ has_zoom=0
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{window_id}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_glyph}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{window_id}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_glyph}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_manual_name}|#{automatic-rename}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{s/[|]/ /:window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
@@ -199,7 +202,7 @@ declare -A win_host win_host_dw win_host_disp win_bhost
 host_any=0         # 1 when some window is placed (gates the badge fragment in ENTRY)
 CREW_HOST_ICON='⇄' # plain Unicode (not a Nerd Font glyph); nerd alt: nf-md-remote
 crew_colw=0        # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prnum prglyph ibranch crew chost hasagent wai bridge bid brest bpr bcrew bhost wname bname wtask; do
+while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prnum prglyph ibranch crew chost hasagent wmanual wrename wai bridge bid brest bpr bcrew bhost wname bname wtask; do
 	indices+=("$idx")
 	win_wid[$idx]="$wid"
 	win_clip_prev[$idx]="$wclip"
@@ -261,6 +264,13 @@ while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prn
 		# PR segments are mode-independent.
 		build_window_label long "$iprov" "$iid" "$ititle" "$prnum" "$prglyph" "$branch" "$pane_path" "$wtask" "$wai"
 		win_rest_long[$idx]="$REPLY_REST"
+
+		# A typed rename (#1157) is the label: no id column, raw name, PR segment kept.
+		if [[ $wmanual == 1 && $wrename == 0 && -n $wname ]]; then
+			win_id[$idx]=""
+			win_rest_short[$idx]="$wname"
+			win_rest_long[$idx]="$wname"
+		fi
 
 		# Crew badge (#671): once a local window's last agent has exited,
 		# @window_has_agent goes empty and the badge must stop rendering here too

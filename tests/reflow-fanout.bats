@@ -806,3 +806,100 @@ setup_border_title() {
 	done
 	[ "$n" -eq 3 ]
 }
+
+# Window naming (#1157): tabs render reflow's @window_label_*, so a `cd` between
+# plain dirs and a typed rename must each request a reflow, and a manual name
+# must reach the label.
+cd_pane() {
+	tmux respawn-pane -k -t S:0 -c "$1"
+}
+
+@test "a plain window's cd requests a reflow and memoizes the new cwd (#1157)" {
+	local dir1="$TDIR/dir-one" dir2="$TDIR/dir-two"
+	mkdir -p "$dir1" "$dir2"
+	cd_pane "$dir1"
+	run_update_icons # stamps the memo; its reflow has logged (or the wait expired) before the next line
+	run_update_icons # settled
+
+	cd_pane "$dir2"
+	run_update_icons
+	grep -q -- '^S' "$REFLOW_LOG"
+	[ "$(tmux show -wv -t S:0 @window_label_seen)" = "p:$(tmux display -t S:0 -p '#{pane_current_path}')" ]
+
+	run_update_icons # no change: run_update_icons waits up to 2s for a log line
+	[ ! -s "$REFLOW_LOG" ]
+}
+
+@test "a cd in the active pane of a split window requests a reflow (#1157)" {
+	local dir1="$TDIR/dir-one" dir2="$TDIR/dir-two"
+	mkdir -p "$dir1" "$dir2"
+	cd_pane "$dir1"
+	local pane2
+	pane2=$(tmux split-window -P -F '#{pane_id}' -t S:0 -c "$dir1") # the new pane is active
+	[ "$(tmux display -t "$pane2" -p '#{pane_active}')" = 1 ]
+	run_update_icons
+	run_update_icons # settled
+
+	# Reflow labels from the active pane; the first pane's cwd is unchanged.
+	tmux respawn-pane -k -t "$pane2" -c "$dir2"
+	run_update_icons
+	grep -q -- '^S' "$REFLOW_LOG"
+	[ "$(tmux show -wv -t S:0 @window_label_seen)" = "p:$dir2" ]
+}
+
+@test "a manual rename requests a reflow and memoizes the typed name (#1157)" {
+	tmux set -wq -t S:0 @window_manual_name 1
+	tmux rename-window -t S:0 typed # also turns automatic-rename off
+	run_update_icons
+	[ "$(tmux show -wv -t S:0 @window_label_seen)" = "n:typed" ]
+
+	tmux rename-window -t S:0 typed2
+	run_update_icons
+	grep -q -- '^S' "$REFLOW_LOG"
+	[ "$(tmux show -wv -t S:0 @window_label_seen)" = "n:typed2" ]
+}
+
+@test "a non-manual window's rename does not key the label memo on the name (#1157)" {
+	local dir1="$TDIR/dir-one"
+	mkdir -p "$dir1"
+	cd_pane "$dir1"
+	run_update_icons
+
+	tmux rename-window -t S:0 typed
+	run_update_icons # no cd, no manual name: nothing to reflow
+	[ ! -s "$REFLOW_LOG" ]
+	[[ $(tmux show -wv -t S:0 @window_label_seen) != n:* ]]
+}
+
+# Stamp a manual-named window in $TDIR/d, run the real reflow, leave the label
+# options for the caller to assert.
+reflow_manual_window() {
+	local name=$1 autorename=${2:-off}
+	mkdir -p "$TDIR/d"
+	cd_pane "$TDIR/d"
+	tmux set -wq -t S:0 @window_manual_name 1
+	tmux rename-window -t S:0 "$name"
+	tmux set-window-option -t S:0 automatic-rename "$autorename"
+	[ "$(tmux display -t S:0 -p '#{window_name}')" = "$name" ]
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+}
+
+@test "a manual-named window's label is the typed name, with no id column (#1157)" {
+	reflow_manual_window typed
+	[ "$(tmux show -wv -t S:0 @window_label_short)" = "typed" ]
+	[ "$(tmux show -wv -t S:0 @window_label_rest_long)" = "typed" ]
+	[ -z "$(tmux show -wv -t S:0 @window_label_id)" ]
+}
+
+@test "a manual name stores '#' unchanged and a '|' as a space (#1157)" {
+	reflow_manual_window 'a#b'
+	[ "$(tmux show -wv -t S:0 @window_label_rest_long)" = 'a#b' ]
+	reflow_manual_window 'api | web'
+	[ "$(tmux show -wv -t S:0 @window_label_rest_long)" = 'api   web' ]
+}
+
+@test "a manual-flagged window with automatic-rename on keeps the derived label (#1157)" {
+	reflow_manual_window typed on
+	[ "$(tmux show -wv -t S:0 @window_label_short)" = "d" ]
+	[ "$(tmux show -wv -t S:0 @window_label_rest_long)" = "d" ]
+}
