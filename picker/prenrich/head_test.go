@@ -122,6 +122,8 @@ func TestHeadStale_NewPRSeenLateWithoutChecksHead(t *testing.T) {
 			p := headPassEnv(t)
 			if seed != "" {
 				p.seedChecks(seed)
+				// Predates the identity fetch that first showed the head.
+				touchAt(p.cache(p.key(headRepo, headBranch)+".checks.json"), time.Unix(1, 0))
 			}
 			p.gh(identBatchArgs, "["+prObjHead(headBranch, "H", isoAgo(1000))+"]", nil)
 			p.gh(checksBatchArgs, "", errors.New("offline"))
@@ -213,17 +215,54 @@ func TestHeadStale_PRMissingFromChecksBatchRefetchesOnce(t *testing.T) {
 	p.gh(checksBatchArgs, "["+checksObj("other", "Z", successRollup)+"]", nil)
 
 	p.e.runFullPass(false)
-	first := checksBatchCalls(p)
-	if first > 1 {
-		t.Errorf("first pass checks batch calls = %d, want at most 1", first)
+	if n := checksBatchCalls(p); n != 1 {
+		t.Errorf("first pass checks batch calls = %d, want exactly 1", n)
 	}
 
 	p.e.runFullPass(false)
-	if n := checksBatchCalls(p) - first; n != 0 {
+	if n := checksBatchCalls(p) - 1; n != 0 {
 		t.Errorf("second pass checks batch calls = %d, want 0 (at most one refetch per head)", n)
 	}
 	if got := lastOpt(t, p, "@pr_check_state"); got == "pending" {
 		t.Errorf("@pr_check_state stuck at pending after the refetch settled")
+	}
+}
+
+// Every window of a branch reads the same checks cache, so an out-of-batch PR
+// whose refetch just ran must not read pending in any of them nor arm a marker.
+func TestHeadStale_WindowsOnOneBranchAgree(t *testing.T) {
+	p := headPassEnv(t)
+	p.windows(
+		row("$1:@1", "/a", "", headBranch, ""),
+		row("$1:@2", "/a", "", headBranch, ""),
+	)
+	p.gh(identBatchArgs, "[]", nil)
+	p.gh("pr list --head "+headBranch+" --state all",
+		"["+prObjHead(headBranch, "H", isoAgo(86400))+"]", nil)
+	p.gh(checksBatchArgs, "["+checksObj("other", "Z", successRollup)+"]", nil)
+	p.e.runFullPass(false)
+
+	got := map[string]string{}
+	for _, c := range setOptCalls(p.f) {
+		if c.args[len(c.args)-2] == "@pr_check_state" {
+			got[c.args[2]] = c.args[len(c.args)-1]
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("@pr_check_state written for %d windows, want 2: %v", len(got), got)
+	}
+	var first string
+	for target, state := range got {
+		if first == "" {
+			first = state
+		}
+		if state != first || state == "pending" {
+			t.Errorf("windows disagree or stuck pending: %v (%s)", got, target)
+		}
+	}
+	markers, _ := filepath.Glob(filepath.Join(p.e.cacheDir, "*.checks-pending*"))
+	if len(markers) != 0 {
+		t.Errorf("pending marker armed for a settled PR: %v", markers)
 	}
 }
 
@@ -249,8 +288,14 @@ func TestHeadStale_EmptyChecksHeadFollowsStampMtime(t *testing.T) {
 	checks, stamp := checksPath(cache), stampPath(cache)
 	at := func(path string, sec int64) { touchAt(path, time.Unix(sec, 0)) }
 
+	at(checks, 100)
+	at(cache, 100)
+	if headStale(cache) {
+		t.Error("no stamp, checks fetched in the same second as the identity: want not stale")
+	}
+	at(cache, 101)
 	if !headStale(cache) {
-		t.Error("no stamp: want stale")
+		t.Error("no stamp, checks older than the identity fetch: want stale")
 	}
 	writeCache(t, filepath.Dir(cache), "k.head-seen", "H\n1\n")
 	at(checks, 100)
@@ -281,6 +326,22 @@ func TestHeadSettling_StampWrittenOnlyOnOidChange(t *testing.T) {
 	e.headSettling(cache, "H", created)
 	if got := fileMtime(stamp); got != 500 {
 		t.Errorf("stamp rewritten for an unchanged oid (mtime %d)", got)
+	}
+}
+
+func TestHeadSettling_StampDatedByIdentityFetch(t *testing.T) {
+	for name, stamp := range map[string]string{"no stamp": "", "stamp holds another oid": "old\n1\n"} {
+		t.Run(name, func(t *testing.T) {
+			e, cache := headCache(t, `[{"state":"OPEN","headRefOid":"newoid"}]`, "")
+			touchAt(cache, time.Unix(1000, 0))
+			if stamp != "" {
+				writeCache(t, filepath.Dir(cache), "k.head-seen", stamp)
+			}
+			e.headSettling(cache, "newoid", isoAgo(30))
+			if got := fileMtime(stampPath(cache)); got != 1000 {
+				t.Errorf("stamp mtime = %d, want 1000 (the identity fetch, not the write)", got)
+			}
+		})
 	}
 }
 

@@ -36,7 +36,9 @@ func stampPath(cache string) string {
 // live head. A differing head is always stale. An empty checks head (no cache,
 // or the PR was outside the checks batch) is stale only while the checks cache
 // predates our sight of the head, so a PR the batch never lists is refetched
-// once per head rather than every pass.
+// once per head rather than every pass. The head-seen stamp dates that sight,
+// else the identity fetch that showed the head, so every window of a branch
+// agrees whether or not headSettling has stamped it yet.
 func headStale(cache string) bool {
 	id := readIdentity(cache)
 	if id.state != "OPEN" || id.head == "" {
@@ -47,7 +49,10 @@ func headStale(cache string) bool {
 		return h != id.head
 	}
 	seen, fetched := fileMtime(stampPath(cache)), fileMtime(checks)
-	return seen == 0 || fetched == 0 || fetched < seen
+	if seen == 0 {
+		seen = fileMtime(cache)
+	}
+	return fetched == 0 || fetched < seen
 }
 
 // headSettling reports whether the open PR's head was first seen less than
