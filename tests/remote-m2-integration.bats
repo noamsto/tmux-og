@@ -8102,8 +8102,8 @@ local_win_intact() {
 		if [ "$win" = placed ]; then
 			[[ $right == *'lab'* ]]
 		else
-			# The segment clips at 16 cells (15 + an ellipsis); runner hostnames can be longer.
-			[[ $right == *"${local_host:0:15}"* ]]
+			# The segment clips at 16 runes; runner hostnames can be longer.
+			[[ $right == *"${local_host:0:16}"* ]]
 		fi
 	done
 
