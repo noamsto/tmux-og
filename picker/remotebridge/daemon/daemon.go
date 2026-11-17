@@ -54,9 +54,10 @@ type Config struct {
 	// any transport where there is no remote filesystem to fetch from).
 	NewGraphics func(paneID string) *graphics.Proxy
 	// PasteUpload ships one clipboard image to the remote over the bridge's
-	// ssh ControlMaster and returns the remote path it landed at (#361). nil
-	// disables ctrl+v image-paste interception (tests, --test-local).
-	PasteUpload func(ctx context.Context, ext string, data []byte) (string, error)
+	// ssh ControlMaster, storing it at path, which the daemon picked (#361).
+	// It returns once the file exists or the store failed. nil disables
+	// ctrl+v image-paste interception (tests, --test-local).
+	PasteUpload func(ctx context.Context, path string, data []byte) error
 	// RendererDied is death.wake, stamped onto cfg once per Run so pumpInput
 	// can wake the main loop without threading a parameter through the whole
 	// reconcile call chain. nil is legal — every test that builds a bare
@@ -3623,10 +3624,13 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 				if died != nil {
 					died()
 				}
-				// A paste still uploading owns bytes only this goroutine may
-				// send: finish it so its path and the held input are not lost.
-				if paste != nil && paste.pumping {
-					paste.replay(paste.finish(remotePane, <-paste.results()), deliver)
+				// A paste still in flight owns bytes only this goroutine may
+				// send: settle it through its ready and its final so the path,
+				// a failure's erase and the held input are not lost. This
+				// waits for the extract and the upload, so the return can
+				// block up to clipTimeout plus pasteTimeout.
+				for paste != nil && paste.pumping() {
+					paste.settle(remotePane, <-paste.results(), deliver)
 				}
 				return
 			}
@@ -3655,10 +3659,11 @@ func pumpInput(conn net.Conn, remotePane string, send func(string), paste *paste
 			deliver(carry)
 			carry = nil
 		case r := <-paste.results():
-			// The path and the input held behind it go out from here, the one
-			// goroutine that sends this pane's typing, so their order is fixed.
+			// The path, a failure's erase and the input held behind them go
+			// out from here, the one goroutine that sends this pane's typing,
+			// so their order is fixed.
 			if paste != nil {
-				paste.replay(paste.finish(remotePane, r), deliver)
+				paste.settle(remotePane, r, deliver)
 			}
 		}
 	}

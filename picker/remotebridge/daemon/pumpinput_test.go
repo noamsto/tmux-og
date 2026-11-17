@@ -794,124 +794,216 @@ func TestPumpInputPasteMarkerSplitByCarryFlush(t *testing.T) {
 	}
 }
 
-// TestPumpInputPasteKeepsPaneResponsive drives the production chain: text
-// typed during an upload is sent at once and lands before the path, Enter
-// waits until the path is injected, and a failed upload releases it anyway.
-func TestPumpInputPasteKeepsPaneResponsive(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		t.Run(fmt.Sprintf("fail=%v", fail), func(t *testing.T) {
-			conn, peer := net.Pipe()
-			defer func() { _ = conn.Close() }()
-			defer func() { _ = peer.Close() }()
-			f := newPasteFixture()
-			release := make(chan struct{})
-			f.h.upload = func(context.Context, string, []byte) (string, error) {
-				<-release
-				if fail {
-					return "", errors.New("exit status 1")
-				}
-				return f.uploadOut, nil
-			}
-			sends := make(chan string, 32)
-			f.h.sendCtl = func(cmds ...string) bool { sends <- cmds[0]; return true }
-			go pumpInput(conn, "%1", func(s string) { sends <- s }, f.h, nil, nil, nil)
+// pumpPasteRig runs the production pumpInput on pane %7 with a paste fixture
+// whose sendCtl shares pumpInput's send channel, as SendCtl and send share
+// one writer in production, so the channel shows their combined order.
+type pumpPasteRig struct {
+	f      *pasteFixture
+	peer   net.Conn
+	sends  chan string
+	seen   chan struct{}
+	died   chan struct{}
+	exited chan struct{}
+}
 
-			write := func(s string) {
-				t.Helper()
-				if err := wire.WriteFrame(peer, wire.FrameInput, []byte(s)); err != nil {
-					t.Fatalf("write %q: %v", s, err)
-				}
+// newPumpPasteRig starts pumpInput after mutate has set up the fixture: the
+// handler's fields are read on the pump goroutine from then on.
+func newPumpPasteRig(t *testing.T, mutate func(*pasteFixture)) *pumpPasteRig {
+	t.Helper()
+	conn, peer := net.Pipe()
+	t.Cleanup(func() { _ = conn.Close(); _ = peer.Close() })
+	r := &pumpPasteRig{
+		f:      newPasteFixture(),
+		peer:   peer,
+		sends:  make(chan string, 64),
+		seen:   make(chan struct{}, 64),
+		died:   make(chan struct{}),
+		exited: make(chan struct{}),
+	}
+	mutate(r.f)
+	r.f.h.sendCtl = func(cmds ...string) bool {
+		for _, c := range cmds {
+			r.sends <- c
+		}
+		return true
+	}
+	go func() {
+		pumpInput(conn, "%7", func(s string) { r.sends <- s }, r.f.h, func() { close(r.died) }, func() { r.seen <- struct{}{} }, nil)
+		close(r.exited)
+	}()
+	return r
+}
+
+// write sends one input frame and waits until the pump takes it up: seen
+// fires before the frame is delivered, after every earlier frame was.
+func (r *pumpPasteRig) write(t *testing.T, s string) {
+	t.Helper()
+	if err := wire.WriteFrame(r.peer, wire.FrameInput, []byte(s)); err != nil {
+		t.Fatalf("write %q: %v", s, err)
+	}
+	select {
+	case <-r.seen:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("the pump never took up %q", s)
+	}
+}
+
+// next returns the bytes of the next send-keys to the pane, skipping the
+// other commands (the dead-key guard).
+func (r *pumpPasteRig) next(t *testing.T, what string) string {
+	t.Helper()
+	for {
+		select {
+		case s := <-r.sends:
+			if b, ok := sendKeysBytes(t, s); ok {
+				return string(b)
 			}
-			next := func(what string) string {
-				t.Helper()
-				for {
-					select {
-					case s := <-sends:
-						if strings.HasPrefix(s, "send-keys") {
-							return s
-						}
-					case <-time.After(2 * time.Second):
-						t.Fatalf("no send for %s", what)
-						return ""
+		case <-time.After(2 * time.Second):
+			t.Fatalf("no send for %s", what)
+			return ""
+		}
+	}
+}
+
+// assertNoSendKeys pins that nothing reached the pane so far. Every send the
+// pump makes for a frame is queued before the pump takes up the next frame,
+// so after write returns this needs no wait.
+func (r *pumpPasteRig) assertNoSendKeys(t *testing.T, why string) {
+	t.Helper()
+	for {
+		select {
+		case s := <-r.sends:
+			if b, ok := sendKeysBytes(t, s); ok {
+				t.Fatalf("%s: %q", why, b)
+			}
+		default:
+			return
+		}
+	}
+}
+
+// TestPumpInputPasteKeepsPaneResponsive drives the production chain: the path
+// is in the prompt while the upload runs, text typed then is sent at once,
+// Enter waits for the upload, and a failed upload releases it anyway — after
+// erasing the path when nothing passed since, else leaving it and saying so.
+func TestPumpInputPasteKeepsPaneResponsive(t *testing.T) {
+	cases := []struct {
+		name           string
+		fail, typeText bool
+	}{
+		{"success", false, true},
+		{"failure after text passed", true, true},
+		{"failure with nothing passed", true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			release := make(chan struct{})
+			r := newPumpPasteRig(t, func(f *pasteFixture) {
+				f.h.upload = func(context.Context, string, []byte) error {
+					<-release
+					if c.fail {
+						return errors.New("exit status 1")
 					}
+					return nil
+				}
+			})
+			r.write(t, "\x16")
+			if got := r.next(t, "the ready path"); got != f0path+" " {
+				t.Fatalf("first send = %q, want the path and its space", got)
+			}
+			if c.typeText {
+				// The upload is blocked on release, so this send is mid-upload.
+				r.write(t, "hi")
+				if got := r.next(t, "text typed mid-upload"); got != "hi" {
+					t.Fatalf("mid-upload text send = %q", got)
 				}
 			}
-			write("\x16")
-			write("hi")
-			if got := next("text typed mid-upload"); got != "send-keys -H -t %1 68 69" {
-				t.Fatalf("mid-upload text send = %q", got)
-			}
-			write("\r")
-			for held := time.After(100 * time.Millisecond); ; {
-				select {
-				case s := <-sends:
-					if strings.HasPrefix(s, "send-keys") {
-						t.Fatalf("Enter reached the remote before the upload finished: %q", s)
-					}
-					continue
-				case <-held:
-				}
-				break
-			}
+			r.write(t, "\r")
+			// Once the pump takes up the next frame it has delivered the Enter.
+			r.write(t, "x")
+			r.assertNoSendKeys(t, "input after Enter reached the remote before the upload finished")
 			close(release)
-			if !fail {
-				path := next("path injection")
-				if !strings.HasSuffix(path, " 20") || !strings.HasPrefix(path, "send-keys -H -t %1 ") {
-					t.Fatalf("path injection = %q", path)
+			if c.fail && !c.typeText {
+				if got := r.next(t, "the erase"); got != strings.Repeat("\x7f", len(f0path)+1) {
+					t.Fatalf("send after the failure = %q, want the path erased first", got)
 				}
-			} else if msg := f.awaitNotify(t); !strings.Contains(msg, "upload to remote failed") {
-				t.Fatalf("notify = %q", msg)
 			}
-			if got := next("held Enter"); got != "send-keys -H -t %1 0d" {
+			if got := r.next(t, "the held Enter"); got != "\r" {
 				t.Fatalf("held Enter send = %q", got)
+			}
+			if got := r.next(t, "the text held behind Enter"); got != "x" {
+				t.Fatalf("held text send = %q", got)
+			}
+			if !c.fail {
+				r.f.assertNoNotify(t)
+				return
+			}
+			msg := r.f.awaitNotify(t)
+			if !strings.Contains(msg, "upload to remote failed") {
+				t.Errorf("notify = %q", msg)
+			}
+			if left := strings.Contains(msg, "path left in the prompt"); left != c.typeText {
+				t.Errorf("notify = %q, path-left note = %v, want %v", msg, left, c.typeText)
 			}
 		})
 	}
 }
 
 // TestPumpInputConnCloseMidUploadStillInjects pins that a renderer connection
-// closing during the upload does not lose the image or the held keys.
+// closing during a paste — while the bytes are read, or while they upload —
+// does not lose the path or the held keys: pumpInput settles the paste to its
+// final before it returns.
 func TestPumpInputConnCloseMidUploadStillInjects(t *testing.T) {
-	conn, peer := net.Pipe()
-	defer func() { _ = conn.Close() }()
-	f := newPasteFixture()
-	release := make(chan struct{})
-	f.h.upload = func(context.Context, string, []byte) (string, error) {
-		<-release
-		return f.uploadOut, nil
-	}
-	sends := make(chan string, 32)
-	f.h.sendCtl = func(cmds ...string) bool { sends <- cmds[0]; return true }
-	exited := make(chan struct{})
-	go func() {
-		pumpInput(conn, "%1", func(s string) { sends <- s }, f.h, nil, nil, nil)
-		close(exited)
-	}()
-	for _, s := range []string{"\x16", "\r"} {
-		if err := wire.WriteFrame(peer, wire.FrameInput, []byte(s)); err != nil {
-			t.Fatal(err)
+	t.Run("while uploading", func(t *testing.T) {
+		release := make(chan struct{})
+		r := newPumpPasteRig(t, func(f *pasteFixture) {
+			f.h.upload = func(context.Context, string, []byte) error { <-release; return nil }
+		})
+		r.write(t, "\x16")
+		if got := r.next(t, "the ready path"); got != f0path+" " {
+			t.Fatalf("first send = %q, want the path", got)
 		}
-	}
-	time.Sleep(50 * time.Millisecond)
-	_ = peer.Close()
-	close(release)
-	var got []string
-	for len(got) < 2 {
+		r.write(t, "\r")
+		_ = r.peer.Close()
+		<-r.died
+		close(release)
+		if got := r.next(t, "the held Enter"); got != "\r" {
+			t.Errorf("send after close = %q, want the held Enter", got)
+		}
 		select {
-		case s := <-sends:
-			if strings.HasPrefix(s, "send-keys") {
-				got = append(got, s)
-			}
+		case <-r.exited:
 		case <-time.After(2 * time.Second):
-			t.Fatalf("sends after close = %q, want the path then the held Enter", got)
+			t.Error("pumpInput never returned")
 		}
-	}
-	if !strings.HasSuffix(got[0], " 20") || got[1] != "send-keys -H -t %1 0d" {
-		t.Errorf("sends = %q", got)
-	}
-	select {
-	case <-exited:
-	case <-time.After(2 * time.Second):
-		t.Error("pumpInput never returned")
-	}
+	})
+
+	t.Run("while reading", func(t *testing.T) {
+		extracted := make(chan struct{})
+		r := newPumpPasteRig(t, func(f *pasteFixture) {
+			f.h.probeClipboard = func() (clipboardProbe, bool, error) {
+				return clipboardProbe{ext: "png", extract: func() ([]byte, error) {
+					<-extracted
+					return []byte("png-bytes"), nil
+				}}, true, nil
+			}
+		})
+		r.write(t, "\x16")
+		r.write(t, "\r")
+		_ = r.peer.Close()
+		// The close is handled while the bytes are still being read.
+		<-r.died
+		r.assertNoSendKeys(t, "sent before the clipboard was read")
+		close(extracted)
+		if got := r.next(t, "the ready path"); got != f0path+" " {
+			t.Fatalf("first send after close = %q, want the path", got)
+		}
+		if got := r.next(t, "the held Enter"); got != "\r" {
+			t.Errorf("second send after close = %q, want the held Enter", got)
+		}
+		select {
+		case <-r.exited:
+		case <-time.After(2 * time.Second):
+			t.Error("pumpInput never returned")
+		}
+	})
 }

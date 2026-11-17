@@ -390,8 +390,8 @@ func TestPasterUsesPlainHooks(t *testing.T) {
 			plainCalls++
 			return "%1|claude|\n", nil
 		},
-		PasteUpload: func(ctx context.Context, ext string, data []byte) (string, error) {
-			return "", nil
+		PasteUpload: func(ctx context.Context, path string, data []byte) error {
+			return nil
 		},
 	}
 	routed := plain.routing(func(fn func()) {
