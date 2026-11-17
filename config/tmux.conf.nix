@@ -617,9 +617,8 @@
     pkgs.writeShellScriptBin name patched;
 
   # tmux-crew-dash execs its sibling tmux-float-group, and a mirror window's ctl,
-  # by store path: PATH is the
-  # tmux server's, and a launcher started from a pane shell (the dispatcher) may
-  # run with a different one. Its own builder for the same reason as @reflow@
+  # by store path: PATH is the tmux server's, and a launcher started from a pane
+  # shell (the dispatcher) may run with a different one. Its own builder for the same reason as @reflow@
   # above: a bare name resolves against whatever PATH the caller has.
   mkScriptCrewDash = name:
     pkgs.writeShellScriptBin name (
