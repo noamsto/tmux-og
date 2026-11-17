@@ -165,7 +165,9 @@ func TestCrewRepoTagEvaluates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	// A scratch server must not touch the live one or the shared status/data dirs,
-	// and -f /dev/null keeps a wrapped tmux from loading the full og config.
+	// (the env overrides isolate it; -f /dev/null does not stop a wrapped tmux
+	// from also loading the og config, which only the flake check's unwrapped
+	// tmux avoids).
 	env := append(os.Environ(), "TMUX_TMPDIR="+dir, "TMUX=",
 		"CLAUDE_STATUS_DIR="+filepath.Join(dir, "status"), "XDG_DATA_HOME="+filepath.Join(dir, "data"))
 	t.Cleanup(func() {
