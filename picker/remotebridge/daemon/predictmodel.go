@@ -207,13 +207,11 @@ func (f *titleFilter) filter(dst, p []byte) []byte {
 // vtGuard sits in front of vt and poisons the model on bytes where vt and tmux
 // part ways: C1 controls vt executes in every state but OSC/DCS bodies, a stray
 // or malformed UTF-8 byte tmux draws as U+FFFD, a byte >= 0x80 inside an escape
-// sequence tmux ignores, and c2 80..9f. That last one is poisoned because
-// U+0080..U+009F spells the C1 family and tmux draws it zero-width where vt's
-// grapheme path overwrites the cursor cell. Any other zero-width rune printed
-// with no base in the same Write (after CR/CUP, or after an ASCII char) has the
-// same vt/tmux divergence and is tolerated, because the predictor skips
-// Width!=1 cells. The guard follows vt's parser table, so it costs one lookup
-// per byte and the zero value is Ground.
+// sequence tmux ignores, and c2 80..9f (U+0080..U+009F, which tmux draws
+// zero-width where vt's grapheme path overwrites the cursor cell). Other
+// zero-width runes printed with no base in the same Write diverge the same way
+// and are tolerated: the predictor skips Width!=1 cells. The guard follows vt's
+// parser table, one lookup per byte; the zero value is Ground.
 type vtGuard struct {
 	st     parser.State
 	need   int
