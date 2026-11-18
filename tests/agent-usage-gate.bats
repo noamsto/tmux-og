@@ -240,14 +240,21 @@ claude'
 @test "tick-run: a failed pane scan clears no cache" {
 	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	echo '{}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	touch "$OG_AGENT_USAGE_DIR/.published."
 	cat >"$FAKEBIN/tmux" <<-'EOF'
 		#!/bin/sh
-		exit 1
+		case "$1" in
+		list-panes) exit 1 ;;
+		set) printf '%s\n' "$*" >>"$TMUX_SET_LOG" ;;
+		esac
+		exit 0
 	EOF
 	chmod +x "$FAKEBIN/tmux"
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ -e "$OG_AGENT_USAGE_DIR/claude.json" ]
+	[ ! -s "$TMUX_SET_LOG" ]
+	[ -e "$OG_AGENT_USAGE_DIR/.published." ]
 }
 
 @test "tick-run: publishes the surviving caches onto @og_agent_usage" {
@@ -318,6 +325,19 @@ claude'
 	: >"$TMUX_SET_LOG"
 	run bash "$AGENT_USAGE_SCRIPT" --tick
 	[ ! -s "$TMUX_SET_LOG" ]
+}
+
+@test "the published memo is per tmux server: a second server's empty pass leaves the first's alone" {
+	export FAKE_PANES='claude'
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
+	echo '{"windows":[{"label":"5h","pct":42}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	TMUX=/tmp/a/default,1,0 run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ -e "$OG_AGENT_USAGE_DIR/.published._tmp_a_default" ]
+	: >"$TMUX_SET_LOG"
+	export FAKE_PANES='bash'
+	TMUX=/tmp/b/default,2,0 run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ ! -s "$TMUX_SET_LOG" ]
+	[ -e "$OG_AGENT_USAGE_DIR/.published._tmp_a_default" ]
 }
 
 # A wrapper keeps the shell foreground and the agent in its process tree; the

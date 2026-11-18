@@ -48,7 +48,11 @@ AGENT_COMMANDS="@AGENT_COMMANDS@"
 
 declare -gA OPEN=()
 SCAN_OK=0
-PUBLISHED="$CACHE_DIR/.published"
+# The memo is per tmux server: CACHE_DIR is per user, the options are per
+# server, so a shared memo lets one server's clear delete the other's.
+sock=${TMUX:-}
+sock=${sock%%,*}
+PUBLISHED="$CACHE_DIR/.published.${sock//[^A-Za-z0-9_-]/_}"
 
 # publish_usage: ships the surviving cache files as one compact JSON object
 # (keyed by cache name) onto the global @og_agent_usage option, for the

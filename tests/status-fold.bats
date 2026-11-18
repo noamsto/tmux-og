@@ -135,6 +135,20 @@ log_status() {
 	[ "$(status_lines)" -eq "$WANT" ]
 }
 
+# A forced pass that waited on the lock re-reads the fold flag once it owns it:
+# the press that flipped the flag meanwhile must win over the pre-lock snapshot.
+@test "forced reflow re-reads the fold flag after acquiring the lock" {
+	local lock="$TDIR/og-reflow.lock.S"
+	mkdir "$lock"
+	bash "$REFLOW" S 60 --force >/dev/null 2>&1 &
+	sleep 0.5
+	tmux set -t S @og_status_folded 1
+	rmdir "$lock"
+	wait
+	[ "$(status_lines)" = 1 ]
+	tmux show -v -t S 'status-format[0]' | grep -Fq '#{session_name}'
+}
+
 @test "three rapid toggles end folded" {
 	press_bg
 	press_bg
@@ -185,6 +199,15 @@ fold_render() {
 	done
 }
 
+# Re-read the drawn row (no reflow) until it contains $1.
+recapture_until() {
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		sleep 0.3
+		LINE=$(tmux -L out capture-pane -p | grep -v '^$' | tail -1)
+		[[ $LINE == *"$1"* ]] && return 0
+	done
+}
+
 @test "folded: windows keep index order with the current one expanded in place" {
 	fold_render 100 3
 	[[ $LINE =~ 0\ I0.*1\ I1.*2\ I2.*3:\ lab3.*4\ I4.*5\ I5.*6\ I6.*7\ I7 ]]
@@ -217,6 +240,10 @@ fold_render() {
 	[[ $LINE =~ 2:.*R\>\ labhost ]]
 	# The host colour (#fab387) reaches the cell: dropping #[fg=FOLD_HC] fails here.
 	[[ $(tmux -L out capture-pane -ep | grep -v '^$' | tail -1) == *"38;2;250;179;135m"* ]]
+	# @icon_remote is read live: a change with no reflow reaches the drawn line.
+	tmux set -g @icon_remote "Q>"
+	recapture_until "Q>"
+	[[ $LINE =~ 2:.*Q\>\ labhost ]]
 }
 
 @test "folded: the right segment shows when wide and goes first when narrow" {
