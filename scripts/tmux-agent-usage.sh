@@ -52,18 +52,34 @@ declare -gA OPEN=()
 # (keyed by cache name) onto the global @og_agent_usage option, for the
 # bridge daemon to sanitize and ship into a mirror session. A jq failure
 # (torn/garbage cache) leaves the option as it was — same "failed refresh
-# keeps the previous value" posture as the providers themselves.
+# keeps the previous value" posture as the providers themselves. The same jq
+# pass builds @og_usage_short, the folded status line's plain-text form
+# (`claude 80% codex 12%`: the highest window pct per agent). It lands in a
+# tmux format, so agent keys are held to [a-z]+ and pct to an integer.
 publish_usage() {
-	local files=() f v
+	local files=() f v out short
 	for f in "$CACHE_DIR"/claude.json "$CACHE_DIR"/codex.json "$CACHE_DIR"/cursor.json "$CACHE_DIR"/pi.json; do
 		[[ -f $f ]] && files+=("$f")
 	done
 	if ((${#files[@]} == 0)); then
 		tmux set -gu @og_agent_usage
+		tmux set -gu @og_usage_short
 		return
 	fi
-	v=$(jq -cn 'reduce inputs as $c ({}; . + {(input_filename | split("/") | last | rtrimstr(".json")): $c})' "${files[@]}") || return
+	out=$(jq -rn 'reduce inputs as $c ({}; . + {(input_filename | split("/") | last | rtrimstr(".json")): $c})
+		| tojson,
+		  ([to_entries[] | select(.key | test("^[a-z]+$"))
+		    | ([.value | objects | .windows | arrays[] | objects | .pct | numbers] | max) as $m
+		    | select($m != null) | "\(.key) \($m | round)%"] | join(" "))' "${files[@]}") || return
+	v=${out%%$'\n'*}
+	short=""
+	[[ $out == *$'\n'* ]] && short=${out#*$'\n'}
 	tmux set -g @og_agent_usage "$v"
+	if [[ -n $short ]]; then
+		tmux set -g @og_usage_short "$short"
+	else
+		tmux set -gu @og_usage_short
+	fi
 }
 
 # agent_of normalizes one command name the way the display gate does — basename,

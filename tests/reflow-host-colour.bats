@@ -191,7 +191,7 @@ picker_token() {
 	[ "$(tmux show -v @session_host_marker | sed 's/#\[[^]]*\]//g')" = "⇄ lab" ]
 }
 
-@test "the folded line carries the marker after the agent windows, not the session name" {
+@test "the folded line carries the marker after the window list, not the session name" {
 	tmux set -g @remote_bridge_hosts "lab"
 	tmux new-window -d
 	stamp_placed 1 lab
@@ -201,7 +201,7 @@ picker_token() {
 
 	local fmt
 	fmt="$(tmux show -v status-format[0])"
-	[[ $fmt == *'#{W:#{?window_active,,'*'}}#{?#{@session_host_marker},  #{E:@session_host_marker},}' ]]
+	[[ $fmt == *'#{W:'*'}#[nolist]#{?#{@session_host_marker},  #{E:@session_host_marker},}#{?'* ]]
 	[[ $fmt != *'#{session_name}#{?#{@session_host_marker}'* ]]
 	[[ "$(tmux display-message -t S -p '#{E:@session_host_marker}')" == *lab* ]]
 }

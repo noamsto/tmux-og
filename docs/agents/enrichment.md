@@ -415,6 +415,13 @@ status line 0. Enabled by default via `programs.tmux-og.agentUsage.enable`.
   falling back to local caches/gate on a mirror. Full detail — the publish
   option, the live subscription gate, the sanitizer, lifecycle and known
   limits — is in `bridge-shipped-state.md`'s "Remote Agent Usage".
+- **`@og_usage_short`** is the same publish's plain-text form for the folded
+  status line (`claude 80% codex 12%`): per agent with a non-empty `windows`
+  array, the highest window pct rounded to an integer, agent keys held to
+  `[a-z]+` because the value lands in a tmux format. Global, set and unset
+  together with `@og_agent_usage` by `tmux-agent-usage`'s `publish_usage`
+  (one jq pass, no extra fork). A mirror session's folded line shows this
+  local value, not the remote's `@bridge_usage`.
 
 
 ## Window cwd tracking

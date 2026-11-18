@@ -15,7 +15,6 @@ setup() {
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	export TMPDIR="$TDIR"
-	export OG_FOLD_STEP_DELAY=0.01
 
 	REFLOW="$TDIR/reflow.sh"
 	local licons lenrich
@@ -41,7 +40,6 @@ setup() {
 
 	FOLD="$TDIR/fold.sh"
 	sed \
-		-e "s|@lib_log@|$PWD/scripts/lib-log.sh|g" \
 		-e "s|@reflow@|$REFLOW|g" \
 		-e "1s|.*|#!$BASH|" \
 		scripts/tmux-status-fold.sh >"$FOLD"
@@ -69,6 +67,7 @@ setup() {
 teardown() {
 	# bats runs teardown even after a skip in setup: only kill a server setup isolated.
 	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
+	tmux -L out kill-server 2>/dev/null || true
 	tmux kill-server 2>/dev/null || true
 }
 
@@ -80,7 +79,7 @@ status_lines() {
 	echo "$v"
 }
 
-# What the prefix + Z bind does: flip the flag in one command, then animate.
+# What the prefix + Z bind does: flip the flag in one command, then hand over to the fold script.
 press() {
 	tmux set -F -t S @og_status_folded '#{?#{==:#{@og_status_folded},1},0,1}'
 	"$FOLD" S 60 >/dev/null 2>&1
@@ -91,8 +90,8 @@ press_bg() {
 	"$FOLD" S 60 >/dev/null 2>&1 &
 }
 
-# Log every `status` value a set-option leaves behind, so a test can see which
-# line counts were stepped through.
+# Log every `status` value a set-option leaves behind, so a test can see that
+# no intermediate line count was shown.
 log_status() {
 	STATUS_LOG="$TDIR/status.log"
 	: >"$STATUS_LOG"
@@ -121,7 +120,6 @@ log_status() {
 	tmux new-window -d
 	press
 	[ "$(tmux show -v -t S @og_status_folded)" = 0 ]
-	[ "$(tmux show -v -t S @og_status_cap)" = "" ]
 	local want
 	want=$(tmux show -v -t S @reflow_lines)
 	[ "$(status_lines)" -eq "$want" ]
@@ -135,7 +133,6 @@ log_status() {
 	wait
 	[ "$(tmux show -v -t S @og_status_folded)" = 0 ]
 	[ "$(status_lines)" -eq "$WANT" ]
-	[ "$(tmux show -v -t S @og_status_cap)" = "" ]
 }
 
 @test "three rapid toggles end folded" {
@@ -147,31 +144,85 @@ log_status() {
 	[ "$(status_lines)" = 1 ]
 }
 
-@test "fold steps through every line count" {
+@test "fold and unfold are instant: only the start and end line counts show" {
 	log_status
 	press
-	# The hook's run-shell is queued like any command: this one returns after it.
+	tmux run-shell true
+	run grep -vxE "$WANT|on" "$STATUS_LOG"
+	[ -z "$output" ]
+	[ "$(status_lines)" = 1 ]
+	: >"$STATUS_LOG"
+	press
 	tmux run-shell true
 	tmux set-hook -gu after-set-option
-	local k want
-	for ((k = WANT - 1; k >= 1; k--)); do
-		want=$k
-		[[ $k == 1 ]] && want=on
-		grep -qx "$want" "$STATUS_LOG"
+	run grep -vxE "$WANT|on" "$STATUS_LOG"
+	[ -z "$output" ]
+	[ "$(status_lines)" -eq "$WANT" ]
+}
+
+# Render the folded line for real: the session lives on the default server, a
+# second server (-L out) runs a client attached to it, and the drawn status row
+# is read back off that client's pane. list= scrolling is only visible in a
+# client. Windows are labelled `lab<idx>` with icon `I<idx>`.
+fold_render() {
+	local width=$1 cur=$2 i
+	tmux set -F -t S @og_status_folded 1
+	tmux -L out kill-server 2>/dev/null || true
+	sleep 0.2
+	tmux -L out new-session -d -x "$width" -y 6 "env -u TMUX tmux attach -t S"
+	bash "$REFLOW" S "$width" --force >/dev/null 2>&1
+	# Reflow stamps the labels; override them afterwards, the format reads them live.
+	for i in $(tmux list-windows -t S -F '#{window_index}'); do
+		tmux set -w -t "S:$i" @window_label_id "lab$i"
+		tmux set -w -t "S:$i" @window_label_rest_long ""
+		tmux set -w -t "S:$i" @window_icon_display "I$i"
+	done
+	tmux select-window -t "S:$cur"
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		sleep 0.3
+		LINE=$(tmux -L out capture-pane -p | grep -v '^$' | tail -1)
+		[[ $LINE == *"lab$cur"* ]] && return 0
 	done
 }
 
-@test "a bridge mirror window jumps straight to the target" {
-	tmux set -w -t S @bridge_win 1
-	log_status
-	press
-	# The hook's run-shell is queued like any command: this one returns after it.
-	tmux run-shell true
-	tmux set-hook -gu after-set-option
-	[ "$(status_lines)" = 1 ]
-	# Only the starting height and the end: no intermediate line count.
-	run grep -vxE "$WANT|on" "$STATUS_LOG"
-	[ -z "$output" ]
-	press
-	[ "$(status_lines)" -eq "$WANT" ]
+@test "folded: windows keep index order with the current one expanded in place" {
+	fold_render 100 3
+	[[ $LINE =~ 0\ I0.*1\ I1.*2\ I2.*3:\ lab3.*4\ I4.*5\ I5.*6\ I6.*7\ I7 ]]
+	[[ $LINE != *‹* && $LINE != *›* ]]
+}
+
+@test "folded overflow: the current window stays visible with a left marker at the end" {
+	fold_render 34 7
+	[[ $LINE == *"7: lab7"* ]]
+	[[ $LINE == *‹* ]]
+	[[ $LINE != *›* ]]
+}
+
+@test "folded overflow: a middle current window shows both markers" {
+	fold_render 28 3
+	[[ $LINE == *"3: lab3"* ]]
+	[[ $LINE == *‹* ]]
+	[[ $LINE == *›* ]]
+}
+
+@test "folded: a placed mirror window shows the remote glyph, and its host when current" {
+	tmux set -g @icon_remote "R>"
+	tmux set -g @thm_peach "#fab387"
+	tmux set -w -t S:2 @bridge_placed 1
+	tmux set -w -t S:2 @bridge_host labhost
+	tmux set -w -t S:2 @window_host_color '#{@thm_peach}'
+	fold_render 100 5
+	[[ $LINE == *"2R>"* || $LINE == *"2 R>"* ]]
+	fold_render 100 2
+	[[ $LINE =~ 2:.*R\>\ labhost ]]
+}
+
+@test "folded: the right segment shows when wide and goes first when narrow" {
+	tmux set -g @og_usage_short "claude 80%"
+	fold_render 100 3
+	[[ $LINE == *"claude 80%"* ]]
+	fold_render 38 3
+	[[ $LINE != *"claude 80%"* ]]
+	[[ $LINE == *"3: lab3"* ]]
+	[[ $LINE == *‹* ]]
 }

@@ -84,9 +84,8 @@ fi
 # @remote_bridge_hosts (the host-colour palette order, '|' squashed) sit ahead of
 # @bridge_nudge for the same reason; @bridge_nudge is last so a '|' in the path
 # stays inside that field.
-# @og_status_folded / @og_status_cap (prefix+Z, tmux-status-fold) are closed
-# tokens: the fold flag and the animation's temporary ceiling on `status`.
-IFS='|' read -r win_count ATTACHED prev_key HEIGHT FOLDED CAP ICON_REMOTE BRIDGE_HOSTS NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{session_attached}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@og_status_cap}|#{@icon_remote}|#{s/[|]/ /:@remote_bridge_hosts}|#{@bridge_nudge}' 2>/dev/null)
+# @og_status_folded (prefix+Z, tmux-status-fold) is a closed token.
+IFS='|' read -r win_count ATTACHED prev_key HEIGHT FOLDED ICON_REMOTE BRIDGE_HOSTS NUDGE < <(tmux display-message -t "$SESSION" -p '#{session_windows}|#{session_attached}|#{@reflow_key}|#{client_height}|#{@og_status_folded}|#{@icon_remote}|#{s/[|]/ /:@remote_bridge_hosts}|#{@bridge_nudge}' 2>/dev/null)
 # Height only gates the extra window row, so a size-neutral client (empty
 # client_height) falls back to the baseline cap instead of skipping the reflow
 # the way an empty width has to. Resolve it before it reaches the cache key so
@@ -713,17 +712,11 @@ tmux_cmds+=("set -t '$SESSION' @window_per '$window_per'")
 tmux_cmds+=("set -t '$SESSION' @reflow_key '$applied_key'")
 tmux_cmds+=("set -t '$SESSION' @labels_mode '${labels_mode}'")
 
-# prefix+Z: a folded session shows one line, and an unfold animation holds the
-# line count at its current step via @og_status_cap. @reflow_lines is the count
-# the grid wants, which tmux-status-fold animates toward. An empty/non-numeric
-# cap means none.
+# prefix+Z: a folded session shows one line. @reflow_lines is the line count
+# the grid wants.
 status_lines=$((current_line + 2))
 tmux_cmds+=("set -t '$SESSION' @reflow_lines '$status_lines'")
-if [[ $FOLDED == 1 ]]; then
-	status_lines=1
-elif [[ $CAP =~ ^[1-9]$ ]] && ((CAP < status_lines)); then
-	status_lines=$CAP
-fi
+[[ $FOLDED == 1 ]] && status_lines=1
 # tmux spells a one-line bar `on`; a bare 1 is rejected.
 ((status_lines == 1)) && status_word=on || status_word=$status_lines
 tmux_cmds+=("set -t '$SESSION' status $status_word")
@@ -823,13 +816,24 @@ ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${CREW}${L
 # status-format[0] is all-or-nothing, so the rest stay empty, and at `status 1`
 # tmux never asks for them anyway. The 1s update-icons job (@og_icons_job) rides
 # along because it is what keeps @window_icon_display and the session tint live,
-# and the folded line is the only status line left to host it. Window rows are a
-# #{W:} format loop: the current window first, then every other window that
-# hosts an agent as `idx icon`, where the icon carries the state colour. The
-# agent test is status-format[1]'s own (a mirror window always counts).
-FOLD_LABEL="#{window_index}: #{=/40/…:#{@window_label_id}#{@window_label_rest_long}}"
-FOLD_AGENT="#{?#{?#{@bridge_win},1,#{@window_has_agent}}, #[fg=#{@thm_subtext_0}]#{window_index} #{@window_icon_display},}"
-FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[fg=#{@thm_mauve},bold]#{W:#{?window_active,${FOLD_LABEL},}}#[nobold]#{W:#{?window_active,,${FOLD_AGENT}}}#{?#{@session_host_marker},  #{E:@session_host_marker},}"
+# and the folded line is the only status line left to host it. Every window sits
+# in its real index order inside a tmux window list (#[list=on]): the current one
+# is `idx: label` and carries #[list=focus], the others `idx icon` with the icon
+# in its state colour. When the list overflows tmux scrolls it around the focus
+# and draws the markers. The markers must follow the first #[list=on]. A mirror
+# window's index takes its host colour (peach fallback) and the remote glyph.
+# tmux trims the list, not the right segment, to make room, so the right segment
+# is gated in-format on everything fitting: #{w:} ignores #[..] styles.
+FOLD_MIRROR='#{||:#{@bridge_win},#{@bridge_placed}}'
+FOLD_HC='#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}'
+FOLD_IDX="#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_subtext_0}]}#{window_index}"
+FOLD_CUR="#[list=focus] #[bold]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_mauve}]}#{window_index}#[fg=#{@thm_mauve}]: #{?${FOLD_MIRROR},#[fg=${FOLD_HC}]${ICON_REMOTE} #{@bridge_host} #[fg=#{@thm_mauve}],}#{=/40/…:#{@window_label_id}#{@window_label_rest_long}}#[nobold]#[list=on]"
+FOLD_OTH="#[nobold] ${FOLD_IDX}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]${ICON_REMOTE},} #{@window_icon_display}"
+FOLD_ITEMS="#{W:#{?window_active,${FOLD_CUR},${FOLD_OTH}}}"
+FOLD_RTXT="#{?${FOLD_MIRROR},#{@bridge_host},#{host_short}}#{?#{@og_usage_short}, #{@og_usage_short},}"
+FOLD_RIGHT="#[align=right]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@bridge_host},#[fg=#{@thm_overlay_1}]#{host_short}}#{?#{@og_usage_short}, #[fg=#{@thm_subtext_0}]#{@og_usage_short},} "
+FOLD_FIT="#{e|<=|:#{e|+|:#{e|+|:#{w:${FOLD_ITEMS}},#{w:#{session_name}}},#{e|+|:#{w:#{E:@session_host_marker}},#{e|+|:#{w:${FOLD_RTXT}},13}}},#{client_width}}"
+FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[list=on]#[list=left-marker]‹#[list=right-marker]›#[list=on]${FOLD_ITEMS}#[nolist]#{?#{@session_host_marker},  #{E:@session_host_marker},}#{?${FOLD_FIT},${FOLD_RIGHT},}"
 if [[ $FOLDED == 1 ]]; then
 	tmux set -t "$SESSION" status-format[0] "$FOLD_FMT"
 elif ((! needs_multiline && current_line == 0)); then

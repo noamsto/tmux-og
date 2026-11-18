@@ -762,7 +762,7 @@ in `docs/superpowers/specs/2026-11-02-event-hooks-design.md`. The kept sites:
 | Bridge resize watcher | Already event-driven (hook-touched `@bridge_nudge`); steady state is a `stat`. |
 | Bridge reveal watcher | Also samples `#{client_activity}` each tick for controller ownership, which no event reports. |
 | agent-detect 30 s liveness probe | Backstop for a lost EOF (dead server, pipe that never closed); no event reports "server gone". |
-| Bounded waits (reflow debounce, lock spins, fold animation, restore retry, socket waits) | One-shot and capped at seconds, not periodic. |
+| Bounded waits (reflow debounce, lock spins, restore retry, socket waits) | One-shot and capped at seconds, not periodic. |
 
 ### agent-detect geometry: pane-resized wait
 
