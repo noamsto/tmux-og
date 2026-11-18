@@ -553,6 +553,9 @@ func compareGuardedModels(t *testing.T, rng *rand.Rand, raw []byte) {
 	direct := newPredictModel(w, h, nil, plainModes(h))
 	defer fed.close()
 	defer direct.close()
+	if fed == nil || direct == nil {
+		t.Fatal("newPredictModel returned nil")
+	}
 	var title titleFilter
 	var g vtGuard
 	for _, c := range splitRandom(rng, raw) {
