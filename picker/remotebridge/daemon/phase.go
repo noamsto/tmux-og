@@ -63,11 +63,15 @@ func writeNoFollow(path string, data []byte, perm os.FileMode) error {
 // hard link.
 func isPrivateRegular(f *os.File) bool {
 	fi, err := f.Stat()
-	if err != nil || !fi.Mode().IsRegular() {
+	if err != nil {
 		return false
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
-	return ok && st.Uid == uint32(os.Geteuid()) && uint64(st.Nlink) == 1 //nolint:gosec // G115: euid is non-negative
+	return ok && privateRegular(fi.Mode(), st.Uid, uint64(st.Nlink), uint32(os.Geteuid())) //nolint:gosec // G115: euid is non-negative
+}
+
+func privateRegular(mode os.FileMode, uid uint32, nlink uint64, euid uint32) bool {
+	return mode.IsRegular() && uid == euid && nlink == 1
 }
 
 // clearPhase drops the file on teardown, so a launcher that reuses this socket

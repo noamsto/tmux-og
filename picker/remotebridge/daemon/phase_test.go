@@ -112,8 +112,39 @@ func TestWriteNoFollowRefusesPlantedFIFO(t *testing.T) {
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	r, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
 	if err := writeNoFollow(path, []byte("x"), 0o600); err == nil {
 		t.Fatal("write to FIFO succeeded")
+	}
+	buf := make([]byte, 8)
+	if n, _ := r.Read(buf); n != 0 {
+		t.Fatalf("reader received %q", buf[:n])
+	}
+}
+
+func TestPrivateRegular(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  os.FileMode
+		uid   uint32
+		nlink uint64
+		want  bool
+	}{
+		{"own regular single link", 0o600, 1000, 1, true},
+		{"foreign uid", 0o600, 0, 1, false},
+		{"extra hard link", 0o600, 1000, 2, false},
+		{"fifo", os.ModeNamedPipe | 0o600, 1000, 1, false},
+		{"symlink", os.ModeSymlink | 0o600, 1000, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := privateRegular(tc.mode, tc.uid, tc.nlink, 1000); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
