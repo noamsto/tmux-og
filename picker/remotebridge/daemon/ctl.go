@@ -238,7 +238,7 @@ var (
 	// The closed set of tools a bind may launch on the remote: a name reaches a
 	// remote shell only by being a key here, so the socket peer cannot smuggle
 	// one in.
-	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true, "btop": true, "k9s": true, "crew-dash": true}
+	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true, "btop": true, "k9s": true, "crew-dash": true, remoteToolSide: true}
 	remoteThemes = map[string]bool{"dark": true, "light": true}
 	// remoteToolFloat gives each remoteTools entry its float shape, matching
 	// config/tmux.conf.nix's floatShort/floatFull mkFloat shapes byte for byte
@@ -258,8 +258,32 @@ var (
 	// remoteToolBin and remoteToolExec name the binary probed on the remote and
 	// the command it runs, for a tool whose key is not its binary: crew-dash is
 	// `crew dash`. An absent key means bin = exec = the tool name.
-	remoteToolBin  = map[string]string{"crew-dash": "crew"}
-	remoteToolExec = map[string]string{"crew-dash": "crew dash"}
+	// crew-dash-side runs the same dash with the $n its probe sets (toolResolveScript).
+	remoteToolBin  = map[string]string{"crew-dash": "crew", remoteToolSide: "crew"}
+	remoteToolExec = map[string]string{"crew-dash": "crew dash", remoteToolSide: "crew dash$n"}
+)
+
+// remoteToolSide is the tool key for crew dash as a tiled side split rather
+// than a float. A key, not an extra argument to the tool verb: the verb's
+// argument contract stays the one every existing caller sends, and a daemon
+// that predates this answers `tool: unknown tool "crew-dash-side"`, which the
+// launcher keys its float fallback on.
+const remoteToolSide = "crew-dash-side"
+
+// The side shape's sizing, evaluated on the remote against the target pane's
+// own window (if-shell -t and split-window -t both pin the format context), so
+// it follows the remote's real width, not the mirror's. Mirrors the local
+// tmux-crew-dash --side: 32% of the window clamped to 50..80 columns, never
+// leaving the target under 80 columns plus the separator.
+const (
+	sideColsFormat  = "#{e|/:#{e|*:#{window_width},32},100}"
+	sideWidthFormat = "#{?#{e|<:" + sideColsFormat + ",50},50,#{?#{e|>:" + sideColsFormat + ",80},80," + sideColsFormat + "}}"
+	// A floating target, a grid window or a pane too narrow takes the float.
+	sideFitsFormat = "#{&&:#{&&:#{!=:#{pane_floating_flag},1},#{!=:#{@crew_grid},1}}," +
+		"#{e|>=:#{pane_width},#{e|+:" + sideWidthFormat + ",81}}}"
+	// The tiled twin of floatLookup: it excludes floats, which share the label
+	// namespace, so only the side split is reused.
+	sideTiledLookup = "#{P:#{?#{&&:#{==:#{@pane_label}," + remoteToolSide + "},#{!=:#{pane_floating_flag},1}},#{pane_id},}}"
 )
 
 // layoutCommand is one allow-listed entry of the layout verb: the remote
@@ -321,6 +345,44 @@ func floatRegister(tool string) string { return "@og_float_target_" + tool }
 // in step by hand like the float geometry above: the two modules share no code.
 func floatLookup(tool string) string {
 	return fmt.Sprintf("#{P:#{?#{&&:#{==:#{@pane_label},%s},#{pane_floating_flag}},#{pane_id},}}", tool)
+}
+
+// floatToolCommand is the tool verb's reuse-gated float press: focus the
+// window's float labelled tool, else create it. cwd is already tmux-quoted.
+func floatToolCommand(pane, win, tool, cwd string) string {
+	flags, ok := remoteToolFloat[tool]
+	if !ok {
+		flags = remoteFloatFull
+	}
+	script := toolResolveScript(tool)
+	// -t <win>, not a bare set -p: the new pane is the window's active one,
+	// and this must not depend on which window the control client is on.
+	create := fmt.Sprintf("new-pane -t %s -c %s %s %s ; set -p -t %s @pane_label %s",
+		pane, cwd, flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, tool)
+	loop := floatLookup(tool)
+	focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
+		pane, floatRegister(tool), tmuxQuote(loop),
+		pane, tmuxQuote(fmt.Sprintf("tmux select-pane -t #{q:%s}", floatRegister(tool))))
+	return fmt.Sprintf("if-shell -t %s -F %s %s %s",
+		pane, tmuxQuote(loop), tmuxQuote(focus), tmuxQuote(create))
+}
+
+// sideToolCommand is the crew-dash-side press: focus the window's existing side
+// split, else split a new one right of pane when it fits, else open the
+// ordinary crew-dash float. cwd is already tmux-quoted. Every command carries
+// its own -t and `;` separates them, for the reasons the tool verb spells out.
+func sideToolCommand(pane, win, cwd string) string {
+	script := toolResolveScript(remoteToolSide)
+	create := fmt.Sprintf("split-window -h -l %s -t %s -c %s %s ; set -p -t %s @pane_label %s",
+		tmuxQuote(sideWidthFormat), pane, cwd, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, remoteToolSide)
+	fallback := floatToolCommand(pane, win, "crew-dash", cwd)
+	open := fmt.Sprintf("if-shell -t %s -F %s %s %s",
+		pane, tmuxQuote(sideFitsFormat), tmuxQuote(create), tmuxQuote(fallback))
+	focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
+		pane, floatRegister(remoteToolSide), tmuxQuote(sideTiledLookup),
+		pane, tmuxQuote(fmt.Sprintf("tmux select-pane -t #{q:%s}", floatRegister(remoteToolSide))))
+	return fmt.Sprintf("if-shell -t %s -F %s %s %s",
+		pane, tmuxQuote(sideTiledLookup), tmuxQuote(focus), tmuxQuote(open))
 }
 
 // floatGeomCommand puts remote float pane on inner box c. -X/-Y/-x/-y speak
@@ -622,33 +684,34 @@ var verbs = map[string]verb{
 	// tmux as a command LINE (cmd_parse_from_string, the same parser a config
 	// file goes through), where `\;` is a literal semicolon argument that leaves
 	// the pane uncreated — measured against a real control-mode client.
+	//
+	// crew-dash-side is the tiled shape of the same press (tmux-crew-dash --side
+	// in a mirror window), built by sideToolCommand under the same rules: a
+	// second press focuses the window's existing side split (a tiled lookup, the
+	// float lookup excludes it), otherwise it splits right of the pressed pane
+	// when the remote's own window is wide enough, and otherwise falls back to
+	// the unchanged crew-dash float (a floating target, an @crew_grid window, or
+	// a target that would drop under 80 columns). It is a key rather than a
+	// shape argument so the verb's arguments stay what older callers send, and
+	// an older daemon's `unknown tool "crew-dash-side"` is the signal to fall
+	// back. It stamps no @float_geom for the float's reason, and the pane it
+	// creates is tiled, so the mirror reconciles it through the remote layout
+	// string exactly like split-h.
 	"tool": {args: 1, optArgs: 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])
 		}
 		tool := a[0]
-		flags, ok := remoteToolFloat[tool]
-		if !ok {
-			flags = remoteFloatFull
-		}
 		cwd := "'#{pane_current_path}'"
 		if len(a) > 1 {
 			if dir, ok := remoteToolCwd(a[1]); ok {
 				cwd = tmuxQuote(dir)
 			}
 		}
-		script := toolResolveScript(tool)
-		// -t <win>, not a bare set -p: the new pane is the window's active one,
-		// and this must not depend on which window the control client is on.
-		create := fmt.Sprintf("new-pane -t %s -c %s %s %s ; set -p -t %s @pane_label %s",
-			pane, cwd, flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, tool)
-		loop := floatLookup(tool)
-		focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
-			pane, floatRegister(tool), tmuxQuote(loop),
-			pane, tmuxQuote(fmt.Sprintf("tmux select-pane -t #{q:%s}", floatRegister(tool))))
-		cmd := fmt.Sprintf("if-shell -t %s -F %s %s %s",
-			pane, tmuxQuote(loop), tmuxQuote(focus), tmuxQuote(create))
-		return []string{cmd}, nil
+		if tool == remoteToolSide {
+			return []string{sideToolCommand(pane, win, cwd)}, nil
+		}
+		return []string{floatToolCommand(pane, win, tool, cwd)}, nil
 	}},
 	// A mirror float's border drag, routed from the local float's inner box
 	// and window size (the remote window is converged to the same size). The
@@ -819,14 +882,22 @@ func toolResolveScript(tool string) string {
 	if e, ok := remoteToolExec[tool]; ok {
 		run = e
 	}
+	// The side dash asks the remote's own `crew dash --help` whether it knows
+	// --narrow, and passes it only then. Runs after the PATH restore so the
+	// probe resolves crew like the exec does; no quote or # of its own.
+	probe := ""
+	if tool == remoteToolSide {
+		probe = `n=; case $(crew dash --help </dev/null 2>&1) in *--narrow*) n=" --narrow";; esac; `
+	}
 	return fmt.Sprintf(
 		"p=$(tmux show-environment -g PATH 2>/dev/null); "+
 			"case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; "+
 			"b=$(tmux show-environment -g BROWSER 2>/dev/null); "+
 			"case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; "+
+			"%s"+
 			"command -v %s >/dev/null 2>&1 && exec %s; "+
 			"echo tmux-og: %s is not on PATH on this host; sleep 5",
-		bin, run, bin)
+		probe, bin, run, bin)
 }
 
 // carouselResolveScript is the POSIX body run under exec /bin/sh -c. It must
