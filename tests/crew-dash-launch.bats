@@ -272,12 +272,30 @@ first_dash() {
 	[ "$(tmux display-message -p -t "$id" '#{pane_current_path}')" = "$dir" ]
 }
 
-# mirror_window: mark the window a bridge mirror and stub the ctl, logging its argv
-# one word per line. $1 is the stub's exit status.
+# mirror_window MODE: mark the window a bridge mirror and stub the ctl, logging its
+# argv one word per line, every call appended. MODE: ok (exit 0); fail (a generic
+# error); old (a daemon predating crew-dash-side: that tool is `unknown tool`, the
+# rest succeed); oldfail (as old, but every other call fails too).
 mirror_window() {
 	MIRROR_LOG="$BATS_TEST_TMPDIR/ctl.log"
 	: >"$MIRROR_LOG"
-	printf '#!%s\nprintf "%%s\\n" "$@" >>"%s"\n[ %s -eq 0 ] || echo "tool: unknown tool" >&2\nexit %s\n' "$BASH" "$MIRROR_LOG" "${1:-0}" "${1:-0}" >"$BIN_DIR/ctl"
+	cat >"$BIN_DIR/ctl" <<STUB
+#!$BASH
+printf '%s\n' "\$@" >>"$MIRROR_LOG"
+case "${1:-ok}" in
+ok) exit 0 ;;
+fail) echo "boom" >&2; exit 1 ;;
+old | oldfail)
+	if [[ " \$* " == *" crew-dash-side "* ]]; then
+		echo 'tool: unknown tool "crew-dash-side"' >&2
+		exit 1
+	fi
+	[[ "${1:-ok}" == old ]] && exit 0
+	echo "boom" >&2
+	exit 1
+	;;
+esac
+STUB
 	chmod +x "$BIN_DIR/ctl"
 	tmux set-option -w -t "$WIN" @bridge_win 1
 	tmux set-option -w -t "$WIN" @bridge_pane '%9'
@@ -285,12 +303,20 @@ mirror_window() {
 	tmux set-option -w -t "$WIN" @bridge_dir '/home/u/proj'
 }
 
+# ctl_argv TOOL: the argv one call to the ctl logs for TOOL.
+ctl_argv() { printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' "$1" /home/u/proj; }
+
+# assert_ctl_argv TOOL...: the log holds exactly one call per TOOL, in order.
 assert_ctl_argv() {
-	[ "$(cat "$MIRROR_LOG")" = "$(printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' crew-dash /home/u/proj)" ]
+	local want="" t
+	for t in "${@:-crew-dash}"; do want+="$(ctl_argv "$t")"$'\n'; done
+	[ "$(cat "$MIRROR_LOG")" = "${want%$'\n'}" ]
 }
 
+ctl_calls() { grep -c '^--sock$' "$MIRROR_LOG"; }
+
 @test "a mirror window runs the dash on the remote through the bridge ctl" {
-	mirror_window 0
+	mirror_window ok
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh "$TILE"
 	[ "$status" -eq 0 ]
 	assert_ctl_argv
@@ -299,7 +325,7 @@ assert_ctl_argv() {
 }
 
 @test "--detached in a mirror window routes through the bridge ctl too" {
-	mirror_window 0
+	mirror_window ok
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --detached "$TILE"
 	[ "$status" -eq 0 ]
 	assert_ctl_argv
@@ -308,16 +334,16 @@ assert_ctl_argv() {
 }
 
 @test "a failing bridge ctl reports and opens nothing locally" {
-	mirror_window 1
+	mirror_window fail
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh "$TILE"
 	[ "$status" -eq 0 ]
-	messages | grep -q 'could not open crew dash on the remote host: tool: unknown tool'
+	messages | grep -q 'could not open crew dash on the remote host: boom'
 	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
 	[ "$(pane_count "$WIN")" -eq 2 ]
 }
 
 @test "a mirror window with no bridge ctl reports and opens nothing locally" {
-	mirror_window 0
+	mirror_window ok
 	run env -u OG_BRIDGE_CTL_BIN bash scripts/tmux-crew-dash.sh "$TILE"
 	[ "$status" -eq 0 ]
 	messages | grep -q 'bridge ctl is not installed'
@@ -442,23 +468,46 @@ side_panes() {
 	[ "$(pane_count "$WIN")" -eq 4 ]
 }
 
-@test "--side in a mirror window goes through the bridge ctl and says it is a float" {
-	mirror_window 0
+@test "--side in a mirror window sends crew-dash-side and opens nothing locally" {
+	mirror_window ok
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
 	[ "$status" -eq 0 ]
-	assert_ctl_argv
+	assert_ctl_argv crew-dash-side
 	[ "$(pane_count "$WIN")" -eq 2 ]
 	[ -z "$(side_panes)" ]
-	messages | grep -q 'no remote side panel yet'
+	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
+	[ "$(messages | grep -c 'no remote side panel yet')" -eq 0 ]
 }
 
-@test "--side in a mirror window with a failing ctl reports only the failure" {
-	mirror_window 1
+@test "--side in a mirror window falls back to the crew-dash float on an older daemon" {
+	mirror_window old
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
 	[ "$status" -eq 0 ]
-	assert_ctl_argv
-	messages | grep -q 'could not open crew dash on the remote host'
+	assert_ctl_argv crew-dash-side crew-dash
+	[ "$(pane_count "$WIN")" -eq 2 ]
+	[ -z "$(side_panes)" ]
+	messages | grep -q 'no remote side panel yet, opened the crew dash float on the remote host'
+	[ "$(messages | grep -c 'could not open crew dash')" -eq 0 ]
+}
+
+@test "--side in a mirror window with a failing ctl reports it and does not retry" {
+	mirror_window fail
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(ctl_calls)" -eq 1 ]
+	assert_ctl_argv crew-dash-side
+	messages | grep -q 'could not open crew dash on the remote host: boom'
 	[ "$(messages | grep -c 'no remote side panel yet')" -eq 0 ]
+}
+
+@test "--side on an older daemon whose float retry also fails reports only the failure" {
+	mirror_window oldfail
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv crew-dash-side crew-dash
+	messages | grep -q 'could not open crew dash on the remote host: boom'
+	[ "$(messages | grep -c 'no remote side panel yet')" -eq 0 ]
+	[ "$(pane_count "$WIN")" -eq 2 ]
 }
 
 @test "--side clamps the width to 80 on a very wide window and to 50 on a modest one" {

@@ -28,8 +28,9 @@
 # too narrow for that, or a @crew_grid window (tmux-grid-refit re-tiles every
 # tiled pane there), falls back to the float below with a notification. A float
 # and a side dash coexist and neither touches the other. A mirror window sends the
-# unchanged `tool` verb, so the REMOTE side gets a float, not a split: the verb has
-# no split shape yet, and the user is told. @remux_relaunch re-stamps the label and
+# `crew-dash-side` tool, so the REMOTE side gets the split too; a daemon older than
+# that tool answers `unknown tool`, and the script retries once with the `crew-dash`
+# float tool and tells the user. @remux_relaunch re-stamps the label and
 # re-execs the dash, so a remux restore keeps the pane findable. The carousel guard
 # (tmux-carousel-guard) keeps a restore from squeezing it under 50 columns.
 #
@@ -76,12 +77,17 @@ if [[ -n $bridge_win ]]; then
 			notify "bridge ctl is not installed"
 			exit 0
 		fi
-		# The reason is kept: a daemon older than this build answers `unknown tool`,
-		# and reopening the bridge is the fix. '#' is doubled for display-message.
-		if ! err="$("$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" crew-dash "$bridge_dir" 2>&1 >/dev/null)"; then
+		# The reason is kept; '#' is doubled for display-message.
+		bridge_tool() { err="$("$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" "$1" "$bridge_dir" 2>&1 >/dev/null)"; }
+		tool=crew-dash
+		((side)) && tool=crew-dash-side
+		if ! bridge_tool "$tool"; then
+			# A daemon older than crew-dash-side answers `unknown tool`: retry once with the float.
+			if ((side)) && [[ $err == *"unknown tool"* ]] && bridge_tool crew-dash; then
+				notify "no remote side panel yet, opened the crew dash float on the remote host"
+				exit 0
+			fi
 			notify "could not open crew dash on the remote host: ${err//#/##}"
-		elif ((side)); then
-			notify "no remote side panel yet, opened the crew dash float on the remote host"
 		fi
 		exit 0
 	fi

@@ -2649,3 +2649,356 @@ func TestTileLayoutCommandGuardsOnLiveTmux(t *testing.T) {
 		}
 	})
 }
+
+// The crew-dash tool press builds exactly this today. The literals were
+// captured from the build before the side shape was added, so a refactor of
+// the float command cannot change what an existing caller sends.
+func TestToolVerbCrewDashBuildOutputIsFrozen(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no dir", []string{"crew-dash"}, "if-shell -t %5 -F '#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}' 'set -wF -t %5 @og_float_target_crew-dash '\\''#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}'\\'' ; run-shell -t %5 '\\''tmux select-pane -t #{q:@og_float_target_crew-dash}'\\''' 'new-pane -t %5 -c '\\''#{pane_current_path}'\\'' -x 90% -y 90% -X 5% -Y 5% -B heavy -A '\\''exec /bin/sh -c '\\''\\'\\'''\\''p=$(tmux show-environment -g PATH 2>/dev/null); case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; b=$(tmux show-environment -g BROWSER 2>/dev/null); case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; command -v crew >/dev/null 2>&1 && exec crew dash; echo tmux-og: crew is not on PATH on this host; sleep 5'\\''\\'\\'''\\'''\\'' ; set -p -t @2 @pane_label crew-dash'"},
+		{"with dir", []string{"crew-dash", "/home/u/proj"}, "if-shell -t %5 -F '#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}' 'set -wF -t %5 @og_float_target_crew-dash '\\''#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}'\\'' ; run-shell -t %5 '\\''tmux select-pane -t #{q:@og_float_target_crew-dash}'\\''' 'new-pane -t %5 -c '\\''/home/u/proj'\\'' -x 90% -y 90% -X 5% -Y 5% -B heavy -A '\\''exec /bin/sh -c '\\''\\'\\'''\\''p=$(tmux show-environment -g PATH 2>/dev/null); case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; b=$(tmux show-environment -g BROWSER 2>/dev/null); case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; command -v crew >/dev/null 2>&1 && exec crew dash; echo tmux-og: crew is not on PATH on this host; sleep 5'\\''\\'\\'''\\'''\\'' ; set -p -t @2 @pane_label crew-dash'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmds, err := verbs["tool"].build("%5", "@2", "sess", tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cmds) != 1 || cmds[0] != tc.want {
+				t.Fatalf("crew-dash command changed\n got %q\nwant %q", cmds, tc.want)
+			}
+		})
+	}
+}
+
+// The side shape's formats are spelled out here as literals, not built from
+// the production helpers, so the test pins what reaches the remote tmux.
+// The width is 32% of the window, clamped to 50..80 columns.
+const (
+	wantSideX        = "#{e|/:#{e|*:#{window_width},32},100}"
+	wantSideWidthFmt = "#{?#{e|<:" + wantSideX + ",50},50,#{?#{e|>:" + wantSideX + ",80},80," + wantSideX + "}}"
+	// The target keeps 80 columns plus the separator, and a floating target, a
+	// grid window or a zoomed window gets the float instead.
+	wantSideFitsFmt = "#{&&:#{&&:#{&&:#{!=:#{pane_floating_flag},1},#{!=:#{@crew_grid},1}},#{!=:#{window_zoomed_flag},1}},#{e|>=:#{pane_width},#{e|+:" + wantSideWidthFmt + ",81}}}"
+	wantSideTiled   = "#{P:#{?#{&&:#{==:#{@pane_label},crew-dash-side},#{!=:#{pane_floating_flag},1}},#{pane_id},}}"
+)
+
+func TestToolVerbSideBuildsSplit(t *testing.T) {
+	cmds, err := verbs["tool"].build("%5", "@2", "sess", []string{"crew-dash-side", "/home/u/proj"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("want one command, got %v", cmds)
+	}
+	script := toolResolveScript("crew-dash-side")
+	if strings.Contains(script, "'") {
+		t.Fatalf("resolve script must have zero single quotes: %q", script)
+	}
+	for _, want := range []string{"crew dash$n", "--help"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script %q missing %q", script, want)
+		}
+	}
+
+	create := "split-window -h -l " + tmuxQuote(wantSideWidthFmt) + " -t %5 -c '/home/u/proj' " +
+		tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)) + " ; set -p -t @2 @pane_label crew-dash-side"
+	focus := "set -wF -t %5 @og_float_target_crew-dash-side " + tmuxQuote(wantSideTiled) +
+		" ; run-shell -t %5 " + tmuxQuote("tmux select-pane -t #{q:@og_float_target_crew-dash-side}")
+	float := floatToolCommand("%5", "@2", "crew-dash", "'/home/u/proj'")
+	inner := "if-shell -t %5 -F " + tmuxQuote(wantSideFitsFmt) + " " + tmuxQuote(create) + " " + tmuxQuote(float)
+	want := "if-shell -t %5 -F " + tmuxQuote(wantSideTiled) + " " + tmuxQuote(focus) + " " + tmuxQuote(inner)
+	if cmds[0] != want {
+		t.Fatalf("command\n got %q\nwant %q", cmds[0], want)
+	}
+
+	// The same expectations as named invariants, so a future format tweak that
+	// keeps the shape still trips on the rule it breaks.
+	if !strings.Contains(create, "split-window -h -l "+tmuxQuote(wantSideWidthFmt)+" -t %5 -c '/home/u/proj' ") {
+		t.Errorf("create does not split right at the clamped width: %q", create)
+	}
+	if !strings.HasSuffix(create, " ; set -p -t @2 @pane_label crew-dash-side") {
+		t.Errorf("create does not label the new pane: %q", create)
+	}
+	if strings.Contains(cmds[0], `\;`) {
+		t.Errorf(`command carries \; (a literal-semicolon argument, not a separator): %q`, cmds[0])
+	}
+	if strings.Contains(cmds[0], "@float_geom") {
+		t.Errorf("command must not stamp @float_geom: %q", cmds[0])
+	}
+	for name, branch := range map[string]string{"create": create, "focus": focus} {
+		for seg := range strings.SplitSeq(branch, " ; ") {
+			if !strings.Contains(seg, " -t ") {
+				t.Errorf("%s branch command %q has no own -t", name, seg)
+			}
+		}
+	}
+	if !strings.Contains(cmds[0], nestedQuote(tmuxQuote(float))) {
+		t.Errorf("else-branch is not the unchanged crew-dash float command")
+	}
+}
+
+func TestToolVerbSideAcceptedOnTheWire(t *testing.T) {
+	c := newCtlStateWith("@1", "%2")
+	base := []string{wire.CtlProtocolVersion, "tool", "%2", "crew-dash-side"}
+	for _, argv := range [][]string{base, append(slices.Clone(base), "/home/u/proj")} {
+		req, err := c.parseCtl(argv, "sess")
+		if err != nil {
+			t.Fatalf("argv %v rejected: %v", argv, err)
+		}
+		if len(req.cmds) != 1 {
+			t.Errorf("argv %v: want one command, got %q", argv, req.cmds)
+		}
+		if req.wantLayout != "@1" || req.invalidate != "@1" {
+			t.Errorf("argv %v: wantLayout = %q, invalidate = %q, want @1 for both", argv, req.wantLayout, req.invalidate)
+		}
+	}
+	if _, err := c.parseCtl(append(slices.Clone(base), "/a", "/b"), "sess"); err == nil {
+		t.Fatal("a third argument was accepted")
+	}
+}
+
+// sideRig is a scratch tmux server holding the window a side-dash press
+// targets (@0, one pane) and a second, current window, so a branch command
+// missing its own -t acts on the wrong window and fails the test.
+type sideRig struct {
+	t        *testing.T
+	tmux     func(args ...string) *exec.Cmd
+	base     string
+	argvFile string
+	dir      string
+}
+
+func newSideRig(t *testing.T, helpListsNarrow bool) *sideRig {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	dir := t.TempDir()
+	stubDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	help := "usage: crew dash"
+	if helpListsNarrow {
+		help += " [--narrow]"
+	}
+	argvFile := filepath.Join(dir, "argv")
+	// The stub outlives the press (a command that exits closes its pane) and
+	// records the argv the dash itself was started with.
+	writeStub(t, filepath.Join(stubDir, "crew"), fmt.Sprintf(
+		"#!/bin/sh\nif [ \"$1\" = dash ] && [ \"$2\" = --help ]; then echo %q; exit 0; fi\nprintf '%%s\\n' \"$*\" > %q\nsleep 600\n",
+		help, argvFile))
+	tmux := startIsolatedTmux(t, "PATH="+stubDir+":"+os.Getenv("PATH"))
+	out, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatalf("display-message: %v", err)
+	}
+	if out, err := tmux("new-window", "-t", "w:").CombinedOutput(); err != nil {
+		t.Fatalf("new-window: %v\n%s", err, out)
+	}
+	return &sideRig{t: t, tmux: tmux, base: strings.TrimSpace(string(out)), argvFile: argvFile, dir: dir}
+}
+
+func (r *sideRig) run(args ...string) {
+	r.t.Helper()
+	if out, err := r.tmux(args...).CombinedOutput(); err != nil {
+		r.t.Fatalf("tmux %v: %v\n%s", args, err, out)
+	}
+}
+
+func (r *sideRig) press(tool string) {
+	r.t.Helper()
+	cmds, err := verbs["tool"].build(r.base, "@0", "w", []string{tool, r.dir})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	conf := filepath.Join(r.dir, "cmd.conf")
+	if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+	r.run("source-file", conf)
+}
+
+type sidePane struct {
+	id, label        string
+	floating, active bool
+	width, left      int
+}
+
+// panes lists window @0's panes. '|' separates the fields so an unset
+// @pane_label does not collapse them.
+func (r *sideRig) panes() []sidePane {
+	r.t.Helper()
+	out, err := r.tmux("list-panes", "-a", "-F",
+		"#{window_id}|#{pane_id}|#{@pane_label}|#{pane_floating_flag}|#{pane_active}|#{pane_width}|#{pane_left}").Output()
+	if err != nil {
+		r.t.Fatalf("list-panes: %v", err)
+	}
+	var got []sidePane
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Split(line, "|")
+		if len(f) != 7 || f[0] != "@0" {
+			continue
+		}
+		p := sidePane{id: f[1], label: f[2], floating: f[3] == "1", active: f[4] == "1"}
+		if _, err := fmt.Sscan(f[5], &p.width); err != nil {
+			r.t.Fatalf("pane_width %q: %v", f[5], err)
+		}
+		if _, err := fmt.Sscan(f[6], &p.left); err != nil {
+			r.t.Fatalf("pane_left %q: %v", f[6], err)
+		}
+		got = append(got, p)
+	}
+	return got
+}
+
+func (r *sideRig) find(label string, floating bool) []sidePane {
+	var got []sidePane
+	for _, p := range r.panes() {
+		if p.label == label && p.floating == floating {
+			got = append(got, p)
+		}
+	}
+	return got
+}
+
+func TestToolVerbSideSplitsRightAtClampedWidth(t *testing.T) {
+	for _, tc := range []struct{ window, want int }{
+		{200, 64}, // 32% of the window
+		{300, 80}, // clamped down
+		{160, 51}, // 32% still leaves the target 108
+		{131, 50}, // clamped up; the narrowest window that still fits 50 + 81
+	} {
+		t.Run(fmt.Sprintf("window-%d", tc.window), func(t *testing.T) {
+			r := newSideRig(t, true)
+			r.run("resize-window", "-t", "@0", "-x", fmt.Sprint(tc.window), "-y", "24")
+			r.press("crew-dash-side")
+			side := r.find("crew-dash-side", false)
+			if len(side) != 1 {
+				t.Fatalf("want one tiled crew-dash-side pane, got %+v", r.panes())
+			}
+			if side[0].width != tc.want {
+				t.Errorf("side width = %d, want %d", side[0].width, tc.want)
+			}
+			var base sidePane
+			for _, p := range r.panes() {
+				if p.id == r.base {
+					base = p
+				}
+				if p.floating {
+					t.Errorf("unexpected float %+v", p)
+				}
+			}
+			if side[0].left <= base.left {
+				t.Errorf("side pane left %d is not right of the base pane's %d", side[0].left, base.left)
+			}
+			if base.width < 80 {
+				t.Errorf("target left at %d columns, want at least 80", base.width)
+			}
+		})
+	}
+}
+
+func TestToolVerbSideFallsBackToFloat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		window int
+		grid   bool
+		zoomed bool
+	}{
+		{"too narrow", 100, false, false},
+		{"just too narrow", 130, false, false},
+		{"grid window", 200, true, false},
+		// pane_width reads the zoomed width, so only the zoom flag keeps the
+		// split from shrinking the target's real cell.
+		{"zoomed", 200, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newSideRig(t, true)
+			r.run("resize-window", "-t", "@0", "-x", fmt.Sprint(tc.window), "-y", "24")
+			if tc.grid {
+				r.run("set-option", "-w", "-t", "@0", "@crew_grid", "1")
+			}
+			if tc.zoomed {
+				r.run("split-window", "-h", "-d", "-t", r.base)
+				r.run("resize-pane", "-Z", "-t", r.base)
+			}
+			r.press("crew-dash-side")
+			if got := r.find("crew-dash-side", false); len(got) != 0 {
+				t.Fatalf("a tiled side pane was created: %+v", got)
+			}
+			if got := r.find("crew-dash", true); len(got) != 1 {
+				t.Fatalf("want one crew-dash float, got %+v", r.panes())
+			}
+			if tc.zoomed {
+				out, err := r.tmux("display-message", "-p", "-t", "@0", "#{window_zoomed_flag}").Output()
+				if err != nil {
+					t.Fatalf("display-message: %v", err)
+				}
+				if got := strings.TrimSpace(string(out)); got != "1" {
+					t.Errorf("the press lost the user's zoom: window_zoomed_flag = %q", got)
+				}
+			}
+		})
+	}
+}
+
+func TestToolVerbSideSecondPressFocusesExisting(t *testing.T) {
+	r := newSideRig(t, true)
+	r.run("resize-window", "-t", "@0", "-x", "200", "-y", "24")
+	r.press("crew-dash-side")
+	first := r.find("crew-dash-side", false)
+	if len(first) != 1 {
+		t.Fatalf("first press: want one side pane, got %+v", r.panes())
+	}
+	r.run("select-pane", "-t", r.base)
+	r.press("crew-dash-side")
+	second := r.find("crew-dash-side", false)
+	if len(second) != 1 || second[0].id != first[0].id {
+		t.Fatalf("second press created another pane: %+v", r.panes())
+	}
+	if !second[0].active {
+		t.Fatalf("second press did not focus the existing side pane: %+v", r.panes())
+	}
+	if n := len(r.panes()); n != 2 {
+		t.Fatalf("want 2 panes in the window, got %d: %+v", n, r.panes())
+	}
+}
+
+// The dash is started with --narrow only when the remote's own `crew dash
+// --help` lists it. pane_start_command is unexpanded, so the stub records the
+// argv it actually received.
+func TestToolVerbSideNarrowFollowsRemoteHelp(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		listed bool
+	}{
+		{"listed", true},
+		{"unlisted", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newSideRig(t, tc.listed)
+			r.run("resize-window", "-t", "@0", "-x", "200", "-y", "24")
+			r.press("crew-dash-side")
+			var argv string
+			for range 100 {
+				if b, err := os.ReadFile(r.argvFile); err == nil && len(b) > 0 {
+					argv = strings.TrimSpace(string(b))
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if argv == "" {
+				t.Fatal("the stub crew was never started as the dash")
+			}
+			if got := strings.Contains(argv, "--narrow"); got != tc.listed {
+				t.Fatalf("dash argv %q: --narrow present = %v, want %v", argv, got, tc.listed)
+			}
+		})
+	}
+}
