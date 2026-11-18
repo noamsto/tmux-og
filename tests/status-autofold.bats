@@ -206,6 +206,62 @@ assert_unfolded() {
 	[ -z "$(folded)" ]
 }
 
+# fold_then_float TOP MARGIN: fold the bar (auto-owned), then open a float whose
+# bottom margin against the folded window height is MARGIN rows.
+fold_then_float() {
+	local top=$1 margin=$2 h
+	tmux set -t S @og_status_folded 1
+	tmux set -t S @og_status_autofolded 1
+	bash "$REFLOW" S 30 --force >/dev/null 2>&1
+	[ "$(status_lines)" = 1 ]
+	h=$(tmux display-message -p -t "$WIN" '#{window_height}')
+	make_float 100 $((h - top - margin)) 0 "$top"
+}
+
+@test "a float covering only the unfolded height keeps the bar folded" {
+	# Margin 4 against the folded height is no cover; against the unfolded
+	# height (4 rows shorter per extra bar line) it is.
+	fold_then_float 1 4
+	autofold
+	assert_folded
+}
+
+@test "a float not covering even the unfolded height unfolds the bar" {
+	fold_then_float 1 $((4 + WANT - 1))
+	autofold
+	assert_unfolded
+}
+
+@test "a manual-owned bar (marker 0) is not folded by a covering float" {
+	tmux set -t S @og_status_autofolded 0
+	tmux set -t S @og_status_folded 0
+	cover_float
+	autofold
+	[ "$(folded)" = 0 ]
+	[ "$(autofolded)" = 0 ]
+	[ "$(status_lines)" -eq "$WANT" ]
+}
+
+@test "closing the float releases a manual marker without touching the bar" {
+	tmux set -t S @og_status_autofolded 0
+	tmux set -t S @og_status_folded 0
+	cover_float
+	autofold
+	tmux kill-pane -t "$FLOAT"
+	autofold
+	[ "$(folded)" = 0 ]
+	[ -z "$(autofolded)" ]
+	[ "$(status_lines)" -eq "$WANT" ]
+}
+
+@test "the Z bind sequence marks the bar manual and flips the fold" {
+	tmux set @og_status_autofolded 0 ';' set -F @og_status_folded '#{?#{==:#{@og_status_folded},1},0,1}'
+	[ "$(autofolded)" = 0 ]
+	[ "$(folded)" = 1 ]
+	tmux set @og_status_autofolded 0 ';' set -F @og_status_folded '#{?#{==:#{@og_status_folded},1},0,1}'
+	[ "$(folded)" = 0 ]
+}
+
 # --- the hook gate -----------------------------------------------------------
 
 # Install the shipped window-layout-changed[40] / session-window-changed[40]
@@ -225,10 +281,18 @@ install_gate() {
 	: >"$MARK"
 }
 
-# forks N: wait for the background run-shell jobs, then compare the count.
+# forks N: wait for the background run-shell jobs, then compare the count. For
+# N > 0 poll until N runs landed, then linger to catch an extra fork.
 forks() {
-	sleep 0.5
-	[ "$(wc -l <"$MARK")" -eq "$1" ]
+	local n=$1 i
+	if [ "$n" -gt 0 ]; then
+		for ((i = 0; i < 50; i++)); do
+			[ "$(wc -l <"$MARK")" -ge "$n" ] && break
+			sleep 0.1
+		done
+	fi
+	sleep 0.3
+	[ "$(wc -l <"$MARK")" -eq "$n" ]
 	: >"$MARK"
 }
 
@@ -290,4 +354,17 @@ forks() {
 	forks 0
 	cover_float
 	forks 0
+}
+
+@test "gate: a manual marker with a covering float forks nothing on an unchanged signature; closing it forks once" {
+	install_gate
+	tmux set -t S @og_status_autofolded 0
+	local tile
+	tile=$(tmux display-message -p -t "$WIN" '#{pane_id}')
+	cover_float
+	forks 1
+	tmux split-window -d -t "$tile"
+	forks 0
+	tmux kill-pane -t "$FLOAT"
+	forks 1
 }

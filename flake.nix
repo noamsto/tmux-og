@@ -2778,7 +2778,7 @@
                 nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
                 CONF = tmuxConfig.tmuxConf;
               } ''
-                [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -u @og_status_autofolded ; set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
+                [ "$(grep -Ec "^bind -N '[^']*' Z \{ set @og_status_autofolded 0 ; set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
                 [ "$(grep -c "^set -g @og_icons_job \".*'#{pid}')\"\$" "$CONF")" -eq 1 ]
                 grep -Fq 'set -g status-format[0] "#{E:@og_icons_job}' "$CONF"
                 # Auto-fold (#1191): one gate on both hooks; a hook that drops

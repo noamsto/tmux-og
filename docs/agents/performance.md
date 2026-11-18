@@ -700,12 +700,14 @@ The on/off difference is far inside the spread within each arm, on a host shared
 | Switch between two float-free windows | 0 | 0 |
 | Covering float opens | 0 | 1 (the fold: one forced reflow follows) |
 | Any later event with the same float geometry (tile split) | 0 | 0 |
-| Covering float closes while auto-folded | 0 | 1 (the unfold) |
-| Float closes when nothing was auto-folded | 0 | 0 |
+| Covering float closes while auto-folded (marker `1`) | 0 | 1 (the unfold) |
+| Covering float closes after a manual Z (marker `0`) | 0 | 1 (clears the marker, no reflow) |
+| Event with the same signature after a manual unfold (marker `0`) | 0 | 0 |
+| Float closes when the marker is empty | 0 | 0 |
 | Small float opens (signature changed, no fold) | 0 | 1 (the script finds no cover and exits) |
 | Modal float (picker) opens, or an event in an inactive or mirror window | 0 | 0 |
 
-The fold changes the window height, so the signature (which carries `WxH`) changes once more and one no-op fork can follow a fold. The script itself runs one `display-message`, one `list-panes` and, only on a state change, two `set-option` calls and one forced reflow.
+The fold changes the window height, so the signature (which carries `WxH`) changes once more and one no-op fork follows a fold; measured on a scratch server with an attached 60x45 pty client, 12 windows (5-line bar) and a stamped 90% float, the sequence is 2 forks in total and the bar then holds steady for 7 s (`status` 5 to `on`, `folded=1`). Before coverage was judged against the unfolded height the same setup flipped fold/unfold about twice a second. The script itself runs one `display-message`, one `list-panes` and, only on a state change, one conditional `if -F` write and one forced reflow.
 
 ## Dwindle cache gate (#1026)
 
