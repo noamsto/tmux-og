@@ -3,6 +3,9 @@
 # neighbouring kitty window; otherwise move within tmux. When the window has
 # floats, resolve the nearest geometrically directional pane ourselves: tmux's
 # select-pane only understands the tiled layout.
+# From a float, a tiled pane is a target only when a strip of it stays visible
+# beside the float (lib-float-cover); with none, the float counts as filling the
+# window: kitty hand-off at the edge, otherwise no move.
 # args: <flag> <kitty-dir> <zoomed> <at-edge> <origin-floating> <pane-id> <window-id> [client=<name>]
 # client= names the invoking client; its own KITTY_LISTEN_ON is authoritative
 # when the arg is present (an unreachable socket, e.g. an ssh client's without
@@ -11,6 +14,8 @@
 # in the bind: a nested #{q:#{...}} does not shell-quote.
 # no set -e: a failed query or kitty command falls through to select-pane.
 set -u
+# shellcheck source=/dev/null  # Nix store path substituted at build time
+source @lib_float_cover@
 flag=$1 dir=$2 zoomed=$3 edge=$4 origin_floating=$5 origin_id=$6 window_id=$7
 
 [ "$zoomed" = 1 ] && exit 0
@@ -25,6 +30,7 @@ else
 	geometry=
 fi
 has_floats=0
+filling=0
 while IFS='|' read -r _ pane_floating _rest; do
 	[ "$pane_floating" = 1 ] && {
 		has_floats=1
@@ -50,6 +56,10 @@ if [ "$has_floats" = 1 ]; then
 		while IFS='|' read -r pane_id pane_floating pane_modal pane_left pane_top pane_width pane_height; do
 			[ "$pane_id" = "$origin_id" ] && continue
 			[ "$pane_modal" = 1 ] && continue
+			if [ "$origin_floating" = 1 ] && [ "$pane_floating" = 0 ]; then
+				float_tile_visible "$flag" "$origin_left" "$origin_top" "$origin_width" "$origin_height" "$pane_left" "$pane_top" "$pane_width" "$pane_height"
+				[ "$REPLY" = 1 ] || continue
+			fi
 			pane_right=$((pane_left + pane_width))
 			pane_bottom=$((pane_top + pane_height))
 			pane_center_x=$((pane_left * 2 + pane_width))
@@ -118,6 +128,8 @@ if [ "$has_floats" = 1 ]; then
 				best_score=1 best_overlaps=$overlaps best_perpendicular_gap=$perpendicular_gap best_gap=$gap best_preference=$preference best_pane_number=$pane_number candidate=$pane_id
 			fi
 		done <<<"$geometry"
+		# pane_at_* is 0 for a float, so the hand-off needs the edge set here.
+		[ -z "$candidate" ] && [ "$origin_floating" = 1 ] && filling=1 edge=1
 	fi
 fi
 
@@ -134,4 +146,5 @@ if [ "$geometry_ok" = 1 ] && [ "$edge" = 1 ] && [ -n "${KITTY_LISTEN_ON:-}" ] &&
 	# timeout so a stalled kitty remote-control socket can't hang the C-hjkl bind.
 	timeout 1 kitty @ action neighboring_window "$dir" 2>/dev/null && exit 0
 fi
+[ "$filling" = 1 ] && exit 0
 tmux select-pane -"$flag"

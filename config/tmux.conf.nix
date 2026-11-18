@@ -178,6 +178,9 @@
   # lib-reflow has no build-time placeholders of its own either.
   lib-reflow = pkgs.writeShellScript "lib-reflow" (builtins.readFile ../scripts/lib-reflow.sh);
 
+  # lib-float-cover is pure geometry math with no placeholders.
+  lib-float-cover = pkgs.writeShellScript "lib-float-cover" (builtins.readFile ../scripts/lib-float-cover.sh);
+
   # lib-notify has no build-time placeholders of its own; a plain writeShellScript.
   lib-notify = pkgs.writeShellScript "lib-notify" (builtins.readFile ../scripts/lib-notify.sh);
 
@@ -391,6 +394,10 @@
           "${script.tmux-agent-repaint}/bin/tmux-agent-repaint"
         ])
       (builtins.readFile ../scripts/${name}.sh));
+
+  mkScriptFloatCover = name:
+    pkgs.writeShellScriptBin name
+    (builtins.replaceStrings ["@lib_float_cover@"] ["${lib-float-cover}"] (builtins.readFile ../scripts/${name}.sh));
 
   # Scripts that need enrich library + provider/icon/config substitution
   scriptsWithEnrich = ["tmux-issue-stamp" "tmux-issue-stamp-linear" "tmux-issue-stamp-github" "tmux-pr-enrich"];
@@ -669,6 +676,8 @@
     then mkScriptCarouselRestore name
     else if name == "tmux-client-theme"
     then mkScriptClientTheme name
+    else if name == "tmux-smart-nav"
+    then mkScriptFloatCover name
     else if builtins.elem name scriptsWithLog
     then mkScriptWithLog name
     else if builtins.elem name scriptsWithRemote

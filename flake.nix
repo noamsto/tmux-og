@@ -920,7 +920,13 @@
                 CREW_DASH = "${tmuxConfig.script.tmux-crew-dash}/bin/tmux-crew-dash";
                 FLOAT_GROUP = "${tmuxConfig.script.tmux-float-group}/bin/tmux-float-group";
                 BRIDGE_CTL = tmuxConfig.picker-bridge-ctl-bin;
+                SMART_NAV = "${tmuxConfig.script.tmux-smart-nav}/bin/tmux-smart-nav";
               } ''
+                # smart-nav's bats suites sed the placeholder themselves, so a
+                # name drift between the script and the builder would test green.
+                ! grep -qF '@lib_float_cover@' "$SMART_NAV"
+                grep -qE 'source /nix/store/[^ ]+-lib-float-cover$' "$SMART_NAV"
+
                 # The crew-dash launcher reaches tmux-float-group by a substituted
                 # store path (a pane shell may not carry the wrapper's PATH). Its
                 # bats suite overrides the path through OG_FLOAT_GROUP_BIN, so a
@@ -3102,16 +3108,52 @@
             # must not overwrite the first client's per-machine env.
             multi-client-env-tests =
               pkgs.runCommand "multi-client-env-tests" {
-                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux];
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.util-linux pkgs.gnused];
                 TMUX_BIN = "${tmuxConfig.tmux-wrapped}/bin/tmux";
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
-                cp -r ${scriptsSrc ["tmux-smart-nav.sh"]} scripts
+                cp -r ${scriptsSrc ["tmux-smart-nav.sh" "lib-float-cover.sh"]} scripts
                 cp -r ${testsSrc ["multi-client-env.bats"]} tests
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/multi-client-env.bats
+                touch $out
+              '';
+
+            float-cover-tests =
+              pkgs.runCommand "float-cover-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep];
+              } ''
+                cp -r ${scriptsSrc ["lib-float-cover.sh"]} scripts
+                cp -r ${testsSrc ["float-cover.bats"]} tests
+                export HOME=$TMPDIR
+                bats tests/float-cover.bats
+                touch $out
+              '';
+
+            smart-nav-tests =
+              pkgs.runCommand "smart-nav-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep];
+              } ''
+                cp -r ${scriptsSrc ["lib-float-cover.sh" "tmux-smart-nav.sh"]} scripts
+                cp -r ${testsSrc ["smart-nav.bats"]} tests
+                export HOME=$TMPDIR
+                bats tests/smart-nav.bats
+                touch $out
+              '';
+
+            # Real floats on a config-less scratch server (mkTmux, like
+            # float-nudge-tests): the stub tests in smart-nav-tests feed the
+            # script canned geometry, this one proves it against real tmux.
+            smart-nav-live-tests =
+              pkgs.runCommand "smart-nav-live-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep (mkTmux pkgs)];
+              } ''
+                cp -r ${scriptsSrc ["lib-float-cover.sh" "tmux-smart-nav.sh"]} scripts
+                cp -r ${testsSrc ["smart-nav-live.bats"]} tests
+                export HOME=$TMPDIR
+                bats tests/smart-nav-live.bats
                 touch $out
               '';
 

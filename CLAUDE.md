@@ -64,6 +64,7 @@ Reload a running tmux with `prefix + r`. `./tests/test-display.sh` is a manual d
 - **`lib-claude.sh`** — `CLAUDE_PANES_DIR`, `read_pane_state` (staleness, interrupt, dead-agent), `claude_state_icon`, `setup_claude_colors`, `claude_priority_state`, the reap/prune/clear helpers.
 - **`lib-enrich.sh`** — branch→issue parsing, `sanitize_title`, `split_pr_badge`, `build_window_label`. Pure logic, unit-tested in `tests/enrich.bats`.
 - **`lib-reflow.sh`** — `reflow_fit_columns`, `reflow_clip_rests`.
+- **`lib-float-cover.sh`** — `float_covers_view`, `float_tile_visible`, `FLOAT_VISIBLE_COLS/ROWS`. Pure float-visibility math (`float_covers_view` is for status-fold; smart-nav decides per direction with `float_tile_visible`); unit-tested in `tests/float-cover.bats`.
 
 Hot-path functions set `REPLY` instead of echoing, to avoid a subshell fork.
 

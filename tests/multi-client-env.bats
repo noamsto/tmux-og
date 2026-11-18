@@ -273,10 +273,13 @@ pane_env() {
 	[ -n "$l_name" ] && [ -n "$r_name" ]
 	[ "$(t display-message -c "$l_name" -p "$frag")" = "client=$l_name" ]
 
-	PATH="$TMUX_TMPDIR/bin:$PATH" bash "$root_dir/scripts/tmux-smart-nav.sh" L left 0 1 0 "$pane" "$win" "client=$l_name"
+	# The Nix build substitutes @lib_float_cover@; do the same on a temp copy.
+	sed "s|@lib_float_cover@|$root_dir/scripts/lib-float-cover.sh|" "$root_dir/scripts/tmux-smart-nav.sh" >"$TMUX_TMPDIR/smart-nav.sh"
+
+	PATH="$TMUX_TMPDIR/bin:$PATH" bash "$TMUX_TMPDIR/smart-nav.sh" L left 0 1 0 "$pane" "$win" "client=$l_name"
 	[ "$(cat "$TMUX_TMPDIR/kitty.log")" = "unix:/local" ]
 
 	: >"$TMUX_TMPDIR/kitty.log"
-	PATH="$TMUX_TMPDIR/bin:$PATH" bash "$root_dir/scripts/tmux-smart-nav.sh" L left 0 1 0 "$pane" "$win" "client=$r_name"
+	PATH="$TMUX_TMPDIR/bin:$PATH" bash "$TMUX_TMPDIR/smart-nav.sh" L left 0 1 0 "$pane" "$win" "client=$r_name"
 	[ "$(cat "$TMUX_TMPDIR/kitty.log")" = "unix:/remote" ]
 }
