@@ -240,14 +240,21 @@ claude'
 @test "tick-run: a failed pane scan clears no cache" {
 	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
 	echo '{}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	touch "$OG_AGENT_USAGE_DIR/.published."
 	cat >"$FAKEBIN/tmux" <<-'EOF'
 		#!/bin/sh
-		exit 1
+		case "$1" in
+		list-panes) exit 1 ;;
+		set) printf '%s\n' "$*" >>"$TMUX_SET_LOG" ;;
+		esac
+		exit 0
 	EOF
 	chmod +x "$FAKEBIN/tmux"
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ -e "$OG_AGENT_USAGE_DIR/claude.json" ]
+	[ ! -s "$TMUX_SET_LOG" ]
+	[ -e "$OG_AGENT_USAGE_DIR/.published." ]
 }
 
 @test "tick-run: publishes the surviving caches onto @og_agent_usage" {
@@ -259,19 +266,40 @@ claude'
 	echo '{"windows":[{"label":"5h","pct":99}]}' >"$OG_AGENT_USAGE_DIR/codex.json"
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
-	[ "$(wc -l <"$TMUX_SET_LOG")" -eq 1 ]
+	[ "$(wc -l <"$TMUX_SET_LOG")" -eq 2 ]
 	local line
-	line=$(cat "$TMUX_SET_LOG")
+	line=$(sed -n 1p "$TMUX_SET_LOG")
 	[[ $line == "set -g @og_agent_usage "* ]]
 	run jq -e '.claude.windows[0].pct == 42 and (has("codex")|not)' <<<"${line#set -g @og_agent_usage }"
 	[ "$status" -eq 0 ]
+	[ "$(sed -n 2p "$TMUX_SET_LOG")" = "set -g @og_usage_short claude 42%" ]
+}
+
+@test "tick-run: @og_usage_short takes the max pct per agent and skips agents without windows" {
+	export FAKE_PANES=$'claude\ncursor-agent'
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
+	echo '{"windows":[{"label":"5h","pct":42.4},{"label":"7d","pct":79.6}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	echo '{"plan":"x"}' >"$OG_AGENT_USAGE_DIR/cursor.json"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(grep -c '^set -g @og_usage_short ' "$TMUX_SET_LOG")" -eq 1 ]
+	[ "$(grep '^set -g @og_usage_short ' "$TMUX_SET_LOG")" = "set -g @og_usage_short claude 80%" ]
+}
+
+@test "tick-run: caches with no windows unset @og_usage_short" {
+	export FAKE_PANES='cursor-agent'
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
+	echo '{"plan":"x"}' >"$OG_AGENT_USAGE_DIR/cursor.json"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	grep -qx 'set -gu @og_usage_short' "$TMUX_SET_LOG"
 }
 
 @test "tick-run: no surviving cache publishes an unset" {
 	export FAKE_PANES='claude'
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
-	[ "$(cat "$TMUX_SET_LOG")" = "set -gu @og_agent_usage" ]
+	[ "$(cat "$TMUX_SET_LOG")" = $'set -gu @og_agent_usage\nset -gu @og_usage_short' ]
 }
 
 @test "tick-run: no agent open never calls tmux set" {
@@ -279,6 +307,37 @@ claude'
 	run bash "$AGENT_USAGE_SCRIPT" --tick-run
 	[ "$status" -eq 0 ]
 	[ ! -s "$TMUX_SET_LOG" ]
+}
+
+@test "last agent closed unsets @og_usage_short" {
+	export FAKE_PANES='claude'
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
+	echo '{"windows":[{"label":"5h","pct":42}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	grep -qx 'set -g @og_usage_short claude 42%' "$TMUX_SET_LOG"
+	: >"$TMUX_SET_LOG"
+	export FAKE_PANES='bash'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$TMUX_SET_LOG")" = $'set -gu @og_agent_usage\nset -gu @og_usage_short' ]
+	# Cleared once: the next empty pass stays fork-free.
+	: >"$TMUX_SET_LOG"
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ ! -s "$TMUX_SET_LOG" ]
+}
+
+@test "the published memo is per tmux server: a second server's empty pass leaves the first's alone" {
+	export FAKE_PANES='claude'
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
+	echo '{"windows":[{"label":"5h","pct":42}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	TMUX=/tmp/a/default,1,0 run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ -e "$OG_AGENT_USAGE_DIR/.published._tmp_a_default" ]
+	: >"$TMUX_SET_LOG"
+	export FAKE_PANES='bash'
+	TMUX=/tmp/b/default,2,0 run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ ! -s "$TMUX_SET_LOG" ]
+	[ -e "$OG_AGENT_USAGE_DIR/.published._tmp_a_default" ]
 }
 
 # A wrapper keeps the shell foreground and the agent in its process tree; the

@@ -237,7 +237,8 @@
 
   # Scripts that source only lib-log (gated event logging). Includes
   # claude-status-update, which is run RAW by tests/claude-issues.bats — its
-  # source is guarded so the raw script defines no-op stubs.
+  # source is guarded so the raw script defines no-op stubs. tmux-status-fold
+  # sources nothing: it is here only for mkScriptWithLog's @reflow@ substitution.
   scriptsWithLog = ["claude-status-update" "og-log-event" "og-debug" "tmux-status-fold"];
 
   mkScriptWithLog = name: let
