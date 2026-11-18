@@ -896,10 +896,12 @@ func TestPredictorFeedC1RunBounded(t *testing.T) {
 
 func BenchmarkPredictFeedC1Run(b *testing.B) {
 	run := bytes.Repeat([]byte{0x84}, 4096)
+	pm := c1RunPredictor(b).model
+	if pm == nil {
+		b.Fatal("no model")
+	}
 	for b.Loop() {
-		b.StopTimer()
-		p := c1RunPredictor(b)
-		b.StartTimer()
-		p.onOutput(run)
+		pm.guard, pm.poisoned = vtGuard{}, false
+		pm.feed(run)
 	}
 }

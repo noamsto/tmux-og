@@ -572,7 +572,7 @@ func compareGuardedModels(t *testing.T, rng *rand.Rand, raw []byte) {
 	}
 	for y := range h {
 		for x := range w {
-			a, b := fed.cell(x, y), direct.cell(x, y)
+			a, b := mustCell(t, fed, x, y), mustCell(t, direct, x, y)
 			if cellText(a) != cellText(b) || a.Width != b.Width {
 				t.Fatalf("stream %q: cell (%d,%d) fed %+v, direct %+v", raw, x, y, a, b)
 			}

@@ -28,7 +28,6 @@ type predictModel struct {
 	title titleFilter
 	guard vtGuard
 	fbuf  []byte
-	gbuf  []byte
 
 	// drained closes when the goroutine servicing the emulator's reply pipe exits.
 	drained chan struct{}
@@ -125,8 +124,8 @@ func (pm *predictModel) feed(p []byte) (ok bool) {
 		}
 	}()
 	pm.fbuf = pm.title.filter(pm.fbuf[:0], p)
-	fb, bad := pm.guard.filter(pm.gbuf[:0], pm.fbuf)
-	pm.gbuf = fb
+	fb, bad := pm.guard.filter(pm.fbuf[:0], pm.fbuf)
+	pm.fbuf = fb
 	if bad {
 		pm.poisoned = true
 		return false
@@ -206,11 +205,15 @@ func (f *titleFilter) filter(dst, p []byte) []byte {
 }
 
 // vtGuard sits in front of vt and poisons the model on bytes where vt and tmux
-// part ways: C1 controls vt executes in every state, a stray or malformed
-// UTF-8 byte tmux draws as U+FFFD, a byte >= 0x80 inside an escape sequence
-// tmux ignores, and U+0080..U+009F, which vt's grapheme path draws over the
-// cursor cell where tmux appends a zero-width rune. It follows vt's parser
-// table, so it costs one lookup per byte and the zero value is Ground.
+// part ways: C1 controls vt executes in every state but OSC/DCS bodies, a stray
+// or malformed UTF-8 byte tmux draws as U+FFFD, a byte >= 0x80 inside an escape
+// sequence tmux ignores, and c2 80..9f. That last one is poisoned because
+// U+0080..U+009F spells the C1 family and tmux draws it zero-width where vt's
+// grapheme path overwrites the cursor cell. Any other zero-width rune printed
+// with no base in the same Write (after CR/CUP, or after an ASCII char) has the
+// same vt/tmux divergence and is tolerated, because the predictor skips
+// Width!=1 cells. The guard follows vt's parser table, so it costs one lookup
+// per byte and the zero value is Ground.
 type vtGuard struct {
 	st     parser.State
 	need   int
@@ -218,7 +221,8 @@ type vtGuard struct {
 }
 
 // filter appends to dst the bytes vt should see and reports bad when p holds a
-// poisoning byte; dst is then unusable.
+// poisoning byte; dst is then unusable. dst may alias p: the guard only drops
+// bytes, so the write index never passes the read index.
 func (g *vtGuard) filter(dst, p []byte) ([]byte, bool) {
 	for _, c := range p {
 		switch {

@@ -319,7 +319,7 @@ func (p *predictor) onOutput(b []byte) []byte {
 // no ASCII byte before predictFeedSliceMax has no cut point it can afford and
 // is not modelled (the model is dropped), so a remote cannot make one vt write
 // arbitrarily long; a shorter one is fed whole. Raw C1 bytes are not ASCII, but
-// the model's guard poisons on them, so such a run never reaches vt.
+// such a run never reaches vt outside OSC/DCS bodies (the guard poisons first).
 func (p *predictor) feedTimed(m *predictModel, b []byte) bool {
 	for len(b) > 0 {
 		if p.fedCost > predictFeedBudget {
