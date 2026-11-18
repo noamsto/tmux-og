@@ -278,8 +278,11 @@ const remoteToolSide = "crew-dash-side"
 const (
 	sideColsFormat  = "#{e|/:#{e|*:#{window_width},32},100}"
 	sideWidthFormat = "#{?#{e|<:" + sideColsFormat + ",50},50,#{?#{e|>:" + sideColsFormat + ",80},80," + sideColsFormat + "}}"
-	// A floating target, a grid window or a pane too narrow takes the float.
-	sideFitsFormat = "#{&&:#{&&:#{!=:#{pane_floating_flag},1},#{!=:#{@crew_grid},1}}," +
+	// A floating target, a grid window, a zoomed window or a pane too narrow takes
+	// the float. A zoomed window's pane_width is the whole window's, but the split
+	// would unzoom and halve the pane's real cell, so the check cannot be trusted;
+	// the float (-A) sits above the zoom and leaves it in place.
+	sideFitsFormat = "#{&&:#{&&:#{&&:#{!=:#{pane_floating_flag},1},#{!=:#{@crew_grid},1}},#{!=:#{window_zoomed_flag},1}}," +
 		"#{e|>=:#{pane_width},#{e|+:" + sideWidthFormat + ",81}}}"
 	// The tiled twin of floatLookup: it excludes floats, which share the label
 	// namespace, so only the side split is reused.
@@ -690,8 +693,8 @@ var verbs = map[string]verb{
 	// second press focuses the window's existing side split (a tiled lookup, the
 	// float lookup excludes it), otherwise it splits right of the pressed pane
 	// when the remote's own window is wide enough, and otherwise falls back to
-	// the unchanged crew-dash float (a floating target, an @crew_grid window, or
-	// a target that would drop under 80 columns). It is a key rather than a
+	// the unchanged crew-dash float (a floating target, an @crew_grid or zoomed
+	// window, or a target that would drop under 80 columns). It is a key rather than a
 	// shape argument so the verb's arguments stay what older callers send, and
 	// an older daemon's `unknown tool "crew-dash-side"` is the signal to fall
 	// back. It stamps no @float_geom for the float's reason, and the pane it
@@ -848,7 +851,9 @@ const maxRemoteToolCwd = 4096
 // runs its command through the remote's default shell (fish on the normal host),
 // and this is POSIX. Like carouselResolveScript it must contain zero single-quote
 // characters so double tmuxQuote only wraps. tool is a remoteTools key, so it and its
-// remoteToolBin/remoteToolExec entries are [a-z -] and need no quoting of their own.
+// remoteToolBin entries are [a-z -]; a remoteToolExec entry may reference only a
+// variable the script itself sets (crew-dash-side's $n, from its probe), and none
+// carries a single quote or #.
 //
 // The PATH restore is what makes the bare name resolvable at all. tmux hands a
 // new pane its global environ, which carries every store path tmux-og's wrapper
@@ -884,7 +889,7 @@ func toolResolveScript(tool string) string {
 	}
 	// The side dash asks the remote's own `crew dash --help` whether it knows
 	// --narrow, and passes it only then. Runs after the PATH restore so the
-	// probe resolves crew like the exec does; no quote or # of its own.
+	// probe resolves crew like the exec does; no single quote or # of its own.
 	probe := ""
 	if tool == remoteToolSide {
 		probe = `n=; case $(crew dash --help </dev/null 2>&1) in *--narrow*) n=" --narrow";; esac; `

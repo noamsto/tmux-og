@@ -2681,9 +2681,9 @@ func TestToolVerbCrewDashBuildOutputIsFrozen(t *testing.T) {
 const (
 	wantSideX        = "#{e|/:#{e|*:#{window_width},32},100}"
 	wantSideWidthFmt = "#{?#{e|<:" + wantSideX + ",50},50,#{?#{e|>:" + wantSideX + ",80},80," + wantSideX + "}}"
-	// The target keeps 80 columns plus the separator, and a floating target or
-	// a grid window gets the float instead.
-	wantSideFitsFmt = "#{&&:#{&&:#{!=:#{pane_floating_flag},1},#{!=:#{@crew_grid},1}},#{e|>=:#{pane_width},#{e|+:" + wantSideWidthFmt + ",81}}}"
+	// The target keeps 80 columns plus the separator, and a floating target, a
+	// grid window or a zoomed window gets the float instead.
+	wantSideFitsFmt = "#{&&:#{&&:#{&&:#{!=:#{pane_floating_flag},1},#{!=:#{@crew_grid},1}},#{!=:#{window_zoomed_flag},1}},#{e|>=:#{pane_width},#{e|+:" + wantSideWidthFmt + ",81}}}"
 	wantSideTiled   = "#{P:#{?#{&&:#{==:#{@pane_label},crew-dash-side},#{!=:#{pane_floating_flag},1}},#{pane_id},}}"
 )
 
@@ -2909,10 +2909,14 @@ func TestToolVerbSideFallsBackToFloat(t *testing.T) {
 		name   string
 		window int
 		grid   bool
+		zoomed bool
 	}{
-		{"too narrow", 100, false},
-		{"just too narrow", 130, false},
-		{"grid window", 200, true},
+		{"too narrow", 100, false, false},
+		{"just too narrow", 130, false, false},
+		{"grid window", 200, true, false},
+		// pane_width reads the zoomed width, so only the zoom flag keeps the
+		// split from shrinking the target's real cell.
+		{"zoomed", 200, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newSideRig(t, true)
@@ -2920,12 +2924,25 @@ func TestToolVerbSideFallsBackToFloat(t *testing.T) {
 			if tc.grid {
 				r.run("set-option", "-w", "-t", "@0", "@crew_grid", "1")
 			}
+			if tc.zoomed {
+				r.run("split-window", "-h", "-d", "-t", r.base)
+				r.run("resize-pane", "-Z", "-t", r.base)
+			}
 			r.press("crew-dash-side")
 			if got := r.find("crew-dash-side", false); len(got) != 0 {
 				t.Fatalf("a tiled side pane was created: %+v", got)
 			}
 			if got := r.find("crew-dash", true); len(got) != 1 {
 				t.Fatalf("want one crew-dash float, got %+v", r.panes())
+			}
+			if tc.zoomed {
+				out, err := r.tmux("display-message", "-p", "-t", "@0", "#{window_zoomed_flag}").Output()
+				if err != nil {
+					t.Fatalf("display-message: %v", err)
+				}
+				if got := strings.TrimSpace(string(out)); got != "1" {
+					t.Errorf("the press lost the user's zoom: window_zoomed_flag = %q", got)
+				}
 			}
 		})
 	}
