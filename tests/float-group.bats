@@ -62,6 +62,7 @@ if [[ -n ${OG_SHIM_FAIL_JOIN:-} && ${1:-} == join-pane ]]; then
 	exit 1
 fi
 if [[ -n ${OG_SHIM_SLEEP_JOIN:-} && ${1:-} == join-pane ]]; then
+	printf '%s\n' "$$" >"$OG_SHIM_PID_FILE"
 	exec sleep 30
 fi
 if [[ -n ${OG_SHIM_FAIL_LISTWIN:-} && ${1:-} == list-windows && ${2:-} == -a ]]; then
@@ -506,14 +507,18 @@ HOOK
 
 	# Stall the script inside the paused window: a join-pane that sleeps.
 	use_shim
-	OG_SHIM_SLEEP_JOIN=1 bash scripts/tmux-float-group.sh show crew "$TILE" &
+	OG_SHIM_PID_FILE="$SHIM_DIR/join.pid" OG_SHIM_SLEEP_JOIN=1 bash scripts/tmux-float-group.sh show crew "$TILE" &
 	pid=$!
 	for _ in $(seq 50); do
 		[ "$(tmux show-options -wqv -t "$WIN" @dwindle)" = off ] && break
 		sleep 0.1
 	done
 	[ "$(tmux show-options -wqv -t "$WIN" @dwindle)" = off ]
-	child=$(pgrep -P "$pid")
+	for _ in $(seq 50); do
+		[[ -s $SHIM_DIR/join.pid ]] && break
+		sleep 0.1
+	done
+	child=$(cat "$SHIM_DIR/join.pid")
 	kill -TERM "$pid"
 	wait "$pid" || true
 	# The orphaned shim sleep would hold bats' fds open for its full 30 s.
