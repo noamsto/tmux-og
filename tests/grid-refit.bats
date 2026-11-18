@@ -280,7 +280,7 @@ dump_refit_state() {
 }
 
 # dump_demoted_lead_state — prints the restore path's state to stderr when the
-# #793 demoted-lead restore poll gives up (#1181). The suspect is a lock loser
+# #793 demoted-lead restore poll gives up (#1181). One hypothesis (unreproduced): a lock loser
 # exiting in the instant between the holder's apply returning and its EXIT-trap
 # rmdir. That race leaves no pending marker, a stale @grid_refit_sig naming the
 # lead and no lock dir (the holder's rmdir follows within microseconds); a lock
