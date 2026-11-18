@@ -64,7 +64,16 @@ has no project key and is never routed (it keeps behaving as today).
 **Slug.** The tmux session name for the project is `mirrorname.Part(<repo>)`
 (`[A-Za-z0-9_-]`, so stock session menus parse it). On a collision between two
 keys the slug becomes `<owner>-<repo>`. The raw key lives in the session option
-`@og_project`, never in the name, for the reason `@bridge_session` is raw.
+`@og_project`, never in the name, for the reason `@bridge_session` is raw. The
+slug names only the *local* hub; the remote leaf name is derived from the key
+alone (3.1), so two controllers, or one controller after a local collision
+clears, always agree on it.
+
+**The key is validated where it is made.** `NormalizeKey` returns `ok=false`
+for any key outside `[A-Za-z0-9._/@+:-]` (the key comes from a host's `git
+remote get-url origin`, which a remote host controls), so a key never carries
+`#`, quotes or control bytes into a session option, a cache file name, the
+registry merge or a message.
 
 **Registry.** Two layers, merged with the declarative layer winning:
 
@@ -120,9 +129,16 @@ inherited from the window the action starts in.
 
 **Opening a window on a remote host** is ssh to the host (it rides the picker's
 ControlMaster) running
-`tmux new-window -P -F '#{window_id}|#{pane_id}' -t '=<remote-session>:' -c
-<worktree-path>`, or `new-session -d -s <remote-session> -c <path>` first if the
-remote session does not exist. There is **no `-n`**: `new-window -n` runs tmux
+`tmux new-window -P -F '#{window_id}|#{pane_id}' -t '=<leaf>:' -c
+<worktree-path>` when the leaf exists. When it does not, the leaf's **first
+window is the target window**: `new-session -d -P -F '#{window_id}|#{pane_id}'
+-s <leaf> -c <worktree-path> \; set-option -t <leaf> @og_project_leaf <key>`
+in one tmux invocation (the leaf name is never numeric, so `-t <leaf>` is
+unambiguous), so no stray anchor window exists and no instant has the leaf
+unstamped. Every remote tmux call resolves the binary and socket directory the
+way the picker and launcher do (`remoteTmuxBin`, `TMUX_TMPDIR` pinned by
+`remoteTmuxCmd`/`rm.env()`), never a bare `tmux`: a non-interactive ssh
+`PATH` may lack it, or reach a different socket than the daemon's. There is **no `-n`**: `new-window -n` runs tmux
 format expansion (`#()` jobs included) on the remote, and `#(` and `#{` are
 legal in git ref names. The window is named by the existing reconcile path from
 its cwd, as a local `wt switch` window is. The launcher then waits (bounded, a
@@ -176,12 +192,17 @@ daemon mirrors it into the local project session:
 og-remote-open <host> <remote-session> --into <slug>
 ```
 
-- **Remote session name** is `og-<slug>`, always prefixed, and stamped on the
+- **Remote session name** is the *leaf name*
+  `og-<repo>-<8 hex of sha256(key)>` (`<repo>` through `mirrorname.Part`),
+  derived from the key alone, so every controller computes the same name and two
+  projects with the same repo name cannot share a leaf. It is stamped on the
   remote with the session option `@og_project_leaf=<key>`. (A hub carries
   `@og_project`, a leaf carries `@og_project_leaf`; the two never share a
-  session.) The prefix means the session never collides with a session the user
-  already keeps on that host (a user session named after the repo is common),
-  and the stamp lets the probes and the launcher recognise it.
+  session.) The `og-` prefix means the session never collides with one the user
+  already keeps on that host, and the stamp lets the probes and the launcher
+  recognise it. **An existing session of that name is reused only if its
+  `@og_project_leaf` equals the key**; otherwise `og project` refuses with a
+  message (a hand-made or colliding session is never silently adopted).
 - **Started on demand** by `og project open`/`new`, and by an explicit
   `og project attach <project> <host>`. Nothing starts at server boot in v1.
 - **The remote session's windows are exactly the project's windows on that
@@ -216,16 +237,20 @@ the #1106 Enter-places path are not covered by it.
 So the invariant, **a remote leaf is mirrored once per local machine, into its
 hub**, needs a guard in the launcher (plan phase P1), not a convention:
 
-1. Before it dials, the launcher reads the target session's two stamps with a
-   session-scoped `show-options -v -t =<sess> @og_project_leaf` and
-   `… @og_project` on the remote, one ssh round trip next to the `has-session`
-   it already makes (`picker/remoteopen/remote.go`). A session-scoped
-   `show-options` (no `-w`) never sees a window option, so a window option
-   cannot forge a stamp. The read **fails open**: an error, a timeout or an
-   old remote reads as "no stamp" and the open proceeds as today. (The picker's
-   own session rows, which use `list-sessions -F` and so evaluate in the
-   session's current window, use the `#{?#{@bridge_placed},,#{@og_project…}}`
-   guard idiom instead.)
+1. Before it dials, the launcher reads the target session's two stamps in one
+   ssh round trip beside the `has-session` it already makes
+   (`picker/remoteopen/remote.go`). `show-options` rejects the `=` exact-match
+   prefix (`docs/agents/tmux-gotchas.md`, #474), so the read first resolves the
+   id, `display-message -p -t '=<sess>:' '#{session_id}'`, requires a `$N`
+   answer, then runs `show-options -qv -t '$N' @og_project_leaf` and
+   `… @og_project`. A session-scoped read (no `-w`) never sees a window option,
+   so a window option cannot forge a stamp. The read **fails open** only when
+   the *session cannot be resolved or the call cannot run* (no `$N`, an error,
+   a timeout, an old remote): the open proceeds as today. A resolved session
+   whose options read empty is "no stamp", not an error. (The picker's own
+   session rows, which use `list-sessions -F` and so evaluate in the session's
+   current window, use the `#{?#{@bridge_placed},,#{@og_project…}}` guard idiom
+   instead.)
 2. A target session with `@og_project_leaf` is opened only by `og project` (an
    internal flag the verb passes); any other open of it is refused with
    `<host>/<sess> is a project leaf — use og project open`.
@@ -245,8 +270,10 @@ hub**, needs a guard in the launcher (plan phase P1), not a convention:
    scan-then-start runs under one per-(host, leaf) lock, not the launcher's
    per-`intoID` placed lock, so two local sessions cannot race past the scan.
 
-The check lives in `picker/remoteopen`, tested by a unit test over parsed
-`list-sessions` rows and a bats case with a fake remote. A remote whose tmux
+The check lives in `picker/remoteopen`, tested by a unit test over the parsed
+stamp read (including the `=`-prefix regression: an unresolvable id must not
+read as "no stamp" silently in the test double) and a bats case with a fake
+remote. A remote whose tmux
 cannot report the stamps has none to report: a leaf is created by this
 revision's `og project`, so its stamp exists by construction, and the
 stamp-less case is only a hand-made session (best effort there).
@@ -290,9 +317,15 @@ rather than leaving it to chance:
   (`og-remote-open <host> <session> --into <slug> --window @N`, an id selector).
   That daemon is filtered on a remote session other than the leaf, so it does
   not overlap the leaf's unfiltered daemon (3.2 is about one remote session).
-  The id selector is the only form the guard (3.3) lets through on a hub, so it
-  cannot start the mirror loop; a mirror window id supplied by hand is the same
-  "mirror of a mirror" the picker already hides, a documented residual.
+  The id selector is the only form the guard (3.3) lets through on a hub. The
+  `@N` comes from a cache that can be a minute or more old (and older while a
+  host is unreachable), and window ids start over when the remote tmux server
+  restarts, so a stale `@N` could name a different window, a mirror among them.
+  The launcher therefore verifies, in the same ssh call that starts the
+  mirror, that window `@N` has an empty `@bridge_win` and that its pane's
+  `pane_current_path` equals the snapshot's worktree path, and refuses
+  otherwise. With that check the mirror loop cannot start from the picker; a
+  mirror window id supplied by hand on the CLI is a documented residual.
 - `^n` "create anyway" on such a worktree is the same-branch refusal of
   section 4.
 
@@ -304,14 +337,19 @@ branch.
 **New worktrees branch from a fresh remote default, on the target host.**
 `og project new <branch> --host H` runs on `H` (through ssh):
 
-1. Resolve the default branch: `git symbolic-ref --short
-   refs/remotes/origin/HEAD`, falling back to `origin/main`.
-2. `git fetch origin <default>` with a timeout. A failed or timed-out fetch
+1. Resolve the default branch **inside the remote script**:
+   `d=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's|^origin/||')`
+   (the command prints `origin/main`, so the prefix is stripped), falling back
+   to `main`. The forge controls that value, so before any use it must pass
+   `git check-ref-format --branch` and `[A-Za-z0-9._/-]`, else the creation is
+   refused; it is only ever expanded as `"$d"` inside the script, never
+   interpolated into a command line built locally.
+2. `git fetch origin "$d"` with a timeout. A failed or timed-out fetch
    **refuses** the creation and says which host and why. (An `--offline`
    override that prints the stale `origin/<default>` short sha it will use is a
    post-v1 option.)
 3. Create the worktree from that ref, never from the host's local `main`:
-   `wt switch -c <branch> --base origin/<default>` (the `--base` flag is
+   `wt switch -c <branch> --base "origin/$d"` (the `--base` flag is
    verified in plan phase P0; the fallback `git worktree add -b <branch>
    <path> origin/<default>` is acceptable only if `wt` is absent, and then
    the worktree path template cannot be honoured, so v1 requires `wt`; D5).
@@ -319,7 +357,7 @@ branch.
 
 **Drift is shown, not hidden.** Each host snapshot records, for the default
 branch, how far the host's local branch is behind `origin/<default>` as of its
-last fetch, and `git ls-remote origin <default>` gives the true remote head
+last fetch, and `git ls-remote origin "$d"` (the same validated value) gives the true remote head
 (one cheap network call per host per refresh, bounded). Rendering: a per-host
 chip `main ↓3` (behind), `main ↑1` (local commits not on origin), or `main ≠`
 (diverged); `main ✓` is not shown. A host whose `ls-remote` failed shows its
@@ -431,7 +469,7 @@ redesign, not a routing feature, and nothing else in this design needs it.
 | URL forwarding (`og-open`) with N daemons in one local session | Records live on each remote session, and a record tagged with its size owner (#1034) opens on exactly one daemon, so one tab per URL. Untagged records from an old remote keep today's per-machine claimer (#994). Each host's daemon reads only its own remote session, so hosts do not interfere. | None. |
 | Size ownership with several daemons into one session (#979) | Independent per remote session. Activity counts only rows showing an *own* window, so typing in a lab window claims lab's owner record and nobody else's. Daemons into one local session compute the same `LocalArea` and do not fight. | None. |
 | Two local machines both running the project | Each has its own local project session and daemon to the same remote project session: two controllers on one remote session, the existing #979 case (the remote follows whoever typed last). | None. |
-| Remote older than this revision (no stamp-hiding rows in its probe) | The leaf shows in the Remote section; a dedicated open of it is refused by the launcher guard (3.3), which reads the stamp from the remote's `list-sessions`. | None. |
+| Remote older than this revision (no stamp-hiding rows in its probe) | The leaf shows in the Remote section; a dedicated open of it is refused by the launcher guard (3.3), which reads the stamps with the session-scoped read of 3.3. | None. |
 
 ## Security and untrusted input
 
@@ -464,7 +502,7 @@ absolute-checked. No credential or secret is read or written by any step.
 ## v1 acceptance (testable statements; the plan carries the per-phase criteria)
 
 - `og project open <branch>` for a branch whose worktree lives only on host `H`
-  creates a window on `H` under `og-<slug>`, and a mirror window with
+  creates a window on `H` under the leaf, and a mirror window with
   `@bridge_host=H` exists in the local `<slug>` session within the bounded wait
   and is selected.
 - Running it twice, or from a second local session, leaves exactly one daemon
