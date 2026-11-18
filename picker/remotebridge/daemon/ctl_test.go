@@ -1487,14 +1487,7 @@ func TestToolVerbToggleClosesSideDash(t *testing.T) {
 		}
 		return all, floats
 	}
-	has := func(ids []string, id string) bool {
-		for _, x := range ids {
-			if x == id {
-				return true
-			}
-		}
-		return false
-	}
+	has := slices.Contains[[]string]
 	press := func(until func() bool) {
 		t.Helper()
 		if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
