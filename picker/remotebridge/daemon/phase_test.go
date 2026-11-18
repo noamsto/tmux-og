@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -84,5 +85,47 @@ func TestWriteNoFollowRefusesPlantedSymlink(t *testing.T) {
 	got, _ := os.ReadFile(victim)
 	if string(got) != "precious" {
 		t.Fatalf("victim = %q", got)
+	}
+}
+
+func TestWriteNoFollowRefusesPlantedHardLink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "x.phase")
+	if err := os.Link(victim, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNoFollow(path, []byte("x"), 0o600); err == nil {
+		t.Fatal("write through hard link succeeded")
+	}
+	got, _ := os.ReadFile(victim)
+	if string(got) != "precious" {
+		t.Fatalf("victim = %q", got)
+	}
+}
+
+func TestWriteNoFollowRefusesPlantedFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.phase")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNoFollow(path, []byte("x"), 0o600); err == nil {
+		t.Fatal("write to FIFO succeeded")
+	}
+}
+
+func TestWriteNoFollowCreatesAndOverwritesOwnFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.phase")
+	for _, want := range []string{"a long first value", "b"} {
+		if err := writeNoFollow(path, []byte(want), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(path)
+		if string(got) != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
 	}
 }

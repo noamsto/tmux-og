@@ -38,8 +38,18 @@ func setPhase(cfg Config, format string, args ...any) {
 // writeNoFollow truncates-and-writes path, refusing to follow a symlink planted
 // there so the write cannot land on the link's target.
 func writeNoFollow(path string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm) //nolint:gosec // G302/G304: socket-derived path, owner-only perm
+	// No O_TRUNC: truncating before the checks would empty a planted hard link's
+	// target. O_NONBLOCK keeps a planted FIFO from blocking the open.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, perm) //nolint:gosec // G302/G304: socket-derived path, owner-only perm
 	if err != nil {
+		return err
+	}
+	if !isPrivateRegular(f) {
+		_ = f.Close()
+		return fmt.Errorf("refusing %s: not a private regular file", path)
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
@@ -47,6 +57,17 @@ func writeNoFollow(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return f.Close()
+}
+
+// isPrivateRegular reports whether f is a regular file we own with no other
+// hard link.
+func isPrivateRegular(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uint32(os.Geteuid()) && uint64(st.Nlink) == 1 //nolint:gosec // G115: euid is non-negative
 }
 
 // clearPhase drops the file on teardown, so a launcher that reuses this socket
