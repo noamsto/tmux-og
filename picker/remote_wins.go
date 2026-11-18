@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // remoteWindow is one window of a remote tmux session. Session is the raw name
@@ -290,7 +292,7 @@ func pendingRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]boo
 	if len(hosts) == 0 {
 		return nil
 	}
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	hostColor := hostColorFunc(tmuxOpts)
 	now := time.Now()
 	items := make([]listItem, 0, len(hosts)+1)
@@ -338,7 +340,7 @@ func collectRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]boo
 		probe = sshListRemoteWindows
 	}
 	localID := readLocalRemoteIdentity()
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	hostColor := hostColorFunc(tmuxOpts)
 
 	type hostResult struct {

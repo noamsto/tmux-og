@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 func TestParseListKeysRows(t *testing.T) {
@@ -399,7 +401,7 @@ func TestWhichKeySelectedRowKeepsBackground(t *testing.T) {
 	row := whichKeyRow{table: "prefix", keyString: "c", key: "C-a c", note: "New window", described: true}
 	const w = 60
 	got := m.renderRow(row, w, true, true)
-	bg := ansiBg(m.colorHex("@thm_surface_2", "#45475a", "#acb0be"))
+	bg := ansiBg(m.colorHex(palette.SelBg))
 	if cells := visibleWidth(got); cells != w {
 		t.Errorf("selected row is %d cells, want %d: %q", cells, w, got)
 	}

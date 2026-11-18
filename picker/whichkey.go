@@ -24,6 +24,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // whichKeyRow is one bind, parsed from `tmux list-keys -a`.
@@ -730,18 +732,12 @@ func (m whichKeyModel) scrollStart(h int) int {
 // color reads a Catppuccin color from tmux options, falling back by theme —
 // the whichKeyModel-scoped twin of tuiModel.thmColor (picker/tui.go), kept
 // separate so this file touches no tuiModel state.
-func (m whichKeyModel) color(tmuxOpt, darkFallback, lightFallback string) imgcolor.Color {
-	return lipgloss.Color(m.colorHex(tmuxOpt, darkFallback, lightFallback))
+func (m whichKeyModel) color(r palette.Role) imgcolor.Color {
+	return lipgloss.Color(m.colorHex(r))
 }
 
-func (m whichKeyModel) colorHex(tmuxOpt, darkFallback, lightFallback string) string {
-	if v, ok := m.tmuxOpts[tmuxOpt]; ok && v != "" {
-		return v
-	}
-	if m.theme == "light" {
-		return lightFallback
-	}
-	return darkFallback
+func (m whichKeyModel) colorHex(r palette.Role) string {
+	return palette.ResolveTheme(m.tmuxOpts, m.theme == "light", r)
 }
 
 func (m whichKeyModel) View() tea.View {
@@ -755,7 +751,7 @@ func (m whichKeyModel) View() tea.View {
 			Width(m.width).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderBottom(true).
-			BorderForeground(m.color("@thm_surface_1", "#45475a", "#9ca0b0")).
+			BorderForeground(m.color(palette.Rule)).
 			Render(body)
 		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSearch(), bordered, m.renderHints())
 	default:
@@ -764,7 +760,7 @@ func (m whichKeyModel) View() tea.View {
 			Width(m.width).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderBottom(true).
-			BorderForeground(m.color("@thm_surface_1", "#45475a", "#9ca0b0")).
+			BorderForeground(m.color(palette.Rule)).
 			Render(body)
 		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSearch(), bordered, m.renderHints())
 	}
@@ -813,7 +809,7 @@ func (m whichKeyModel) renderRawBody() string {
 	w := m.width
 
 	if m.rawErr != "" {
-		dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
+		dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
 		lines := []string{fitVisibleWidth(dim.Render("tmux list-keys failed: "+m.rawErr), w)}
 		for len(lines) < h {
 			lines = append(lines, strings.Repeat(" ", w))
@@ -859,8 +855,8 @@ func whichKeyTableGloss(table, prefixKey string) string {
 // renderTableHeader draws a table's section divider at the real popup width —
 // mirrors renderHeaderItem's shape (picker/render_list.go).
 func (m whichKeyModel) renderTableHeader(table string, w int) string {
-	accent := lipgloss.NewStyle().Foreground(m.color("@thm_lavender", "#b4befe", "#7287fd"))
-	rule := lipgloss.NewStyle().Foreground(m.color("@thm_surface_1", "#45475a", "#9ca0b0"))
+	accent := lipgloss.NewStyle().Foreground(m.color(palette.Accent))
+	rule := lipgloss.NewStyle().Foreground(m.color(palette.Rule))
 
 	head := rule.Render("── ") + accent.Render(table) + " "
 	if gloss := whichKeyTableGloss(table, m.tmuxOpts["prefix"]); gloss != "" {
@@ -882,9 +878,9 @@ func (m whichKeyModel) renderTableHeader(table string, w int) string {
 // key's own foreground reset is patched to re-assert the background after it
 // (same trick as renderList's selResetKeepBg).
 func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected, showTable bool) string {
-	keyStyle := lipgloss.NewStyle().Foreground(m.color("@thm_lavender", "#b4befe", "#7287fd"))
-	dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
-	table := lipgloss.NewStyle().Foreground(m.color("@thm_overlay_0", "#6c7086", "#9ca0b0"))
+	keyStyle := lipgloss.NewStyle().Foreground(m.color(palette.Accent))
+	dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
+	table := lipgloss.NewStyle().Foreground(m.color(palette.Muted))
 
 	tableW := 0
 	if showTable {
@@ -905,7 +901,7 @@ func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected, showTable bool)
 
 	// Fit before patching: fitVisibleWidth's padding reset would otherwise
 	// land after the patch and drop the background from the padding.
-	selBgHex := m.colorHex("@thm_surface_2", "#45475a", "#acb0be")
+	selBgHex := m.colorHex(palette.SelBg)
 	selStyle := lipgloss.NewStyle().Background(lipgloss.Color(selBgHex))
 	restore := "\033[39m" + ansiBg(selBgHex)
 	keepBg := strings.NewReplacer("\033[m", restore, "\033[0m", restore)
@@ -913,8 +909,8 @@ func (m whichKeyModel) renderRow(r whichKeyRow, w int, selected, showTable bool)
 }
 
 func (m whichKeyModel) renderSearch() string {
-	blue := lipgloss.NewStyle().Foreground(m.color("@thm_blue", "#89b4fa", "#1e66f5"))
-	dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
+	blue := lipgloss.NewStyle().Foreground(m.color(palette.Blue))
+	dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
 
 	icon := blue.Render("  ")
 	var queryStr string
@@ -928,13 +924,13 @@ func (m whichKeyModel) renderSearch() string {
 		Width(m.width).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
-		BorderForeground(m.color("@thm_surface_1", "#45475a", "#9ca0b0")).
+		BorderForeground(m.color(palette.Rule)).
 		Render(icon + queryStr)
 }
 
 func (m whichKeyModel) renderHints() string {
-	dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
-	key := lipgloss.NewStyle().Foreground(m.color("@thm_lavender", "#b4befe", "#7287fd"))
+	dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
+	key := lipgloss.NewStyle().Foreground(m.color(palette.Accent))
 
 	hint := func(k, desc string) string {
 		return key.Render(k) + dim.Render(":"+desc)

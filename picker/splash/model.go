@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 type tip struct {
@@ -105,17 +106,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) accent() string {
-	if m.theme == "light" {
-		return "#7287fd"
-	}
-	return "#b4befe"
+	return palette.ResolveTheme(nil, m.theme == "light", palette.Accent)
 }
 
 func (m model) subtext() string {
-	if m.theme == "light" {
-		return "#6c6f85"
-	}
-	return "#a6adc8"
+	return palette.ResolveTheme(nil, m.theme == "light", palette.Primary)
 }
 
 // introFrames is the dissolve-in length (~1s at 50ms/frame): each glyph starts

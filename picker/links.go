@@ -26,6 +26,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/noamsto/tmux-og/picker/linkjoin"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 type linksAction int
@@ -289,18 +290,12 @@ func (m linksModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // --- Rendering ---
 
 // color reads a Catppuccin color from tmux options, falling back by theme.
-func (m linksModel) color(tmuxOpt, darkFallback, lightFallback string) imgcolor.Color {
-	return lipgloss.Color(m.colorHex(tmuxOpt, darkFallback, lightFallback))
+func (m linksModel) color(r palette.Role) imgcolor.Color {
+	return lipgloss.Color(m.colorHex(r))
 }
 
-func (m linksModel) colorHex(tmuxOpt, darkFallback, lightFallback string) string {
-	if v, ok := m.tmuxOpts[tmuxOpt]; ok && v != "" {
-		return v
-	}
-	if m.theme == "light" {
-		return lightFallback
-	}
-	return darkFallback
+func (m linksModel) colorHex(r palette.Role) string {
+	return palette.ResolveTheme(m.tmuxOpts, m.theme == "light", r)
 }
 
 func (m linksModel) View() tea.View {
@@ -324,8 +319,8 @@ func (m linksModel) bodyHeight() int {
 }
 
 func (m linksModel) renderTitle() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(m.color("@thm_lavender", "#b4befe", "#7287fd"))
-	dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
+	title := lipgloss.NewStyle().Bold(true).Foreground(m.color(palette.Accent))
+	dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
 	line := " " + title.Render("Links") + dim.Render(" "+strconv.Itoa(len(m.visible)))
 	return fitVisibleWidth(line, m.width)
 }
@@ -336,10 +331,10 @@ func (m linksModel) renderBody() []string {
 	rows := make([]string, 0, h)
 	switch {
 	case len(m.links) == 0:
-		dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
+		dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
 		rows = append(rows, fitVisibleWidth(" "+dim.Render("no links in this pane"), m.width))
 	case len(m.visible) == 0:
-		dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
+		dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
 		rows = append(rows, fitVisibleWidth(" "+dim.Render("no matches"), m.width))
 	default:
 		start := max(m.cursor-h/2, 0)
@@ -357,7 +352,7 @@ func (m linksModel) renderBody() []string {
 }
 
 func (m linksModel) renderRow(l linkjoin.Link, selected bool) string {
-	overlay := lipgloss.NewStyle().Foreground(m.color("@thm_overlay_0", "#6c7086", "#9ca0b0"))
+	overlay := lipgloss.NewStyle().Foreground(m.color(palette.Muted))
 	tag := overlay.Render(fitVisibleWidth(l.Kind.String(), 4))
 
 	marker := ""
@@ -376,7 +371,7 @@ func (m linksModel) renderRow(l linkjoin.Link, selected bool) string {
 	}
 	// Every reset, lipgloss's "\033[m" and fitVisibleWidth's "\033[0m" alike,
 	// would drop the background for the text after it, padding included.
-	selBgHex := m.colorHex("@thm_surface_2", "#45475a", "#acb0be")
+	selBgHex := m.colorHex(palette.SelBg)
 	restore := "\033[39m" + ansiBg(selBgHex)
 	keepBg := strings.NewReplacer("\033[m", restore, "\033[0m", restore)
 	return lipgloss.NewStyle().Background(lipgloss.Color(selBgHex)).Render(keepBg.Replace(fitted))
@@ -401,13 +396,13 @@ func elideLeft(s string, cells int) string {
 }
 
 func (m linksModel) renderSearch() string {
-	blue := lipgloss.NewStyle().Foreground(m.color("@thm_blue", "#89b4fa", "#1e66f5"))
+	blue := lipgloss.NewStyle().Foreground(m.color(palette.Blue))
 	return fitVisibleWidth(" "+blue.Render("/")+" "+m.query+"█", m.width)
 }
 
 func (m linksModel) renderHints() string {
-	dim := lipgloss.NewStyle().Foreground(m.color("@thm_surface_2", "#585b70", "#9ca0b0"))
-	key := lipgloss.NewStyle().Foreground(m.color("@thm_lavender", "#b4befe", "#7287fd"))
+	dim := lipgloss.NewStyle().Foreground(m.color(palette.Dim))
+	key := lipgloss.NewStyle().Foreground(m.color(palette.Accent))
 	hint := func(k, desc string) string { return key.Render(k) + dim.Render(":"+desc) }
 
 	parts := []string{hint("esc", "close")}

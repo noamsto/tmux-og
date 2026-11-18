@@ -30,6 +30,7 @@ import (
 	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/enrichstate"
 	"github.com/noamsto/tmux-og/picker/hostcolor"
+	"github.com/noamsto/tmux-og/picker/palette"
 	"github.com/noamsto/tmux-og/picker/proctree"
 )
 
@@ -56,8 +57,8 @@ var claudeColors = map[string]map[string]string{
 		"done": "#a6e3a1", "idle": "#6c7086", "error": "#f38ba8", "denied": "#f9e2af",
 	},
 	"light": {
-		"waiting": "#fe640b", "compacting": "#04a5e5", "processing": "#179299",
-		"done": "#40a02b", "idle": "#6c6f85", "error": "#d20f39", "denied": "#df8e1d",
+		"waiting": palette.Highlight.LightHex, "compacting": palette.Blue.LightHex, "processing": palette.Teal.LightHex,
+		"done": palette.Success.LightHex, "idle": palette.Dim.LightHex, "error": palette.Warn.LightHex, "denied": palette.Teal.LightHex,
 	},
 }
 
@@ -788,10 +789,10 @@ type resourceColors struct {
 
 func newResourceColors(tmuxOpts map[string]string) resourceColors {
 	return resourceColors{
-		low:  ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8")),
-		med:  ansiFg(envOrMap("THM_YELLOW", tmuxOpts, "@thm_yellow", "#f9e2af")),
-		high: ansiFg(envOrMap("THM_PEACH", tmuxOpts, "@thm_peach", "#fab387")),
-		crit: ansiFg(envOrMap("THM_RED", tmuxOpts, "@thm_red", "#f38ba8")),
+		low:  ansiFg(roleHex(tmuxOpts, palette.Primary)),
+		med:  ansiFg(roleHex(tmuxOpts, palette.LevelMed)),
+		high: ansiFg(roleHex(tmuxOpts, palette.Highlight)),
+		crit: ansiFg(roleHex(tmuxOpts, palette.Warn)),
 	}
 }
 
@@ -1578,6 +1579,16 @@ func envOrMap(envKey string, tmuxOpts map[string]string, tmuxOpt, fallback strin
 		return v
 	}
 	return fallback
+}
+
+// roleHex resolves a palette role for the theme opts name, honouring the
+// role's THM_* environment override.
+func roleHex(opts map[string]string, r palette.Role) string {
+	return roleHexTheme(opts, opts["@catppuccin_flavor"] == "latte", r)
+}
+
+func roleHexTheme(opts map[string]string, light bool, r palette.Role) string {
+	return envOrMap(r.Env(light), opts, r.Opt(light), r.Hex(light))
 }
 
 var hostColorsNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)

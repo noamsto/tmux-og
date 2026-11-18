@@ -19,6 +19,8 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // listItem is one row in the picker list.
@@ -214,18 +216,12 @@ type tuiModel struct {
 // --- Catppuccin palette (dark/light) ---
 
 // thmColor reads a Catppuccin color from tmux options, falling back to defaults.
-func (m tuiModel) thmColor(tmuxOpt, darkFallback, lightFallback string) imgcolor.Color {
-	return lipgloss.Color(m.thmColorHex(tmuxOpt, darkFallback, lightFallback))
+func (m tuiModel) thmColor(r palette.Role) imgcolor.Color {
+	return lipgloss.Color(m.thmColorHex(r))
 }
 
-func (m tuiModel) thmColorHex(tmuxOpt, darkFallback, lightFallback string) string {
-	if v, ok := m.tmuxOpts[tmuxOpt]; ok && v != "" {
-		return v
-	}
-	if m.theme == "light" {
-		return lightFallback
-	}
-	return darkFallback
+func (m tuiModel) thmColorHex(r palette.Role) string {
+	return palette.ResolveTheme(m.tmuxOpts, m.theme == "light", r)
 }
 
 // --- Messages ---
@@ -2902,7 +2898,7 @@ func (m tuiModel) scopedItems(hostMatches func(string) bool) []listItem {
 		}
 	}
 	hostColor := hostColorFunc(m.tmuxOpts)
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", m.tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(m.tmuxOpts, palette.Primary))
 	header := false
 	for _, host := range configuredHosts(m.tmuxOpts) {
 		if !hostMatches(host) {
@@ -3136,9 +3132,9 @@ func buildSessionItems(tmuxOpts map[string]string, snap panesSnapshot, agentPane
 		mergeRemoteResources(sessions)
 	}
 
-	thmMauve := envOrMap("THM_MAUVE", tmuxOpts, "@thm_mauve", "#cba6f7")
-	thmSubtext0 := envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8")
-	thmOverlay1 := envOrMap("THM_OVERLAY_1", tmuxOpts, "@thm_overlay_1", "#7f849c")
+	thmMauve := roleHex(tmuxOpts, palette.Mauve)
+	thmSubtext0 := roleHex(tmuxOpts, palette.Primary)
+	thmOverlay1 := roleHex(tmuxOpts, palette.Quiet)
 	iHost := envOrMap("PICKER_ICON_HOST", tmuxOpts, "@icon_host", iconHost)
 	iProcs := envOrMap("PICKER_ICON_PROCS", tmuxOpts, "@icon_procs", iconProcs)
 	iCPU := envOrMap("PICKER_ICON_CPU", tmuxOpts, "@icon_cpu", iconCPU)
@@ -3348,8 +3344,8 @@ func collectZoxideItems(tmuxOpts map[string]string) []listItem {
 		return nil
 	}
 
-	cBlue := ansiFg(envOrMap("THM_BLUE", tmuxOpts, "@thm_blue", "#89b4fa"))
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cBlue := ansiFg(roleHex(tmuxOpts, palette.Blue))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	iDir := envOrMap("PICKER_ICON_DIR", tmuxOpts, "@icon_dir", iconDir)
 	reset := "\033[0m"
 	home := os.Getenv("HOME")
@@ -3519,13 +3515,13 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 	agentByWin := aggregateAgentByWindow(agentPanes)
 	mergeAgentWindows(windows, agentByWin)
 
-	thmMauve := envOrMap("THM_MAUVE", tmuxOpts, "@thm_mauve", "#cba6f7")
-	thmGreen := envOrMap("THM_GREEN", tmuxOpts, "@thm_green", "#a6e3a1")
-	thmRed := envOrMap("THM_RED", tmuxOpts, "@thm_red", "#f38ba8")
-	thmPeach := envOrMap("THM_PEACH", tmuxOpts, "@thm_peach", "#fab387")
-	thmSubtext0 := envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8")
-	thmOverlay1 := envOrMap("THM_OVERLAY_1", tmuxOpts, "@thm_overlay_1", "#7f849c")
-	thmOverlay0 := envOrMap("THM_OVERLAY_0", tmuxOpts, "@thm_overlay_0", "#6c7086")
+	thmMauve := roleHex(tmuxOpts, palette.Mauve)
+	thmGreen := roleHex(tmuxOpts, palette.Success)
+	thmRed := roleHex(tmuxOpts, palette.Warn)
+	thmPeach := roleHex(tmuxOpts, palette.Highlight)
+	thmSubtext0 := roleHex(tmuxOpts, palette.Primary)
+	thmOverlay1 := roleHex(tmuxOpts, palette.Quiet)
+	thmOverlay0 := roleHex(tmuxOpts, palette.Muted)
 	iSess := envOrMap("PICKER_ICON_SESSION", tmuxOpts, "@icon_session", iconSession)
 	iBranch := envOrMap("PICKER_ICON_BRANCH", tmuxOpts, "@icon_branch", iconBranch)
 	iDir := envOrMap("PICKER_ICON_DIR", tmuxOpts, "@icon_dir", iconDir)
@@ -3546,7 +3542,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 
 	cMauve := ansiFg(thmMauve)
 	cGreen := ansiFg(thmGreen)
-	cBlue := ansiFg(envOrMap("THM_BLUE", tmuxOpts, "@thm_blue", "#89b4fa"))
+	cBlue := ansiFg(roleHex(tmuxOpts, palette.Blue))
 	cDim := ansiFg(thmSubtext0)
 	cFaint := ansiFg(thmOverlay1)
 	hostColor := hostColorFunc(tmuxOpts)

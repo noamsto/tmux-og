@@ -19,7 +19,7 @@ var darkLiterals = map[string]bool{
 	"@thm_lavender/#b4befe": true, "@thm_peach/#fab387": true, "@thm_red/#f38ba8": true,
 	"@thm_green/#a6e3a1": true, "@thm_yellow/#f9e2af": true, "@thm_mauve/#cba6f7": true,
 	"@thm_blue/#89b4fa": true, "@thm_surface_2/#45475a": true, "@thm_base/#1e1e2e": true,
-	"@thm_mantle/#181825": true,
+	"@thm_mantle/#181825": true, "@thm_teal/#94e2d5": true,
 }
 
 func allRoles() []Role {

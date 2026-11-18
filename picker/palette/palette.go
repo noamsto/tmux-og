@@ -62,6 +62,7 @@ var (
 	Warn      = rl("@thm_red", "#f38ba8", "@thm_red", "#d20f39")
 	Success   = rl("@thm_green", "#a6e3a1", "@thm_teal", "#179299")
 	LevelMed  = rl("@thm_yellow", "#f9e2af", "@thm_teal", "#179299")
+	Teal      = rl("@thm_teal", "#94e2d5", "@thm_teal", "#179299")
 	Mauve     = rl("@thm_mauve", "#cba6f7", "@thm_mauve", "#8839ef")
 	Blue      = rl("@thm_blue", "#89b4fa", "@thm_blue", "#1e66f5")
 	SelBg     = rl("@thm_surface_2", "#45475a", "@thm_mantle", "#e6e9ef")
@@ -81,7 +82,7 @@ var RowRoles = []NamedRole{
 	{"Text", Text}, {"Primary", Primary}, {"Quiet", Quiet}, {"Dim", Dim},
 	{"Faint", Faint}, {"Muted", Muted}, {"Accent", Accent},
 	{"Highlight", Highlight}, {"Warn", Warn}, {"Success", Success},
-	{"LevelMed", LevelMed}, {"Mauve", Mauve}, {"Blue", Blue},
+	{"LevelMed", LevelMed}, {"Mauve", Mauve}, {"Blue", Blue}, {"Teal", Teal},
 }
 
 const (

@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/noamsto/tmux-og/picker/linkjoin"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 func testLinksModel(links ...linkjoin.Link) linksModel {
@@ -224,7 +225,7 @@ func TestLinksFailArgv(t *testing.T) {
 func TestLinksSelectedRowKeepsBackground(t *testing.T) {
 	m := testLinksModel(linkjoin.Link{Text: "/tmp/a", Kind: linkjoin.Path, Rows: 2})
 	row := m.renderRow(m.links[0], true)
-	bg := ansiBg(m.colorHex("@thm_surface_2", "#45475a", "#acb0be"))
+	bg := ansiBg(m.colorHex(palette.SelBg))
 	resets := regexp.MustCompile(`\x1b\[0?m`).FindAllStringIndex(row, -1)
 	if len(resets) == 0 {
 		t.Fatalf("row %q has no reset", row)

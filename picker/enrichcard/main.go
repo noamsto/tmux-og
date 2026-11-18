@@ -33,6 +33,7 @@ func main() {
 	flag.StringVar(&c.icConflict, "icon-conflict", "", "")
 	flag.StringVar(&c.icDraft, "icon-draft", "", "")
 	flag.Parse()
+	c = lightCfg(c, readGlobalOptions())
 
 	opts := readWindowState(c.target)
 	w := resolve(opts)
