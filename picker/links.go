@@ -360,7 +360,12 @@ func (m linksModel) renderRow(l linkjoin.Link, selected bool) string {
 		marker = " +" + strconv.Itoa(l.Rows)
 	}
 	linkW := max(m.width-1-4-1-visibleWidth(marker), 0)
-	line := " " + tag + " " + truncateVisibleWidth(sanitizeStatusText(elideLeft(l.Text, min(linkW, statusTextMaxRunes))), linkW)
+	lead := " "
+	if selected && m.theme == "light" {
+		// Mantle against base is ~1.07:1, so the background alone does not mark the row.
+		lead = lipgloss.NewStyle().Foreground(m.color(palette.Accent)).Render("▶")
+	}
+	line := lead + tag + " " + truncateVisibleWidth(sanitizeStatusText(elideLeft(l.Text, min(linkW, statusTextMaxRunes))), linkW)
 	if marker != "" {
 		line += overlay.Render(marker)
 	}

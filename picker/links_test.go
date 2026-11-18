@@ -308,3 +308,24 @@ func TestRunLinksCmdReportsEarlyFailure(t *testing.T) {
 		t.Errorf("runLinksCmd = %q, %v; want stderr boom and an error", detail, err)
 	}
 }
+
+func TestLinksSelectedRowMarkerLight(t *testing.T) {
+	l := linkjoin.Link{Text: "/tmp/a", Kind: linkjoin.Path, Rows: 1}
+	light := newLinksModel([]linkjoin.Link{l}, map[string]string{}, "light")
+	light.width = 40
+	sel := light.renderRow(l, true)
+	if !strings.Contains(sel, "▶") {
+		t.Errorf("light selected row lacks marker: %q", sel)
+	}
+	if strings.Contains(light.renderRow(l, false), "▶") {
+		t.Error("light unselected row has marker")
+	}
+	if w := visibleWidth(sel); w != 40 {
+		t.Errorf("selected width = %d, want 40", w)
+	}
+	dark := newLinksModel([]linkjoin.Link{l}, map[string]string{}, "mocha")
+	dark.width = 40
+	if strings.Contains(dark.renderRow(l, true), "▶") {
+		t.Error("dark selected row has marker")
+	}
+}

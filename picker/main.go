@@ -58,7 +58,7 @@ var claudeColors = map[string]map[string]string{
 	},
 	"light": {
 		"waiting": palette.Highlight.LightHex, "compacting": palette.Blue.LightHex, "processing": palette.Teal.LightHex,
-		"done": palette.Success.LightHex, "idle": palette.Dim.LightHex, "error": palette.Warn.LightHex, "denied": palette.Teal.LightHex,
+		"done": palette.Success.LightHex, "idle": palette.Dim.LightHex, "error": palette.Warn.LightHex, "denied": palette.Mauve.LightHex,
 	},
 }
 

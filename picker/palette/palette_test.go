@@ -5,21 +5,34 @@ import (
 	"testing"
 )
 
+// latte mirrors the live values the pinned catppuccin plugin sets in
+// catppuccin_latte_tmux.conf: its subtext_0/1 are swapped against upstream
+// Latte, and it sets @thm_fg/@thm_bg but never @thm_text/@thm_base.
 var latte = map[string]string{
-	"@thm_text": "#4c4f69", "@thm_subtext_1": "#5c5f77", "@thm_subtext_0": "#6c6f85",
+	"@thm_fg": "#4c4f69", "@thm_subtext_0": "#5c5f77", "@thm_subtext_1": "#6c6f85",
 	"@thm_overlay_2": "#7c7f93", "@thm_overlay_1": "#8c8fa1", "@thm_overlay_0": "#9ca0b0",
 	"@thm_blue": "#1e66f5", "@thm_maroon": "#e64553", "@thm_red": "#d20f39",
 	"@thm_teal": "#179299", "@thm_mauve": "#8839ef", "@thm_mantle": "#e6e9ef",
-	"@thm_base": "#eff1f5",
+	"@thm_bg": "#eff1f5",
 }
 
-var darkLiterals = map[string]bool{
-	"@thm_text/#cdd6f4": true, "@thm_subtext_0/#a6adc8": true, "@thm_overlay_1/#7f849c": true,
-	"@thm_surface_2/#585b70": true, "@thm_overlay_0/#6c7086": true, "@thm_surface_1/#45475a": true,
-	"@thm_lavender/#b4befe": true, "@thm_peach/#fab387": true, "@thm_red/#f38ba8": true,
-	"@thm_green/#a6e3a1": true, "@thm_yellow/#f9e2af": true, "@thm_mauve/#cba6f7": true,
-	"@thm_blue/#89b4fa": true, "@thm_surface_2/#45475a": true, "@thm_base/#1e1e2e": true,
-	"@thm_mantle/#181825": true, "@thm_teal/#94e2d5": true,
+type darkHalf struct{ opt, hex string }
+
+var darkLiterals = map[string]darkHalf{
+	"Text": {"@thm_fg", "#cdd6f4"}, "Primary": {"@thm_subtext_0", "#a6adc8"},
+	"Quiet": {"@thm_overlay_1", "#7f849c"}, "Dim": {"@thm_surface_2", "#585b70"},
+	"Faint": {"@thm_overlay_1", "#7f849c"}, "Muted": {"@thm_overlay_0", "#6c7086"},
+	"Rule": {"@thm_surface_1", "#45475a"}, "Accent": {"@thm_lavender", "#b4befe"},
+	"Highlight": {"@thm_peach", "#fab387"}, "Warn": {"@thm_red", "#f38ba8"},
+	"Success": {"@thm_green", "#a6e3a1"}, "LevelMed": {"@thm_yellow", "#f9e2af"},
+	"Teal": {"@thm_teal", "#94e2d5"}, "Mauve": {"@thm_mauve", "#cba6f7"},
+	"Blue": {"@thm_blue", "#89b4fa"}, "SelBg": {"@thm_surface_2", "#45475a"},
+	"Base": {"@thm_bg", "#1e1e2e"}, "Mantle": {"@thm_mantle", "#181825"},
+}
+
+func namedRoles() []NamedRole {
+	rs := []NamedRole{{"Rule", Rule}, {"SelBg", SelBg}, {"Base", Base}, {"Mantle", Mantle}}
+	return append(rs, RowRoles...)
 }
 
 func allRoles() []Role {
@@ -39,9 +52,18 @@ func TestLightHexMatchesLatte(t *testing.T) {
 }
 
 func TestDarkLiterals(t *testing.T) {
-	for _, r := range allRoles() {
-		if !darkLiterals[r.DarkOpt+"/"+r.DarkHex] {
-			t.Errorf("unlisted dark literal %s %s", r.DarkOpt, r.DarkHex)
+	rs := namedRoles()
+	if len(rs) != len(darkLiterals) {
+		t.Errorf("%d roles, %d dark literals", len(rs), len(darkLiterals))
+	}
+	for _, n := range rs {
+		want, ok := darkLiterals[n.Name]
+		if !ok {
+			t.Errorf("%s: no dark literal", n.Name)
+			continue
+		}
+		if n.Role.DarkOpt != want.opt || n.Role.DarkHex != want.hex {
+			t.Errorf("%s: dark %s %s, want %s %s", n.Name, n.Role.DarkOpt, n.Role.DarkHex, want.opt, want.hex)
 		}
 	}
 }
@@ -71,11 +93,11 @@ func TestResolve(t *testing.T) {
 	if got := Resolve(o, Primary); got != "#5c5f77" {
 		t.Errorf("latte fallback = %s", got)
 	}
-	o["@thm_subtext_1"] = "#123456"
+	o["@thm_subtext_0"] = "#123456"
 	if got := Resolve(o, Primary); got != "#123456" {
 		t.Errorf("option = %s", got)
 	}
-	if got := Primary.Env(true); got != "THM_SUBTEXT_1" {
+	if got := Primary.Env(true); got != "THM_SUBTEXT_0" {
 		t.Errorf("env = %s", got)
 	}
 }

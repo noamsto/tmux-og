@@ -50,10 +50,10 @@ func ResolveTheme(opts map[string]string, light bool, r Role) string {
 func rl(dOpt, dHex, lOpt, lHex string) Role { return Role{dOpt, dHex, lOpt, lHex} }
 
 var (
-	Text      = rl("@thm_text", "#cdd6f4", "@thm_text", "#4c4f69")
-	Primary   = rl("@thm_subtext_0", "#a6adc8", "@thm_subtext_1", "#5c5f77")
-	Quiet     = rl("@thm_overlay_1", "#7f849c", "@thm_subtext_1", "#5c5f77")
-	Dim       = rl("@thm_surface_2", "#585b70", "@thm_subtext_0", "#6c6f85")
+	Text      = rl("@thm_fg", "#cdd6f4", "@thm_fg", "#4c4f69")
+	Primary   = rl("@thm_subtext_0", "#a6adc8", "@thm_subtext_0", "#5c5f77")
+	Quiet     = rl("@thm_overlay_1", "#7f849c", "@thm_subtext_0", "#5c5f77")
+	Dim       = rl("@thm_surface_2", "#585b70", "@thm_subtext_1", "#6c6f85")
 	Faint     = rl("@thm_overlay_1", "#7f849c", "@thm_overlay_2", "#7c7f93")
 	Muted     = rl("@thm_overlay_0", "#6c7086", "@thm_overlay_2", "#7c7f93")
 	Rule      = rl("@thm_surface_1", "#45475a", "@thm_overlay_2", "#7c7f93")
@@ -66,7 +66,7 @@ var (
 	Mauve     = rl("@thm_mauve", "#cba6f7", "@thm_mauve", "#8839ef")
 	Blue      = rl("@thm_blue", "#89b4fa", "@thm_blue", "#1e66f5")
 	SelBg     = rl("@thm_surface_2", "#45475a", "@thm_mantle", "#e6e9ef")
-	Base      = rl("@thm_base", "#1e1e2e", "@thm_base", "#eff1f5")
+	Base      = rl("@thm_bg", "#1e1e2e", "@thm_bg", "#eff1f5")
 	Mantle    = rl("@thm_mantle", "#181825", "@thm_mantle", "#e6e9ef")
 )
 
