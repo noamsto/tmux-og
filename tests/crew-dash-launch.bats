@@ -238,7 +238,7 @@ first_dash() {
 	messages | grep -q 'tmux-float-group is not installed'
 }
 
-# tile_running ARGV...: split a tiled pane running the given command and echo its id,
+# tile_running CMD PATTERN: split a tiled pane running the given command and echo its id,
 # once ps shows the exec'd argv0 (the pane shell execs it a moment after creation).
 tile_running() {
 	local id
@@ -248,6 +248,11 @@ tile_running() {
 		ps -ww -t "$(tmux display-message -p -t "$id" '#{pane_tty}' | sed 's|^/dev/||')" -o args= 2>/dev/null | grep -q "$2" && break
 		sleep 0.05
 	done
+	# shellcheck disable=SC2009
+	ps -ww -t "$(tmux display-message -p -t "$id" '#{pane_tty}' | sed 's|^/dev/||')" -o args= 2>/dev/null | grep -q "$2" || {
+		echo "tile_running: $2 never appeared" >&2
+		return 1
+	}
 	echo "$id"
 }
 
@@ -406,9 +411,8 @@ STUB
 # ctl_argv SPEC: the argv one call to the ctl logs. SPEC is TOOL, or TOOL+toggle
 # for a call carrying the trailing toggle argument.
 ctl_argv() {
-	local extra=()
-	[[ $1 == *+toggle ]] && extra=(toggle)
-	printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' "${1%+toggle}" /home/u/proj "${extra[@]}"
+	printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' "${1%+toggle}" /home/u/proj
+	[[ $1 != *+toggle ]] || echo toggle
 }
 
 # assert_ctl_argv SPEC...: the log holds exactly one call per SPEC, in order

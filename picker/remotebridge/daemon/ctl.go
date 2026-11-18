@@ -709,8 +709,9 @@ var verbs = map[string]verb{
 	// dismissal (prefix + H on a visible dash): the float is killed, else a tiled
 	// crew-dash-side pane is, else the float opens. Killed, not hidden: the reuse
 	// gate cannot see a stashed pane and a remote may lack tmux-float-group. The
-	// cwd slot is always sent (possibly empty) so toggle lands at a[2]. Any other
-	// tool refuses toggle, so --side never dismisses.
+	// cwd slot is always sent (possibly empty) so toggle lands at a[2]. Any tool's
+	// float is killed by toggle; only crew-dash also closes a side pane, and
+	// crew-dash-side refuses toggle, so --side never dismisses.
 	"tool": {args: 1, optArgs: 2, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])

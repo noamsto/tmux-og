@@ -8,8 +8,8 @@
 # client, so the bind passes #{q:pane_id} explicitly; a dispatcher calls this from
 # a worker pane, where $TMUX_PANE is set. --detached leaves focus where it is.
 #
-# One dash per window, and the press toggles it (#1186). Without --detached a
-# visible dash is dismissed: a float labelled crew-dash (a plain list-panes scan,
+# One dash per window, and the press toggles it (#1186). On a plain press (neither
+# --detached nor --side) a visible dash is dismissed: a float labelled crew-dash (a plain list-panes scan,
 # last match wins) is hidden by `tmux-float-group hide crew`, so the next press
 # restores it with its state; a tiled pane whose foreground process is `crew dash`
 # is closed (a tile cannot be stashed without disturbing the layout), as is a
@@ -35,7 +35,7 @@
 # the window clamped to 50..80 columns and leaves the target at least 80; a window
 # too narrow for that, or a @crew_grid window (tmux-grid-refit re-tiles every
 # tiled pane there), falls back to the float below with a notification. A float
-# and a side dash coexist and neither touches the other. A mirror window sends the
+# and a side dash coexist; --side never touches the float, and a plain press dismisses the float first, else the side pane. A mirror window sends the
 # `crew-dash-side` tool, so the REMOTE side gets the split too; a daemon older than
 # that tool answers `unknown tool`, and the script retries once with the `crew-dash`
 # float tool and tells the user. @remux_relaunch re-stamps the label and
@@ -69,8 +69,6 @@ done
 # --side keeps its idempotent focus: only a plain press dismisses.
 dismiss=1
 ((detached || side)) && dismiss=0
-toggle=()
-((dismiss)) && toggle=(toggle)
 pane=${pane:-${TMUX_PANE:-}}
 [[ $pane == %* ]] || exit 0
 
@@ -101,8 +99,9 @@ if [[ -n $bridge_win ]]; then
 				fi
 				notify "could not open crew dash on the remote host: ${err//#/##}"
 			fi
-		elif ! bridge_tool crew-dash "${toggle[@]}"; then
-			notify "could not open crew dash on the remote host: ${err//#/##}"
+		else
+			# toggle rides only a plain press; an empty array trips set -u on bash < 4.4.
+			if ((dismiss)); then bridge_tool crew-dash toggle; else bridge_tool crew-dash; fi || notify "could not open crew dash on the remote host: ${err//#/##}"
 		fi
 		exit 0
 	fi
@@ -189,6 +188,11 @@ if [[ -n $id ]]; then
 		exit 0
 	}
 	# `hide crew` skips a float outside the crew group, so a re-tagged dash joins it first.
+	# tmux-float-group refuses a mirror window, so a dash there is closed instead.
+	[[ -z $bridge_win ]] || {
+		tmux kill-pane -t "$id"
+		exit 0
+	}
 	[[ $idgrp == "$GROUP" ]] || "$FLOAT_GROUP" tag "$GROUP" "$id"
 	exec "$FLOAT_GROUP" hide "$GROUP" "$pane"
 fi

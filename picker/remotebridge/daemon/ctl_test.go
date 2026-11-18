@@ -1539,10 +1539,10 @@ func TestToolVerbToggleClosesSideDash(t *testing.T) {
 
 func TestToolVerbToggleArg(t *testing.T) {
 	v := verbs["tool"]
-	if _, err := v.build("%5", "@2", "s", []string{"crew-dash", "", "bogus"}); err == nil {
+	if _, err := v.build("%5", "@2", "s", []string{"crew-dash", "", "bogus"}); err == nil || !strings.Contains(err.Error(), "unknown option") {
 		t.Fatal("a third argument other than toggle must be rejected")
 	}
-	if _, err := v.build("%5", "@2", "s", []string{"crew-dash-side", "", "toggle"}); err == nil {
+	if _, err := v.build("%5", "@2", "s", []string{"crew-dash-side", "", "toggle"}); err == nil || !strings.Contains(err.Error(), "does not toggle") {
 		t.Fatal("crew-dash-side must never dismiss")
 	}
 	plain, err := v.build("%5", "@2", "s", []string{"crew-dash", "/x"})
@@ -1735,8 +1735,15 @@ func TestToolVerbCwdIsOptionalOnTheWire(t *testing.T) {
 			t.Fatalf("argv %v rejected: %v", argv, err)
 		}
 	}
-	if _, err := c.parseCtl(append(base, "/a", "/b"), "sess"); err == nil {
-		t.Fatal("a third argument was accepted")
+	// The cwd slot plus a trailing toggle is the third argument, within arity.
+	if _, err := c.parseCtl(append(slices.Clone(base), "", "toggle"), "sess"); err != nil {
+		t.Fatalf("toggle form rejected: %v", err)
+	}
+	if _, err := c.parseCtl(append(slices.Clone(base), "/a", "toggle", "x"), "sess"); err == nil || !strings.Contains(err.Error(), "wants 1 argument") {
+		t.Fatalf("a fourth argument: err = %v, want an arity error", err)
+	}
+	if _, err := c.parseCtl(append(slices.Clone(base), "/a", "/b"), "sess"); err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Fatalf("a non-toggle third argument: err = %v, want unknown option", err)
 	}
 }
 
