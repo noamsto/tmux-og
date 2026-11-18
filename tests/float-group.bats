@@ -61,6 +61,10 @@ fi
 if [[ -n ${OG_SHIM_FAIL_JOIN:-} && ${1:-} == join-pane ]]; then
 	exit 1
 fi
+if [[ -n ${OG_SHIM_SLEEP_JOIN:-} && ${1:-} == join-pane ]]; then
+	printf '%s\n' "$$" >"$OG_SHIM_PID_FILE"
+	exec sleep 30
+fi
 if [[ -n ${OG_SHIM_FAIL_LISTWIN:-} && ${1:-} == list-windows && ${2:-} == -a ]]; then
 	exit 1
 fi
@@ -475,4 +479,50 @@ HOOK
 	[[ " $(tmux list-panes -a -F '#{pane_id}' | tr '\n' ' ') " == *" $a "* ]]
 	float_group show crew "$TILE"
 	in_window "$a"
+}
+
+@test "hide, show, hide keeps the window zoomed for a float made without -A" {
+	local f
+	f="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	tmux select-pane -t "$TILE"
+	tmux resize-pane -Z -t "$TILE"
+	[ "$(zoomed_tile)" = "$TILE" ]
+
+	float_group hide crew "$TILE"
+	float_group show crew "$TILE"
+	in_window "$f"
+	[ "$(zoomed_tile)" = "$TILE" ]
+
+	float_group hide crew "$TILE"
+	run ! in_window "$f"
+	[ "$(zoomed_tile)" = "$TILE" ]
+}
+
+@test "a show killed between the dwindle pause and resume leaves @dwindle restored" {
+	local f pid child
+	f="$(new_float "$WIN" 50% 50% 5% 5% crew)"
+	install_dwindle_hook
+	tmux set -w -t "$WIN" @dwindle on
+	float_group hide crew "$TILE"
+
+	# Stall the script inside the paused window: a join-pane that sleeps.
+	use_shim
+	OG_SHIM_PID_FILE="$SHIM_DIR/join.pid" OG_SHIM_SLEEP_JOIN=1 bash scripts/tmux-float-group.sh show crew "$TILE" &
+	pid=$!
+	for _ in $(seq 50); do
+		[ "$(tmux show-options -wqv -t "$WIN" @dwindle)" = off ] && break
+		sleep 0.1
+	done
+	[ "$(tmux show-options -wqv -t "$WIN" @dwindle)" = off ]
+	for _ in $(seq 50); do
+		[[ -s $SHIM_DIR/join.pid ]] && break
+		sleep 0.1
+	done
+	child=$(cat "$SHIM_DIR/join.pid")
+	kill -TERM "$pid"
+	wait "$pid" || true
+	# The orphaned shim sleep would hold bats' fds open for its full 30 s.
+	[[ -z $child ]] || kill "$child" 2>/dev/null || true
+
+	[ "$(tmux show-options -wqv -t "$WIN" @dwindle)" = on ]
 }
