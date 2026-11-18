@@ -157,6 +157,12 @@ if ((! locked)); then
 	exit 0
 fi
 
+# A forced pass (prefix + Z) re-reads the fold flag now that it owns the lock:
+# an overtaking press may have flipped it since the fast-path read above.
+if ((FORCE)); then
+	FOLDED=$(tmux display-message -t "$SESSION" -p '#{@og_status_folded}' 2>/dev/null)
+fi
+
 PREFIX_WIDTH=5 # " ├─ " or " ╰─ "
 
 # --- Single pass: collect window data ---
@@ -827,8 +833,8 @@ ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${CREW}${L
 FOLD_MIRROR='#{||:#{@bridge_win},#{@bridge_placed}}'
 FOLD_HC='#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}'
 FOLD_IDX="#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_subtext_0}]}#{window_index}"
-FOLD_CUR="#[list=focus] #[bold]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_mauve}]}#{window_index}#[fg=#{@thm_mauve}]: #{?${FOLD_MIRROR},#[fg=${FOLD_HC}]${ICON_REMOTE} #{@bridge_host} #[fg=#{@thm_mauve}],}#{=/40/…:#{@window_label_id}#{@window_label_rest_long}}#[nobold]#[list=on]"
-FOLD_OTH="#[nobold] ${FOLD_IDX}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]${ICON_REMOTE},} #{@window_icon_display}"
+FOLD_CUR="#[list=focus] #[bold]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_mauve}]}#{window_index}#[fg=#{@thm_mauve}]: #{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@icon_remote} #{@bridge_host} #[fg=#{@thm_mauve}],}#{=/40/…:#{@window_label_id}#{@window_label_rest_long}}#[nobold]#[list=on]"
+FOLD_OTH="#[nobold] ${FOLD_IDX}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@icon_remote},} #{@window_icon_display}"
 FOLD_ITEMS="#{W:#{?window_active,${FOLD_CUR},${FOLD_OTH}}}"
 FOLD_RTXT="#{?${FOLD_MIRROR},#{@bridge_host},#{host_short}}#{?#{@og_usage_short}, #{@og_usage_short},}"
 FOLD_RIGHT="#[align=right]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@bridge_host},#[fg=#{@thm_overlay_1}]#{host_short}}#{?#{@og_usage_short}, #[fg=#{@thm_subtext_0}]#{@og_usage_short},} "

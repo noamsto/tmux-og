@@ -302,6 +302,24 @@ claude'
 	[ ! -s "$TMUX_SET_LOG" ]
 }
 
+@test "last agent closed unsets @og_usage_short" {
+	export FAKE_PANES='claude'
+	mkdir -m 700 "$OG_AGENT_USAGE_DIR"
+	echo '{"windows":[{"label":"5h","pct":42}]}' >"$OG_AGENT_USAGE_DIR/claude.json"
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	grep -qx 'set -g @og_usage_short claude 42%' "$TMUX_SET_LOG"
+	: >"$TMUX_SET_LOG"
+	export FAKE_PANES='bash'
+	run bash "$AGENT_USAGE_SCRIPT" --tick-run
+	[ "$status" -eq 0 ]
+	[ "$(cat "$TMUX_SET_LOG")" = $'set -gu @og_agent_usage\nset -gu @og_usage_short' ]
+	# Cleared once: the next empty pass stays fork-free.
+	: >"$TMUX_SET_LOG"
+	run bash "$AGENT_USAGE_SCRIPT" --tick
+	[ ! -s "$TMUX_SET_LOG" ]
+}
+
 # A wrapper keeps the shell foreground and the agent in its process tree; the
 # resource poller stamps that tree agent on @og_pane_agent, and the gate must
 # resolve it the same way the bridge does (#963). The fake prints the `cmd|tree`

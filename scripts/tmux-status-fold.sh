@@ -5,7 +5,7 @@
 # arguments the reflow hooks pass. The flag is the intent; tmux-reflow-windows
 # (--force) is the one place that knows what a folded or unfolded bar looks
 # like, so fold and unfold are one instant switch. Rapid presses converge on the
-# last flag: reflow reads the live flag under its own lock.
+# last flag: a forced reflow re-reads the live flag once it holds its lock.
 
 SESSION=${1:-}
 WIDTH=${2:-}

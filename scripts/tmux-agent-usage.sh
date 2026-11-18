@@ -47,6 +47,8 @@ REFRESH_SECONDS="@refresh_seconds@"
 AGENT_COMMANDS="@AGENT_COMMANDS@"
 
 declare -gA OPEN=()
+SCAN_OK=0
+PUBLISHED="$CACHE_DIR/.published"
 
 # publish_usage: ships the surviving cache files as one compact JSON object
 # (keyed by cache name) onto the global @og_agent_usage option, for the
@@ -64,6 +66,7 @@ publish_usage() {
 	if ((${#files[@]} == 0)); then
 		tmux set -gu @og_agent_usage
 		tmux set -gu @og_usage_short
+		rm -f "$PUBLISHED"
 		return
 	fi
 	out=$(jq -rn 'reduce inputs as $c ({}; . + {(input_filename | split("/") | last | rtrimstr(".json")): $c})
@@ -75,11 +78,24 @@ publish_usage() {
 	short=""
 	[[ $out == *$'\n'* ]] && short=${out#*$'\n'}
 	tmux set -g @og_agent_usage "$v"
+	touch "$PUBLISHED"
 	if [[ -n $short ]]; then
 		tmux set -g @og_usage_short "$short"
 	else
 		tmux set -gu @og_usage_short
 	fi
+}
+
+# clear_published: with no agent open the passes exit before publish_usage, so
+# the last published values would outlive the last agent. The memo file keeps
+# the tick that finds nothing open fork-free unless something was published.
+clear_published() {
+	((SCAN_OK)) || return 0
+	[[ -e $PUBLISHED ]] || return 0
+	owner_only_dir "$CACHE_DIR" || return 0
+	tmux set -gu @og_agent_usage
+	tmux set -gu @og_usage_short
+	rm -f "$PUBLISHED"
 }
 
 # agent_of normalizes one command name the way the display gate does — basename,
@@ -122,6 +138,7 @@ scan_open_agents() {
 		agent=$(agent_of "$tree") || continue
 		OPEN[$agent]=1
 	done <<<"$cmds"
+	SCAN_OK=1
 }
 
 mode="tick"
@@ -137,7 +154,10 @@ if [[ $mode == "tick" ]]; then
 	# the first tick after an agent appears waits out another one and the segment
 	# comes back showing the last agent session's numbers.
 	scan_open_agents
-	((${#OPEN[@]})) || exit 0
+	if ((! ${#OPEN[@]})); then
+		clear_published
+		exit 0
+	fi
 	# Mark fresh BEFORE daemonizing (same best-effort trade as tmux-pr-enrich):
 	# a crashed pass waits one cycle. An existing dir keeps its mode, so the
 	# owner check can still refuse it.
@@ -153,7 +173,10 @@ fi
 # Re-checked here because --tick-run is its own entry point, and an agent can
 # exit between the tick's gate and the detached pass.
 scan_open_agents
-((${#OPEN[@]})) || exit 0
+if ((! ${#OPEN[@]})); then
+	clear_published
+	exit 0
+fi
 # shellcheck disable=SC2174  # only the leaf (og-agent-usage-<uid>) needs 700; its parent (XDG_RUNTIME_DIR/TMPDIR) already exists
 mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null
 owner_only_dir "$CACHE_DIR" || exit 0

@@ -215,6 +215,8 @@ fold_render() {
 	[[ $LINE == *"2R>"* || $LINE == *"2 R>"* ]]
 	fold_render 100 2
 	[[ $LINE =~ 2:.*R\>\ labhost ]]
+	# The host colour (#fab387) reaches the cell: dropping #[fg=FOLD_HC] fails here.
+	[[ $(tmux -L out capture-pane -ep | grep -v '^$' | tail -1) == *"38;2;250;179;135m"* ]]
 }
 
 @test "folded: the right segment shows when wide and goes first when narrow" {
@@ -225,4 +227,12 @@ fold_render() {
 	[[ $LINE != *"claude 80%"* ]]
 	[[ $LINE == *"3: lab3"* ]]
 	[[ $LINE == *‹* ]]
+}
+
+@test "folded: a width that fits the list and session name but not the right segment drops only the segment" {
+	tmux set -g @og_usage_short "claude 80%"
+	fold_render 50 3
+	[[ $LINE == *"3: lab3"* ]]
+	[[ $LINE != *‹* && $LINE != *›* ]]
+	[[ $LINE != *"claude 80%"* ]]
 }
