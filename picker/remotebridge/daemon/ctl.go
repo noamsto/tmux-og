@@ -191,7 +191,8 @@ type verb struct {
 	// optArgs is how many FURTHER trailing arguments the verb tolerates. Only
 	// the tool verb has any: its cwd rides along when the bind can supply one
 	// and is absent from an older local config, and a verb that refused the
-	// shorter form would break a mirror mid-upgrade.
+	// shorter form would break a mirror mid-upgrade; a trailing "toggle" asks
+	// the press to dismiss a visible float instead of focusing it.
 	optArgs int
 	windows bool
 	layout  bool
@@ -350,7 +351,9 @@ func floatLookup(tool string) string {
 
 // floatToolCommand is the tool verb's reuse-gated float press: focus the
 // window's float labelled tool, else create it. cwd is already tmux-quoted.
-func floatToolCommand(pane, win, tool, cwd string) string {
+// toggle turns the press into a dismissal: the float is killed. For crew-dash
+// a tiled crew-dash-side pane is closed when no float is up, else it is created.
+func floatToolCommand(pane, win, tool, cwd string, toggle bool) string {
 	flags, ok := remoteToolFloat[tool]
 	if !ok {
 		flags = remoteFloatFull
@@ -361,9 +364,21 @@ func floatToolCommand(pane, win, tool, cwd string) string {
 	create := fmt.Sprintf("new-pane -t %s -c %s %s %s ; set -p -t %s @pane_label %s",
 		pane, cwd, flags, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, tool)
 	loop := floatLookup(tool)
+	act := "select-pane"
+	if toggle {
+		act = "kill-pane"
+	}
+	if toggle && tool == "crew-dash" {
+		// Reached only when no float is up.
+		closeSide := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
+			pane, floatRegister(remoteToolSide), tmuxQuote(sideTiledLookup),
+			pane, tmuxQuote(fmt.Sprintf("tmux kill-pane -t #{q:%s}", floatRegister(remoteToolSide))))
+		create = fmt.Sprintf("if-shell -t %s -F %s %s %s",
+			pane, tmuxQuote(sideTiledLookup), tmuxQuote(closeSide), tmuxQuote(create))
+	}
 	focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
 		pane, floatRegister(tool), tmuxQuote(loop),
-		pane, tmuxQuote(fmt.Sprintf("tmux select-pane -t #{q:%s}", floatRegister(tool))))
+		pane, tmuxQuote(fmt.Sprintf("tmux %s -t #{q:%s}", act, floatRegister(tool))))
 	return fmt.Sprintf("if-shell -t %s -F %s %s %s",
 		pane, tmuxQuote(loop), tmuxQuote(focus), tmuxQuote(create))
 }
@@ -376,7 +391,7 @@ func sideToolCommand(pane, win, cwd string) string {
 	script := toolResolveScript(remoteToolSide)
 	create := fmt.Sprintf("split-window -h -l %s -t %s -c %s %s ; set -p -t %s @pane_label %s",
 		tmuxQuote(sideWidthFormat), pane, cwd, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, remoteToolSide)
-	fallback := floatToolCommand(pane, win, "crew-dash", cwd)
+	fallback := floatToolCommand(pane, win, "crew-dash", cwd, false)
 	open := fmt.Sprintf("if-shell -t %s -F %s %s %s",
 		pane, tmuxQuote(sideFitsFormat), tmuxQuote(create), tmuxQuote(fallback))
 	focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
@@ -689,9 +704,23 @@ var verbs = map[string]verb{
 	// crew-dash-side (tmux-crew-dash --side in a mirror window) is built by
 	// sideToolCommand under the same rules. Its tiled pane reconciles through the
 	// remote layout string exactly like split-h.
-	"tool": {args: 1, optArgs: 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
+	//
+	// A third argument, exactly "toggle", turns a plain `crew-dash` press into a
+	// dismissal (prefix + H on a visible dash): the float is killed, else a tiled
+	// crew-dash-side pane is, else the float opens. Killed, not hidden: the reuse
+	// gate cannot see a stashed pane and a remote may lack tmux-float-group. The
+	// cwd slot is always sent (possibly empty) so toggle lands at a[2]. Any other
+	// tool refuses toggle, so --side never dismisses.
+	"tool": {args: 1, optArgs: 2, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])
+		}
+		toggle := false
+		if len(a) > 2 {
+			if a[2] != "toggle" {
+				return nil, fmt.Errorf("tool: unknown option %q", a[2])
+			}
+			toggle = true
 		}
 		tool := a[0]
 		cwd := "'#{pane_current_path}'"
@@ -700,10 +729,13 @@ var verbs = map[string]verb{
 				cwd = tmuxQuote(dir)
 			}
 		}
+		if toggle && tool == remoteToolSide {
+			return nil, fmt.Errorf("tool: %s does not toggle", tool)
+		}
 		if tool == remoteToolSide {
 			return []string{sideToolCommand(pane, win, cwd)}, nil
 		}
-		return []string{floatToolCommand(pane, win, tool, cwd)}, nil
+		return []string{floatToolCommand(pane, win, tool, cwd, toggle)}, nil
 	}},
 	// A mirror float's border drag, routed from the local float's inner box
 	// and window size (the remote window is converged to the same size). The

@@ -2900,7 +2900,9 @@
 
             crew-dash-launch-tests =
               pkgs.runCommand "crew-dash-launch-tests" {
-                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+                nativeBuildInputs =
+                  [pkgs.bats pkgs.coreutils pkgs.procps (mkTmux pkgs)]
+                  ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [pkgs.ps];
               } ''
                 cp -r ${scriptsSrc (coreScripts ++ ["tmux-crew-dash.sh" "tmux-float-group.sh" "tmux-float-nudge.sh" "tmux-float-refit.sh"])} scripts
                 cp -r ${testsSrc ["crew-dash-launch.bats"]} tests

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# Tests scripts/tmux-crew-dash.sh (#1139): open `crew dash` in a labelled floating
-# pane, or focus or restore the one this window already has.
+# Tests scripts/tmux-crew-dash.sh (#1139, #1186): open `crew dash` in a labelled floating
+# pane, restore a hidden one, or dismiss a visible one (a float is hidden, a tile closed).
 #
 # Runs the real script against a private, config-less tmux server (like
 # tests/float-group.bats), with `crew` stubbed and OG_FLOAT_GROUP_BIN pointing at
@@ -29,7 +29,9 @@ setup() {
 	BIN_DIR="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$BIN_DIR"
 	# `crew dash --help` answers at once (the --side probe), listing --narrow unless
-	# STUB_NO_NARROW is set; any other call is the long-lived dash.
+	# STUB_NO_NARROW is set; any other call is the long-lived dash. exec -a on bash
+	# (coreutils' sleep is a multicall binary that reads argv0): ps shows
+	# `crew dash`/`crew await` for a tiled pane, as the real binary does.
 	cat >"$BIN_DIR/crew" <<STUB
 #!$BASH
 if [[ "\$*" == "dash --help" ]]; then
@@ -37,7 +39,7 @@ if [[ "\$*" == "dash --help" ]]; then
 	[[ -n \${STUB_NO_NARROW:-} ]] || echo "  --narrow"
 	exit 0
 fi
-exec sleep 3600
+exec -a "crew \$*" "$BASH" -c "sleep 3600; true"
 STUB
 	printf '#!%s\nexec bash "%s/scripts/tmux-float-group.sh" "$@"\n' "$BASH" "$PWD" >"$BIN_DIR/tmux-float-group"
 	chmod +x "$BIN_DIR/crew" "$BIN_DIR/tmux-float-group"
@@ -86,6 +88,8 @@ dash_panes() {
 		awk -F'|' -v f="$floating" '(!f || $2 == 1) && $3 == "crew-dash" { print $1 }'
 }
 
+# has_pane id: 1 if the pane is in $WIN, else 0.
+has_pane() { tmux list-panes -t "$WIN" -F '#{pane_id}' | grep -cx "$1" || true; }
 pane_count() { tmux list-panes -t "$1" | wc -l; }
 active_pane() { tmux display-message -p -t "$1" '#{pane_id}'; }
 
@@ -119,19 +123,6 @@ first_dash() {
 	id="$(first_dash)"
 	[ "$(tmux display-message -p -t "$id" '#{pane_current_path}')" = "$BATS_TEST_TMPDIR" ]
 	[ "$(tmux display-message -p -t "$id" '#{pane_start_command}')" = '"exec crew dash"' ]
-}
-
-@test "a second press focuses the open dash without creating another" {
-	local id
-	id="$(first_dash)"
-	tmux select-pane -t "$TILE"
-	[ "$(active_pane "$WIN")" = "$TILE" ]
-
-	run crew_dash "$TILE"
-	[ "$status" -eq 0 ]
-	[ "$(dash_panes | wc -l)" -eq 1 ]
-	[ "$(pane_count "$WIN")" -eq 3 ]
-	[ "$(active_pane "$WIN")" = "$id" ]
 }
 
 @test "TMUX_PANE is the fallback when no pane id is given" {
@@ -192,14 +183,123 @@ first_dash() {
 	[ "$(tmux display-message -p -t "$id" '#{@pane_label}|#{@float_group}')" = "crew-dash|crew" ]
 }
 
-@test "--detached on a visible dash leaves focus alone" {
-	first_dash >/dev/null
+@test "--detached on a visible dash leaves it and focus alone" {
+	local id
+	id="$(first_dash)"
 	tmux select-pane -t "$TILE"
 
 	run crew_dash --detached "$TILE"
 	[ "$status" -eq 0 ]
 	[ "$(active_pane "$WIN")" = "$TILE" ]
+	[ "$(dash_panes "$WIN")" = "$id" ]
+}
+
+@test "a press on a visible focused dash hides it, and the next press restores it" {
+	local id
+	id="$(first_dash)"
+	[ "$(active_pane "$WIN")" = "$id" ]
+
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 0 ]
 	[ "$(dash_panes | wc -l)" -eq 1 ]
+
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN")" = "$id" ]
+}
+
+@test "a press on a visible unfocused dash hides it" {
+	first_dash >/dev/null
+	tmux select-pane -t "$TILE"
+
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 0 ]
+	[ "$(dash_panes | wc -l)" -eq 1 ]
+}
+
+@test "a visible dash re-tagged to another group is tagged back to crew and hidden" {
+	local id
+	id="$(first_dash)"
+	tmux set-option -p -t "$id" @float_group review
+
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 0 ]
+	[ "$(tmux display-message -p -t "$id" '#{@float_group}')" = crew ]
+}
+
+@test "a visible dash with no executable tmux-float-group reports and keeps the float" {
+	first_dash >/dev/null
+	run env OG_FLOAT_GROUP_BIN="$BATS_TEST_TMPDIR/missing" bash scripts/tmux-crew-dash.sh "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 1 ]
+	messages | grep -q 'tmux-float-group is not installed'
+}
+
+# tile_running ARGV...: split a tiled pane running the given command and echo its id,
+# once ps shows the exec'd argv0 (the pane shell execs it a moment after creation).
+tile_running() {
+	local id
+	id="$(tmux split-window -d -P -F '#{pane_id}' -t "$WIN" -c "$BATS_TEST_TMPDIR" "$1")"
+	for _ in $(seq 100); do
+		# shellcheck disable=SC2009 # no pgrep: it matches by process, not by tty
+		ps -ww -t "$(tmux display-message -p -t "$id" '#{pane_tty}' | sed 's|^/dev/||')" -o args= 2>/dev/null | grep -q "$2" && break
+		sleep 0.05
+	done
+	echo "$id"
+}
+
+@test "the crew stub shows its subcommand in ps" {
+	local id
+	id="$(tile_running 'exec crew dash' 'crew dash')"
+	# shellcheck disable=SC2009 # no pgrep: it matches by process, not by tty
+	ps -ww -t "$(tmux display-message -p -t "$id" '#{pane_tty}' | sed 's|^/dev/||')" -o stat=,args= | grep -q '+.*crew dash'
+}
+
+@test "a press closes a tiled crew dash pane and creates nothing" {
+	local id
+	id="$(tile_running 'exec crew dash' 'crew dash')"
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(has_pane "$id")" -eq 0 ]
+	[ "$(dash_panes | wc -l)" -eq 0 ]
+}
+
+@test "a tiled crew dash with flags and a store-path argv0 is closed too" {
+	local id
+	printf '#!%s\nexec -a "/x/bin/.crew-wrapped dash --foo" "%s" -c "sleep 3600; true"\n' "$BASH" "$BASH" >"$BIN_DIR/wrapped"
+	chmod +x "$BIN_DIR/wrapped"
+	id="$(tile_running 'exec wrapped' 'crew-wrapped dash')"
+	crew_dash "$TILE"
+	[ "$(has_pane "$id")" -eq 0 ]
+}
+
+@test "a tiled pane running another crew subcommand is ignored and a float opens" {
+	local id
+	id="$(tile_running 'exec crew await' 'crew await')"
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(has_pane "$id")" -eq 1 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 1 ]
+}
+
+@test "a pane whose arguments merely contain a path ending in /crew and dash is not closed" {
+	local id
+	printf '#!%s\nexec -a "grep x/crew dash" "%s" -c "sleep 3600; true"\n' "$BASH" "$BASH" >"$BIN_DIR/decoy"
+	chmod +x "$BIN_DIR/decoy"
+	id="$(tile_running 'exec decoy' 'x/crew dash')"
+	run crew_dash "$TILE"
+	[ "$(has_pane "$id")" -eq 1 ]
+}
+
+@test "--detached never closes a tiled crew dash pane" {
+	local id
+	id="$(tile_running 'exec crew dash' 'crew dash')"
+	run crew_dash --detached "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(has_pane "$id")" -eq 1 ]
 }
 
 @test "--detached on a stashed dash restores it without taking focus" {
@@ -303,10 +403,16 @@ STUB
 	tmux set-option -w -t "$WIN" @bridge_dir '/home/u/proj'
 }
 
-# ctl_argv TOOL: the argv one call to the ctl logs for TOOL.
-ctl_argv() { printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' "$1" /home/u/proj; }
+# ctl_argv SPEC: the argv one call to the ctl logs. SPEC is TOOL, or TOOL+toggle
+# for a call carrying the trailing toggle argument.
+ctl_argv() {
+	local extra=()
+	[[ $1 == *+toggle ]] && extra=(toggle)
+	printf '%s\n' --sock '/run/og|x/bridge.sock' tool '%9' "${1%+toggle}" /home/u/proj "${extra[@]}"
+}
 
-# assert_ctl_argv TOOL...: the log holds exactly one call per TOOL, in order.
+# assert_ctl_argv SPEC...: the log holds exactly one call per SPEC, in order
+# (no SPEC: one plain crew-dash call).
 assert_ctl_argv() {
 	local want="" t
 	for t in "${@:-crew-dash}"; do want+="$(ctl_argv "$t")"$'\n'; done
@@ -319,7 +425,7 @@ ctl_calls() { grep -c '^--sock$' "$MIRROR_LOG"; }
 	mirror_window ok
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh "$TILE"
 	[ "$status" -eq 0 ]
-	assert_ctl_argv
+	assert_ctl_argv crew-dash+toggle
 	[ "$(pane_count "$WIN")" -eq 2 ]
 	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
 }
@@ -470,11 +576,42 @@ side_panes() {
 	[ "$(dash_panes "$WIN")" = "$f" ]
 	[ "$(pane_count "$WIN")" -eq 4 ]
 
+	# A plain press dismisses the float (hidden, not killed) and leaves the side pane.
 	tmux select-pane -t "$TILE"
 	crew_dash "$TILE"
-	[ "$(active_pane "$WIN")" = "$f" ]
+	[ -z "$(dash_panes "$WIN")" ]
 	[ "$(side_panes)" = "$s" ]
-	[ "$(pane_count "$WIN")" -eq 4 ]
+	[ "$(pane_count "$WIN")" -eq 3 ]
+}
+
+@test "a press closes a visible crew-dash-side pane and creates nothing" {
+	crew_dash --side "$TILE"
+	local id
+	id="$(side_panes)"
+	[[ $id == %* ]]
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(has_pane "$id")" -eq 0 ]
+	[ -z "$(side_panes)" ]
+	[ "$(dash_panes | wc -l)" -eq 0 ]
+	[ "$(pane_count "$WIN")" -eq 2 ]
+}
+
+@test "--detached never closes a crew-dash-side pane" {
+	crew_dash --side "$TILE"
+	local id
+	id="$(side_panes)"
+	run crew_dash --detached "$TILE"
+	[ "$(has_pane "$id")" -eq 1 ]
+}
+
+@test "a repeat --side focuses a visible side pane and never closes it" {
+	crew_dash --side "$TILE"
+	local id
+	id="$(side_panes)"
+	crew_dash --side "$TILE"
+	[ "$(has_pane "$id")" -eq 1 ]
+	[ "$(active_pane "$WIN")" = "$id" ]
 }
 
 @test "--side in a mirror window sends crew-dash-side and opens nothing locally" {
