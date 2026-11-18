@@ -861,3 +861,47 @@ func TestPredictModelSurvivesSeedExtra(t *testing.T) {
 		t.Error("the seed's trailing ?25l did not hide the model's cursor")
 	}
 }
+
+// c1RunPredictor is a predictor holding a 400x100 model whose cursor sits on
+// the last row, with a key just typed so output reaches feedTimed.
+func c1RunPredictor(tb testing.TB) *predictor {
+	tb.Helper()
+	p := newPredictor(newPredictShared(PredictOn), func() {}, func() bool { return false }, func() bool { return false })
+	m := plainModes(100)
+	m.cy = 99
+	p.onResize(400, 100)
+	p.onModelSeed(nil, m)
+	if p.model == nil {
+		tb.Fatal("onModelSeed built no model")
+	}
+	tb.Cleanup(func() { p.shutdown() })
+	p.lastKey = p.now()
+	return p
+}
+
+// A run of raw C1 bytes has no ASCII cut point, so feedTimed once handed all
+// 4096 of them to vt in one write: 0x84 (IND) at the last row scrolls the
+// whole pane each time, about 1 s at 400x100.
+func TestPredictorFeedC1RunBounded(t *testing.T) {
+	p := c1RunPredictor(t)
+	start := time.Now()
+	p.onOutput(bytes.Repeat([]byte{0x84}, 4096))
+	if d := time.Since(start); d >= 100*time.Millisecond {
+		t.Errorf("onOutput of 4096 x 0x84 took %v, want < 100ms", d)
+	}
+	if p.model != nil {
+		t.Error("model survived a run of C1 bytes")
+	}
+}
+
+func BenchmarkPredictFeedC1Run(b *testing.B) {
+	run := bytes.Repeat([]byte{0x84}, 4096)
+	pm := c1RunPredictor(b).model
+	if pm == nil {
+		b.Fatal("no model")
+	}
+	for b.Loop() {
+		pm.guard, pm.poisoned = vtGuard{}, false
+		pm.feed(run)
+	}
+}

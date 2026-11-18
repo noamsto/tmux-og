@@ -1,11 +1,17 @@
 package daemon
 
 import (
+	"bytes"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/ansi/parser"
 )
 
 // plainModes is a default pane of height h: cursor shown, wrapping, no scroll region.
@@ -313,6 +319,269 @@ func TestPredictModelREPMatchesTmux(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Rows and cursor tmux next-3.9 (-f /dev/null, 20x6 pane) ends with for each
+// byte stream carrying bytes that are not valid UTF-8 or are C1 controls
+// (tmux treats none of them as controls). A keep stream must stay modelled and
+// draw them; any other must either cost the model or draw them.
+func TestPredictModelNonUTF8MatchesTmux(t *testing.T) {
+	const fffd = "\uFFFD"
+	cases := []struct {
+		name, in string
+		keep     bool
+		rows     []string
+		cursor   [2]int
+	}{
+		{"ground 0x84", "a\x84b", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"ground 0x8d", "a\x8db", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"ground 0x9c", "a\x9cb", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"ground 0x90", "a\x90bc\x9cd", false, []string{"a" + fffd + "bc" + fffd + "d"}, [2]int{6, 0}},
+		{"ground 0x9d", "a\x9d0;title\x9cb", false, []string{"a" + fffd + "0;title" + fffd + "b"}, [2]int{11, 0}},
+		{"ground 0x9b", "a\x9bX1mb", false, []string{"a" + fffd + "X1mb"}, [2]int{6, 0}},
+		{"stray high bytes", "a\xa0b\xbfc\xc0d\xc1e\xf5f\xffg", false,
+			[]string{"a" + fffd + "b" + fffd + "c" + fffd + "d" + fffd + "e" + fffd + "f" + fffd + "g"}, [2]int{13, 0}},
+		{"truncated two-byte", "a\xc3b", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"truncated three-byte", "a\xe2\x82b", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"overlong", "a\xe0\x80\x80b", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"surrogate", "a\xed\xa0\x80b", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"above U+10FFFF", "a\xf4\x90\x80\x80b", false, []string{"a" + fffd + "b"}, [2]int{3, 0}},
+		{"ESC state 0x84", "a\x1b\x84b", false, []string{"a"}, [2]int{1, 0}},
+		{"CSI state 0x84", "a\x1b[1\x84mb", false, []string{"ab"}, [2]int{2, 0}},
+		{"CSI state 0x9c", "a\x1b[\x9cmb", false, []string{"ab"}, [2]int{2, 0}},
+		{"CSI state UTF-8", "a\x1b[\xc3\xa9m|", false, []string{"a|"}, [2]int{2, 0}},
+		{"OSC body 0x9c", "a\x1b]2;ti\x9ctle\x07b", true, []string{"ab"}, [2]int{2, 0}},
+		{"OSC body 0x84", "a\x1b]2;ti\x84tle\x07b", true, []string{"ab"}, [2]int{2, 0}},
+		{"OSC body continuation 0x9c", "a\x1b]0;\xc4\x9c\x07b", true, []string{"ab"}, [2]int{2, 0}},
+		{"DCS body 0x9c", "a\x1bPxy\x9cz\x1b\\b", true, []string{"ab"}, [2]int{2, 0}},
+		{"DCS body 0x84", "a\x1bPxy\x84z\x1b\\b", true, []string{"ab"}, [2]int{2, 0}},
+		{"APC body 0x9c", "a\x1b_xy\x9cz\x1b\\b", false, []string{"ab"}, [2]int{2, 0}},
+		{"APC body 0x84", "a\x1b_xy\x84z\x1b\\b", false, []string{"ab"}, [2]int{2, 0}},
+		{"SOS body 0x9c", "a\x1bXxy\x9cz\x1b\\b", false, []string{"ab"}, [2]int{2, 0}},
+		{"PM body 0x9c", "a\x1b^xy\x9cz\x1b\\b", false, []string{"ab"}, [2]int{2, 0}},
+		{"valid mixed UTF-8", "A\xc3\xa9BC", true, []string{"A\u00e9BC"}, [2]int{4, 0}},
+		{"valid then stray", "A\xc3\xa9B\x84C", false, []string{"A\u00e9B" + fffd + "C"}, [2]int{5, 0}},
+		{"U+00A0", "a\xc2\xa0|", true, []string{"a\u00a0|"}, [2]int{3, 0}},
+		{"U+0084 is width 0", "a\xc2\x84b|", false, []string{"a\u0084b|"}, [2]int{3, 0}},
+		{"U+009F is width 0", "a\xc2\x9f|", false, []string{"a\u009f|"}, [2]int{2, 0}},
+		{"U+0084 under the cursor", "AB\r\xc2\x84", false, []string{"AB"}, [2]int{0, 0}},
+		{"stray after CR", "ab\x84\r\x84|c", false, []string{fffd + "|c"}, [2]int{3, 0}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pm := newTestModel(t, 20, 6, "", plainModes(6))
+			if !pm.feed([]byte(c.in)) {
+				if c.keep {
+					t.Fatalf("feed refused %q: this stream must stay modelled", c.in)
+				}
+				return
+			}
+			for y, want := range c.rows {
+				var b strings.Builder
+				for x := range 20 {
+					b.WriteString(cellText(pm.cell(x, y)))
+				}
+				if got := strings.TrimRight(b.String(), " "); got != want {
+					t.Errorf("row %d: model %q, tmux %q", y, got, want)
+				}
+			}
+			if x, y := pm.cursor(); x != c.cursor[0] || y != c.cursor[1] {
+				t.Errorf("cursor: model (%d,%d), tmux (%d,%d)", x, y, c.cursor[0], c.cursor[1])
+			}
+		})
+	}
+}
+
+// guardOracle reports whether tmux and vt part ways on in, from the tmux table
+// and a parser of its own rather than from vtGuard's tracking.
+func guardOracle(p *ansi.Parser, in []byte) bool {
+	p.Reset()
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		if c < 0x80 {
+			p.Advance(c)
+			continue
+		}
+		switch p.State() {
+		case parser.GroundState:
+			rest := in[i:]
+			if !utf8.FullRune(rest) {
+				return false
+			}
+			r, size := utf8.DecodeRune(rest)
+			if r == utf8.RuneError && size == 1 || r >= 0x80 && r <= 0x9f {
+				return true
+			}
+			for _, b := range rest[:size] {
+				p.Advance(b)
+			}
+			i += size - 1
+		case parser.OscStringState, parser.DcsStringState:
+			if c != 0x9c {
+				p.Advance(c)
+			}
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// splitRandom cuts b at random points, empty chunks included.
+func splitRandom(rng *rand.Rand, b []byte) [][]byte {
+	var chunks [][]byte
+	for len(b) > 0 {
+		n := rng.IntN(len(b) + 1)
+		chunks = append(chunks, b[:n])
+		b = b[n:]
+	}
+	return chunks
+}
+
+// runGuard filters chunks through a fresh guard, stopping at the first poison.
+func runGuard(chunks [][]byte) (out []byte, bad bool) {
+	var g vtGuard
+	for _, c := range chunks {
+		if out, bad = g.filter(out, c); bad {
+			return nil, true
+		}
+	}
+	return out, false
+}
+
+// vtGuard must poison exactly where tmux and vt disagree and hand vt a stream
+// its parser reads the way tmux does, whatever the chunking.
+func TestVTGuardAgreesWithParser(t *testing.T) {
+	ascii := []byte("aZ m0123456789;~\\\x1b[]P_X^k\x07\x18\x1a\n")
+	structural := []byte("a\x1b[]P_X^k\x07\\")
+	hot := []byte{0x84, 0x9c, 0xa9, 0xbd, 0xbf, 0xc2, 0xdf, 0xef}
+	var high []byte
+	for c := 0x80; c <= 0x9f; c++ {
+		high = append(high, byte(c))
+	}
+	high = append(high, 0xa0, 0xa9, 0xbd, 0xbe, 0xbf, 0xc0, 0xc1, 0xc2, 0xdf, 0xe0, 0xe1, 0xed, 0xef,
+		0xf0, 0xf1, 0xf3, 0xf4, 0xf5, 0xff)
+	// Most high-byte soup poisons, so each stream draws its own density to
+	// keep a share of streams that reach the parser comparison.
+	densities := [...]int{2, 5, 10, 20, 30, 60}
+
+	rng := rand.New(rand.NewPCG(1096, 1))
+	oracle, check := ansi.NewParser(), ansi.NewParser()
+	var executed []byte
+	var printed []rune
+	check.SetHandler(ansi.Handler{
+		Print:   func(r rune) { printed = append(printed, r) },
+		Execute: func(b byte) { executed = append(executed, b) },
+	})
+	var one [1]byte
+	var step []byte
+	const streams, modelEvery = 20000, 20000 / 300
+
+	for n := range streams {
+		raw := make([]byte, 1+rng.IntN(24))
+		density := densities[rng.IntN(len(densities))]
+		pool, hi := ascii, high
+		if rng.IntN(2) == 0 {
+			pool = structural
+		}
+		if rng.IntN(2) == 0 {
+			hi = hot
+		}
+		for i := range raw {
+			if rng.IntN(100) < density {
+				raw[i] = hi[rng.IntN(len(hi))]
+			} else {
+				raw[i] = pool[rng.IntN(len(pool))]
+			}
+		}
+		var title titleFilter
+		in := title.filter(nil, raw)
+		chunks := splitRandom(rng, in)
+
+		whole, wholeBad := runGuard([][]byte{in})
+		if want := guardOracle(oracle, in); wholeBad != want {
+			t.Fatalf("stream %d %q: guard poison = %v, oracle = %v", n, in, wholeBad, want)
+		}
+		out, bad := runGuard(chunks)
+		if bad != wholeBad || !bytes.Equal(out, whole) {
+			t.Fatalf("stream %d %q split %q: chunked guard (%q, %v), whole (%q, %v)",
+				n, in, chunks, out, bad, whole, wholeBad)
+		}
+		if wholeBad {
+			continue
+		}
+
+		var g vtGuard
+		check.Reset()
+		executed, printed = executed[:0], printed[:0]
+		for i, c := range in {
+			one[0] = c
+			var bad bool
+			step, bad = g.filter(step[:0], one[:])
+			if bad {
+				t.Fatalf("stream %d %q: byte-wise guard poisons at %d", n, in, i)
+			}
+			for _, b := range step {
+				check.Advance(b)
+			}
+			if g.st != parser.Utf8State && g.st != check.State() {
+				t.Fatalf("stream %d %q after byte %d: guard state %v, parser %v",
+					n, in, i, g.st, check.State())
+			}
+		}
+		if i := slices.IndexFunc(executed, func(b byte) bool { return b >= 0x80 }); i >= 0 {
+			t.Fatalf("stream %d %q: parser executed %#x", n, in, executed[i])
+		}
+		if !bytes.Contains(in, []byte("�")) && slices.Contains(printed, utf8.RuneError) {
+			t.Fatalf("stream %d %q: parser printed U+FFFD", n, in)
+		}
+
+		if n%modelEvery == 0 {
+			compareGuardedModels(t, rng, raw)
+		}
+	}
+}
+
+// compareGuardedModels feeds raw to predictModel.feed and its guard-filtered
+// bytes to a second model in the same chunks (vt flushes graphemes per Write),
+// and requires the same cells.
+func compareGuardedModels(t *testing.T, rng *rand.Rand, raw []byte) {
+	t.Helper()
+	const w, h = 8, 3
+	fed := newPredictModel(w, h, nil, plainModes(h))
+	direct := newPredictModel(w, h, nil, plainModes(h))
+	defer fed.close()
+	defer direct.close()
+	if fed == nil || direct == nil {
+		t.Fatal("newPredictModel returned nil")
+	}
+	var title titleFilter
+	var g vtGuard
+	for _, c := range splitRandom(rng, raw) {
+		fb, bad := g.filter(nil, title.filter(nil, c))
+		if bad {
+			t.Fatalf("stream %q: guard poisons a stream it passed whole", raw)
+		}
+		if !fed.feed(c) {
+			t.Fatalf("stream %q: feed refused a stream the guard passes", raw)
+		}
+		if _, err := direct.e.Write(fb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for y := range h {
+		for x := range w {
+			a, b := mustCell(t, fed, x, y), mustCell(t, direct, x, y)
+			if cellText(a) != cellText(b) || a.Width != b.Width {
+				t.Fatalf("stream %q: cell (%d,%d) fed %+v, direct %+v", raw, x, y, a, b)
+			}
+		}
+	}
+	fx, fy := fed.cursor()
+	dx, dy := direct.cursor()
+	if fx != dx || fy != dy {
+		t.Fatalf("stream %q: cursor fed (%d,%d), direct (%d,%d)", raw, fx, fy, dx, dy)
 	}
 }
 

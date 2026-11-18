@@ -6,6 +6,7 @@ import (
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/ansi/parser"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -25,6 +26,7 @@ type predictModel struct {
 	poisoned bool
 
 	title titleFilter
+	guard vtGuard
 	fbuf  []byte
 
 	// drained closes when the goroutine servicing the emulator's reply pipe exits.
@@ -122,7 +124,13 @@ func (pm *predictModel) feed(p []byte) (ok bool) {
 		}
 	}()
 	pm.fbuf = pm.title.filter(pm.fbuf[:0], p)
-	_, err := pm.e.Write(pm.fbuf)
+	fb, bad := pm.guard.filter(pm.fbuf[:0], pm.fbuf)
+	pm.fbuf = fb
+	if bad {
+		pm.poisoned = true
+		return false
+	}
+	_, err := pm.e.Write(fb)
 	return err == nil && !pm.poisoned
 }
 
@@ -194,4 +202,81 @@ func (f *titleFilter) filter(dst, p []byte) []byte {
 		dst = append(dst, c)
 	}
 	return dst
+}
+
+// vtGuard sits in front of vt and poisons the model on bytes where vt and tmux
+// part ways: C1 controls vt executes in every state but OSC/DCS bodies, a stray
+// or malformed UTF-8 byte tmux draws as U+FFFD, a byte >= 0x80 inside an escape
+// sequence tmux ignores, and c2 80..9f (U+0080..U+009F, which tmux draws
+// zero-width where vt's grapheme path overwrites the cursor cell). Other
+// zero-width runes printed with no base in the same Write diverge the same way
+// and are tolerated: the predictor skips Width!=1 cells. The guard follows vt's
+// parser table, one lookup per byte; the zero value is Ground.
+type vtGuard struct {
+	st     parser.State
+	need   int
+	lo, hi byte
+}
+
+// filter appends to dst the bytes vt should see and reports bad when p holds a
+// poisoning byte; dst is then unusable. dst may alias p: the guard only drops
+// bytes, so the write index never passes the read index.
+func (g *vtGuard) filter(dst, p []byte) ([]byte, bool) {
+	for _, c := range p {
+		switch {
+		case g.st == parser.Utf8State:
+			if c < g.lo || c > g.hi {
+				return dst, true
+			}
+			g.lo, g.hi = 0x80, 0xbf
+			if g.need--; g.need == 0 {
+				g.st = parser.GroundState
+			}
+		case c < 0x80:
+			g.st, _ = parser.Table.Transition(g.st, c)
+		case g.st == parser.GroundState:
+			if !g.lead(c) {
+				return dst, true
+			}
+		case g.st == parser.OscStringState || g.st == parser.DcsStringState:
+			// tmux takes 0x9C as body; vt would end the string on it.
+			if c == 0x9c {
+				continue
+			}
+		default:
+			return dst, true
+		}
+		dst = append(dst, c)
+	}
+	return dst, false
+}
+
+// lead starts a UTF-8 sequence at c, with the continuation range that
+// rejects overlong forms, surrogates and values above U+10FFFF. It reports
+// false for any byte that cannot start one, and for C2 80..9F, which is
+// excluded by starting C2's continuation at 0xA0.
+func (g *vtGuard) lead(c byte) bool {
+	g.lo, g.hi = 0x80, 0xbf
+	switch {
+	case c == 0xc2:
+		g.need, g.lo = 1, 0xa0
+	case c >= 0xc3 && c <= 0xdf:
+		g.need = 1
+	case c == 0xe0:
+		g.need, g.lo = 2, 0xa0
+	case c == 0xed:
+		g.need, g.hi = 2, 0x9f
+	case c >= 0xe1 && c <= 0xef:
+		g.need = 2
+	case c == 0xf0:
+		g.need, g.lo = 3, 0x90
+	case c >= 0xf1 && c <= 0xf3:
+		g.need = 3
+	case c == 0xf4:
+		g.need, g.hi = 3, 0x8f
+	default:
+		return false
+	}
+	g.st = parser.Utf8State
+	return true
 }
