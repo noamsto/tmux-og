@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 )
 
 // phaseSuffix names the file og-remote-loading polls beside the socket. The
@@ -31,7 +32,21 @@ func setPhase(cfg Config, format string, args ...any) {
 		return
 	}
 	line := strings.ReplaceAll(fmt.Sprintf(format, args...), "\n", " ")
-	_ = os.WriteFile(path, []byte(line+"\n"), 0o600)
+	_ = writeNoFollow(path, []byte(line+"\n"), 0o600)
+}
+
+// writeNoFollow truncates-and-writes path, refusing to follow a symlink planted
+// there so the write cannot land on the link's target.
+func writeNoFollow(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, perm) //nolint:gosec // G302/G304: socket-derived path, owner-only perm
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // clearPhase drops the file on teardown, so a launcher that reuses this socket

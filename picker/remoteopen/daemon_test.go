@@ -318,3 +318,59 @@ func TestEnvDedicated(t *testing.T) {
 		t.Error("dedicated must not set OG_DAEMON_INTO")
 	}
 }
+
+func plantLink(t *testing.T, dir, name string) (link, victim string) {
+	t.Helper()
+	victim = filepath.Join(dir, "victim-"+name)
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link = filepath.Join(dir, name)
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+	return link, victim
+}
+
+func assertVictim(t *testing.T, victim string) {
+	t.Helper()
+	got, err := os.ReadFile(victim)
+	if err != nil || string(got) != "precious" {
+		t.Fatalf("victim = %q, %v", got, err)
+	}
+}
+
+func TestCreateFreshReplacesPlantedSymlink(t *testing.T) {
+	for _, name := range []string{"x.log", "x.phase"} {
+		dir := t.TempDir()
+		link, victim := plantLink(t, dir, name)
+		f, err := createFresh(link, 0o644)
+		if err != nil {
+			t.Fatalf("createFresh: %v", err)
+		}
+		_, _ = f.WriteString("new")
+		_ = f.Close()
+		fi, err := os.Lstat(link)
+		if err != nil || !fi.Mode().IsRegular() {
+			t.Fatalf("%s not a regular file: %v %v", name, fi, err)
+		}
+		assertVictim(t, victim)
+	}
+}
+
+func TestCreateFreshRefusesUnremovableSymlink(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	link, victim := plantLink(t, dir, "x.log")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if f, err := createFresh(link, 0o644); err == nil {
+		_ = f.Close()
+		t.Fatal("createFresh followed or replaced an unremovable symlink")
+	}
+	assertVictim(t, victim)
+}

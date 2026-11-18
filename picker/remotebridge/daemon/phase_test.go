@@ -64,3 +64,25 @@ func TestSetPhaseWithoutSocketWritesNothing(t *testing.T) {
 		t.Fatalf("wrote %d entries with no socket path", len(entries))
 	}
 }
+
+func TestWriteNoFollowRefusesPlantedSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"x.phase", "x.pid"} {
+		link := filepath.Join(dir, name)
+		if err := os.Symlink(victim, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeNoFollow(link, []byte("x"), 0o600); err == nil {
+			t.Fatalf("%s: write through symlink succeeded", name)
+		}
+	}
+	setPhase(Config{SockPath: filepath.Join(dir, "x")}, "hello")
+	got, _ := os.ReadFile(victim)
+	if string(got) != "precious" {
+		t.Fatalf("victim = %q", got)
+	}
+}

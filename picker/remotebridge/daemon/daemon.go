@@ -1179,7 +1179,7 @@ func runMirror(cfg Config) error {
 	// and to tell a stale socket from one a running daemon still owns. Removed in
 	// teardown so a clean exit leaves neither file behind.
 	pidFile := cfg.SockPath + ".pid"
-	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+	if err := writeNoFollow(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: write pidfile %s: %v\n", pidFile, err)
 	}
 	connCh := make(chan helloConn, 64)
