@@ -279,6 +279,36 @@ dump_refit_state() {
 	} >&2 || true
 }
 
+# dump_demoted_lead_state — prints the restore path's state to stderr when the
+# #793 demoted-lead restore poll gives up (#1181). One hypothesis (unreproduced): a lock loser
+# exiting in the instant between the holder's apply returning and its EXIT-trap
+# rmdir. That race leaves no pending marker, a stale @grid_refit_sig naming the
+# lead and no lock dir (the holder's rmdir follows within microseconds); a lock
+# dir still present means a hung or crashed holder inside the 60s stale window.
+# The lock dir records no owner pid, so its age stands in. Every command
+# tolerates failure so the dump never replaces the assertion.
+dump_demoted_lead_state() {
+	local f
+	{
+		echo "dump_demoted_lead_state: lead=$LEAD first_pane=$(first_pane)"
+		echo "dump_demoted_lead_state: @grid_refit_pending=$(tmux show-options -wqv -t "$WIN" @grid_refit_pending 2>/dev/null || true)"
+		echo "dump_demoted_lead_state: @grid_refit_sig=$(tmux show-options -wqv -t "$WIN" @grid_refit_sig 2>/dev/null || true)"
+		echo "dump_demoted_lead_state: @grid_refit_layout=$(tmux show-options -wqv -t "$WIN" @grid_refit_layout 2>/dev/null || true)"
+		echo "dump_demoted_lead_state: window size: $(tmux display-message -p -t "$WIN" '#{window_width}x#{window_height}' 2>/dev/null || true)"
+		echo "dump_demoted_lead_state: panes:"
+		tmux list-panes -t "$WIN" -F '#{pane_id} #{pane_index} #{pane_left} #{pane_top} #{pane_width}x#{pane_height} #{@crew_role}' 2>&1 || true
+		echo "dump_demoted_lead_state: lock dirs (name, mtime; no owner pid is recorded):"
+		for f in "$TMUX_TMPDIR"/og-grid-refit.lock.*; do
+			[ -e "$f" ] || continue
+			echo "  ${f##*/} mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || true) now=$(date +%s)"
+		done
+		echo "dump_demoted_lead_state: jobs started: $(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* run job ' || true)"
+		echo "dump_demoted_lead_state: jobs died: $(cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -c '^[0-9.]* job died ' || true)"
+		echo "dump_demoted_lead_state: refit job lifecycle, layout commands and script @grid_refit writes in the server log:"
+		cat "$BATS_TEST_TMPDIR"/vlog/tmux-server-*.log 2>/dev/null | grep -E 'run job .*tmux-grid-refit|job died .*tmux-grid-refit|hook_arguments=-(uw|w) .*@grid_refit|message: client-[0-9]* command: (swap-pane|select-layout)' | cut -c1-200 | tail -60 || true
+	} >&2 || true
+}
+
 # #760 reproduces only on the pinned next-3.9: upstream <=3.7c already collapses
 # the freed cells back to the pre-split sibling, so on such a tmux the behavior
 # assertions below hold with no fix at all. Skip rather than report a green that
@@ -908,6 +938,7 @@ WRAP
 		sleep 0.1
 		((tries2++)) || true
 	done
+	[ "$ok" -eq 1 ] || dump_demoted_lead_state
 	[ "$ok" -eq 1 ]
 }
 
