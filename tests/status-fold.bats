@@ -248,7 +248,11 @@ recapture_until() {
 
 @test "folded: the right segment shows when wide and goes first when narrow" {
 	tmux set -g @og_usage_short "claude 80%"
-	fold_render 100 3
+	# The segment leads with #{host_short}, whose width is the runner's: wide means
+	# 100 columns past the host name (a 33+ char macOS CI hostname overflowed 100).
+	local host
+	host=$(tmux display-message -p -t S '#{host_short}')
+	fold_render $((100 + ${#host})) 3
 	[[ $LINE == *"claude 80%"* ]]
 	fold_render 38 3
 	[[ $LINE != *"claude 80%"* ]]
