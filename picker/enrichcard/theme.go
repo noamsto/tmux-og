@@ -15,7 +15,7 @@ func readGlobalOptions() map[string]string {
 		return nil
 	}
 	opts := map[string]string{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.SplitSeq(string(out), "\n") {
 		name, val, ok := strings.Cut(strings.TrimSpace(line), " ")
 		if !ok {
 			continue
