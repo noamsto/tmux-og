@@ -1,6 +1,7 @@
 package render
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -327,5 +328,37 @@ func TestSeedNilExtraWritesNothing(t *testing.T) {
 		if strings.Contains(out, seq) {
 			t.Errorf("seed %q contains %q with the extra state unknown", out, seq)
 		}
+	}
+}
+
+// TestSeedBidiModes: bidi modes are set-only and land before the 2J clear;
+// off or unknown modes emit neither sequence.
+func TestSeedBidiModes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		modes *TerminalModes
+		want  []string
+	}{
+		{"both", &TerminalModes{BidiDirect: true, BidiAuto: true}, []string{"\x1b[8h", "\x1b[?2501h"}},
+		{"direct", &TerminalModes{BidiDirect: true}, []string{"\x1b[8h"}},
+		{"auto", &TerminalModes{BidiAuto: true}, []string{"\x1b[?2501h"}},
+		{"off", &TerminalModes{}, nil},
+		{"unknown", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := string(Seed([]byte("x"), 0, 0, false, false, nil, tc.modes, nil, nil))
+			clear := strings.Index(out, "\x1b[2J")
+			for _, seq := range []string{"\x1b[8h", "\x1b[?2501h"} {
+				i := strings.Index(out, seq)
+				if want := slices.Contains(tc.want, seq); (i >= 0) != want {
+					t.Errorf("seed %q contains %q = %v, want %v", out, seq, i >= 0, want)
+				} else if want && i > clear {
+					t.Errorf("%q written after the 2J clear in %q", seq, out)
+				}
+			}
+			if strings.Contains(out, "\x1b[8l") || strings.Contains(out, "\x1b[?2501l") {
+				t.Errorf("seed %q clears a bidi mode", out)
+			}
+		})
 	}
 }

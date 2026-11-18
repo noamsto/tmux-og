@@ -580,3 +580,22 @@ func TestPaneSeedRestoresHiddenBarCursor(t *testing.T) {
 		t.Errorf("seed %q does not end with CUP then ?25l", got)
 	}
 }
+
+// TestParseCursorBidiModes: tokens 8 and 2501 of the private-mode list carry
+// the bidi state; a list without them (stock tmux) reads both false.
+func TestParseCursorBidiModes(t *testing.T) {
+	line := func(s string) controlmode.Line { return controlmode.Line{Kind: controlmode.End, Data: []byte(s)} }
+	for _, tc := range []struct {
+		reply        string
+		direct, auto bool
+	}{
+		{"1 2 0 0 0 0 0 0 0 w1 7,8,25,2004,2501", true, true},
+		{"1 2 0 0 0 0 0 0 0 w1 7,2501", false, true},
+		{"1 2 0 0 0 0 0 0 0 w1 7,25,2004", false, false},
+	} {
+		_, _, _, _, _, modes, _, _ := parseCursor(line(tc.reply), true)
+		if modes == nil || modes.BidiDirect != tc.direct || modes.BidiAuto != tc.auto {
+			t.Errorf("%q: modes = %+v, want direct=%v auto=%v", tc.reply, modes, tc.direct, tc.auto)
+		}
+	}
+}
