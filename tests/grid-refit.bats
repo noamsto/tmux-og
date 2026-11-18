@@ -282,10 +282,11 @@ dump_refit_state() {
 # dump_demoted_lead_state — prints the restore path's state to stderr when the
 # #793 demoted-lead restore poll gives up (#1181). The suspect is a lock loser
 # exiting in the instant between the holder's apply returning and its EXIT-trap
-# rmdir: a surviving lock dir, no pending marker and a stale signature that
-# still names the lead point at it. The lock dir records no owner pid, so its
-# age stands in. Every command tolerates failure so the dump never replaces the
-# assertion.
+# rmdir. That race leaves no pending marker, a stale @grid_refit_sig naming the
+# lead and no lock dir (the holder's rmdir follows within microseconds); a lock
+# dir still present means a hung or crashed holder inside the 60s stale window.
+# The lock dir records no owner pid, so its age stands in. Every command
+# tolerates failure so the dump never replaces the assertion.
 dump_demoted_lead_state() {
 	local f
 	{
