@@ -132,9 +132,7 @@ ControlMaster) running
 `tmux new-window -P -F '#{window_id}|#{pane_id}' -t '=<leaf>:' -c
 <worktree-path>` when the leaf exists. When it does not, the leaf's **first
 window is the target window**: `new-session -d -P -F '#{window_id}|#{pane_id}'
--s <leaf> -c <worktree-path> \; set-option -t <leaf> @og_project_leaf <key>`
-in one tmux invocation (the leaf name is never numeric, so `-t <leaf>` is
-unambiguous), so no stray anchor window exists and no instant has the leaf
+-s <leaf> -c <worktree-path> \; set-option -t '<leaf>:' @og_project_leaf <key>` in one tmux invocation (the trailing colon forces a session lookup: a bare `-t` string is matched against window names first), so no stray anchor window exists and no instant has the leaf
 unstamped. Every remote tmux call resolves the binary and socket directory the
 way the picker and launcher do (`remoteTmuxBin`, `TMUX_TMPDIR` pinned by
 `remoteTmuxCmd`/`rm.env()`), never a bare `tmux`: a non-interactive ssh
@@ -321,10 +319,7 @@ rather than leaving it to chance:
   `@N` comes from a cache that can be a minute or more old (and older while a
   host is unreachable), and window ids start over when the remote tmux server
   restarts, so a stale `@N` could name a different window, a mirror among them.
-  The launcher therefore verifies, in the same ssh call that starts the
-  mirror, that window `@N` has an empty `@bridge_win` and that its pane's
-  `pane_current_path` equals the snapshot's worktree path, and refuses
-  otherwise. With that check the mirror loop cannot start from the picker; a
+  The launcher therefore verifies, in its pre-dial stamp read (3.3 item 1), that window `@N` has an empty `@bridge_win` and that its `@git_root` (the field the probe keyed the window on, not `pane_current_path`, which follows a `cd` into a subdirectory and differs across symlinked prefixes) equals the snapshot's checkout root, and refuses otherwise. The small gap between that read and the daemon's own selector resolution is accepted: the id selector then re-evaluates on the remote, and a window that changed in between is a mirror only if a user raced it by hand. With that check the mirror loop cannot start from the picker; a
   mirror window id supplied by hand on the CLI is a documented residual.
 - `^n` "create anyway" on such a worktree is the same-branch refusal of
   section 4.
@@ -461,7 +456,7 @@ redesign, not a routing feature, and nothing else in this design needs it.
 |---|---|---|
 | Host unreachable at open | The probe state (`classifyProbeErr`) is the answer: `og project open/new --host H` fails fast with the same message the picker shows; nothing is created on any host. The host chip is dimmed with its cache age. | Message plumbing only. |
 | Host drops while mirrored | Existing reconnect (`Bridge Reconnect`): the daemon retries, then the refused-attach path kills its own windows after notifying a client of the session. Other hosts' windows are untouched (placed teardown kills own windows only). The chip reads `unreachable`. | None. |
-| Create succeeds on the remote but the mirror fails | Order is: ensure pickup, then create, then open. If the daemon cannot attach, the launcher reports it and leaves the worktree (it is valid on the host); a re-run opens it. No rollback of a created worktree. | Ordering in `og project`. |
+| Create succeeds on the remote but the mirror fails | Order for `new` is: create the worktree, then open (below); for any open: ensure hub; leaf absent → create the leaf with the worktree as its first window, then start pickup; leaf present → start pickup, then `new-window`; then wait for the mirror window and select it. If the daemon cannot attach, the launcher reports it and leaves the worktree (it is valid on the host); a re-run opens it. No rollback of a created worktree. | Ordering in `og project`. |
 | Remote project session killed | The #934 rule ends the daemon and its windows. Processes in those windows are gone with the session (the remote's own persistence, tmux-remux, may restore them). The next open recreates the session and daemon. | None. |
 | Remote tmux server restarted | `errServerReplaced`: an unfiltered placed daemon re-opens and re-evaluates, as today. | None. |
 | Registry/probe disagree (path moved, checkout deleted) | The snapshot is rebuilt per probe; a stale declarative path gives `no checkout of <key> on H` rather than a guess. | Message. |
