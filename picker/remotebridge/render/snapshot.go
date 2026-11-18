@@ -30,6 +30,12 @@ type TerminalModes struct {
 	// CursorVisible is DECTCEM (?25), carried in the same list. Seed writes it
 	// last, after the final cursor move, so nothing in the repaint re-shows it.
 	CursorVisible bool
+	// BidiDirect is BDSM (ANSI mode 8) and BidiAuto is ?2501, both read as
+	// tokens 8 and 2501 of the same list. They are set-only: a remote that
+	// cannot report them (any stock tmux) lists neither, so off and unknown both
+	// emit nothing rather than clearing a mode the mirror may have learned live.
+	BidiDirect bool
+	BidiAuto   bool
 }
 
 // CursorStyle is the DECSCUSR cursor shape ("block", "underline", "bar" or
@@ -124,6 +130,12 @@ func writeTerminalModes(b *bytes.Buffer, modes TerminalModes) {
 	}
 	if modes.FocusReporting {
 		b.WriteString("\x1b[?1004h")
+	}
+	if modes.BidiDirect {
+		b.WriteString("\x1b[8h")
+	}
+	if modes.BidiAuto {
+		b.WriteString("\x1b[?2501h")
 	}
 }
 

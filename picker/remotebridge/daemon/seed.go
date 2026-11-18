@@ -190,6 +190,8 @@ func parseCursor(l controlmode.Line, ok bool) (cx, cy int, alt, appCursorKeys bo
 			BracketedPaste: privateModeSet(rest[5], 2004),
 			FocusReporting: privateModeSet(rest[5], 1004),
 			CursorVisible:  privateModeSet(rest[5], 25),
+			BidiDirect:     privateModeSet(rest[5], 8),
+			BidiAuto:       privateModeSet(rest[5], 2501),
 		}
 	}
 	return cx, cy, fields[2] == "1", fields[3] == "1", mouse, modes, wrap, extra
