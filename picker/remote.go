@@ -21,6 +21,7 @@ import (
 	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/mirrorname"
 	"github.com/noamsto/tmux-og/picker/ownerdir"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // remoteProbeTimeout bounds each per-host ssh list-sessions probe so a down
@@ -1015,7 +1016,7 @@ func lastNonEmptyLine(s string) string {
 // synchronous pending render (Task 2) and the probed result so both agree on
 // layout — a pending header must look identical to a resolved one.
 func remoteHeaderItem(tmuxOpts map[string]string) listItem {
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	reset := "\033[0m"
 	rule := "── Remote " + strings.Repeat("─", 220)
 	return listItem{
@@ -1039,6 +1040,13 @@ var hostPalette = [...][2]string{
 	{"THM_SKY", "#89dceb"},
 }
 
+// hostLightRoles remaps the hostPalette slots in the light theme, where only
+// maroon and teal clear 3:1 against the Latte backgrounds. Slots collapse onto
+// two hues, so one host no longer matches its status-bar colour there.
+var hostLightRoles = [len(hostPalette)]palette.Role{
+	palette.Highlight, palette.Teal, palette.Highlight, palette.Teal, palette.Teal,
+}
+
 // hostColorFunc returns the per-host tint drawn everywhere a host or one of
 // its sessions appears — Host column, mirror session name, Remote row and its
 // children — so one host is one colour across the popup. Configured hosts
@@ -1050,7 +1058,12 @@ var hostPalette = [...][2]string{
 // (collisions possible).
 func hostColorFunc(tmuxOpts map[string]string) func(string) string {
 	colors := make(map[string]string, len(hostPalette))
+	light := tmuxOpts["@catppuccin_flavor"] == "latte"
 	for i, p := range hostPalette {
+		if light {
+			colors[hostcolor.Palette[i]] = ansiFg(roleHexTheme(tmuxOpts, true, hostLightRoles[i]))
+			continue
+		}
 		colors[hostcolor.Palette[i]] = ansiFg(envOrMap(p[0], tmuxOpts, "@"+strings.ToLower(p[0]), p[1]))
 	}
 	hosts := hostcolor.ParseHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", ""))
@@ -1087,7 +1100,7 @@ func sessionDisplayName(name, bridgeHost string) string {
 // session (marked remoteContextOnly by withFilter in tui.go) is not.
 func remoteHostRowItem(tmuxOpts map[string]string, host, note string) listItem {
 	cHost := hostColorFunc(tmuxOpts)(host)
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	iSess := envOrMap("PICKER_ICON_SESSION", tmuxOpts, "@icon_session", iconSession)
 	reset := "\033[0m"
 
@@ -1124,7 +1137,7 @@ func pendingRemoteItems(tmuxOpts map[string]string, bridges map[string]bool) []l
 	if len(hosts) == 0 {
 		return nil
 	}
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	hostColor := hostColorFunc(tmuxOpts)
 	now := time.Now()
 	items := make([]listItem, 0, len(hosts)+1)
@@ -1253,7 +1266,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 	}
 	localID := readLocalRemoteIdentity()
 
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	hostColor := hostColorFunc(tmuxOpts)
 
 	type hostResult struct {

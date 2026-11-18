@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // maxRemoteDirCandidates bounds the dirs kept per host before the
@@ -156,8 +158,8 @@ func (m tuiModel) remoteZoxideRows(host string) []listItem {
 	}
 
 	exclude := parseExcludePatterns(envOrMap("PICKER_ZOXIDE_EXCLUDE", m.tmuxOpts, "@picker_zoxide_exclude", ""))
-	cBlue := ansiFg(envOrMap("THM_BLUE", m.tmuxOpts, "@thm_blue", "#89b4fa"))
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", m.tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cBlue := ansiFg(roleHex(m.tmuxOpts, palette.Blue))
+	cDim := ansiFg(roleHex(m.tmuxOpts, palette.Primary))
 	iDir := envOrMap("PICKER_ICON_DIR", m.tmuxOpts, "@icon_dir", iconDir)
 	reset := "\033[0m"
 

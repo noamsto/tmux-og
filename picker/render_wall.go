@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // A tile needs this much interior to be worth drawing at all — narrower and a
@@ -120,12 +122,12 @@ func (m tuiModel) renderWall() string {
 // its own border color, distinct from plain selection.
 func (m tuiModel) renderTile(item listItem, selected, focused bool, outerW, outerH int) []string {
 	innerW, innerH := max(outerW-wallTileFrame, 0), max(outerH-wallTileFrame, 0)
-	border := ansiFg(m.thmColorHex("@thm_surface_1", "#45475a", "#9ca0b0"))
+	border := ansiFg(m.thmColorHex(palette.Rule))
 	switch {
 	case focused:
-		border = ansiFg(m.thmColorHex("@thm_peach", "#fab387", "#fe640b"))
+		border = ansiFg(m.thmColorHex(palette.Highlight))
 	case selected:
-		border = ansiFg(m.thmColorHex("@thm_mauve", "#cba6f7", "#8839ef"))
+		border = ansiFg(m.thmColorHex(palette.Mauve))
 	}
 	reset := "\033[0m"
 	edge := border + "│" + reset
@@ -171,7 +173,7 @@ func (m tuiModel) tileBody(item listItem, innerW, innerH int) []string {
 		if bad {
 			note = "(gone)"
 		}
-		dim := ansiFg(m.thmColorHex("@thm_overlay_1", "#7f849c", "#8c8fa1"))
+		dim := ansiFg(m.thmColorHex(palette.Faint))
 		lines := make([]string, innerH)
 		lines[0] = dim + truncateCells(note, innerW) + "\033[0m"
 		return lines
@@ -197,15 +199,15 @@ func blankRows(width, height int) []string {
 
 // renderWallHints mirrors renderHints' shaping for the wall's own keymap.
 func (m tuiModel) renderWallHints() string {
-	dim := lipgloss.NewStyle().Foreground(m.thmColor("@thm_surface_2", "#585b70", "#9ca0b0"))
-	key := lipgloss.NewStyle().Foreground(m.thmColor("@thm_lavender", "#b4befe", "#7287fd"))
+	dim := lipgloss.NewStyle().Foreground(m.thmColor(palette.Dim))
+	key := lipgloss.NewStyle().Foreground(m.thmColor(palette.Accent))
 
 	if len(m.killConfirm) > 0 {
 		return m.renderKillConfirm()
 	}
 
 	if m.statusMsg != "" {
-		red := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
+		red := lipgloss.NewStyle().Foreground(m.thmColor(palette.Warn))
 		return fitVisibleWidth(red.Render("  "+m.statusMsg), m.width)
 	}
 
@@ -233,7 +235,7 @@ func (m tuiModel) renderWallHints() string {
 			dim.Render(" — typing relays to the pane")+"  "+hint("esc", "unfocus"), m.width)
 	}
 
-	highlight := lipgloss.NewStyle().Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b"))
+	highlight := lipgloss.NewStyle().Foreground(m.thmColor(palette.Highlight))
 	agentLabel := "agents"
 	if m.agentOnly {
 		agentLabel = highlight.Render(agentLabel)

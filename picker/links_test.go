@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/noamsto/tmux-og/picker/linkjoin"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 func testLinksModel(links ...linkjoin.Link) linksModel {
@@ -224,7 +225,7 @@ func TestLinksFailArgv(t *testing.T) {
 func TestLinksSelectedRowKeepsBackground(t *testing.T) {
 	m := testLinksModel(linkjoin.Link{Text: "/tmp/a", Kind: linkjoin.Path, Rows: 2})
 	row := m.renderRow(m.links[0], true)
-	bg := ansiBg(m.colorHex("@thm_surface_2", "#45475a", "#acb0be"))
+	bg := ansiBg(m.colorHex(palette.SelBg))
 	resets := regexp.MustCompile(`\x1b\[0?m`).FindAllStringIndex(row, -1)
 	if len(resets) == 0 {
 		t.Fatalf("row %q has no reset", row)
@@ -305,5 +306,26 @@ func TestRunLinksCmdReportsEarlyFailure(t *testing.T) {
 	detail, err := runLinksCmd(exec.Command("sh", "-c", "echo boom >&2; exit 3"), 5*time.Second)
 	if err == nil || detail != "boom" {
 		t.Errorf("runLinksCmd = %q, %v; want stderr boom and an error", detail, err)
+	}
+}
+
+func TestLinksSelectedRowMarkerLight(t *testing.T) {
+	l := linkjoin.Link{Text: "/tmp/a", Kind: linkjoin.Path, Rows: 1}
+	light := newLinksModel([]linkjoin.Link{l}, map[string]string{}, "light")
+	light.width = 40
+	sel := light.renderRow(l, true)
+	if !strings.Contains(sel, "▶") {
+		t.Errorf("light selected row lacks marker: %q", sel)
+	}
+	if strings.Contains(light.renderRow(l, false), "▶") {
+		t.Error("light unselected row has marker")
+	}
+	if w := visibleWidth(sel); w != 40 {
+		t.Errorf("selected width = %d, want 40", w)
+	}
+	dark := newLinksModel([]linkjoin.Link{l}, map[string]string{}, "mocha")
+	dark.width = 40
+	if strings.Contains(dark.renderRow(l, true), "▶") {
+		t.Error("dark selected row has marker")
 	}
 }

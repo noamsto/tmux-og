@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/hostcolor"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // noRestore is a stub restoreProbe for tests that don't exercise the
@@ -1495,6 +1496,40 @@ func TestHostColorFuncEqualsHostcolorName(t *testing.T) {
 	for _, h := range append(append([]string(nil), hosts...), "unlisted") {
 		if got, want := fn(h), ansi[hostcolor.Name(hosts, h)]; got != want {
 			t.Errorf("hostColorFunc(%q) = %q, want %q", h, got, want)
+		}
+	}
+}
+
+func TestHostColorFuncThemes(t *testing.T) {
+	opts := map[string]string{"@remote_bridge_hosts": "a,b,c,d,e"}
+	slots := func(o map[string]string) []string {
+		fn := hostColorFunc(o)
+		var out []string
+		for _, h := range []string{"a", "b", "c", "d", "e"} {
+			out = append(out, fn(h))
+		}
+		return out
+	}
+	allowedDark := map[string]bool{}
+	for _, h := range []string{"#fab387", "#94e2d5", "#f5c2e7", "#f9e2af", "#89dceb"} {
+		allowedDark[ansiFg(h)] = true
+	}
+	for _, c := range slots(opts) {
+		if !allowedDark[c] {
+			t.Errorf("dark colour %q not a Mocha slot", c)
+		}
+	}
+	lopts := map[string]string{"@remote_bridge_hosts": "a,b,c,d,e", "@catppuccin_flavor": "latte"}
+	allowed := map[string]bool{ansiFg(palette.Highlight.LightHex): true, ansiFg(palette.Teal.LightHex): true}
+	for _, c := range slots(lopts) {
+		if !allowed[c] {
+			t.Errorf("light colour %q not maroon/teal", c)
+		}
+	}
+	for i, p := range hostPalette {
+		wantHex := hostLightRoles[i].LightHex
+		if wantHex != "#e64553" && wantHex != "#179299" {
+			t.Errorf("slot %d light hex %s (palette %s)", i, wantHex, p[0])
 		}
 	}
 }

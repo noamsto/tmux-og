@@ -5,6 +5,8 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // renderFrame composes the list frame: search row, list (+ preview), bottom
@@ -33,7 +35,7 @@ func (m tuiModel) frameBlocks() []string {
 // anything composeFrame will not vouch for and as the test oracle.
 func (m tuiModel) composeFrameLipgloss() string {
 	body := lipgloss.JoinVertical(lipgloss.Left, m.frameBlocks()...)
-	borderColor := m.thmColor("@thm_surface_1", "#45475a", "#9ca0b0")
+	borderColor := m.thmColor(palette.Rule)
 	bordered := lipgloss.NewStyle().
 		Width(m.width).
 		BorderStyle(lipgloss.NormalBorder()).

@@ -9,13 +9,15 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 func (m tuiModel) renderList() string {
 	h := m.listHeight()
 	w := m.listWidth()
 
-	selBgHex := m.thmColorHex("@thm_surface_2", "#45475a", "#acb0be")
+	selBgHex := m.thmColorHex(palette.SelBg)
 	selBg := lipgloss.Color(selBgHex)
 	selStyle := lipgloss.NewStyle().
 		Background(selBg)
@@ -24,7 +26,7 @@ func (m tuiModel) renderList() string {
 	selResetKeepBg := "\033[39m" + ansiBg(selBgHex) // reset fg only, re-set bg
 
 	markGlyph := lipgloss.NewStyle().
-		Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b")).
+		Foreground(m.thmColor(palette.Highlight)).
 		Render("✓")
 
 	bodyH, start, pin, colPin := m.listLayout(h)
@@ -140,9 +142,9 @@ func (m tuiModel) renderHeaderItem(item listItem, w int) string {
 		return item.display
 	}
 	accent := lipgloss.NewStyle().
-		Foreground(m.thmColor("@thm_lavender", "#b4befe", "#7287fd"))
+		Foreground(m.thmColor(palette.Accent))
 	rule := lipgloss.NewStyle().
-		Foreground(m.thmColor("@thm_surface_1", "#45475a", "#9ca0b0"))
+		Foreground(m.thmColor(palette.Rule))
 
 	head := rule.Render("──") + " "
 	if item.headerIcon != "" {
@@ -160,13 +162,13 @@ func (m tuiModel) renderHeaderItem(item listItem, w int) string {
 
 func (m tuiModel) renderSeparator() string {
 	sepColor := lipgloss.NewStyle().
-		Foreground(m.thmColor("@thm_surface_1", "#45475a", "#9ca0b0"))
+		Foreground(m.thmColor(palette.Rule))
 	return sepColor.Render(strings.Repeat("─", m.innerWidth()))
 }
 
 func (m tuiModel) renderSearch() string {
-	blue := lipgloss.NewStyle().Foreground(m.thmColor("@thm_blue", "#89b4fa", "#1e66f5"))
-	dim := lipgloss.NewStyle().Foreground(m.thmColor("@thm_surface_2", "#585b70", "#9ca0b0"))
+	blue := lipgloss.NewStyle().Foreground(m.thmColor(palette.Blue))
+	dim := lipgloss.NewStyle().Foreground(m.thmColor(palette.Dim))
 
 	icon := blue.Render("  ")
 	var queryStr string
@@ -186,7 +188,7 @@ func (m tuiModel) renderSearch() string {
 		Width(m.width).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderBottom(true).
-		BorderForeground(m.thmColor("@thm_surface_1", "#45475a", "#9ca0b0")).
+		BorderForeground(m.thmColor(palette.Rule)).
 		Render(m.withHostBadge(m.withScopeBadge(icon + queryStr)))
 }
 
@@ -199,7 +201,7 @@ func (m tuiModel) withHostBadge(row string) string {
 		return row
 	}
 	badge := lipgloss.NewStyle().
-		Foreground(m.thmColor("@thm_mauve", "#cba6f7", "#8839ef")).
+		Foreground(m.thmColor(palette.Mauve)).
 		Render(" " + m.emitHost + " ")
 	gap := m.width - visibleWidth(row) - visibleWidth(badge)
 	if gap < 1 {
@@ -221,7 +223,7 @@ func (m tuiModel) withScopeBadge(row string) string {
 		cHost := hostColorFunc(m.tmuxOpts)(m.scope.host)
 		badge = " " + cHost + m.scope.host + "\033[0m" + " "
 	case scopeAll:
-		highlight := lipgloss.NewStyle().Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b"))
+		highlight := lipgloss.NewStyle().Foreground(m.thmColor(palette.Highlight))
 		badge = " " + highlight.Render("all hosts") + " "
 	}
 	gap := m.width - visibleWidth(row) - visibleWidth(badge)
@@ -232,8 +234,8 @@ func (m tuiModel) withScopeBadge(row string) string {
 }
 
 func (m tuiModel) renderHints() string {
-	dim := lipgloss.NewStyle().Foreground(m.thmColor("@thm_surface_2", "#585b70", "#9ca0b0"))
-	key := lipgloss.NewStyle().Foreground(m.thmColor("@thm_lavender", "#b4befe", "#7287fd"))
+	dim := lipgloss.NewStyle().Foreground(m.thmColor(palette.Dim))
+	key := lipgloss.NewStyle().Foreground(m.thmColor(palette.Accent))
 
 	if m.attach != nil {
 		return m.renderAttachStatus(dim, key)
@@ -248,7 +250,7 @@ func (m tuiModel) renderHints() string {
 	}
 
 	if m.statusMsg != "" {
-		red := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
+		red := lipgloss.NewStyle().Foreground(m.thmColor(palette.Warn))
 		return fitVisibleWidth(red.Render("  "+m.statusMsg), m.width)
 	}
 
@@ -256,7 +258,7 @@ func (m tuiModel) renderHints() string {
 		return key.Render(k) + dim.Render(":"+desc)
 	}
 
-	highlight := lipgloss.NewStyle().Foreground(m.thmColor("@thm_peach", "#fab387", "#fe640b"))
+	highlight := lipgloss.NewStyle().Foreground(m.thmColor(palette.Highlight))
 
 	agentLabel := "agents"
 	if m.agentOnly {
@@ -414,7 +416,7 @@ func (m tuiModel) renderKillConfirm() string {
 	if len(m.killConfirm) == 0 {
 		return ""
 	}
-	warn := lipgloss.NewStyle().Foreground(m.thmColor("@thm_red", "#f38ba8", "#d20f39"))
+	warn := lipgloss.NewStyle().Foreground(m.thmColor(palette.Warn))
 	prompt := "kill " + m.killConfirm[0].remoteHost + "/" + m.killConfirm[0].remoteSess + " on the remote?"
 	if it := m.killConfirm[0]; it.remoteWindowID != "" {
 		prompt = "kill " + remoteRowLabel(it) + " " + it.remoteWindowName + " on the remote?"

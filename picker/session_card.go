@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/claudestatus"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // cardSepSeq makes each card call's separator unique. The rows carry pane paths
@@ -219,15 +220,15 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 	if width <= 0 {
 		return ""
 	}
-	thm := func(env, opt, fallback string) string { return ansiFg(envOrMap(env, opts, opt, fallback)) }
-	cMauve := thm("THM_MAUVE", "@thm_mauve", "#cba6f7")
-	cGreen := thm("THM_GREEN", "@thm_green", "#a6e3a1")
-	cDim := thm("THM_SUBTEXT_0", "@thm_subtext_0", "#a6adc8")
-	cFaint := thm("THM_OVERLAY_1", "@thm_overlay_1", "#7f849c")
-	cPeach := thm("THM_PEACH", "@thm_peach", "#fab387")
+	thm := func(r palette.Role) string { return ansiFg(roleHexTheme(opts, theme == "light", r)) }
+	cMauve := thm(palette.Mauve)
+	cGreen := thm(palette.Success)
+	cDim := thm(palette.Primary)
+	cFaint := thm(palette.Quiet)
+	cPeach := thm(palette.Highlight)
 	prCols := prColors{
-		success: cGreen, failure: thm("THM_RED", "@thm_red", "#f38ba8"), pending: cPeach, merged: cMauve,
-		closed: thm("THM_OVERLAY_0", "@thm_overlay_0", "#6c7086"), required: thm("THM_OVERLAY_0", "@thm_overlay_0", "#6c7086"),
+		success: cGreen, failure: thm(palette.Warn), pending: cPeach, merged: cMauve,
+		closed: thm(palette.Muted), required: thm(palette.Muted),
 		underline: "\033[4m", reset: "\033[0m",
 	}
 	const reset = "\033[0m"

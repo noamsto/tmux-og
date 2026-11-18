@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // emitPayload is the picker's only output in --remote-pick mode: a typed
@@ -179,7 +181,7 @@ func tmuxCommandLine(argv []string) string {
 // unselectable row shown only when emit mode has neither sessions nor zoxide
 // dirs to offer.
 func emitEmptyRow(tmuxOpts map[string]string) listItem {
-	cDim := ansiFg(envOrMap("THM_SUBTEXT_0", tmuxOpts, "@thm_subtext_0", "#a6adc8"))
+	cDim := ansiFg(roleHex(tmuxOpts, palette.Primary))
 	reset := "\033[0m"
 	text := "(no sessions, and no zoxide on this host)"
 	return listItem{
