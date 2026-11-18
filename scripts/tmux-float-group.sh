@@ -108,7 +108,8 @@ rezoom() {
 	tmux resize-pane -Z -t "$1"
 }
 
-# dwindle_pause / dwindle_resume: the dwindle hook runs on every layout change in
+# dwindle_pause / dwindle_resume (resume also runs from show's EXIT trap, so a
+# killed show cannot leave @dwindle off): the dwindle hook runs on every layout change in
 # a window with @dwindle on and evens the tiles when the tiled count dropped, which
 # is what restore's join + break-pane -W looks like. @dwindle is switched off for
 # the round trip, then put back as it was (window-local value, else inherited)
@@ -207,6 +208,7 @@ show() {
 	zoomed_pane
 	zoomed=$ZOOMED
 	dwindle_pause
+	trap dwindle_resume EXIT
 	for line in "${entries[@]}"; do
 		IFS='|' read -r id geom cells <<<"$line"
 		if restore "$id" "$geom" "$cells"; then
@@ -216,9 +218,19 @@ show() {
 		fi
 	done
 	dwindle_resume
+	trap - EXIT
 	rezoom "$zoomed"
 	if ((focus)); then
 		[[ -n $last ]] && tmux select-pane -Z -t "$last"
+		# A float made without new-pane -A sits under the zoom, so focusing it
+		# moves the zoom onto it: put the zoom back on the user's tile.
+		if [[ -n $zoomed && -n $last ]]; then
+			zoomed_pane
+			if [[ $ZOOMED == "$last" ]]; then
+				tmux resize-pane -Z -t "$last"
+				rezoom "$zoomed"
+			fi
+		fi
 	else
 		tmux select-pane -Z -t "$active" 2>/dev/null
 	fi
