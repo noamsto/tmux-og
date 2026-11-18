@@ -98,7 +98,7 @@ focus() { ((detached)) || tmux select-pane -t "$1"; }
 # Side mode. Returns 0 when it handled the call (focused, created or failed
 # loudly); 1 to fall through to the float path.
 open_side() {
-	local sid="" pid floating label grid ww pw pfl w narrow=""
+	local sid="" pid floating label grid ww pw pfl zoom w narrow=""
 	# A mirror window is daemon-owned: a local tiled pane would fight its layout mirroring.
 	if [[ -n $bridge_win ]]; then
 		notify "no side dash in a mirror window, opened the crew dash float instead"
@@ -117,7 +117,7 @@ open_side() {
 		return 0
 	}
 
-	IFS='|' read -r grid ww pw pfl <<<"$(tmux display-message -p -t "$pane" '#{@crew_grid}|#{window_width}|#{pane_width}|#{pane_floating_flag}' 2>/dev/null)"
+	IFS='|' read -r grid ww pw pfl zoom <<<"$(tmux display-message -p -t "$pane" '#{@crew_grid}|#{window_width}|#{pane_width}|#{pane_floating_flag}|#{window_zoomed_flag}' 2>/dev/null)"
 	[[ $ww =~ ^[0-9]+$ && $pw =~ ^[0-9]+$ ]] || return 1
 	# Splitting a float halves it into two floats, never a tiled pane.
 	if [[ $pfl == 1 ]]; then
@@ -126,6 +126,11 @@ open_side() {
 	fi
 	if [[ $grid == 1 ]]; then
 		notify "grid window re-tiles every pane, opened the crew dash float instead"
+		return 1
+	fi
+	# pane_width reads the zoomed pane's full-window width, but split-window unzooms first and splits the real cell.
+	if [[ $zoom == 1 ]]; then
+		notify "window is zoomed, opened the crew dash float instead"
 		return 1
 	fi
 	w=$((ww * 32 / 100))

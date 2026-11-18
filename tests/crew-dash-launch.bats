@@ -451,6 +451,15 @@ side_panes() {
 	[[ $(dash_panes "$WIN") == %* ]] || skip "this tmux cannot create a floating pane"
 }
 
+@test "--side in a zoomed window creates no split and falls back to the float" {
+	tmux resize-pane -Z -t "$TILE"
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	[ -z "$(side_panes)" ]
+	messages | grep -q 'window is zoomed'
+	[[ $(dash_panes "$WIN") == %* ]] || skip "this tmux cannot create a floating pane"
+}
+
 @test "a float and a side dash coexist and neither touches the other" {
 	local f
 	f="$(first_dash)"
