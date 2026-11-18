@@ -143,6 +143,38 @@ func TestRunnerDiscardedStderr(t *testing.T) {
 	}
 }
 
+func TestRunnerSanitizesInheritedStreams(t *testing.T) {
+	var r execRunner
+	script := `printf 'e1\033[31m\nerr\033]0;x\007two' >&2; printf 'o1\033[0m\nout\033cend'`
+	var stdout string
+	stderr := captureStderr(t, func() {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = pr.Close() }()
+		saved := os.Stdout
+		os.Stdout = pw
+		_, status, runErr := r.Run(cmdSpec{Name: "sh", Args: []string{"-c", script}})
+		os.Stdout = saved
+		_ = pw.Close()
+		if runErr != nil || status != 0 {
+			t.Errorf("status %d, err %v", status, runErr)
+		}
+		b, err := io.ReadAll(pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout = string(b)
+	})
+	if want := "e1\nerrtwo"; stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+	if want := "o1\noutend"; stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
 func TestRunnerStdinString(t *testing.T) {
 	var r execRunner
 	in := "line one\nline two\n"

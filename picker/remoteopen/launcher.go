@@ -139,7 +139,7 @@ func (l *launcher) settleSignal() {
 // fail prints msg and exits 1.
 func (l *launcher) fail(msg string) {
 	l.settleSignal()
-	_, _ = fmt.Fprintln(l.stderr, msg)
+	_, _ = fmt.Fprintln(l.stderr, safeText(msg))
 	l.exit(1)
 }
 
@@ -520,7 +520,7 @@ func (l *launcher) launchPlaced(o Opts, lt *localTmux, ctl, daemon string, liste
 		if l.proc.exited() {
 			l.settleSignal()
 			_, _ = fmt.Fprintf(l.stderr, "og-remote-open: the bridge daemon for %s:%s exited before listening:\n", o.Host, o.Sess)
-			_, _ = io.WriteString(l.stderr, tailLines(l.sock+".log", 20))
+			_, _ = io.WriteString(l.stderr, safeText(tailLines(l.sock+".log", 20)))
 			l.exit(1)
 		}
 		l.pollSleep(pollTick)

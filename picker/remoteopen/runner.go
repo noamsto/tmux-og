@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -90,22 +91,38 @@ func (r execRunner) run(c cmdSpec) (string, int, error) {
 		cmd.Stdin = strings.NewReader(*c.Stdin)
 	}
 	var buf bytes.Buffer
-	cmd.Stdout = os.Stdout
+	var inherited []*lineSanitizer
+	inherit := func(dst io.Writer) io.Writer {
+		w := &lineSanitizer{dst: dst}
+		inherited = append(inherited, w)
+		return w
+	}
 	if c.captures() {
 		cmd.Stdout = &buf
+	} else {
+		cmd.Stdout = inherit(os.Stdout)
 	}
 	switch c.Stderr {
 	case stderrInherit:
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = inherit(os.Stderr)
 	case stderrDiscard:
 		cmd.Stderr = nil
 	case stderrMerge:
 		cmd.Stderr = cmd.Stdout
 	}
+	flush := func() {
+		for _, w := range inherited {
+			w.flush()
+		}
+	}
+	// Pipes replace the inherited fds, so a grandchild holding stdout/stderr must not block Wait.
+	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
+		flush()
 		return notRun(c, 126, err.Error(), fmt.Errorf("%s: %w", c.Name, err))
 	}
 	err = cmd.Wait()
+	flush()
 	out := strings.TrimRight(buf.String(), "\n")
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
