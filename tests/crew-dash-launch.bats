@@ -28,7 +28,17 @@ setup() {
 	# dash` with the server's environment, not the script's.
 	BIN_DIR="$BATS_TEST_TMPDIR/bin"
 	mkdir -p "$BIN_DIR"
-	printf '#!%s\nexec sleep 3600\n' "$BASH" >"$BIN_DIR/crew"
+	# `crew dash --help` answers at once (the --side probe), listing --narrow unless
+	# STUB_NO_NARROW is set; any other call is the long-lived dash.
+	cat >"$BIN_DIR/crew" <<STUB
+#!$BASH
+if [[ "\$*" == "dash --help" ]]; then
+	echo "usage: crew dash"
+	[[ -n \${STUB_NO_NARROW:-} ]] || echo "  --narrow"
+	exit 0
+fi
+exec sleep 3600
+STUB
 	printf '#!%s\nexec bash "%s/scripts/tmux-float-group.sh" "$@"\n' "$BASH" "$PWD" >"$BIN_DIR/tmux-float-group"
 	chmod +x "$BIN_DIR/crew" "$BIN_DIR/tmux-float-group"
 	PATH="$BIN_DIR:$PATH"
@@ -331,4 +341,153 @@ assert_ctl_argv() {
 	[ "$(pane_count "$WIN")" -eq 2 ]
 	[ "$(dash_panes | wc -l)" -eq 0 ]
 	messages | grep -q 'crew is not on PATH'
+}
+
+# side_panes [window]: ids of tiled crew-dash-side panes in a window.
+side_panes() {
+	tmux list-panes -t "${1:-$WIN}" -F '#{pane_id}|#{pane_floating_flag}|#{@pane_label}' |
+		awk -F'|' '$2 != 1 && $3 == "crew-dash-side" { print $1 }'
+}
+
+@test "--side opens one tiled labelled pane right of the target and focuses it" {
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	local id
+	id="$(side_panes)"
+	[[ $id == %* ]]
+	[ "$(side_panes | wc -l)" -eq 1 ]
+	[ "$(pane_count "$WIN")" -eq 3 ]
+	[ "$(tmux display-message -p -t "$id" '#{pane_floating_flag}')" = 0 ]
+	local w
+	w="$(tmux display-message -p -t "$id" '#{pane_width}')"
+	[ "$w" -ge 50 ] && [ "$w" -le 80 ]
+	[ "$(tmux display-message -p -t "$id" '#{pane_left}')" -gt "$(tmux display-message -p -t "$TILE" '#{pane_left}')" ]
+	[ "$(tmux display-message -p -t "$TILE" '#{pane_width}')" -ge 80 ]
+	[ "$(tmux display-message -p -t "$id" '#{pane_start_command}')" = '"exec crew dash --narrow"' ]
+	[ "$(active_pane "$WIN")" = "$id" ]
+	[ "$(tmux display-message -p -t "$id" '#{@remux_relaunch}')" = "tmux set -p @pane_label crew-dash-side; exec crew dash --narrow" ]
+}
+
+@test "--side sizes the pane to 32% of the window" {
+	crew_dash --side "$TILE"
+	[ "$(tmux display-message -p -t "$(side_panes)" '#{pane_width}')" -eq 64 ]
+}
+
+@test "--side runs plain crew dash when crew lacks --narrow" {
+	run env STUB_NO_NARROW=1 bash scripts/tmux-crew-dash.sh --side "$TILE"
+	[ "$status" -eq 0 ]
+	local id
+	id="$(side_panes)"
+	[ "$(tmux display-message -p -t "$id" '#{pane_start_command}')" = '"exec crew dash"' ]
+	[ "$(tmux display-message -p -t "$id" '#{@remux_relaunch}')" = "tmux set -p @pane_label crew-dash-side; exec crew dash" ]
+}
+
+@test "a second --side focuses the existing pane and creates nothing" {
+	crew_dash --side "$TILE"
+	local id
+	id="$(side_panes)"
+	tmux select-pane -t "$TILE"
+
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(side_panes | wc -l)" -eq 1 ]
+	[ "$(pane_count "$WIN")" -eq 3 ]
+	[ "$(active_pane "$WIN")" = "$id" ]
+}
+
+@test "--side --detached keeps focus on the target" {
+	tmux select-pane -t "$TILE"
+	run crew_dash --side --detached "$TILE"
+	[ "$status" -eq 0 ]
+	[[ $(side_panes) == %* ]]
+	[ "$(active_pane "$WIN")" = "$TILE" ]
+
+	run crew_dash --side --detached "$TILE"
+	[ "$(side_panes | wc -l)" -eq 1 ]
+	[ "$(active_pane "$WIN")" = "$TILE" ]
+}
+
+@test "--side in a window too narrow to keep the target at 80 columns falls back to the float" {
+	tmux resize-window -t "$WIN" -x 120
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	[ -z "$(side_panes)" ]
+	messages | grep -q 'window too narrow for a side dash'
+	[[ $(dash_panes "$WIN") == %* ]] || skip "this tmux cannot create a floating pane"
+}
+
+@test "--side in a crew grid window falls back to the float" {
+	tmux set-option -w -t "$WIN" @crew_grid 1
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	[ -z "$(side_panes)" ]
+	messages | grep -q 'grid window re-tiles'
+	[[ $(dash_panes "$WIN") == %* ]] || skip "this tmux cannot create a floating pane"
+}
+
+@test "a float and a side dash coexist and neither touches the other" {
+	local f
+	f="$(first_dash)"
+	crew_dash --side "$TILE"
+	local s
+	s="$(side_panes)"
+	[[ $s == %* ]]
+	[ "$(dash_panes "$WIN")" = "$f" ]
+	[ "$(pane_count "$WIN")" -eq 4 ]
+
+	tmux select-pane -t "$TILE"
+	crew_dash "$TILE"
+	[ "$(active_pane "$WIN")" = "$f" ]
+	[ "$(side_panes)" = "$s" ]
+	[ "$(pane_count "$WIN")" -eq 4 ]
+}
+
+@test "--side in a mirror window goes through the bridge ctl and says it is a float" {
+	mirror_window 0
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv
+	[ "$(pane_count "$WIN")" -eq 2 ]
+	[ -z "$(side_panes)" ]
+	messages | grep -q 'no remote side panel yet'
+}
+
+@test "--side in a mirror window with a failing ctl reports only the failure" {
+	mirror_window 1
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv
+	messages | grep -q 'could not open crew dash on the remote host'
+	[ "$(messages | grep -c 'no remote side panel yet')" -eq 0 ]
+}
+
+@test "--side clamps the width to 80 on a very wide window and to 50 on a modest one" {
+	tmux resize-window -t "$WIN" -x 300
+	crew_dash --side --detached "$TILE"
+	[ "$(tmux display-message -p -t "$(side_panes)" '#{pane_width}')" -eq 80 ]
+	tmux kill-pane -t "$(side_panes)"
+
+	tmux resize-window -t "$WIN" -x 140
+	crew_dash --side --detached "$TILE"
+	[ "$(tmux display-message -p -t "$(side_panes)" '#{pane_width}')" -eq 50 ]
+	[ "$(tmux display-message -p -t "$TILE" '#{pane_width}')" -ge 80 ]
+}
+
+@test "--side from a floating target falls back to the float and never stacks side panes" {
+	local f
+	f="$(first_dash)"
+	run crew_dash --side "$f"
+	[ "$status" -eq 0 ]
+	run crew_dash --side "$f"
+	[ -z "$(side_panes)" ]
+	[ "$(pane_count "$WIN")" -eq 3 ]
+	messages | grep -q 'target is a floating pane'
+}
+
+@test "--side in a @bridge_win window without bridge options opens no local tiled pane" {
+	tmux set-option -w -t "$WIN" @bridge_win 1
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	[ -z "$(side_panes)" ]
+	messages | grep -q 'no side dash in a mirror window'
 }
