@@ -570,6 +570,18 @@ side_panes() {
 	[[ $(dash_panes "$WIN") == %* ]] || skip "this tmux cannot create a floating pane"
 }
 
+@test "a press hides the float that --side fell back to in a zoomed window" {
+	tmux resize-pane -Z -t "$TILE"
+	run crew_dash --side "$TILE"
+	[ "$status" -eq 0 ]
+	[[ $(dash_panes "$WIN") == %* ]] || skip "this tmux cannot create a floating pane"
+
+	run crew_dash "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 0 ]
+	[ "$(dash_panes | wc -l)" -eq 1 ]
+}
+
 @test "a float and a side dash coexist and neither touches the other" {
 	local f
 	f="$(first_dash)"
