@@ -94,8 +94,9 @@ reap_orphans() {
 }
 
 # zoomed_pane: the window's zoomed tile in ZOOMED (empty when not zoomed). Not the
-# active pane: a focused float sits above a zoomed tile, and select-pane -Z keeps
-# the zoom while moving focus to it.
+# active pane: a focused new-pane -A float sits above a zoomed tile, and
+# select-pane -Z keeps the zoom while moving focus to it (show corrects the zoom
+# for a float made without -A).
 zoomed_pane() {
 	ZOOMED=""
 	read -r ZOOMED < <(tmux list-panes -t "$win" -f '#{pane_zoomed_flag}' -F '#{pane_id}')
@@ -109,8 +110,8 @@ rezoom() {
 }
 
 # dwindle_pause / dwindle_resume (resume also runs from show's EXIT trap, so a
-# killed show cannot leave @dwindle off): the dwindle hook runs on every layout change in
-# a window with @dwindle on and evens the tiles when the tiled count dropped, which
+# killed show cannot leave @dwindle off): the dwindle hook runs on every layout
+# change in a window with @dwindle on and evens the tiles when the tiled count dropped, which
 # is what restore's join + break-pane -W looks like. @dwindle is switched off for
 # the round trip, then put back as it was (window-local value, else inherited)
 # together with @dwindle_cache, which the hook drops while the mode is off.
