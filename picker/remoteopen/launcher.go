@@ -574,7 +574,7 @@ func (l *launcher) launchDedicated(o Opts, lt *localTmux, ctl, daemon, loading, 
 	removeFiles(l.sock, l.sock+".pid", l.phaseFile)
 	lt.ok("kill-session", "-t", "="+local)
 
-	if err := os.WriteFile(l.phaseFile, []byte("connecting to "+host+"\n"), 0o644); err != nil { //nolint:gosec // G306: the loading pane reads it
+	if err := writeFresh(l.phaseFile, []byte("connecting to "+host+"\n")); err != nil {
 		l.fail("og-remote-open: " + err.Error())
 	}
 	args := []string{"new-session", "-d", "-s", local, "-n", sessPart}

@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -62,5 +63,100 @@ func TestSetPhaseWithoutSocketWritesNothing(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("wrote %d entries with no socket path", len(entries))
+	}
+}
+
+func TestWriteNoFollowRefusesPlantedSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"x.phase", "x.pid"} {
+		link := filepath.Join(dir, name)
+		if err := os.Symlink(victim, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeNoFollow(link, []byte("x"), 0o600); err == nil {
+			t.Fatalf("%s: write through symlink succeeded", name)
+		}
+	}
+	setPhase(Config{SockPath: filepath.Join(dir, "x")}, "hello")
+	got, _ := os.ReadFile(victim)
+	if string(got) != "precious" {
+		t.Fatalf("victim = %q", got)
+	}
+}
+
+func TestWriteNoFollowRefusesPlantedHardLink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "x.phase")
+	if err := os.Link(victim, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNoFollow(path, []byte("x"), 0o600); err == nil {
+		t.Fatal("write through hard link succeeded")
+	}
+	got, _ := os.ReadFile(victim)
+	if string(got) != "precious" {
+		t.Fatalf("victim = %q", got)
+	}
+}
+
+func TestWriteNoFollowRefusesPlantedFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.phase")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	if err := writeNoFollow(path, []byte("x"), 0o600); err == nil {
+		t.Fatal("write to FIFO succeeded")
+	}
+	buf := make([]byte, 8)
+	if n, _ := r.Read(buf); n != 0 {
+		t.Fatalf("reader received %q", buf[:n])
+	}
+}
+
+func TestPrivateRegular(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  os.FileMode
+		uid   uint32
+		nlink uint64
+		want  bool
+	}{
+		{"own regular single link", 0o600, 1000, 1, true},
+		{"foreign uid", 0o600, 0, 1, false},
+		{"extra hard link", 0o600, 1000, 2, false},
+		{"fifo", os.ModeNamedPipe | 0o600, 1000, 1, false},
+		{"symlink", os.ModeSymlink | 0o600, 1000, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := privateRegular(tc.mode, tc.uid, tc.nlink, 1000); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteNoFollowCreatesAndOverwritesOwnFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.phase")
+	for _, want := range []string{"a long first value", "b"} {
+		if err := writeNoFollow(path, []byte(want), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile(path)
+		if string(got) != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
 	}
 }

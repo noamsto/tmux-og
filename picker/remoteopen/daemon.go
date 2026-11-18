@@ -87,11 +87,32 @@ func (d *daemonProc) exited() bool {
 	}
 }
 
+// createFresh creates path as a new regular file. A planted symlink at path is
+// removed first and O_EXCL|O_NOFOLLOW refuses one that could not be, so the
+// write never lands on the link's target.
+func createFresh(path string, perm os.FileMode) (*os.File, error) {
+	_ = os.Remove(path)                                                                  // not-exist is expected; any other failure is decided by O_EXCL below
+	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, perm) //nolint:gosec // G302/G304: caller-chosen path, world-readable by design
+}
+
+// writeFresh is os.WriteFile over createFresh.
+func writeFresh(path string, data []byte) error {
+	f, err := createFresh(path, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // launchDaemon starts path in its own session with stderr in logPath. A
 // goroutine reaps the child so a dead daemon fails kill -0 instead of
 // lingering as a zombie.
 func launchDaemon(path string, environ []string, logPath string) (*daemonProc, error) {
-	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) //nolint:gosec // G302/G304: caller-chosen log path, world-readable
+	logf, err := createFresh(logPath, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open daemon log: %w", err)
 	}
