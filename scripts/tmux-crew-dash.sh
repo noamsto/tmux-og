@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Open `crew dash` in a labelled floating pane, or bring the open one forward (#1139).
 #
-#   tmux-crew-dash.sh [--detached] [pane-id]
+#   tmux-crew-dash.sh [--side] [--detached] [pane-id]
 #
 # The window is the pane's window; pane-id falls back to $TMUX_PANE. A bind's
 # run-shell sets no TMUX_PANE and a bare display-message resolves tmux's "best"
@@ -21,6 +21,18 @@
 # OG_BRIDGE_CTL_BIN is the test seam, and the raw placeholder is not executable.
 # A @bridge_win window lacking either option keeps the local path below.
 #
+# --side (#1185) opens the dash as a tiled split on the right of the pane instead
+# (label crew-dash-side, `crew dash --narrow` when this crew lists the flag), for
+# a dispatcher that wants it persistent beside the agent. The split takes 32% of
+# the window clamped to 50..80 columns and leaves the target at least 80; a window
+# too narrow for that, or a @crew_grid window (tmux-grid-refit re-tiles every
+# tiled pane there), falls back to the float below with a notification. A float
+# and a side dash coexist and neither touches the other. A mirror window sends the
+# unchanged `tool` verb, so the REMOTE side gets a float, not a split: the verb has
+# no split shape yet, and the user is told. @remux_relaunch re-stamps the label and
+# re-execs the dash, so a remux restore keeps the pane findable. The carousel guard
+# (tmux-carousel-guard) keeps a restore from squeezing it under 50 columns.
+#
 # The new-pane flags and the @float_geom stamp below are separate literals nothing
 # compares: change both together.
 set -uo pipefail
@@ -28,14 +40,20 @@ set -uo pipefail
 STASH=scratch-og-float-stash
 LABEL=crew-dash
 GROUP=crew
+SIDE_LABEL=crew-dash-side
+SIDE_MIN=50
+SIDE_MAX=80
+SIDE_KEEP=80
 FLOAT_GROUP="${OG_FLOAT_GROUP_BIN:-@float_group@}"
 BRIDGE_CTL="${OG_BRIDGE_CTL_BIN:-@bridge_ctl@}"
 
 detached=0
+side=0
 pane=""
 for arg in "$@"; do
 	case $arg in
 	--detached) detached=1 ;;
+	--side) side=1 ;;
 	%*) pane=$arg ;;
 	esac
 done
@@ -62,12 +80,73 @@ if [[ -n $bridge_win ]]; then
 		# and reopening the bridge is the fix. '#' is doubled for display-message.
 		if ! err="$("$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" crew-dash "$bridge_dir" 2>&1 >/dev/null)"; then
 			notify "could not open crew dash on the remote host: ${err//#/##}"
+		elif ((side)); then
+			notify "no remote side panel yet, opened the crew dash float on the remote host"
 		fi
 		exit 0
 	fi
 fi
 
 focus() { ((detached)) || tmux select-pane -t "$1"; }
+
+# Side mode. Returns 0 when it handled the call (focused, created or failed
+# loudly); 1 to fall through to the float path.
+open_side() {
+	local sid="" pid floating label grid ww pw pfl w narrow=""
+	# A mirror window is daemon-owned: a local tiled pane would fight its layout mirroring.
+	if [[ -n $bridge_win ]]; then
+		notify "no side dash in a mirror window, opened the crew dash float instead"
+		return 1
+	fi
+	while IFS='|' read -r pid floating label; do
+		[[ $floating != 1 && $label == "$SIDE_LABEL" ]] && sid=$pid
+	done < <(tmux list-panes -t "$win" -F '#{pane_id}|#{pane_floating_flag}|#{@pane_label}')
+	if [[ -n $sid ]]; then
+		focus "$sid"
+		return 0
+	fi
+
+	command -v crew >/dev/null || {
+		notify "crew is not on PATH"
+		return 0
+	}
+
+	IFS='|' read -r grid ww pw pfl <<<"$(tmux display-message -p -t "$pane" '#{@crew_grid}|#{window_width}|#{pane_width}|#{pane_floating_flag}' 2>/dev/null)"
+	[[ $ww =~ ^[0-9]+$ && $pw =~ ^[0-9]+$ ]] || return 1
+	# Splitting a float halves it into two floats, never a tiled pane.
+	if [[ $pfl == 1 ]]; then
+		notify "target is a floating pane, opened the crew dash float instead"
+		return 1
+	fi
+	if [[ $grid == 1 ]]; then
+		notify "grid window re-tiles every pane, opened the crew dash float instead"
+		return 1
+	fi
+	w=$((ww * 32 / 100))
+	((w < SIDE_MIN)) && w=$SIDE_MIN
+	((w > SIDE_MAX)) && w=$SIDE_MAX
+	if ((pw - w - 1 < SIDE_KEEP)); then
+		notify "window too narrow for a side dash, opened the crew dash float instead"
+		return 1
+	fi
+
+	[[ $(crew dash --help </dev/null 2>&1) == *--narrow* ]] && narrow=" --narrow"
+	local args=(split-window -h -l "$w" -t "$pane" -P -F '#{pane_id}')
+	((detached)) && args+=(-d)
+	[[ -z $cwd ]] || args+=(-c "${cwd//#/##}")
+	sid="$(tmux "${args[@]}" "exec crew dash$narrow" 2>/dev/null)"
+	[[ $sid == %* ]] || {
+		notify "could not open a side pane"
+		return 0
+	}
+	# The relaunch runs in the user's default shell, fish included: keep it POSIX and fish-safe.
+	tmux set-option -p -t "$sid" @pane_label "$SIDE_LABEL" \; \
+		set-option -p -t "$sid" @remux_relaunch "tmux set -p @pane_label $SIDE_LABEL; exec crew dash$narrow"
+	return 0
+}
+if ((side)) && open_side; then
+	exit 0
+fi
 
 id=""
 while IFS='|' read -r pid floating label; do

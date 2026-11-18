@@ -20,6 +20,8 @@ set -uo pipefail
 # The hook gate's `20` and `61` (MIN_COLS + 1 + MAIN_MIN_COLS) are literals.
 MIN_COLS=20
 MAIN_MIN_COLS=40
+# tmux-crew-dash --side clamps its split to at least this many columns.
+SIDE_DASH_MIN_COLS=50
 SHARE_PCT=40
 # Byte-identical to the hook gate's signature, so a rolled-back window matches
 # the marker and the gate does not fork again (tests/carousel-guard.bats pins it).
@@ -31,10 +33,11 @@ target=${1:-}
 declare -A left top width height
 carousels=()
 protected=
+side_protected=
 wwidth=0
 snapshot=
 read_sig=
-while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src layout sig; do
+while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src label layout sig; do
 	# The window can change between the gate and this backgrounded run. Only a
 	# zoom needs the marker cleared, so an unzoom back to this same geometry is
 	# restored instead of suppressed; a mirror window is daemon-owned and never
@@ -53,7 +56,8 @@ while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph src layout
 	height[$pane]=$ph
 	[[ -n $src ]] && ((pw < MIN_COLS)) && carousels+=("$pane|$src")
 	[[ -z $src ]] && ((pw >= MIN_COLS)) && protected+="<$pane>"
-done < <(tmux list-panes -t "$target" -F "#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@claude_img_src}|#{window_layout}|$SIG_FMT" 2>/dev/null)
+	[[ $label == 1 ]] && ((pw >= SIDE_DASH_MIN_COLS)) && side_protected+="<$pane>"
+done < <(tmux list-panes -t "$target" -F "#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@claude_img_src}|#{?#{==:#{@pane_label},crew-dash-side},1,}|#{window_layout}|$SIG_FMT" 2>/dev/null)
 
 # Re-checked inside the apply list: resize-pane unzooms a zoomed window, and a
 # zoom, mirror or grid flag can land between the read above and the resize.
@@ -69,7 +73,8 @@ clear_if_zoomed="if -F -t $target '#{&&:#{window_zoomed_flag},#{!:#{@bridge_win}
 # already narrower, like a sidebar, is not the guard's doing); otherwise the
 # window is rolled back to the snapshot read above, which select-layout
 # restores exactly. Protected panes match by id through a glob over '<%1><%2>'.
-restored="#{&&:#{e|>=|:#{pane_width},$MIN_COLS},#{!:#{P:#{?#{&&:#{&&:#{!:#{@claude_img_src}},#{m:*<#{pane_id}>*,$protected}},#{&&:#{!:#{pane_floating_flag}},#{e|<|:#{pane_width},$MIN_COLS}}},x,}}}}"
+side_crushed="#{P:#{?#{&&:#{m:*<#{pane_id}>*,$side_protected},#{&&:#{!:#{pane_floating_flag}},#{e|<|:#{pane_width},$SIDE_DASH_MIN_COLS}}},x,}}"
+restored="#{&&:#{&&:#{e|>=|:#{pane_width},$MIN_COLS},#{!:#{P:#{?#{&&:#{&&:#{!:#{@claude_img_src}},#{m:*<#{pane_id}>*,$protected}},#{&&:#{!:#{pane_floating_flag}},#{e|<|:#{pane_width},$MIN_COLS}}},x,}}}},#{!:$side_crushed}}"
 
 # resize-pane -x adjusts the pane's cell in its nearest left-right row and
 # takes the columns from the next cell, or from the previous one when the cell

@@ -720,3 +720,33 @@ EOF
 	[ "$sig_fmt" = "$hook_sig" ]
 	[[ $lc == *"#{!=:$sig_fmt,#{@carousel_guard_sig}}"* ]]
 }
+
+@test "a restore that would take a side crew dash under 50 columns is rolled back" {
+	# MAIN | DASH | CAR at the right edge: the donor rule resizes CAR and tmux
+	# takes the columns from DASH, which keeps the 20-column floor but not the
+	# 50 columns tmux-crew-dash --side promises.
+	local dash
+	dash="$(split_h "$MAIN")"
+	CAR="$(split_h "$dash")"
+	make_carousel "$CAR" "$MAIN"
+	tmux select-layout -t "$WIN" even-horizontal
+	tmux set-option -p -t "$dash" @pane_label crew-dash-side
+	tmux resize-pane -t "$CAR" -x 1
+	local want
+	want="$(width_of "$dash")"
+	[ "$want" -ge 90 ]
+	arm_guard_hooks
+
+	fire_same
+	poll_forks 1
+	sleep "$SETTLE"
+	[ "$(width_of "$dash")" -eq "$want" ]
+	[ "$(width_of "$CAR")" -eq 1 ]
+	[ -n "$(marker)" ]
+
+	# Positive control: the same geometry without the label is restored.
+	tmux set-option -p -u -t "$dash" @pane_label
+	tmux set-option -w -u -t "$WIN" @carousel_guard_sig
+	fire_same
+	poll_width "$CAR" 61
+}
