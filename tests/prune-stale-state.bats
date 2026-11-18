@@ -36,6 +36,13 @@ start_fake_tmux_server() {
 	# shellcheck disable=SC2016 # $1 is expanded by the child bash, not here
 	"$BATS_TEST_TMPDIR/tmux" -c 'read -t 300 <>"$1"' _ "$BATS_TEST_TMPDIR/idle" &
 	FAKE_TMUX_PID=$!
+	# A backgrounded child reports its parent's comm until exec, so claude_pid_is_tmux's *tmux* check would reject it under load.
+	local _
+	for _ in {1..500}; do
+		[[ $(ps -o comm= -p "$FAKE_TMUX_PID" 2>/dev/null) == *tmux* ]] && return 0
+		sleep 0.01
+	done
+	return 1
 }
 
 # Fake tmux on PATH. $1 is has-session's exit status (0 = session exists); $2,
