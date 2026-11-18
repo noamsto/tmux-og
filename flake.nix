@@ -183,6 +183,7 @@
           "tmux-reconcile-window.sh"
           "tmux-reflow-windows.sh"
           "tmux-shell-prompt.sh"
+          "tmux-status-autofold.sh"
           "tmux-status-fold.sh"
           "tmux-update-icons.sh"
           "tmux-window-nav.sh"
@@ -2752,6 +2753,23 @@
                 touch $out
               '';
 
+            # Auto-fold under a covering float (#1191): real floats on a
+            # config-less scratch server (mkTmux), like smart-nav-live-tests.
+            status-autofold-tests =
+              pkgs.runCommand "status-autofold-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep (mkTmux pkgs)];
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${scriptsSrc (coreScripts ++ ["lib-float-cover.sh" "tmux-status-autofold.sh"])} scripts
+                cp -r ${testsSrc ["status-autofold.bats"]} tests
+                mkdir config
+                cp ${./config/tmux.conf.tmpl} config/tmux.conf.tmpl
+                export HOME=$TMPDIR
+                bats tests/status-autofold.bats
+                touch $out
+              '';
+
             # The fold bind (#970) must flip the flag and hand the fold script the
             # session and width reflow needs; a bind that drops either builds clean
             # and folds nothing.
@@ -2760,9 +2778,14 @@
                 nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
                 CONF = tmuxConfig.tmuxConf;
               } ''
-                [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
+                [ "$(grep -Ec "^bind -N '[^']*' Z \{ set -u @og_status_autofolded ; set -F @og_status_folded .* ; run-shell -b \".*/tmux-status-fold #\{qs:session_name\} #\{q:client_width\}\" \}" "$CONF")" -eq 1 ]
                 [ "$(grep -c "^set -g @og_icons_job \".*'#{pid}')\"\$" "$CONF")" -eq 1 ]
                 grep -Fq 'set -g status-format[0] "#{E:@og_icons_job}' "$CONF"
+                # Auto-fold (#1191): one gate on both hooks; a hook that drops
+                # the @og_status_autofolded clause forks on every float-free event.
+                for hook in window-layout-changed session-window-changed; do
+                  [ "$(grep -Ec "^set-hook -g $hook\[40\] +\{ if -F '.*@og_status_autofolded.*@og_autofold_sig.*run-shell -b \".*/tmux-status-autofold #\{q:session_id\} #\{q:window_id\} #\{q:client_width\}\" \} \}" "$CONF")" -eq 1 ]
+                done
                 touch $out
               '';
 

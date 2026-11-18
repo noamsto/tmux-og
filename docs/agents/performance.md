@@ -690,6 +690,23 @@ The on/off difference is far inside the spread within each arm, on a host shared
   the server. With our forks gone this measured cheap, so it is documented
   here, not filed upstream.
 
+## Status auto-fold gate (#1191)
+
+`window-layout-changed[40]` and `session-window-changed[40]` fork `tmux-status-autofold` through one `if -F` gate (`status-bar.md`, "Auto-fold under a covering float"). Before this change neither hook did this work (0 forks); "after" is the stub-counted forks per event in `tests/status-autofold.bats` (the real gate lines, extracted from `config/tmux.conf.tmpl`, with the script replaced by a marker-file stub):
+
+| Event | Forks before | Forks after |
+| --- | --- | --- |
+| Layout change in a float-free window (tile split, `kill-pane`) | 0 | 0 |
+| Switch between two float-free windows | 0 | 0 |
+| Covering float opens | 0 | 1 (the fold: one forced reflow follows) |
+| Any later event with the same float geometry (tile split) | 0 | 0 |
+| Covering float closes while auto-folded | 0 | 1 (the unfold) |
+| Float closes when nothing was auto-folded | 0 | 0 |
+| Small float opens (signature changed, no fold) | 0 | 1 (the script finds no cover and exits) |
+| Modal float (picker) opens, or an event in an inactive or mirror window | 0 | 0 |
+
+The fold changes the window height, so the signature (which carries `WxH`) changes once more and one no-op fork can follow a fold. The script itself runs one `display-message`, one `list-panes` and, only on a state change, two `set-option` calls and one forced reflow.
+
 ## Dwindle cache gate (#1026)
 
 Every `window-layout-changed` in a window with dwindle on evaluates one

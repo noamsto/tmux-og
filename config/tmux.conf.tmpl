@@ -125,7 +125,7 @@ bind -N 'Toggle pane zoom' z if-shell -F '{{.BridgeGate}}' { run-shell "{{.Bridg
 # Fold the status bar to one compact line and back. The flip is a single `set -F`
 # so a rapid second press reads the first one's result; the script animates
 # toward whatever the flag says last.
-bind -N 'Fold or unfold the status bar' Z { set -F @og_status_folded '#{?#{==:#{@og_status_folded},1},0,1}' ; run-shell -b "{{index .Paths.Scripts "tmux-status-fold"}} #{qs:session_name} #{q:client_width}" }
+bind -N 'Fold or unfold the status bar' Z { set -u @og_status_autofolded ; set -F @og_status_folded '#{?#{==:#{@og_status_folded},1},0,1}' ; run-shell -b "{{index .Paths.Scripts "tmux-status-fold"}} #{qs:session_name} #{q:client_width}" }
 # client_name is tty-derived (never ~-initial); conditionals/--display-error= make empty values harmless.
 # #{q:} and NOT \"...\", as at client-attached[50]. Bare #{q:client_name}
 # would be zero words when no client exists, sliding the session name into
@@ -654,6 +654,15 @@ set-hook -g window-layout-changed[20] { if -F '#{&&:#{==:#{@dwindle},on},#{!:#{@
 # `set-hook -gu` of both hooks above clears every index on reload.
 set-hook -g window-layout-changed[30] { if -F '#{&&:#{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{e|>=|:#{window_width},61}}},#{&&:#{P:#{?#{&&:#{&&:#{@claude_img_src},#{!:#{pane_floating_flag}}},#{e|<|:#{pane_width},20}},1,}},#{!=:#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{@carousel_guard_sig}}}}' { set -wF @carousel_guard_sig '#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-carousel-guard"}} #{q:window_id}" } }
 set-hook -g window-resized[30]        { if -F '#{&&:#{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{e|>=|:#{window_width},61}}},#{&&:#{P:#{?#{&&:#{&&:#{@claude_img_src},#{!:#{pane_floating_flag}}},#{e|<|:#{pane_width},20}},1,}},#{!=:#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }},#{@carousel_guard_sig}}}}' { set -wF @carousel_guard_sig '#{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}' ; run-shell -b "{{index .Paths.Scripts "tmux-carousel-guard"}} #{q:window_id}" } }
+# Auto-fold the bar while a float covers the view (#1191). Both hooks share one
+# gate: fork tmux-status-autofold only when the active window's non-modal float
+# geometry signature changed AND the window has such a float or the auto-fold is
+# holding the bar folded (so a float-free window with nothing to unfold forks
+# nothing). The signature is written before the fork, so a burst forks once. The
+# script owns the covering decision (lib-float-cover); the bare `set-hook -gu` of
+# both hooks above clears every index on reload.
+set-hook -g window-layout-changed[40]  { if -F '#{&&:#{&&:#{window_active},#{!:#{@bridge_win}}},#{&&:#{!=:#{window_id}:#{window_width}x#{window_height}:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{pane_modal_flag}}},#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} ,}},#{@og_autofold_sig}},#{||:#{!=:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{pane_modal_flag}}},x,}},},#{==:#{@og_status_autofolded},1}}}}' { set -F @og_autofold_sig '#{window_id}:#{window_width}x#{window_height}:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{pane_modal_flag}}},#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} ,}}' ; run-shell -b "{{index .Paths.Scripts "tmux-status-autofold"}} #{q:session_id} #{q:window_id} #{q:client_width}" } }
+set-hook -g session-window-changed[40] { if -F '#{&&:#{&&:#{window_active},#{!:#{@bridge_win}}},#{&&:#{!=:#{window_id}:#{window_width}x#{window_height}:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{pane_modal_flag}}},#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} ,}},#{@og_autofold_sig}},#{||:#{!=:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{pane_modal_flag}}},x,}},},#{==:#{@og_status_autofolded},1}}}}' { set -F @og_autofold_sig '#{window_id}:#{window_width}x#{window_height}:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{pane_modal_flag}}},#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} ,}}' ; run-shell -b "{{index .Paths.Scripts "tmux-status-autofold"}} #{q:session_id} #{q:window_id} #{q:client_width}" } }
 
 # Tag every newly-created window as a worktree window from its cwd — at
 # creation, regardless of creator or CLAUDECODE (issue #95). new-session

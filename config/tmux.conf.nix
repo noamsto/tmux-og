@@ -303,6 +303,7 @@
     "claude-status-update"
     "tmux-reflow-windows"
     "tmux-status-fold"
+    "tmux-status-autofold"
     "tmux-session-picker"
     "tmux-window-picker"
     "tmux-window-wall"
@@ -397,7 +398,7 @@
 
   mkScriptFloatCover = name:
     pkgs.writeShellScriptBin name
-    (builtins.replaceStrings ["@lib_float_cover@"] ["${lib-float-cover}"] (builtins.readFile ../scripts/${name}.sh));
+    (builtins.replaceStrings ["@lib_float_cover@" "@reflow@"] ["${lib-float-cover}" "${script.tmux-reflow-windows}/bin/tmux-reflow-windows"] (builtins.readFile ../scripts/${name}.sh));
 
   # Scripts that need enrich library + provider/icon/config substitution
   scriptsWithEnrich = ["tmux-issue-stamp" "tmux-issue-stamp-linear" "tmux-issue-stamp-github" "tmux-pr-enrich"];
@@ -676,7 +677,7 @@
     then mkScriptCarouselRestore name
     else if name == "tmux-client-theme"
     then mkScriptClientTheme name
-    else if name == "tmux-smart-nav"
+    else if name == "tmux-smart-nav" || name == "tmux-status-autofold"
     then mkScriptFloatCover name
     else if builtins.elem name scriptsWithLog
     then mkScriptWithLog name
@@ -853,6 +854,7 @@
     "tmux-smart-nav"
     "tmux-splash-maybe"
     "tmux-status-fold"
+    "tmux-status-autofold"
     "tmux-update-icons"
     "tmux-window-nav"
     "tmux-worktree-match"
