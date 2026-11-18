@@ -102,6 +102,12 @@ while :; do
 done
 ((locked)) || exit 0
 
+# A client attaching reports dark and then its real theme ~120ms later
+# (measured, kitty on a light theme: want=dark at 290ms, light at 407ms). Acting
+# on the first report costs a full reload each way, so the pane sits in the
+# wrong flavor for ~2s. Let the burst land; the loop then reads the newest want.
+sleep "${OG_CLIENT_THEME_SETTLE:-0.3}"
+
 # apply WANTED_FLAVOR
 # tmux-only apply: clear @thm_*, set @catppuccin_flavor, replay the reload
 # path. NEVER writes theme-state.json — that file is theme-toggle's alone

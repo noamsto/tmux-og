@@ -302,6 +302,26 @@ write_fake_toggle() {
 	thm_bg_is '#eff1f5'
 }
 
+@test "attach burst (dark then light) on latte: no reload, never mocha" {
+	theme_setup
+	report "$CLIENT1" light
+	wait_for 20 applied_is light
+	settle
+	local after_light
+	after_light="$(reload_count)"
+
+	# The gap a real attach leaves between its two reports (measured ~120ms);
+	# back to back, tmux drains both before the job reads the want.
+	report "$CLIENT1" dark
+	sleep 0.12
+	report "$CLIENT1" light
+	settle
+
+	[ "$(reload_count)" -eq "$after_light" ]
+	flavor_is latte
+	thm_bg_is '#eff1f5'
+}
+
 @test "rejected conf still recovers: thm_bg non-empty" {
 	theme_setup
 	printf 'bogus-command-xyz\n' >"$HOME/.config/tmux/tmux.conf"
