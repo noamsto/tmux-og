@@ -264,10 +264,8 @@ var (
 )
 
 // remoteToolSide is the tool key for crew dash as a tiled side split rather
-// than a float. A key, not an extra argument to the tool verb: the verb's
-// argument contract stays the one every existing caller sends, and a daemon
-// that predates this answers `tool: unknown tool "crew-dash-side"`, which the
-// launcher keys its float fallback on.
+// than a float. A daemon that predates it answers `tool: unknown tool
+// "crew-dash-side"`, which the launcher keys its float fallback on.
 const remoteToolSide = "crew-dash-side"
 
 // The side shape's sizing, evaluated on the remote against the target pane's
@@ -688,18 +686,9 @@ var verbs = map[string]verb{
 	// file goes through), where `\;` is a literal semicolon argument that leaves
 	// the pane uncreated — measured against a real control-mode client.
 	//
-	// crew-dash-side is the tiled shape of the same press (tmux-crew-dash --side
-	// in a mirror window), built by sideToolCommand under the same rules: a
-	// second press focuses the window's existing side split (a tiled lookup, the
-	// float lookup excludes it), otherwise it splits right of the pressed pane
-	// when the remote's own window is wide enough, and otherwise falls back to
-	// the unchanged crew-dash float (a floating target, an @crew_grid or zoomed
-	// window, or a target that would drop under 80 columns). It is a key rather than a
-	// shape argument so the verb's arguments stay what older callers send, and
-	// an older daemon's `unknown tool "crew-dash-side"` is the signal to fall
-	// back. It stamps no @float_geom for the float's reason, and the pane it
-	// creates is tiled, so the mirror reconciles it through the remote layout
-	// string exactly like split-h.
+	// crew-dash-side (tmux-crew-dash --side in a mirror window) is built by
+	// sideToolCommand under the same rules. Its tiled pane reconciles through the
+	// remote layout string exactly like split-h.
 	"tool": {args: 1, optArgs: 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])
