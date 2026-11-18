@@ -388,7 +388,7 @@ func TestParseCtlRejects(t *testing.T) {
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
-		{"version skew names the daemon's version", []string{"8", "dwindle-toggle", "%3"}, `this daemon speaks "9"`},
+		{"version skew names the daemon's version", []string{"8", "dwindle-toggle", "%3"}, `this daemon speaks "10"`},
 		{"dwindle-toggle takes no argument", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%3", "x"}, "wants 0 argument"},
 		{"dwindle-toggle refuses an unmirrored pane", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%99"}, "not mirrored"},
 		{"dwindle-toggle refuses a pane injection attempt", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%3; kill-server"}, "not mirrored"},
@@ -1400,6 +1400,158 @@ func toolVerbDoesNotStackFloats(t *testing.T, tool, bin string) {
 	if second[0][0] != first[0][0] || second[0][2] != "1" {
 		t.Fatalf("second press did not focus the existing float: %v (first press was %v)", second, first)
 	}
+
+	// A toggle press dismisses the visible float, focused or not.
+	tcmds, err := v.build(base, "@0", "w", []string{tool, "", "toggle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tconf := filepath.Join(dir, "toggle.conf")
+	if err := os.WriteFile(tconf, []byte(tcmds[0]+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := tmux("select-pane", "-t", base).CombinedOutput(); err != nil {
+		t.Fatalf("select-pane: %v\n%s", err, out)
+	}
+	if out, err := tmux("source-file", tconf).CombinedOutput(); err != nil {
+		t.Fatalf("source-file: %v\n%s", err, out)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(floats()) != 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := floats(); len(got) != 0 {
+		t.Fatalf("toggle press left floats %v, want none", got)
+	}
+	// With no float the toggle press still creates one.
+	if out, err := tmux("source-file", tconf).CombinedOutput(); err != nil {
+		t.Fatalf("source-file: %v\n%s", err, out)
+	}
+	if got := floats(); len(got) != 1 {
+		t.Fatalf("toggle press with no float: %d floats, want 1", len(got))
+	}
+}
+
+// prefix + H in a mirror window must close a remote tiled crew-dash-side pane
+// when no float is up, and prefer the float when both are.
+func TestToolVerbToggleClosesSideDash(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	v := verbs["tool"]
+	dir := t.TempDir()
+	stubDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, filepath.Join(stubDir, "crew"), "#!/bin/sh\nsleep 600\n")
+	tmux := startIsolatedTmux(t, "PATH="+stubDir+":"+os.Getenv("PATH"))
+
+	baseOut, err := tmux("display-message", "-p", "-t", "w", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := strings.TrimSpace(string(baseOut))
+	if out, err := tmux("new-window", "-t", "w:").CombinedOutput(); err != nil {
+		t.Fatalf("new-window: %v\n%s", err, out)
+	}
+	sideOut, err := tmux("split-window", "-h", "-d", "-t", base, "-P", "-F", "#{pane_id}", "sleep 600").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	side := strings.TrimSpace(string(sideOut))
+	if out, err := tmux("set-option", "-p", "-t", side, "@pane_label", "crew-dash-side").CombinedOutput(); err != nil {
+		t.Fatalf("label: %v\n%s", err, out)
+	}
+
+	cmds, err := v.build(base, "@0", "w", []string{"crew-dash", "", "toggle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(dir, "toggle.conf")
+	if err := os.WriteFile(conf, []byte(cmds[0]+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	panes := func() (all, floats []string) {
+		t.Helper()
+		out, err := tmux("list-panes", "-a", "-F", "#{pane_id}|#{pane_floating_flag}").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+			id, fl, _ := strings.Cut(line, "|")
+			all = append(all, id)
+			if fl == "1" {
+				floats = append(floats, id)
+			}
+		}
+		return all, floats
+	}
+	has := slices.Contains[[]string]
+	press := func(until func() bool) {
+		t.Helper()
+		if out, err := tmux("source-file", conf).CombinedOutput(); err != nil {
+			t.Fatalf("source-file: %v\n%s", err, out)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for !until() && time.Now().Before(deadline) {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Side only: the press closes it and opens no float.
+	press(func() bool { all, _ := panes(); return !has(all, side) })
+	all, floats := panes()
+	if has(all, side) || len(floats) != 0 {
+		t.Fatalf("side-only toggle: panes %v floats %v, want side closed and no float", all, floats)
+	}
+
+	// Side and float: the float is dismissed, the side stays.
+	sideOut, err = tmux("split-window", "-h", "-d", "-t", base, "-P", "-F", "#{pane_id}", "sleep 600").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	side = strings.TrimSpace(string(sideOut))
+	if out, err := tmux("set-option", "-p", "-t", side, "@pane_label", "crew-dash-side").CombinedOutput(); err != nil {
+		t.Fatalf("label: %v\n%s", err, out)
+	}
+	fl, err := tmux("new-pane", "-t", base, "-P", "-F", "#{pane_id}", "sleep 600").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	float := strings.TrimSpace(string(fl))
+	if out, err := tmux("set-option", "-p", "-t", float, "@pane_label", "crew-dash").CombinedOutput(); err != nil {
+		t.Fatalf("label: %v\n%s", err, out)
+	}
+	press(func() bool { all, _ := panes(); return !has(all, float) })
+	all, _ = panes()
+	if has(all, float) || !has(all, side) {
+		t.Fatalf("float+side toggle: panes %v, want the float gone and %s kept", all, side)
+	}
+}
+
+func TestToolVerbToggleArg(t *testing.T) {
+	v := verbs["tool"]
+	if _, err := v.build("%5", "@2", "s", []string{"crew-dash", "", "bogus"}); err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Fatal("a third argument other than toggle must be rejected")
+	}
+	if _, err := v.build("%5", "@2", "s", []string{"crew-dash-side", "", "toggle"}); err == nil || !strings.Contains(err.Error(), "does not toggle") {
+		t.Fatal("crew-dash-side must never dismiss")
+	}
+	plain, err := v.build("%5", "@2", "s", []string{"crew-dash", "/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tog, err := v.build("%5", "@2", "s", []string{"crew-dash", "/x", "toggle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain[0], "select-pane -t") || strings.Contains(plain[0], "kill-pane") {
+		t.Fatalf("plain press must only focus: %q", plain[0])
+	}
+	if !strings.Contains(tog[0], "kill-pane -t") || strings.Contains(tog[0], "select-pane -t") {
+		t.Fatalf("toggle press must kill, not focus: %q", tog[0])
+	}
 }
 
 // A pane spawned through fish gets a PATH rebuilt from the login profile, so the
@@ -1576,8 +1728,15 @@ func TestToolVerbCwdIsOptionalOnTheWire(t *testing.T) {
 			t.Fatalf("argv %v rejected: %v", argv, err)
 		}
 	}
-	if _, err := c.parseCtl(append(base, "/a", "/b"), "sess"); err == nil {
-		t.Fatal("a third argument was accepted")
+	// The cwd slot plus a trailing toggle is the third argument, within arity.
+	if _, err := c.parseCtl(append(slices.Clone(base), "", "toggle"), "sess"); err != nil {
+		t.Fatalf("toggle form rejected: %v", err)
+	}
+	if _, err := c.parseCtl(append(slices.Clone(base), "/a", "toggle", "x"), "sess"); err == nil || !strings.Contains(err.Error(), "wants 1 argument") {
+		t.Fatalf("a fourth argument: err = %v, want an arity error", err)
+	}
+	if _, err := c.parseCtl(append(slices.Clone(base), "/a", "/b"), "sess"); err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Fatalf("a non-toggle third argument: err = %v, want unknown option", err)
 	}
 }
 
@@ -2709,7 +2868,7 @@ func TestToolVerbSideBuildsSplit(t *testing.T) {
 		tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)) + " ; set -p -t @2 @pane_label crew-dash-side"
 	focus := "set -wF -t %5 @og_float_target_crew-dash-side " + tmuxQuote(wantSideTiled) +
 		" ; run-shell -t %5 " + tmuxQuote("tmux select-pane -t #{q:@og_float_target_crew-dash-side}")
-	float := floatToolCommand("%5", "@2", "crew-dash", "'/home/u/proj'")
+	float := floatToolCommand("%5", "@2", "crew-dash", "'/home/u/proj'", false)
 	inner := "if-shell -t %5 -F " + tmuxQuote(wantSideFitsFmt) + " " + tmuxQuote(create) + " " + tmuxQuote(float)
 	want := "if-shell -t %5 -F " + tmuxQuote(wantSideTiled) + " " + tmuxQuote(focus) + " " + tmuxQuote(inner)
 	if cmds[0] != want {
