@@ -250,7 +250,7 @@ command -v crew >/dev/null || {
 }
 
 # -A is a z-order flag (the float stays above a zoomed pane), absent on older servers.
-args=(new-pane -t "$win" -x 90% -y 90% -X 5% -Y 5% -B heavy -P -F '#{pane_id}')
+args=(new-pane -t "$win" -x 96% -y 94% -X 2% -Y 3% -B heavy -P -F '#{pane_id}')
 [[ $(tmux list-commands new-pane 2>/dev/null) =~ \[-[a-zA-Z]*A[a-zA-Z]*\] ]] && args+=(-A)
 ((detached)) && args+=(-d)
 # In a mirror window pane_current_path is the daemon renderer's cwd, not the user's.
@@ -264,7 +264,7 @@ id="$(tmux "${args[@]}" 'exec crew dash' 2>/dev/null)"
 }
 
 # Same stamp the float binds write, so tmux-float-refit keeps the dash responsive.
-tmux set-option -p -t "$id" @float_geom '90% 90% 5% 5%' \; \
+tmux set-option -p -t "$id" @float_geom '96% 94% 2% 3%' \; \
 	set-option -p -t "$id" remain-on-exit off \; \
 	set-option -p -t "$id" @pane_label "$LABEL" \; \
 	set-option -p -t "$id" @float_group "$GROUP"

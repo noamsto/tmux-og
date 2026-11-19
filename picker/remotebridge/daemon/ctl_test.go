@@ -860,7 +860,7 @@ func TestCarouselVerbBuildsRemoteToggle(t *testing.T) {
 	}
 	// new-pane and a float shape are what #593 removed: every outcome is a
 	// verdict stamp the daemon reads back, so nothing opens on the remote.
-	for _, ban := range []string{"display-message", "#{@claude_img_src}", "''|*", "split-window", "@float_geom", "new-pane", remoteFloatFull} {
+	for _, ban := range []string{"display-message", "#{@claude_img_src}", "''|*", "split-window", "@float_geom", "new-pane", remoteFloat} {
 		if strings.Contains(cmds[0], ban) {
 			t.Fatalf("command %q must not contain %q", cmds[0], ban)
 		}
@@ -1222,18 +1222,18 @@ func TestToolVerbBuildsRemoteFloatInRemoteCwd(t *testing.T) {
 	if !ok {
 		t.Fatal("no tool verb")
 	}
-	// Exact shape per tool, matching config/tmux.conf.nix's floatShort/floatFull
+	// Exact shape per tool, matching config/tmux.conf.nix's floatFull
 	// binds byte for byte.
 	tests := []struct {
 		tool  string
 		flags string
 	}{
-		{"prdash", remoteFloatShort},
-		{"yazi", remoteFloatShort},
-		{"lazygit", remoteFloatFull},
-		{"btop", remoteFloatFull},
-		{"k9s", remoteFloatFull},
-		{"crew-dash", remoteFloatFull},
+		{"prdash", remoteFloat},
+		{"yazi", remoteFloat},
+		{"lazygit", remoteFloat},
+		{"btop", remoteFloat},
+		{"k9s", remoteFloat},
+		{"crew-dash", remoteFloat},
 	}
 	for _, tc := range tests {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -2823,8 +2823,8 @@ func TestToolVerbCrewDashBuildOutputIsFrozen(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no dir", []string{"crew-dash"}, "if-shell -t %5 -F '#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}' 'set -wF -t %5 @og_float_target_crew-dash '\\''#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}'\\'' ; run-shell -t %5 '\\''tmux select-pane -t #{q:@og_float_target_crew-dash}'\\''' 'new-pane -t %5 -c '\\''#{pane_current_path}'\\'' -x 90% -y 90% -X 5% -Y 5% -B heavy -A '\\''exec /bin/sh -c '\\''\\'\\'''\\''p=$(tmux show-environment -g PATH 2>/dev/null); case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; b=$(tmux show-environment -g BROWSER 2>/dev/null); case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; command -v crew >/dev/null 2>&1 && exec crew dash; echo tmux-og: crew is not on PATH on this host; sleep 5'\\''\\'\\'''\\'''\\'' ; set -p -t @2 @pane_label crew-dash'"},
-		{"with dir", []string{"crew-dash", "/home/u/proj"}, "if-shell -t %5 -F '#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}' 'set -wF -t %5 @og_float_target_crew-dash '\\''#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}'\\'' ; run-shell -t %5 '\\''tmux select-pane -t #{q:@og_float_target_crew-dash}'\\''' 'new-pane -t %5 -c '\\''/home/u/proj'\\'' -x 90% -y 90% -X 5% -Y 5% -B heavy -A '\\''exec /bin/sh -c '\\''\\'\\'''\\''p=$(tmux show-environment -g PATH 2>/dev/null); case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; b=$(tmux show-environment -g BROWSER 2>/dev/null); case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; command -v crew >/dev/null 2>&1 && exec crew dash; echo tmux-og: crew is not on PATH on this host; sleep 5'\\''\\'\\'''\\'''\\'' ; set -p -t @2 @pane_label crew-dash'"},
+		{"no dir", []string{"crew-dash"}, "if-shell -t %5 -F '#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}' 'set -wF -t %5 @og_float_target_crew-dash '\\''#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}'\\'' ; run-shell -t %5 '\\''tmux select-pane -t #{q:@og_float_target_crew-dash}'\\''' 'new-pane -t %5 -c '\\''#{pane_current_path}'\\'' -x 96% -y 94% -X 2% -Y 3% -B heavy -A '\\''exec /bin/sh -c '\\''\\'\\'''\\''p=$(tmux show-environment -g PATH 2>/dev/null); case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; b=$(tmux show-environment -g BROWSER 2>/dev/null); case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; command -v crew >/dev/null 2>&1 && exec crew dash; echo tmux-og: crew is not on PATH on this host; sleep 5'\\''\\'\\'''\\'''\\'' ; set -p -t @2 @pane_label crew-dash'"},
+		{"with dir", []string{"crew-dash", "/home/u/proj"}, "if-shell -t %5 -F '#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}' 'set -wF -t %5 @og_float_target_crew-dash '\\''#{P:#{?#{&&:#{==:#{@pane_label},crew-dash},#{pane_floating_flag}},#{pane_id},}}'\\'' ; run-shell -t %5 '\\''tmux select-pane -t #{q:@og_float_target_crew-dash}'\\''' 'new-pane -t %5 -c '\\''/home/u/proj'\\'' -x 96% -y 94% -X 2% -Y 3% -B heavy -A '\\''exec /bin/sh -c '\\''\\'\\'''\\''p=$(tmux show-environment -g PATH 2>/dev/null); case $p in PATH=?*) PATH=${p#*=}:$PATH; export PATH;; esac; b=$(tmux show-environment -g BROWSER 2>/dev/null); case $b in BROWSER=?*) BROWSER=${b#*=}; export BROWSER;; esac; command -v crew >/dev/null 2>&1 && exec crew dash; echo tmux-og: crew is not on PATH on this host; sleep 5'\\''\\'\\'''\\'''\\'' ; set -p -t @2 @pane_label crew-dash'"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

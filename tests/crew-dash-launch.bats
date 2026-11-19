@@ -112,7 +112,7 @@ first_dash() {
 	id="$(first_dash)"
 	[ "$(dash_panes "$WIN" | wc -l)" -eq 1 ]
 	[ "$(pane_count "$WIN")" -eq 3 ]
-	[ "$(tmux display-message -p -t "$id" '#{@float_geom}|#{@float_group}|#{@pane_label}')" = "90% 90% 5% 5%|crew|crew-dash" ]
+	[ "$(tmux display-message -p -t "$id" '#{@float_geom}|#{@float_group}|#{@pane_label}')" = "96% 94% 2% 3%|crew|crew-dash" ]
 	[ "$(tmux show-options -pv -t "$id" pane-border-lines)" = "heavy" ]
 	[ "$(tmux show-options -pv -t "$id" remain-on-exit)" = "off" ]
 	[ "$(active_pane "$WIN")" = "$id" ]

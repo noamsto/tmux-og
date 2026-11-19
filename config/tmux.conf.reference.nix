@@ -494,8 +494,7 @@
   floatRegister = tool: "@og_float_target_${tool}";
   floatLookup = tool: "#{P:#{?#{&&:#{==:#{@pane_label},${tool}},#{pane_floating_flag}},#{pane_id},}}";
   floatReuse = tool: guard: "if-shell -F \"${floatLookup tool}\" { set -wF ${floatRegister tool} \"${floatLookup tool}\" ; run-shell \"tmux select-pane -t #{q:${floatRegister tool}}\" } { ${guard} }";
-  floatFull = mkFloat "90%" "90%" "5%" "5%";
-  floatShort = mkFloat "90%" "85%" "5%" "8%";
+  floatFull = mkFloat "96%" "94%" "2%" "3%";
   # The enrich card sizes to its contents, not to the client; only its offsets
   # are percentages, and those are what walk off a shrinking window.
   floatCard = mkFloat "64" "18" "20%" "15%";
@@ -520,7 +519,7 @@
   # and the cascade counter survives kill-pane. @pane_label → mauve border title.
   prdashBind =
     lib.optionalString (prdash != null)
-    (bridgedFloatTool "p" "Open PR dashboard" "prdash" floatShort "-c '#{pane_current_path}' "
+    (bridgedFloatTool "p" "Open PR dashboard" "prdash" floatFull "-c '#{pane_current_path}' "
       "${prdash}/bin/prdash \\; set -p @pane_label prdash");
 
   # In kitty-pane mode (AEYE_HOST=kitty) the carousel is a kitty split that doesn't
@@ -889,7 +888,7 @@
     # yazi in a tmux 3.7 floating pane: unlike display-popup, floating panes have
     # full escape-sequence passthrough, so yazi's image preview / terminal
     # detection work. Scoped to the launching window (no window-line entry).
-    ${bridgedFloatTool "y" "Open yazi file manager" "yazi" floatShort "-c '#{pane_current_path}' " "yazi \\; set -p @pane_label yazi"}
+    ${bridgedFloatTool "y" "Open yazi file manager" "yazi" floatFull "-c '#{pane_current_path}' " "yazi \\; set -p @pane_label yazi"}
 
     # New session prompt
     bind -N 'Create new session' N command-prompt -p "New session name:" "new-session -s '%%'"
