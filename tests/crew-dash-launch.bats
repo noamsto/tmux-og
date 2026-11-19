@@ -613,6 +613,35 @@ side_panes() {
 	[ "$(pane_count "$WIN")" -eq 2 ]
 }
 
+@test "--side --toggle opens a side pane when none is visible" {
+	run crew_dash --side --toggle "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(side_panes | wc -l)" -eq 1 ]
+	[[ $(side_panes) == %* ]]
+}
+
+@test "--side --toggle closes a visible side pane and leaves the float alone" {
+	crew_dash "$TILE"
+	crew_dash --side "$TILE"
+	local id
+	id="$(side_panes)"
+	run crew_dash --side --toggle "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(has_pane "$id")" -eq 0 ]
+	[ -z "$(side_panes)" ]
+	[ "$(dash_panes "$WIN" | wc -l)" -eq 1 ]
+}
+
+@test "--side --detached never closes a visible side pane, even with --toggle" {
+	crew_dash --side "$TILE"
+	local id
+	id="$(side_panes)"
+	run crew_dash --side --detached "$TILE"
+	[ "$(has_pane "$id")" -eq 1 ]
+	run crew_dash --side --toggle --detached "$TILE"
+	[ "$(has_pane "$id")" -eq 1 ]
+}
+
 @test "--detached never closes a crew-dash-side pane" {
 	crew_dash --side "$TILE"
 	local id
@@ -639,6 +668,22 @@ side_panes() {
 	[ -z "$(side_panes)" ]
 	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
 	[ "$(messages | grep -c 'no remote side panel yet')" -eq 0 ]
+}
+
+@test "--side --toggle in a mirror window sends crew-dash-side with toggle and opens nothing locally" {
+	mirror_window ok
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side --toggle "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv crew-dash-side+toggle
+	[ -z "$(side_panes)" ]
+	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
+}
+
+@test "--side --toggle --detached in a mirror window never sends toggle" {
+	mirror_window ok
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side --toggle --detached "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv crew-dash-side
 }
 
 @test "--side in a mirror window falls back to the crew-dash float on an older daemon" {

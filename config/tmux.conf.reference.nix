@@ -740,6 +740,7 @@
     # run-shell does not export TMUX_PANE, so the pressed pane is passed explicitly
     # (same reason as the carousel bind above).
     bind -N 'Toggle crew dash' H run-shell '${script.tmux-crew-dash}/bin/tmux-crew-dash #{q:pane_id}'
+    bind -N 'Toggle crew dash side panel' h run-shell '${script.tmux-crew-dash}/bin/tmux-crew-dash --side --toggle #{q:pane_id}'
     bind -N 'Toggle floating pane group' G run-shell '${script.tmux-float-group}/bin/tmux-float-group toggle crew #{q:pane_id}'
 
     # Yank pane's current working directory to system clipboard

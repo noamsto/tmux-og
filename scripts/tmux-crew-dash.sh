@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Toggle `crew dash` in a labelled floating pane: open or restore it, or dismiss a visible one (#1139, #1186).
 #
-#   tmux-crew-dash.sh [--side] [--detached] [pane-id]
+#   tmux-crew-dash.sh [--side [--toggle]] [--detached] [pane-id]
 #
 # The window is the pane's window; pane-id falls back to $TMUX_PANE. A bind's
 # run-shell sets no TMUX_PANE and a bare display-message resolves tmux's "best"
@@ -9,13 +9,13 @@
 # a worker pane, where $TMUX_PANE is set. --detached leaves focus where it is.
 #
 # One dash per window, and the press toggles it (#1186). On a plain press (neither
-# --detached nor --side) a visible dash is dismissed: a float labelled crew-dash (a plain list-panes scan,
+# --detached nor --side; --side --toggle is below) a visible dash is dismissed: a float labelled crew-dash (a plain list-panes scan,
 # last match wins) is hidden by `tmux-float-group hide crew`, so the next press
 # restores it with its state; a tiled pane whose foreground process is `crew dash`
 # is closed (a tile cannot be stashed without disturbing the layout), as is a
 # visible crew-dash-side pane (found by label). Else a crew-group copy hidden by
 # `tmux-float-group hide crew` is restored, else a new one is created. --detached
-# and --side never dismiss: a visible dash is only focused or left alone. The
+# and a plain --side never dismiss: a visible dash is only focused or left alone. The
 # build substitutes the sibling's store path into FLOAT_GROUP (a pane shell's PATH may not carry the scripts);
 # OG_FLOAT_GROUP_BIN is the test seam, and the raw placeholder is not executable.
 #
@@ -24,10 +24,10 @@
 # reconciles it. Nothing is created locally, and --detached cannot suppress the
 # verb's focus. The build substitutes the ctl's store path into @bridge_ctl@;
 # OG_BRIDGE_CTL_BIN is the test seam, and the raw placeholder is not executable.
-# The verb gets a trailing `toggle` only on a plain press (not --detached or
-# --side): the remote kills a visible float, else closes a tiled crew-dash-side
-# pane, else opens the float. A @bridge_win window lacking either option keeps
-# the local path below.
+# The verb gets a trailing `toggle` only on a plain press or `--side --toggle`
+# (never --detached): the remote kills a visible float, else closes a tiled
+# crew-dash-side pane, else opens the float (`--side --toggle` closes the side
+# pane only). A @bridge_win window lacking either option keeps the local path below.
 #
 # --side (#1185) opens the dash as a tiled split on the right of the pane instead
 # (label crew-dash-side, `crew dash --narrow` when this crew lists the flag), for
@@ -35,7 +35,8 @@
 # the window clamped to 50..80 columns and leaves the target at least 80; a window
 # too narrow for that, or a @crew_grid window (tmux-grid-refit re-tiles every
 # tiled pane there), falls back to the float below with a notification. A float
-# and a side dash coexist; --side never touches the float, and a plain press dismisses the float first, else the side pane. A mirror window sends the
+# and a side dash coexist; --side never touches the float. `--side --toggle` closes a
+# visible side pane and leaves the float alone; a plain press dismisses the float first, else the side pane. A mirror window sends the
 # `crew-dash-side` tool, so the REMOTE side gets the split too; a daemon older than
 # that tool answers `unknown tool`, and the script retries once with the `crew-dash`
 # float tool and tells the user. @remux_relaunch re-stamps the label and
@@ -58,16 +59,19 @@ BRIDGE_CTL="${OG_BRIDGE_CTL_BIN:-@bridge_ctl@}"
 
 detached=0
 side=0
+toggle=0
 pane=""
 for arg in "$@"; do
 	case $arg in
 	--detached) detached=1 ;;
 	--side) side=1 ;;
+	--toggle) toggle=1 ;;
 	%*) pane=$arg ;;
 	esac
 done
-# --side keeps its idempotent focus: only a plain press dismisses.
+# --side keeps its idempotent focus unless --toggle: only a plain press dismisses the float.
 dismiss=1
+((detached)) && toggle=0
 ((detached || side)) && dismiss=0
 pane=${pane:-${TMUX_PANE:-}}
 [[ $pane == %* ]] || exit 0
@@ -88,10 +92,11 @@ if [[ -n $bridge_win ]]; then
 			notify "bridge ctl is not installed"
 			exit 0
 		fi
-		# The reason is kept; '#' is doubled for display-message. toggle rides only a plain press.
+		# The reason is kept; '#' is doubled for display-message. toggle rides only a plain press or --side --toggle.
 		bridge_tool() { err="$("$BRIDGE_CTL" --sock "$bridge_sock" tool "$bridge_pane" "$1" "$bridge_dir" "${@:2}" 2>&1 >/dev/null)"; }
+		bridge_side() { if ((toggle)); then bridge_tool crew-dash-side toggle; else bridge_tool crew-dash-side; fi; }
 		if ((side)); then
-			if ! bridge_tool crew-dash-side; then
+			if ! bridge_side; then
 				# A daemon older than crew-dash-side answers `unknown tool`: retry once with the float.
 				if [[ $err == *"unknown tool"* ]] && bridge_tool crew-dash; then
 					notify "no remote side panel yet, opened the crew dash float on the remote host"
@@ -122,7 +127,11 @@ open_side() {
 		[[ $floating != 1 && $label == "$SIDE_LABEL" ]] && sid=$pid
 	done < <(tmux list-panes -t "$win" -F '#{pane_id}|#{pane_floating_flag}|#{@pane_label}')
 	if [[ -n $sid ]]; then
-		focus "$sid"
+		if ((toggle)); then
+			tmux kill-pane -t "$sid"
+		else
+			focus "$sid"
+		fi
 		return 0
 	fi
 
