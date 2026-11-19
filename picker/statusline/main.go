@@ -335,9 +335,20 @@ func paneCmdDisplay(cmd, bridgeProc string) string {
 		cmd = bridgeProc
 	}
 	if m := wrappedRe.FindStringSubmatch(cmd); m != nil {
-		return m[1]
+		cmd = m[1]
+	}
+	if short, ok := cmdAliases[cmd]; ok {
+		return short
 	}
 	return cmd
+}
+
+// cmdAliases shortens the commands that would not fit paneSlotKeep beside a
+// 2-cell icon; anything else longer is truncated with an ellipsis by the slot.
+var cmdAliases = map[string]string{
+	"cursor-agent":    "cursor",
+	"opencode":        "ocode",
+	"process-compose": "pcomp",
 }
 
 // paneSlotKeep/paneSlotPad pin the trailing "<icon> <command>" unit to a fixed
@@ -348,8 +359,10 @@ func paneCmdDisplay(cmd, bridgeProc string) string {
 // tmux does the measuring, not Go: #{=/N/…:} truncates to N display cells and
 // appends a 1-cell ellipsis, and #{p-N:}/#{pN:} pad to N cells with the same
 // utf8_cstrwidth() that computes the right section's width in format-draw.c, so
-// the pad cannot disagree with tmux's own layout. 16 cells fits the longest
-// agent command in use (cursor-agent, 12) plus a 2-cell icon and a space.
+// the pad cannot disagree with tmux's own layout. 9 cells is a 2-cell emoji
+// icon, a space and 6 characters, which fits claude/codex/cursor/ocode/nvim/fish
+// untruncated (cmdAliases shortens the longer agent names); a 1-cell nerd glyph
+// leaves 7 characters.
 //
 // Measured empirically (the man page's prose is inverted from actual
 // behaviour): `#{p-N:...}` pads on the LEFT (blanks before the content),
@@ -358,7 +371,7 @@ func paneCmdDisplay(cmd, bridgeProc string) string {
 // paneSlotPad cells, which is the only thing #260 cares about (see paneSlot),
 // so choosing a side never reintroduces that jitter.
 const (
-	paneSlotKeep = 16
+	paneSlotKeep = 9
 	// Derived, not independent: bumping keep without the pad would let the
 	// truncated value overflow its slot and re-open #260.
 	paneSlotPad = paneSlotKeep + 1 // truncated width + the 1-cell ellipsis
@@ -384,20 +397,10 @@ func slotSafe(s string) string {
 // required, not defensive: a modifier's argument is resolved as a format, so bare
 // literal text would vanish entirely.
 //
-// adjacentToUsage flips which side of the box the reserved pad cells land on
-// (#575): left-pad (today's default) leaves a command-length-dependent dead
-// run between the usage segment and a short pane command, since usage is
-// emitted immediately before this slot in renderLine. Right-pad instead
-// pushes that slack to the command's right, so the command sits flush
-// against usage — safe per the width invariant above. Gated on usage being
-// non-empty: with no agent running there's nothing to be adjacent to, so
-// that render stays byte-identical to before this parameter existed.
-func paneSlot(icon, cmd string, adjacentToUsage bool) string {
-	if adjacentToUsage {
-		return fmt.Sprintf("#{p%d:#{=/%d/…:#{l:%s %s}}}",
-			paneSlotPad, paneSlotKeep, slotSafe(icon), slotSafe(cmd))
-	}
-	return fmt.Sprintf("#{p-%d:#{=/%d/…:#{l:%s %s}}}",
+// It right-pads (#575): the slack lands after the command, so a short command
+// sits flush against the usage segment emitted just before the slot.
+func paneSlot(icon, cmd string) string {
+	return fmt.Sprintf("#{p%d:#{=/%d/…:#{l:%s %s}}}",
 		paneSlotPad, paneSlotKeep, slotSafe(icon), slotSafe(cmd))
 }
 
@@ -416,16 +419,36 @@ func themeFromFlavor(flavor string) string {
 	}
 }
 
+// hostBoxWidth is the fixed width of the host segment: the longest of the local
+// host and every configured bridge host (hostnames are ASCII, so runes are
+// cells), capped at hostSegmentRunes. Fixed so switching between a local and a
+// mirror window never slides the pane slot or usage (#260).
+func hostBoxWidth(a args) int {
+	w := len([]rune(a.localHost))
+	for _, h := range hostcolor.ParseHosts(a.remoteBridgeHosts) {
+		w = max(w, len([]rune(h)))
+	}
+	return min(w, hostSegmentRunes)
+}
+
 // hostSegment names the machine the active window runs on: a mirror window's
-// remote host in its palette colour, else the local host dimmed.
+// remote host in its palette colour, else the local host dimmed. tmux pads it
+// to hostBoxWidth on the left (name flush with the edge) and truncates a longer
+// name to the box, so the width is exactly W whatever the name.
 func hostSegment(a args) string {
+	w := hostBoxWidth(a)
+	if w == 0 {
+		return ""
+	}
+	name, colour := a.localHost, a.thmOverlay1
 	if a.bridgeWin == "1" && a.bridgeHost != "" {
-		return "#[fg=" + a.hostHex(a.bridgeHost) + "]" + clipRunes(slotSafe(a.bridgeHost), hostSegmentRunes) + "  "
+		name, colour = a.bridgeHost, a.hostHex(a.bridgeHost)
 	}
-	if a.localHost != "" {
-		return "#[fg=" + a.thmOverlay1 + "]" + clipRunes(slotSafe(a.localHost), hostSegmentRunes) + "  "
+	name = slotSafe(name)
+	if name == "" {
+		return strings.Repeat(" ", w)
 	}
-	return ""
+	return fmt.Sprintf("#[fg=%s]#{p-%d:#{=%d:#{l:%s}}}", colour, w, w, name)
 }
 
 const hostSegmentRunes = 16
@@ -452,10 +475,14 @@ func renderLine(a args, claudeDir string, claudeTrusted bool, theme string, pref
 		b.WriteString("  " + a.hostMarker)
 	}
 	b.WriteString(" #[align=right]") // literal space mirrors `#(claude) #[align=right]` in the old format
-	// Host first: a width change here must not slide paneSlot (#260).
-	b.WriteString(hostSegment(a))
+	// Variable-width usage stays left of the fixed-width slot and host boxes,
+	// so nothing right of it moves when it changes (#260).
 	b.WriteString(usage)
-	b.WriteString("#[fg=" + a.thmSubtext0 + "]" + paneSlot(a.paneIcon, paneCmdDisplay(a.paneCmd, a.bridgeProc), usage != "") + " ")
+	b.WriteString("#[fg=" + a.thmSubtext0 + "]" + paneSlot(a.paneIcon, paneCmdDisplay(a.paneCmd, a.bridgeProc)))
+	if host := hostSegment(a); host != "" {
+		b.WriteString("  " + host)
+	}
+	b.WriteString(" ")
 	return b.String()
 }
 

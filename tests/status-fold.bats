@@ -248,11 +248,12 @@ recapture_until() {
 
 @test "folded: the right segment shows when wide and goes first when narrow" {
 	tmux set -g @og_usage_short "claude 80%"
-	# The right segment leads with #{host_short}, whose width varies per machine.
+	# The right segment ends with #{host_short}, whose width varies per machine.
 	local host
 	host=$(tmux display-message -p -t S '#{host_short}')
 	fold_render $((100 + ${#host})) 3
 	[[ $LINE == *"claude 80%"* ]]
+	[[ $LINE == *"claude 80% $host"* ]]
 	fold_render 38 3
 	[[ $LINE != *"claude 80%"* ]]
 	[[ $LINE == *"3: lab3"* ]]
