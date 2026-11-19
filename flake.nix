@@ -1621,7 +1621,19 @@
                   # still satisfies them. The prefix render differs from its
                   # reference only in path text, and a path holds no newline, so
                   # the line counts must agree exactly.
-                  want=$(wc -l <"$SMOKE_REFERENCE")
+                  # The one exception is the wrapper-bin PATH swap (and its trailing
+                  # blank line): a --prefix tree has no *-tmux-wrapper-bin segment
+                  # to swap, so the render omits the block the reference carries.
+                  if grep -Fq 'set-environment -gF PATH' prefixout/tmux.conf; then
+                    echo "--prefix render carries the wrapper-bin PATH swap" >&2
+                    exit 1
+                  fi
+                  swap=$(sed -n '/^# The wrapper put its bin dir/,/^set -gu @_og_path$/p' "$SMOKE_REFERENCE" | wc -l)
+                  [ "$swap" -gt 0 ] || {
+                    echo "reference carries no wrapper-bin PATH swap block" >&2
+                    exit 1
+                  }
+                  want=$(($(wc -l <"$SMOKE_REFERENCE") - swap - 1))
                   got=$(wc -l <prefixout/tmux.conf)
                   if [ "$got" != "$want" ]; then
                     echo "--prefix render is $got lines, reference is $want" >&2
@@ -3659,6 +3671,36 @@
                 export HOME=$TMPDIR/home
                 mkdir -p "$HOME"
                 bats tests/enter-bind-integration.bats
+                touch $out
+              '';
+
+            # The conf rewrites the server's global PATH on load so panes created
+            # after a nix switch resolve the current wrapper bin. Only a server can
+            # say what the nested format expands to, so this sources the real conf.
+            wrapper-bin-path-tests = let
+              wrapperBinPathConfig = import ./config/tmux.conf.nix {
+                inherit pkgs lib;
+                tmuxPkg = mkTmux pkgs;
+                carousel-toggle = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.toggle;
+                carousel-aeye = inputs.aeye.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                prdash = inputs.prdash.packages.${pkgs.stdenv.hostPlatform.system}.prdash;
+                enrichEnable = false;
+                agentUsageEnable = false;
+              };
+            in
+              pkgs.runCommand "wrapper-bin-path-tests" {
+                nativeBuildInputs = [pkgs.bash pkgs.bats pkgs.coreutils pkgs.gnugrep];
+                TMUX_BIN = "${wrapperBinPathConfig.tmux-wrapped}/bin/tmux";
+                RAW_TMUX = "${builtins.head wrapperBinPathConfig.wrapperBinPkgs}/bin/tmux";
+                NEW_BIN = "${wrapperBinPathConfig.wrapperBinDir}/bin";
+                CONF = "${wrapperBinPathConfig.tmuxConf}";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${testsSrc ["wrapper-bin-path.bats"]} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/wrapper-bin-path.bats
                 touch $out
               '';
 

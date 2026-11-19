@@ -39,6 +39,7 @@
   # Optional packages, null when not wired in.
   carousel-toggle,
   prdash,
+  wrapperBinDir,
   # Built by config/tmux.conf.nix and passed in rather than rebuilt here.
   processIcons,
   script,
@@ -634,6 +635,17 @@
     # is bridged and is the platform opener otherwise. A store path, not the
     # bare name: a resident server's PATH predates a rebuild (#407).
     set-environment -g BROWSER "${script.og-open}/bin/og-open"
+
+    # The wrapper put its bin dir on the server PATH once, at server start, and a
+    # reload never touches it, so panes created after a nix switch kept resolving
+    # bare script names against the old generation. Swap every wrapper-bin segment
+    # for the current one on each load. Pane PATH is fixed at spawn: existing panes
+    # keep theirs. The patterns avoid ":" (it splits the enclosing format modifier)
+    # and match the separator as a non-path character instead. The leading ":"
+    # on the copy gives a lone wrapper segment a separator to match.
+    set -g @_og_path ":$PATH"
+    set-environment -gF PATH "${wrapperBinDir}/bin#{s|[^-._+/a-zA-Z0-9][-._+/a-zA-Z0-9]*-tmux-wrapper-bin/bin$||:#{s|[-._+/a-zA-Z0-9]*-tmux-wrapper-bin/bin[^-._+/a-zA-Z0-9]||:@_og_path}}"
+    set -gu @_og_path
 
     # Timing
     set -s escape-time 0

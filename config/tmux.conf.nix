@@ -1063,7 +1063,8 @@
     // lib.optionalAttrs (persistWireScript != null) {persist_wire_script = "${persistWireScript}";}
     // lib.optionalAttrs (carousel-toggle != null) {carousel_toggle = "${carousel-toggle}/bin/tmux-claude-images";}
     // lib.optionalAttrs (carousel-aeye != null) {carousel_aeye = "${carousel-aeye}/bin/aeye";}
-    // lib.optionalAttrs (prdash != null) {prdash = "${prdash}/bin/prdash";});
+    // lib.optionalAttrs (prdash != null) {prdash = "${prdash}/bin/prdash";}
+    // {wrapper_bin = "${wrapperBinDir}/bin";});
 
   # $out is the rendered file itself, not the directory holding it: every
   # consumer of tmuxConf — tests/test-display.sh's wrapper scrape included —
@@ -1088,7 +1089,7 @@
     inherit agentUsageEnable agentUsageMonthlyThreshold;
     inherit aiNamingEnable dwindleEnable resumeClaudeEnable resumeCarouselEnable;
     inherit extraConfText persistWireScript;
-    inherit carousel-toggle prdash;
+    inherit carousel-toggle prdash wrapperBinDir;
     inherit processIcons script;
     inherit picker-bridge-ctl-bin picker-card-bin picker-splash-bin picker-statusline-bin;
     inherit picker-session-res-bin picker-dwindle-bin;
