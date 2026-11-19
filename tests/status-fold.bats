@@ -253,6 +253,7 @@ recapture_until() {
 	host=$(tmux display-message -p -t S '#{host_short}')
 	fold_render $((100 + ${#host})) 3
 	[[ $LINE == *"claude 80%"* ]]
+	[[ $LINE == *"claude 80% $host"* ]]
 	fold_render 38 3
 	[[ $LINE != *"claude 80%"* ]]
 	[[ $LINE == *"3: lab3"* ]]
