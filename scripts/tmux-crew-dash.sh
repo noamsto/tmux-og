@@ -9,13 +9,13 @@
 # a worker pane, where $TMUX_PANE is set. --detached leaves focus where it is.
 #
 # One dash per window, and the press toggles it (#1186). On a plain press (neither
-# --detached nor --side) a visible dash is dismissed: a float labelled crew-dash (a plain list-panes scan,
+# --detached nor --side; --side --toggle is below) a visible dash is dismissed: a float labelled crew-dash (a plain list-panes scan,
 # last match wins) is hidden by `tmux-float-group hide crew`, so the next press
 # restores it with its state; a tiled pane whose foreground process is `crew dash`
 # is closed (a tile cannot be stashed without disturbing the layout), as is a
 # visible crew-dash-side pane (found by label). Else a crew-group copy hidden by
 # `tmux-float-group hide crew` is restored, else a new one is created. --detached
-# and --side never dismiss: a visible dash is only focused or left alone. The
+# and a plain --side never dismiss: a visible dash is only focused or left alone. The
 # build substitutes the sibling's store path into FLOAT_GROUP (a pane shell's PATH may not carry the scripts);
 # OG_FLOAT_GROUP_BIN is the test seam, and the raw placeholder is not executable.
 #
@@ -69,8 +69,9 @@ for arg in "$@"; do
 	%*) pane=$arg ;;
 	esac
 done
-# --side keeps its idempotent focus: only a plain press dismisses.
+# --side keeps its idempotent focus unless --toggle: only a plain press dismisses the float.
 dismiss=1
+((detached)) && toggle=0
 ((detached || side)) && dismiss=0
 pane=${pane:-${TMUX_PANE:-}}
 [[ $pane == %* ]] || exit 0

@@ -714,8 +714,8 @@ var verbs = map[string]verb{
 	// crew-dash-side pane is, else the float opens. Killed, not hidden: the reuse
 	// gate cannot see a stashed pane and a remote may lack tmux-float-group. The
 	// cwd slot is always sent (possibly empty) so toggle lands at a[2]. Any tool's
-	// float is killed by toggle; only crew-dash also closes a side pane, and
-	// crew-dash-side toggle closes its own visible pane, and a plain --side never dismisses.
+	// float is killed by toggle; crew-dash also closes a tiled side pane when no float is up;
+	// crew-dash-side with toggle kills its own tiled pane (never the float), and a plain crew-dash-side press only focuses.
 	"tool": {args: 1, optArgs: 2, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])

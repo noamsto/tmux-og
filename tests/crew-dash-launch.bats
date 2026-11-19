@@ -632,11 +632,13 @@ side_panes() {
 	[ "$(dash_panes "$WIN" | wc -l)" -eq 1 ]
 }
 
-@test "--side --detached never closes a visible side pane" {
+@test "--side --detached never closes a visible side pane, even with --toggle" {
 	crew_dash --side "$TILE"
 	local id
 	id="$(side_panes)"
 	run crew_dash --side --detached "$TILE"
+	[ "$(has_pane "$id")" -eq 1 ]
+	run crew_dash --side --toggle --detached "$TILE"
 	[ "$(has_pane "$id")" -eq 1 ]
 }
 
