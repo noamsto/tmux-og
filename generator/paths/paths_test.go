@@ -67,6 +67,7 @@ func TestLoadOptionalsPresent(t *testing.T) {
 carousel_toggle = "/store/aeye/bin/tmux-claude-images"
 carousel_aeye = "/store/aeye/bin/aeye"
 prdash = "/store/prdash/bin/prdash"
+wrapper_bin = "/store/x-tmux-wrapper-bin/bin"
 ` + completeToml()
 	p, err := Load(writeToml(t, body))
 	if err != nil {
@@ -190,6 +191,7 @@ func optionalsOf(p *Paths) map[string]*string {
 		"carousel_toggle":     p.CarouselToggle,
 		"carousel_aeye":       p.CarouselAeye,
 		"prdash":              p.Prdash,
+		"wrapper_bin":         p.WrapperBin,
 	}
 }
 

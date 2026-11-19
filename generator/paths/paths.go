@@ -27,6 +27,10 @@ type Paths struct {
 	CarouselToggle    *string `toml:"carousel_toggle"`
 	CarouselAeye      *string `toml:"carousel_aeye"`
 	Prdash            *string `toml:"prdash"`
+
+	// The merged bin dir the wrapper prefixes onto the server PATH. Absent in
+	// --prefix mode, where nothing named *-tmux-wrapper-bin exists to swap.
+	WrapperBin *string `toml:"wrapper_bin"`
 }
 
 // RequiredScripts are the ${script.<name>} sites the template has.
