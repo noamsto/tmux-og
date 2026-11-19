@@ -27,13 +27,13 @@ setup() {
 	# shellcheck disable=SC2174  # only the root itself must be owner-only
 	mkdir -p -m 700 "$CLAUDE_STATUS_DIR"
 	export TMPDIR="$TDIR"
+	OG_TEST_ISOLATED=1
 }
 
 start_server() {
 	command -v tmux >/dev/null || skip "tmux not on PATH"
 	[[ -x ${PICKER_GENERATE:-} ]] || skip "PICKER_GENERATE not set"
 	[[ -x ${APPLY_SCRIPT:-} ]] || skip "APPLY_SCRIPT not set"
-	OG_TEST_ISOLATED=1
 	tmux -f /dev/null new-session -d -s S -x 200 -y 50
 	local n i=16
 	for n in $THM_NAMES; do
