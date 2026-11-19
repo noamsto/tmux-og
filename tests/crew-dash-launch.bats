@@ -679,6 +679,13 @@ side_panes() {
 	[ "$(grep -c '^new-pane ' "$OG_SHIM_LOG")" -eq 0 ]
 }
 
+@test "--side --toggle --detached in a mirror window never sends toggle" {
+	mirror_window ok
+	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side --toggle --detached "$TILE"
+	[ "$status" -eq 0 ]
+	assert_ctl_argv crew-dash-side
+}
+
 @test "--side in a mirror window falls back to the crew-dash float on an older daemon" {
 	mirror_window old
 	run env OG_BRIDGE_CTL_BIN="$BIN_DIR/ctl" bash scripts/tmux-crew-dash.sh --side "$TILE"
