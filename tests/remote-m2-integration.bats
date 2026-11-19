@@ -5096,7 +5096,7 @@ server_restart() {
 }
 
 # PARK_DIM_STYLE mirrors daemon/park.go's parkDimStyle byte-for-byte.
-PARK_DIM_STYLE='fg=#{@thm_overlay_0},bg=#{@thm_mantle}'
+PARK_DIM_STYLE='fg=#{@og_c_park},bg=#{@thm_mantle}'
 
 # The park cases below run with OG_DAEMON_RETRY_MAX_ELAPSED/OG_DAEMON_WAKE_MAX_ELAPSED
 # set to 2s. The daemon clamps each retry wait to the schedule's remaining

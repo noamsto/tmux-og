@@ -88,7 +88,7 @@ func bridgeOpts() map[string]string {
 // carries its origin in the host badge. The single place the tag's format
 // lives, so a compact-mode conditional can wrap it later. Unescaped commas, as
 // in bridgeOpts: the style commas are '#,'-escaped, the conditional's are not.
-const crewRepoTag = "#{?#{&&:#{@crew_repo},#{&&:#{!:#{@bridge_placed}},#{!=:#{@crew_repo},#{b:session_path}}}},#[fg=#{@thm_peach}#,bg=#{@thm_bg}]#{@crew_repo} #{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]},}"
+const crewRepoTag = "#{?#{&&:#{@crew_repo},#{&&:#{!:#{@bridge_placed}},#{!=:#{@crew_repo},#{b:session_path}}}},#[fg=#{@og_c_host_peach}#,bg=#{@thm_bg}]#{@crew_repo} #{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]},}"
 
 // processIcon reads the merged process-icon map, falling back to the emoji the
 // usage segment uses when no glyph is configured for that agent.

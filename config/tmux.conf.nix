@@ -551,7 +551,7 @@
   # scriptsWithIcons' icon-map/library placeholders — its own minimal builder
   # rather than folding into mkScriptFull for a script that uses one of its
   # six substitutions.
-  scriptsWithPickerBin = ["tmux-which-key" "tmux-link-picker"];
+  scriptsWithPickerBin = ["tmux-which-key" "tmux-link-picker" "tmux-apply-theme-colors"];
   mkScriptPickerBin = name:
     pkgs.writeShellScriptBin name (
       builtins.replaceStrings ["@picker_generate@"] [picker-generate-bin]

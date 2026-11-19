@@ -230,10 +230,10 @@ recapture_until() {
 
 @test "folded: a placed mirror window shows the remote glyph, and its host when current" {
 	tmux set -g @icon_remote "R>"
-	tmux set -g @thm_peach "#fab387"
+	tmux set -g @og_c_host_peach "#fab387"
 	tmux set -w -t S:2 @bridge_placed 1
 	tmux set -w -t S:2 @bridge_host labhost
-	tmux set -w -t S:2 @window_host_color '#{@thm_peach}'
+	tmux set -w -t S:2 @window_host_color '#{@og_c_host_peach}'
 	fold_render 100 5
 	[[ $LINE == *"2R>"* || $LINE == *"2 R>"* ]]
 	fold_render 100 2
