@@ -171,15 +171,15 @@ func buildPairs() []Pair {
 		{"splash", "Primary/Base", Primary, Base, FloorPrimary},
 		{"splash", "Accent/Base", Accent, Base, FloorSecondary},
 	}
-	status := []Pair{
-		{"status bar", "dim/Base", StatusDim, Base, FloorSecondary},
-		{"status bar", "pr_closed/Base", StatusPRClosed, Base, FloorSecondary},
-		{"status bar", "pr_pending/Base", StatusPRPending, Base, FloorSecondary},
-		{"status bar", "pr_success/Base", StatusPRSuccess, Base, FloorSecondary},
-		{"park", "park/Mantle", StatusPark, Mantle, FloorSecondary},
-	}
 	ps = append(ps, chrome...)
-	return append(ps, status...)
+	for _, sr := range StatusRoles {
+		surface, bg, bgName := "status bar", Base, "Base"
+		if sr.Name == "park" {
+			surface, bg, bgName = "park", Mantle, "Mantle"
+		}
+		ps = append(ps, Pair{surface, sr.Name + "/" + bgName, sr.Role, bg, FloorSecondary})
+	}
+	return ps
 }
 
 func lum(hex string) float64 {

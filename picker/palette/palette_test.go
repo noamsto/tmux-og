@@ -220,3 +220,17 @@ func TestResolve(t *testing.T) {
 		t.Errorf("env = %s", got)
 	}
 }
+
+func TestEveryStatusRoleIsFloored(t *testing.T) {
+	for _, sr := range StatusRoles {
+		found := false
+		for _, p := range LightPairs {
+			if strings.HasPrefix(p.Name, sr.Name+"/") && (p.Surface == "status bar" || p.Surface == "park") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("status role %s has no LightPairs entry", sr.Name)
+		}
+	}
+}

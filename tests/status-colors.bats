@@ -61,21 +61,39 @@ teardown() {
 	[ "$(tmux show -g | grep -c '^@og_c_')" -eq "${#MOCHA_OPT[@]}" ]
 }
 
-@test "latte: every role stamps a non-empty #rrggbb" {
+@test "latte: roles map to the Latte options and literal host hexes" {
 	start_server
-	tmux set -g @catppuccin_flavor latte
+	tmux set -g @catppuccin_flavor mocha
 	bash "$APPLY_SCRIPT"
+	local -A mocha
 	local name
 	for name in "${!MOCHA_OPT[@]}"; do
-		[[ "$(tmux show -gv "@og_c_$name")" =~ ^#[0-9a-fA-F]{6}$ ]]
+		mocha[$name]=$(tmux show -gv "@og_c_$name")
+	done
+	tmux set -g @catppuccin_flavor latte
+	bash "$APPLY_SCRIPT"
+	[ "$(tmux show -gv @og_c_dim)" = "${HEX[overlay_2]}" ]
+	[ "$(tmux show -gv @og_c_pr_closed)" = "${HEX[subtext_1]}" ]
+	[ "$(tmux show -gv @og_c_pr_pending)" = "${HEX[maroon]}" ]
+	[ "$(tmux show -gv @og_c_pr_success)" = "${HEX[teal]}" ]
+	[ "$(tmux show -gv @og_c_park)" = "${HEX[overlay_2]}" ]
+	# Latte host tints are literals (palette.HostPeach ... HostSky), not options.
+	local -A host=([host_peach]='#c4500a' [host_teal]='#179299' [host_pink]='#c03fa0'
+		[host_yellow]='#8f7000' [host_sky]='#127eae')
+	for name in "${!host[@]}"; do
+		[ "$(tmux show -gv "@og_c_$name")" = "${host[$name]}" ]
+		[ "$(tmux show -gv "@og_c_$name")" != "${mocha[$name]}" ]
 	done
 }
 
 @test "pane-border chrome takes the stamped dim colour" {
 	start_server
-	tmux set -g @catppuccin_flavor mocha
+	tmux set -g @catppuccin_flavor latte
 	bash "$APPLY_SCRIPT"
-	[[ "$(tmux show -gwv pane-border-style)" == *"${HEX[overlay_1]}"* ]]
+	local style
+	style=$(tmux show -gwv pane-border-style)
+	[[ $style == *"${HEX[overlay_2]}"* ]]
+	[[ $style != *"${HEX[overlay_1]}"* ]]
 }
 
 @test "every @og_c_<name> the formats, scripts and Go renderers reference is a status role" {

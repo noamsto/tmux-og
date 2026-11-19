@@ -55,10 +55,14 @@ thm_red=$(tmux show -gv @thm_red 2>/dev/null | tr -d '"')
 # picker_generate owns the role table (palette.StatusRoles): per flavor each role
 # is a @thm_* option or a literal hex. Stamp @og_c_<name> so every status format
 # reads one option that follows the flavor. Skipped for a raw-script test copy
-# (placeholder unsubstituted) or when the call yields nothing.
+# (placeholder unsubstituted). Otherwise the old stamps are cleared first, so an
+# empty or failed call leaves them unset, never stale from the previous flavor.
 gen="@picker_generate@"
 if [[ $gen != @* ]]; then
 	flavor=$(tmux show -gv @catppuccin_flavor 2>/dev/null | tr -d '"')
+	while read -r opt _; do
+		[[ $opt == @og_c_* ]] && tmux set -gu "$opt"
+	done < <(tmux show -g 2>/dev/null)
 	roles=$("$gen" status-roles "$flavor" 2>/dev/null || true)
 	while read -r name value; do
 		[[ $name =~ ^[a-z_]+$ ]] || continue
