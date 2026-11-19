@@ -142,12 +142,12 @@ func shellQuote(s string) string {
 func remotePickNewPaneArgs(bin, host, window string) []string {
 	return []string{
 		"new-pane", "-t", window,
-		"-x", "90%", "-y", "85%", "-X", "5%", "-Y", "8%", "-B", "heavy", "-A", "-O", "-K", "-C",
+		"-x", "96%", "-y", "94%", "-X", "2%", "-Y", "3%", "-B", "heavy", "-A", "-O", "-K", "-C",
 		bin + " " + shellQuote(host),
 		";",
 		"set", "-p", "@pane_label", "remote " + host,
 		";",
-		"set", "-p", "@float_geom", "90% 85% 5% 8%",
+		"set", "-p", "@float_geom", "96% 94% 2% 3%",
 		";",
 		"set", "-p", "remain-on-exit", "off",
 	}

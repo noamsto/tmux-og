@@ -25,13 +25,13 @@ func keysPaths() *paths.Paths {
 // The escaping is scoped to the inner new-pane command; the if-shell wrapper's
 // own quotes stay bare, and a quote inside the suffix must come out escaped.
 func TestFloatNewPaneGuardEscapesInnerCommandOnly(t *testing.T) {
-	f := mkFloat("90%", "90%", "5%", "5%")
+	f := mkFloat("96%", "94%", "2%", "3%")
 	got := floatNewPaneGuard(f, "", `"echo hi" \; set -p @pane_label hi`)
 	want := `if-shell "tmux list-commands new-pane | grep -q -- -A" ` +
-		`"new-pane -x 90% -y 90% -X 5% -Y 5% -B heavy -A \"echo hi\" \; set -p @pane_label hi \; ` +
-		`set -p @float_geom '90% 90% 5% 5%' \; set -p remain-on-exit off" ` +
-		`"new-pane -x 90% -y 90% -X 5% -Y 5% -B heavy \"echo hi\" \; set -p @pane_label hi \; ` +
-		`set -p @float_geom '90% 90% 5% 5%' \; set -p remain-on-exit off"`
+		`"new-pane -x 96% -y 94% -X 2% -Y 3% -B heavy -A \"echo hi\" \; set -p @pane_label hi \; ` +
+		`set -p @float_geom '96% 94% 2% 3%' \; set -p remain-on-exit off" ` +
+		`"new-pane -x 96% -y 94% -X 2% -Y 3% -B heavy \"echo hi\" \; set -p @pane_label hi \; ` +
+		`set -p @float_geom '96% 94% 2% 3%' \; set -p remain-on-exit off"`
 	if got != want {
 		t.Fatalf("guard =\n%q\nwant\n%q", got, want)
 	}

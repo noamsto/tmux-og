@@ -49,8 +49,8 @@ func mkFloat(w, h, x, y string) floatShape {
 }
 
 var (
-	floatFull  = mkFloat("90%", "90%", "5%", "5%")
-	floatShort = mkFloat("90%", "85%", "5%", "8%")
+	floatFull = mkFloat("96%", "94%", "2%", "3%")
+
 	// The enrich card sizes to its contents, not to the client; only its
 	// offsets are percentages, and those are what walk off a shrinking window.
 	floatCard = mkFloat("64", "18", "20%", "15%")
@@ -148,7 +148,7 @@ func prdashBind(p *paths.Paths) string {
 	if p.Prdash == nil {
 		return ""
 	}
-	return bridgedFloatTool(p, "p", "Open PR dashboard", "prdash", floatShort, "-c '#{pane_current_path}' ",
+	return bridgedFloatTool(p, "p", "Open PR dashboard", "prdash", floatFull, "-c '#{pane_current_path}' ",
 		*p.Prdash+" \\; set -p @pane_label prdash")
 }
 
@@ -158,7 +158,7 @@ func lazygitBind(p *paths.Paths) string {
 }
 
 func yaziBind(p *paths.Paths) string {
-	return bridgedFloatTool(p, "y", "Open yazi file manager", "yazi", floatShort, "-c '#{pane_current_path}' ",
+	return bridgedFloatTool(p, "y", "Open yazi file manager", "yazi", floatFull, "-c '#{pane_current_path}' ",
 		"yazi \\; set -p @pane_label yazi")
 }
 

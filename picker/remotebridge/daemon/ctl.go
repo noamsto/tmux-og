@@ -242,19 +242,19 @@ var (
 	remoteTools  = map[string]bool{"prdash": true, "lazygit": true, "yazi": true, "btop": true, "k9s": true, "crew-dash": true, remoteToolSide: true}
 	remoteThemes = map[string]bool{"dark": true, "light": true}
 	// remoteToolFloat gives each remoteTools entry its float shape, matching
-	// config/tmux.conf.nix's floatShort/floatFull mkFloat shapes byte for byte
+	// config/tmux.conf.nix's floatFull mkFloat shape byte for byte
 	// so a bridged tool opens at the same geometry the purely-local bind uses.
 	// Not itself an authorization list — remoteTools stays that; a tool present
 	// there but absent here (should never happen, kept in sync by hand) falls
-	// back to remoteFloatFull rather than build a flagless new-pane.
+	// back to remoteFloat rather than build a flagless new-pane.
 	remoteToolFloat = map[string]string{
-		"prdash":  remoteFloatShort,
-		"yazi":    remoteFloatShort,
-		"lazygit": remoteFloatFull,
-		"btop":    remoteFloatFull,
-		"k9s":     remoteFloatFull,
-		// The local crew-dash script's 90/90/5/5.
-		"crew-dash": remoteFloatFull,
+		"prdash":  remoteFloat,
+		"yazi":    remoteFloat,
+		"lazygit": remoteFloat,
+		"btop":    remoteFloat,
+		"k9s":     remoteFloat,
+		// The local crew-dash script's 96/94/2/3.
+		"crew-dash": remoteFloat,
 	}
 	// remoteToolBin and remoteToolExec name the binary probed on the remote and
 	// the command it runs, for a tool whose key is not its binary: crew-dash is
@@ -312,18 +312,16 @@ var layoutCommands = map[string]layoutCommand{
 	"spread":                   {verb: "select-layout", arg: "-E"},
 }
 
-// remoteFloatShort and remoteFloatFull are config/tmux.conf.nix's
-// floatShort/floatFull mkFloat shapes, always carrying -A: the local bind's
-// version-guarded flagsNoA fallback exists only for a tmux old enough to lack
-// new-pane -A, and every remote this daemon opens a ctl connection to is on
-// this revision.
+// remoteFloat is config/tmux.conf.nix's floatFull mkFloat shape, always carrying
+// -A: the local bind's version-guarded flagsNoA fallback exists only for a tmux
+// old enough to lack new-pane -A, and every remote this daemon opens a ctl
+// connection to is on this revision.
 //
 // -A is a z-order flag — "the floating pane remains visible above a zoomed
 // pane" — and NOT attach-if-exists: new-pane has no such mode, so nothing here
 // dedupes by itself. The reuse is explicit and keyed on @pane_label (#679).
 const (
-	remoteFloatShort = "-x 90% -y 85% -X 5% -Y 8% -B heavy -A"
-	remoteFloatFull  = "-x 90% -y 90% -X 5% -Y 5% -B heavy -A"
+	remoteFloat = "-x 96% -y 94% -X 2% -Y 3% -B heavy -A"
 )
 
 // floatRegister is the window option a tool press hands the float's pane id to
@@ -356,7 +354,7 @@ func floatLookup(tool string) string {
 func floatToolCommand(pane, win, tool, cwd string, toggle bool) string {
 	flags, ok := remoteToolFloat[tool]
 	if !ok {
-		flags = remoteFloatFull
+		flags = remoteFloat
 	}
 	script := toolResolveScript(tool)
 	// -t <win>, not a bare set -p: the new pane is the window's active one,
