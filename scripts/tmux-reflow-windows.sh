@@ -836,8 +836,8 @@ FOLD_IDX="#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_subtext_0}]}#{window_in
 FOLD_CUR="#[list=focus] #[bold]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_mauve}]}#{window_index}#[fg=#{@thm_mauve}]: #{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@icon_remote} #{@bridge_host} #[fg=#{@thm_mauve}],}#{=/40/…:#{@window_label_id}#{@window_label_rest_long}}#[nobold]#[list=on]"
 FOLD_OTH="#[nobold] ${FOLD_IDX}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@icon_remote},} #{@window_icon_display}"
 FOLD_ITEMS="#{W:#{?window_active,${FOLD_CUR},${FOLD_OTH}}}"
-FOLD_RTXT="#{?${FOLD_MIRROR},#{@bridge_host},#{host_short}}#{?#{@og_usage_short}, #{@og_usage_short},}"
-FOLD_RIGHT="#[align=right]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@bridge_host},#[fg=#{@thm_overlay_1}]#{host_short}}#{?#{@og_usage_short}, #[fg=#{@thm_subtext_0}]#{@og_usage_short},} "
+FOLD_RTXT="#{?#{@og_usage_short},#{@og_usage_short} ,}#{?${FOLD_MIRROR},#{@bridge_host},#{host_short}}"
+FOLD_RIGHT="#[align=right]#{?#{@og_usage_short},#[fg=#{@thm_subtext_0}]#{@og_usage_short} ,}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@bridge_host},#[fg=#{@thm_overlay_1}]#{host_short}} "
 FOLD_FIT="#{e|<=|:#{e|+|:#{e|+|:#{w:${FOLD_ITEMS}},#{w:#{session_name}}},#{e|+|:#{w:#{E:@session_host_marker}},#{e|+|:#{w:${FOLD_RTXT}},13}}},#{client_width}}"
 FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[list=on]#[list=left-marker]‹#[list=right-marker]›#[list=on]${FOLD_ITEMS}#[nolist]#{?#{@session_host_marker},  #{E:@session_host_marker},}#{?${FOLD_FIT},${FOLD_RIGHT},}"
 if [[ $FOLDED == 1 ]]; then

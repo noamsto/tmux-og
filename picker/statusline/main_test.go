@@ -345,7 +345,7 @@ func TestRenderLineFull(t *testing.T) {
 		"  #[fg=#9a8,nobold]D ./" +
 		"  #[fg=#777]#[fg=#94e2d5]󰪞#[fg=default] " +
 		" #[align=right]" +
-		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I nvim}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I nvim}}} "
 	if got != want {
 		t.Fatalf("renderLine\n got %q\nwant %q", got, want)
 	}
@@ -400,7 +400,7 @@ func TestRenderLineUntrustedDirSuppressesAgentGlyph(t *testing.T) {
 		"  #[fg=#9a8,nobold]D ./" +
 		"  #[fg=#777]" +
 		" #[align=right]" +
-		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I nvim}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I nvim}}} "
 	if got != want {
 		t.Fatalf("renderLine untrusted\n got %q\nwant %q", got, want)
 	}
@@ -429,7 +429,7 @@ func TestRenderLineBridgeWinSuppressesDir(t *testing.T) {
 		"#[fg=#c6a] #[range=left]S work#[norange]  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
-		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I nvim}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I nvim}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge\n got %q\nwant %q", got, want)
 	}
@@ -442,7 +442,7 @@ func TestRenderLineBridgeHost(t *testing.T) {
 	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
-		session: "g6-main", bridgeWin: "1", bridgeHost: "g6",
+		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", localHost: "lh",
 		iconSession: "S", iconRemote: "R",
 		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
 		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky",
@@ -455,8 +455,8 @@ func TestRenderLineBridgeHost(t *testing.T) {
 		"#[fg=" + g6Hex + "]R g6  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
-		"#[fg=" + g6Hex + "]g6  " +
-		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I zsh}}}  " +
+		"#[fg=" + g6Hex + "]#{p-2:#{=2:#{l:g6}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge host\n got %q\nwant %q", got, want)
 	}
@@ -470,7 +470,7 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
-		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "disconnected",
+		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", localHost: "lh", bridgeState: "disconnected",
 		iconSession: "S", iconRemote: "R",
 		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
 		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky", thmRed: "#f00",
@@ -484,8 +484,8 @@ func TestRenderLineBridgeStateDisconnected(t *testing.T) {
 		"#[fg=#f00]" + bridgeDisconnectedGlyph + "  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
-		"#[fg=" + g6Hex + "]g6  " +
-		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I zsh}}}  " +
+		"#[fg=" + g6Hex + "]#{p-2:#{=2:#{l:g6}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge disconnected\n got %q\nwant %q", got, want)
 	}
@@ -499,7 +499,7 @@ func TestRenderLineBridgeStateParked(t *testing.T) {
 	mustMkdirAll(t, dir+"/panes", 0o755)
 
 	a := args{
-		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", bridgeState: "parked",
+		session: "g6-main", bridgeWin: "1", bridgeHost: "g6", localHost: "lh", bridgeState: "parked",
 		iconSession: "S", iconRemote: "R",
 		thmBg: "#000", thmMauve: "#c6a", thmSubtext0: "#9a8", thmOverlay1: "#777",
 		thmPeach: "#fab", thmTeal: "#tea", thmPink: "#pnk", thmYellow: "#yel", thmSky: "#sky", thmRed: "#f00",
@@ -513,16 +513,16 @@ func TestRenderLineBridgeStateParked(t *testing.T) {
 		"#[fg=#777]" + bridgeParkedGlyph + " offline — press a key  " +
 		"  #[fg=#777]" +
 		" #[align=right]" +
-		"#[fg=" + g6Hex + "]g6  " +
-		"#[fg=#9a8]#{p-17:#{=/16/…:#{l:I zsh}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I zsh}}}  " +
+		"#[fg=" + g6Hex + "]#{p-2:#{=2:#{l:g6}}} "
 	if got != want {
 		t.Fatalf("renderLine bridge parked\n got %q\nwant %q", got, want)
 	}
 }
 
 func TestPaneSlot(t *testing.T) {
-	got := paneSlot("I", "nvim", false)
-	want := "#{p-17:#{=/16/…:#{l:I nvim}}}"
+	got := paneSlot("I", "nvim")
+	want := "#{p10:#{=/9/…:#{l:I nvim}}}"
 	if got != want {
 		t.Fatalf("paneSlot\n got %q\nwant %q", got, want)
 	}
@@ -532,8 +532,8 @@ func TestPaneSlot(t *testing.T) {
 // swallows the missing icon's cells, so the slot's shape — modifiers, widths,
 // leading space before cmd — stays the same regardless of icon width.
 func TestPaneSlotEmptyIcon(t *testing.T) {
-	got := paneSlot("", "fish", false)
-	want := "#{p-17:#{=/16/…:#{l: fish}}}"
+	got := paneSlot("", "fish")
+	want := "#{p10:#{=/9/…:#{l: fish}}}"
 	if got != want {
 		t.Fatalf("paneSlot empty icon\n got %q\nwant %q", got, want)
 	}
@@ -541,35 +541,47 @@ func TestPaneSlotEmptyIcon(t *testing.T) {
 
 func TestPaneSlotStripsFormatChars(t *testing.T) {
 	for _, tc := range []struct{ icon, cmd, want string }{
-		{"I", "foo}bar", "#{p-17:#{=/16/…:#{l:I foobar}}}"},
-		{"I", "a#[bold]b", "#{p-17:#{=/16/…:#{l:I a[bold]b}}}"},
-		{"I", "x{y", "#{p-17:#{=/16/…:#{l:I xy}}}"},
-		{"#{", "sh", "#{p-17:#{=/16/…:#{l: sh}}}"},
+		{"I", "foo}bar", "#{p10:#{=/9/…:#{l:I foobar}}}"},
+		{"I", "a#[bold]b", "#{p10:#{=/9/…:#{l:I a[bold]b}}}"},
+		{"I", "x{y", "#{p10:#{=/9/…:#{l:I xy}}}"},
+		{"#{", "sh", "#{p10:#{=/9/…:#{l: sh}}}"},
 	} {
-		if got := paneSlot(tc.icon, tc.cmd, false); got != tc.want {
+		if got := paneSlot(tc.icon, tc.cmd); got != tc.want {
 			t.Errorf("paneSlot(%q, %q)\n got %q\nwant %q", tc.icon, tc.cmd, got, tc.want)
 		}
 	}
 }
 
-// TestPaneSlotAdjacentToUsage covers the #575 fix: adjacentToUsage=true flips
-// the pad modifier to right-pad (no minus), pushing the reserved blank cells
-// after the command instead of before it, mirroring TestPaneSlot/
-// TestPaneSlotEmptyIcon's style for the false case.
-func TestPaneSlotAdjacentToUsage(t *testing.T) {
-	if got, want := paneSlot("I", "nvim", true), "#{p17:#{=/16/…:#{l:I nvim}}}"; got != want {
-		t.Fatalf("paneSlot adjacent\n got %q\nwant %q", got, want)
-	}
-	if got, want := paneSlot("", "bash", true), "#{p17:#{=/16/…:#{l: bash}}}"; got != want {
-		t.Fatalf("paneSlot adjacent empty icon\n got %q\nwant %q", got, want)
+// TestPaneSlotWidthIndependentOfCommand pins the same box for a short command,
+// an aliased agent and a long truncated name: tmux renders every one at 10 cells.
+func TestPaneSlotWidthIndependentOfCommand(t *testing.T) {
+	for _, raw := range []string{"fish", "cursor-agent", "a-very-long-command-name-indeed"} {
+		got := paneSlot("I", paneCmdDisplay(raw, ""))
+		if !strings.HasPrefix(got, "#{p10:#{=/9/…:#{l:I ") || !strings.HasSuffix(got, "}}}") {
+			t.Errorf("paneSlot for %q has a command-dependent box: %q", raw, got)
+		}
 	}
 }
 
-// TestRenderLineUsageAdjacentToPaneSlot is the format-string-level regression
-// guard for #575: with a non-empty usage, renderLine must wire
-// adjacentToUsage=true through to paneSlot, so usage's output is immediately
-// followed by the right-padded (#{p17:...}, no minus) slot with no
-// characters in between.
+func TestPaneCmdDisplayAliases(t *testing.T) {
+	for cmd, want := range map[string]string{
+		"cursor-agent":      "cursor",
+		"opencode":          "ocode",
+		"process-compose":   "pcomp",
+		".opencode-wrapped": "ocode",
+		"claude":            "claude",
+	} {
+		if got := paneCmdDisplay(cmd, ""); got != want {
+			t.Errorf("paneCmdDisplay(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+	if got := paneCmdDisplay("og-remote-bridge-renderer", "cursor-agent"); got != "cursor" {
+		t.Errorf("bridgeProc must be aliased too, got %q", got)
+	}
+}
+
+// TestRenderLineUsageAdjacentToPaneSlot guards #575: usage's output is
+// immediately followed by the right-padded (#{p10:...}, no minus) slot.
 func TestRenderLineUsageAdjacentToPaneSlot(t *testing.T) {
 	dir := t.TempDir()
 	mustMkdirAll(t, dir+"/panes", 0o755)
@@ -590,7 +602,7 @@ func TestRenderLineUsageAdjacentToPaneSlot(t *testing.T) {
 		"  #[fg=#777]" +
 		" #[align=right]" +
 		usage +
-		"#[fg=#9a8]#{p17:#{=/16/…:#{l:I bash}}} "
+		"#[fg=#9a8]#{p10:#{=/9/…:#{l:I bash}}} "
 	if got != want {
 		t.Fatalf("renderLine usage adjacency\n got %q\nwant %q", got, want)
 	}
@@ -642,9 +654,8 @@ func TestPaneSlotPadDirectionLiveTmux(t *testing.T) {
 	// Wraps the rendered format in sentinel brackets and strips only those
 	// plus the trailing newline — a stray strings.TrimSpace would erase the
 	// exact leading/trailing pad cells this test exists to measure.
-	render := func(icon, cmd string, adjacentToUsage bool) string {
-		format := "[" + paneSlot(icon, cmd, adjacentToUsage) + "]"
-		show := exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", "t1", "-F", format)
+	render := func(format string) string {
+		show := exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", "t1", "-F", "["+format+"]")
 		show.Env = env
 		out, err := show.Output()
 		if err != nil {
@@ -656,26 +667,28 @@ func TestPaneSlotPadDirectionLiveTmux(t *testing.T) {
 		return s
 	}
 
-	for _, adjacent := range []bool{false, true} {
-		content := " sh" // empty icon leaves its own leading space before "sh"
-		got := render("", "sh", adjacent)
-		if n := len([]rune(got)); n != paneSlotPad {
-			t.Fatalf("short cmd adjacentToUsage=%v: rendered %d cells, want %d (%q)", adjacent, n, paneSlotPad, got)
-		}
-		fill := strings.Repeat(" ", paneSlotPad-len([]rune(content)))
-		want := fill + content
-		if adjacent {
-			want = content + fill
-		}
-		if got != want {
-			t.Fatalf("short cmd adjacentToUsage=%v\n got %q\nwant %q", adjacent, got, want)
-		}
+	content := " sh" // empty icon leaves its own leading space before "sh"
+	got := render(paneSlot("", "sh"))
+	if want := content + strings.Repeat(" ", paneSlotPad-len([]rune(content))); got != want {
+		t.Fatalf("short cmd\n got %q\nwant %q", got, want)
 	}
 
-	for _, adjacent := range []bool{false, true} {
-		got := render("", "a-very-long-command-name-indeed", adjacent)
-		if n := len([]rune(got)); n != paneSlotPad {
-			t.Fatalf("long cmd adjacentToUsage=%v: rendered %d cells, want %d (already-full box, no room for padding either way) (%q)", adjacent, n, paneSlotPad, got)
+	got = render(paneSlot("", "a-very-long-command-name-indeed"))
+	if n := len([]rune(got)); n != paneSlotPad {
+		t.Fatalf("long cmd: rendered %d cells, want %d (%q)", n, paneSlotPad, got)
+	}
+
+	// The host box left-pads to its width and truncates (no ellipsis) beyond it.
+	for _, tc := range []struct{ name, want string }{
+		{"lab", "     lab"},
+		{"halo-cluster", "halo-clu"},
+		{"nixos-01", "nixos-01"},
+	} {
+		a := args{localHost: "nixos-01", thmOverlay1: "#777"}
+		a.bridgeWin, a.bridgeHost, a.remoteBridgeHosts = "1", tc.name, "lab"
+		_, format, _ := strings.Cut(hostSegment(a), "]")
+		if got := render(format); got != tc.want {
+			t.Errorf("host %q\n got %q\nwant %q", tc.name, got, tc.want)
 		}
 	}
 }
@@ -862,11 +875,12 @@ func TestRenderLineHostTopRight(t *testing.T) {
 	render := func(a args) string {
 		return right(renderLine(a, t.TempDir(), false, "dark", false, 0, "", nil))
 	}
+	slot := "#[fg=#9a8]#{p10:#{=/9/…:#{l:I zsh}}}  "
 
 	local := hostLineArgs()
 	local.localHost = "nixos"
-	if got, want := render(local), "#[fg=#777]nixos  #[fg=#9a8]"; !strings.HasPrefix(got, want) {
-		t.Fatalf("local window: got %q, want prefix %q", got, want)
+	if got, want := render(local), slot+"#[fg=#777]#{p-5:#{=5:#{l:nixos}}} "; got != want {
+		t.Fatalf("local window: got %q, want %q", got, want)
 	}
 
 	placed := hostLineArgs()
@@ -875,8 +889,8 @@ func TestRenderLineHostTopRight(t *testing.T) {
 	placed.hostMarker = "#[fg=#fab]⇄ lab"
 	placed.remoteBridgeHosts = "lab"
 	hex := placed.hostHex("lab")
-	if got, want := render(placed), "#[fg="+hex+"]lab  #[fg=#9a8]"; !strings.HasPrefix(got, want) {
-		t.Fatalf("placed mirror: got %q, want prefix %q", got, want)
+	if got, want := render(placed), slot+"#[fg="+hex+"]#{p-5:#{=5:#{l:lab}}} "; got != want {
+		t.Fatalf("placed mirror: got %q, want %q", got, want)
 	}
 
 	dedicated := hostLineArgs()
@@ -884,18 +898,40 @@ func TestRenderLineHostTopRight(t *testing.T) {
 	dedicated.bridgeWin, dedicated.bridgeHost = "1", "lab"
 	dedicated.remoteBridgeHosts = "lab"
 	hex = dedicated.hostHex("lab")
-	if got, want := render(dedicated), "#[fg="+hex+"]lab  #[fg=#9a8]"; !strings.HasPrefix(got, want) {
-		t.Fatalf("dedicated mirror: got %q, want prefix %q", got, want)
+	if got, want := render(dedicated), slot+"#[fg="+hex+"]#{p-5:#{=5:#{l:lab}}} "; got != want {
+		t.Fatalf("dedicated mirror: got %q, want %q", got, want)
 	}
 
 	none := hostLineArgs()
-	if got := render(none); !strings.HasPrefix(got, "#[fg=#9a8]") {
-		t.Fatalf("no host must emit nothing before the pane slot: %q", got)
+	if got, want := render(none), "#[fg=#9a8]#{p10:#{=/9/…:#{l:I zsh}}} "; got != want {
+		t.Fatalf("no host must emit no host box or separator: got %q, want %q", got, want)
 	}
 
 	long := hostLineArgs()
 	long.localHost = "a-very-long-hostname-indeed"
-	if got := render(long); strings.Contains(got, "indeed") {
-		t.Fatalf("host must be clipped: %q", got)
+	if got := render(long); !strings.Contains(got, "#{p-16:#{=16:#{l:a-very-long-hostname-indeed}}}") {
+		t.Fatalf("host box must be capped at 16 and truncated by tmux: %q", got)
+	}
+}
+
+// The right block is usage, slot, host (host last), and the host box keeps one
+// width for a local window and for a mirror whose name is longer than every
+// configured host.
+func TestRenderLineRightBlockOrderAndHostWidth(t *testing.T) {
+	usage := "#[fg=#0f0]42%·5h  "
+	local := hostLineArgs()
+	local.localHost = "tp-g6"
+	local.remoteBridgeHosts = "halo lab"
+	mirror := local
+	mirror.bridgeWin, mirror.bridgeHost = "1", "halo"
+	unlisted := local
+	unlisted.bridgeWin, unlisted.bridgeHost = "1", "a-mirror-not-in-the-list"
+
+	for name, a := range map[string]args{"local": local, "mirror": mirror, "unlisted mirror": unlisted} {
+		got := renderLine(a, t.TempDir(), false, "dark", false, 0, usage, nil)
+		iu, is, ih := strings.Index(got, usage), strings.Index(got, "#{p10:"), strings.LastIndex(got, "#{p-5:#{=5:")
+		if iu < 0 || is < 0 || ih < 0 || iu >= is || is >= ih {
+			t.Errorf("%s: want usage < slot < host box of width 5, got %q", name, got)
+		}
 	}
 }
