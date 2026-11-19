@@ -162,7 +162,7 @@ func placedViewing(out, sock string) bool {
 // parkDimStyle paints a parked mirror window's panes as tmux-og already
 // paints an inactive one: default-foreground text in the theme's overlay
 // colour, on the mantle background.
-const parkDimStyle = "fg=#{@thm_overlay_0},bg=#{@thm_mantle}"
+const parkDimStyle = "fg=#{?@og_c_park,#{@og_c_park},#{@thm_overlay_0}},bg=#{@thm_mantle}"
 
 // parkDimOptions are stamped together because a per-window value replaces
 // the inherited global one rather than merging with it — dimming only

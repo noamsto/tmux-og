@@ -142,6 +142,10 @@ func main() {
 		runHostColors(os.Stdout, os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "status-roles" {
+		runStatusRoles(os.Stdout, os.Args[2:])
+		return
+	}
 	if err := applyConfig(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -1589,6 +1593,20 @@ func roleHex(opts map[string]string, r palette.Role) string {
 
 func roleHexTheme(opts map[string]string, light bool, r palette.Role) string {
 	return envOrMap(r.Env(light), opts, r.Opt(light), r.Hex(light))
+}
+
+// runStatusRoles prints "name value" per palette.StatusRoles entry for the
+// flavor in args[0]: the @thm_* option the role reads, or a literal #rrggbb
+// when the theme has no option for it. Any flavor but latte prints Mocha's.
+func runStatusRoles(w io.Writer, args []string) {
+	light := len(args) > 0 && args[0] == "latte"
+	for _, n := range palette.StatusRoles {
+		v := n.Role.Opt(light)
+		if v == "" {
+			v = n.Role.Hex(light)
+		}
+		_, _ = fmt.Fprintf(w, "%s %s\n", n.Name, v)
+	}
 }
 
 var hostColorsNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*$`)

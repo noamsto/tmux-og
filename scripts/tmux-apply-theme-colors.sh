@@ -51,6 +51,32 @@ thm_red=$(tmux show -gv @thm_red 2>/dev/null | tr -d '"')
 # Bail if catppuccin hasn't loaded yet
 [[ -z $thm_mauve || -z $thm_bg ]] && exit 0
 
+# --- Status-bar roles ---
+# picker_generate owns the role table (palette.StatusRoles): per flavor each role
+# is a @thm_* option or a literal hex. Stamp @og_c_<name> so every status format
+# reads one option that follows the flavor. Skipped for a raw-script test copy
+# (placeholder unsubstituted). Otherwise the old stamps are cleared first, so an
+# empty or failed call leaves them unset, never stale from the previous flavor.
+gen="@picker_generate@"
+if [[ $gen != @* ]]; then
+	flavor=$(tmux show -gv @catppuccin_flavor 2>/dev/null | tr -d '"')
+	while read -r opt _; do
+		[[ $opt == @og_c_* ]] && tmux set -gu "$opt"
+	done < <(tmux show -g 2>/dev/null)
+	roles=$("$gen" status-roles "$flavor" 2>/dev/null || true)
+	while read -r name value; do
+		[[ $name =~ ^[a-z_]+$ ]] || continue
+		if [[ $value =~ ^@thm_[a-z0-9_]+$ ]]; then
+			tmux set -gF "@og_c_$name" "#{$value}"
+		elif [[ $value =~ ^#[0-9a-fA-F]{6}$ ]]; then
+			tmux set -g "@og_c_$name" "$value"
+		fi
+	done <<<"$roles"
+fi
+# pane-border-style cannot hold a nested format, so read the stamped value back.
+og_dim=$(tmux show -gv @og_c_dim 2>/dev/null | tr -d '"')
+[[ -n $og_dim ]] || og_dim=$thm_overlay_1
+
 # --- Pane borders ---
 # Nested #{@thm_*} inside #[] don't expand at render time, so we interpolate here.
 # Branch order, first match wins: float label → aeye carousel → role pane →
@@ -69,7 +95,7 @@ thm_red=$(tmux show -gv @thm_red 2>/dev/null | tr -d '"')
 # glyph with no #[...] directive, so its width measures correctly below.
 ROLE_NAME='#{?@bridge_crew_role,#{@bridge_crew_role},#{@crew_role}}'
 STATE='#{?@bridge_crew_role,#{@bridge_crew_state},#{@crew_state}}'
-STATE_GLYPH="#{?#{==:${STATE},working},#[fg=${thm_green}]●#[default],#{?#{==:${STATE},idle},#[fg=${thm_overlay_1}]○#[default],#{?#{==:${STATE},blocked},#[fg=${thm_peach}]⚠#[default],#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},#[fg=${thm_green}]✓#[default],#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},#[fg=${thm_red}]✗#[default],#{?${STATE},#[fg=${thm_overlay_1}]○#[default],}}}}}}"
+STATE_GLYPH="#{?#{==:${STATE},working},#[fg=${thm_green}]●#[default],#{?#{==:${STATE},idle},#[fg=${og_dim}]○#[default],#{?#{==:${STATE},blocked},#[fg=${thm_peach}]⚠#[default],#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},#[fg=${thm_green}]✓#[default],#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},#[fg=${thm_red}]✗#[default],#{?${STATE},#[fg=${og_dim}]○#[default],}}}}}}"
 STATE_GLYPH_PLAIN="#{?#{==:${STATE},working},●,#{?#{==:${STATE},idle},○,#{?#{==:${STATE},blocked},⚠,#{?#{||:#{==:${STATE},done},#{==:${STATE},pr_open}},✓,#{?#{||:#{==:${STATE},failed},#{==:${STATE},exited}},✗,#{?${STATE},○,}}}}}}"
 
 # aeye's own image-carousel pane option, the bridge-shipped marker for a
@@ -115,13 +141,13 @@ NAME_SEG="${HOST_SEG}#{?${CODENAME},#{?${HOST_PLAIN}, · ,}#[bold]${CODENAME}#[n
 STATE_SEG="#{?${LEAD_STATE},#{?#{||:${HOST_PLAIN},${CODENAME}}, · ,}${LEAD_STATE},}"
 TITLE_SEG="#{?${TITLE_SHOWN},#{?#{||:#{||:${HOST_PLAIN},${CODENAME}},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_SHOWN}},}"
 
-FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ #{@pane_label} ━━}"
-AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━ aeye ━━}"
+FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ #{@pane_label} ━━}"
+AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ aeye ━━}"
 ROLE_BRANCH="━━ #[bold]${ROLE_NAME}#[nobold]#{?${STATE}, ${STATE_GLYPH} ${STATE},} ━━"
 ANCHOR_BRANCH="━━ ${NAME_SEG}${STATE_SEG}${TITLE_SEG} ━━"
 # A sole or zoomed active pane gets no label, so its border stays one unbroken
 # line in the active colour; grey dashes there would break that line.
-PLAIN_BRANCH="#{?pane_active,#{?#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,},#[bg=${thm_bg}]#[fg=${thm_overlay_1}]━━━━━}"
+PLAIN_BRANCH="#{?pane_active,#{?#{&&:#{>:#{window_panes},1},#{==:#{window_zoomed_flag},0}},#[fg=${thm_mauve}]━━ #[fg=${thm_green}]●#[fg=${thm_mauve}] ━━,},#[bg=${thm_bg}]#[fg=${og_dim}]━━━━━}"
 
 ROLE_COND="#{&&:#{!=:${ROLE_NAME},},#{!=:${ROLE_NAME},lead}}"
 ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_SHOWN},},#{||:#{!=:${HOST_PLAIN},},#{||:#{!=:${CODENAME},},#{&&:#{!=:${TITLE_RAW},},#{!=:${LEAD_STATE},}}}}}}"
@@ -133,11 +159,11 @@ tmux setw -g pane-border-format \
 # role colour (bridged, then local) → window agent colour (bridged, then local
 # while occupied, the status bar's #671 gate) → mauve/overlay_1.
 ROLE_COLOR_CHAIN_MAUVE="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_mauve}},${thm_mauve}}}}}"
-ROLE_COLOR_CHAIN_OVERLAY="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_overlay_1}},${thm_overlay_1}}}}}"
+ROLE_COLOR_CHAIN_OVERLAY="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${og_dim}},${og_dim}}}}}"
 tmux setw -g pane-active-border-style \
 	"bg=${thm_bg},fg=#{?${AEYE},${thm_mauve},${ROLE_COLOR_CHAIN_MAUVE}}"
 tmux setw -g pane-border-style \
-	"bg=${thm_bg},fg=#{?${AEYE},${thm_overlay_1},${ROLE_COLOR_CHAIN_OVERLAY}}"
+	"bg=${thm_bg},fg=#{?${AEYE},${og_dim},${ROLE_COLOR_CHAIN_OVERLAY}}"
 
 # --- tmux-fingers hints (requires colourN format, not hex) ---
 tmux set -g @fingers-hint-style "fg=colour$(hex_to_256 "$thm_crust"),bg=colour$(hex_to_256 "$thm_mauve"),bold"

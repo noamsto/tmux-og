@@ -52,11 +52,12 @@ setup() {
 	for v in thm_bg thm_mauve thm_subtext_0 thm_fg thm_overlay_0 thm_overlay_1 thm_green thm_red; do
 		tmux set -g "@$v" "#000000"
 	done
-	tmux set -g @thm_peach "#fab387"
-	tmux set -g @thm_teal "#94e2d5"
-	tmux set -g @thm_pink "#f5c2e7"
-	tmux set -g @thm_yellow "#f9e2af"
-	tmux set -g @thm_sky "#89dceb"
+	tmux set -g @og_c_dim "#000000"
+	tmux set -g @og_c_host_peach "#fab387"
+	tmux set -g @og_c_host_teal "#94e2d5"
+	tmux set -g @og_c_host_pink "#f5c2e7"
+	tmux set -g @og_c_host_yellow "#f9e2af"
+	tmux set -g @og_c_host_sky "#89dceb"
 }
 
 teardown() {
@@ -77,7 +78,7 @@ stamp_placed() {
 # The colour token the picker assigns $2 within the configured set $1.
 picker_token() {
 	local hosts=$1 host=$2
-	"$PICKER_GENERATE" host-colors "$hosts" "$host" | awk -v h="$host" '$1 == h { printf "#{@thm_%s}", $2 }'
+	"$PICKER_GENERATE" host-colors "$hosts" "$host" | awk -v h="$host" '$1 == h { printf "#{@og_c_host_%s}", $2 }'
 }
 
 @test "placed windows from two hosts take the picker's per-host colours" {
@@ -122,7 +123,7 @@ picker_token() {
 	local lab srv
 	lab="$(picker_token "lab serverless" lab)"
 	srv="$(picker_token "lab serverless" serverless)"
-	[ "$(tmux show -v @session_host_marker)" = "#[fg=#{@thm_overlay_1}]⇄ #[fg=${lab}]lab#[fg=#{@thm_overlay_1}] · #[fg=${srv}]serverless" ]
+	[ "$(tmux show -v @session_host_marker)" = "#[fg=#{@og_c_dim}]⇄ #[fg=${lab}]lab#[fg=#{@og_c_dim}] · #[fg=${srv}]serverless" ]
 
 	local expanded
 	expanded="$(tmux display-message -t S -p '#{E:@session_host_marker}')"

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/noamsto/tmux-og/picker/hostcolor"
+	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 func TestCollectorArgvCarriesNotModalFilter(t *testing.T) {
@@ -711,6 +714,48 @@ func TestPaneMapReadsTwelveFieldRows(t *testing.T) {
 	}
 	if _, ok := pm["6"]; ok {
 		t.Error("paneMap() accepted an 11-field row")
+	}
+}
+
+func TestRunStatusRoles(t *testing.T) {
+	parse := func(args ...string) map[string]string {
+		var buf strings.Builder
+		runStatusRoles(&buf, args)
+		got := map[string]string{}
+		for l := range strings.SplitSeq(strings.TrimSpace(buf.String()), "\n") {
+			f := strings.Fields(l)
+			if len(f) != 2 {
+				t.Fatalf("bad line %q", l)
+			}
+			got[f[0]] = f[1]
+		}
+		return got
+	}
+	mocha := parse("mocha")
+	if len(mocha) != len(palette.StatusRoles) {
+		t.Errorf("mocha prints %d roles, want %d", len(mocha), len(palette.StatusRoles))
+	}
+	for _, n := range palette.StatusRoles {
+		if got := mocha[n.Name]; got != n.Role.DarkOpt || !strings.HasPrefix(got, "@thm_") {
+			t.Errorf("mocha %s = %q, want %s", n.Name, got, n.Role.DarkOpt)
+		}
+	}
+	for _, args := range [][]string{nil, {""}, {"frappe"}} {
+		if got := parse(args...); !maps.Equal(got, mocha) {
+			t.Errorf("flavor %q differs from mocha: %v", args, got)
+		}
+	}
+	latte := parse("latte")
+	if len(latte) != len(palette.StatusRoles) {
+		t.Errorf("latte prints %d roles, want %d", len(latte), len(palette.StatusRoles))
+	}
+	if latte["dim"] != "@thm_overlay_2" || latte["pr_success"] != "@thm_teal" {
+		t.Errorf("latte options = %v", latte)
+	}
+	for _, h := range []string{"host_peach", "host_teal", "host_pink", "host_yellow", "host_sky"} {
+		if !regexp.MustCompile(`^#[0-9a-f]{6}$`).MatchString(latte[h]) {
+			t.Errorf("latte %s = %q, want a literal hex", h, latte[h])
+		}
 	}
 }
 

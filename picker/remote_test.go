@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/hostcolor"
-	"github.com/noamsto/tmux-og/picker/palette"
 )
 
 // noRestore is a stub restoreProbe for tests that don't exercise the
@@ -1520,16 +1519,18 @@ func TestHostColorFuncThemes(t *testing.T) {
 		}
 	}
 	lopts := map[string]string{"@remote_bridge_hosts": "a,b,c,d,e", "@catppuccin_flavor": "latte"}
-	allowed := map[string]bool{ansiFg(palette.Highlight.LightHex): true, ansiFg(palette.Teal.LightHex): true}
+	allowed := map[string]bool{}
+	for _, r := range hostLightRoles {
+		allowed[ansiFg(r.LightHex)] = true
+	}
 	for _, c := range slots(lopts) {
 		if !allowed[c] {
-			t.Errorf("light colour %q not maroon/teal", c)
+			t.Errorf("light colour %q not a host light role", c)
 		}
 	}
 	for i, p := range hostPalette {
-		wantHex := hostLightRoles[i].LightHex
-		if wantHex != "#e64553" && wantHex != "#179299" {
-			t.Errorf("slot %d light hex %s (palette %s)", i, wantHex, p[0])
+		if hostLightRoles[i].DarkOpt != "@thm_"+strings.ToLower(strings.TrimPrefix(p[0], "THM_")) {
+			t.Errorf("slot %d light role %+v does not match palette %s", i, hostLightRoles[i], p[0])
 		}
 	}
 }

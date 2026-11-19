@@ -29,7 +29,11 @@ func (r Role) Hex(light bool) string {
 }
 
 // Env returns the THM_* environment variable carrying the role's colour.
+// A literal role (no option for the theme) has no override and returns "".
 func (r Role) Env(light bool) string {
+	if r.Opt(light) == "" {
+		return ""
+	}
 	return "THM_" + strings.ToUpper(strings.TrimPrefix(r.Opt(light), "@thm_"))
 }
 
@@ -70,10 +74,35 @@ var (
 	Mantle    = rl("@thm_mantle", "#181825", "@thm_mantle", "#e6e9ef")
 )
 
+// Status-bar roles. Dark halves are the @thm_* options the bar always drew.
+// The host tints have no Latte option clearing 3:1, so their light half is a
+// literal hex (empty LightOpt).
+var (
+	StatusDim       = rl("@thm_overlay_1", "#7f849c", "@thm_overlay_2", "#7c7f93")
+	StatusPRClosed  = rl("@thm_overlay_0", "#6c7086", "@thm_subtext_1", "#6c6f85")
+	StatusPRPending = rl("@thm_peach", "#fab387", "@thm_maroon", "#e64553")
+	StatusPRSuccess = rl("@thm_green", "#a6e3a1", "@thm_teal", "#179299")
+	StatusPark      = rl("@thm_overlay_0", "#6c7086", "@thm_overlay_2", "#7c7f93")
+	HostPeach       = rl("@thm_peach", "#fab387", "", "#c4500a")
+	HostTeal        = rl("@thm_teal", "#94e2d5", "", "#179299")
+	HostPink        = rl("@thm_pink", "#f5c2e7", "", "#c03fa0")
+	HostYellow      = rl("@thm_yellow", "#f9e2af", "", "#8f7000")
+	HostSky         = rl("@thm_sky", "#89dceb", "", "#127eae")
+)
+
 // NamedRole labels a role for contrast reports.
 type NamedRole struct {
 	Name string
 	Role Role
+}
+
+// StatusRoles lists every role the status bar stamps as @og_c_<name>; the
+// names are a contract with the scripts and the tmux config.
+var StatusRoles = []NamedRole{
+	{"dim", StatusDim}, {"pr_closed", StatusPRClosed}, {"pr_pending", StatusPRPending},
+	{"pr_success", StatusPRSuccess}, {"park", StatusPark},
+	{"host_peach", HostPeach}, {"host_teal", HostTeal}, {"host_pink", HostPink},
+	{"host_yellow", HostYellow}, {"host_sky", HostSky},
 }
 
 // RowRoles lists every foreground role the session and window row builders
@@ -83,6 +112,8 @@ var RowRoles = []NamedRole{
 	{"Faint", Faint}, {"Muted", Muted}, {"Accent", Accent},
 	{"Highlight", Highlight}, {"Warn", Warn}, {"Success", Success},
 	{"LevelMed", LevelMed}, {"Mauve", Mauve}, {"Blue", Blue}, {"Teal", Teal},
+	{"host_peach", HostPeach}, {"host_teal", HostTeal}, {"host_pink", HostPink},
+	{"host_yellow", HostYellow}, {"host_sky", HostSky},
 }
 
 const (
@@ -140,7 +171,15 @@ func buildPairs() []Pair {
 		{"splash", "Primary/Base", Primary, Base, FloorPrimary},
 		{"splash", "Accent/Base", Accent, Base, FloorSecondary},
 	}
-	return append(ps, chrome...)
+	ps = append(ps, chrome...)
+	for _, sr := range StatusRoles {
+		surface, bg, bgName := "status bar", Base, "Base"
+		if sr.Name == "park" {
+			surface, bg, bgName = "park", Mantle, "Mantle"
+		}
+		ps = append(ps, Pair{surface, sr.Name + "/" + bgName, sr.Role, bg, FloorSecondary})
+	}
+	return ps
 }
 
 func lum(hex string) float64 {

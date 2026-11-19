@@ -1040,11 +1040,10 @@ var hostPalette = [...][2]string{
 	{"THM_SKY", "#89dceb"},
 }
 
-// hostLightRoles remaps the hostPalette slots in the light theme, where only
-// maroon and teal clear 3:1 against the Latte backgrounds. Slots collapse onto
-// two hues, so one host no longer matches its status-bar colour there.
+// hostLightRoles are the hostPalette slots in the light theme: the same
+// darkened tints the status bar stamps as @og_c_host_<slot>.
 var hostLightRoles = [len(hostPalette)]palette.Role{
-	palette.Highlight, palette.Teal, palette.Highlight, palette.Teal, palette.Teal,
+	palette.HostPeach, palette.HostTeal, palette.HostPink, palette.HostYellow, palette.HostSky,
 }
 
 // hostColorFunc returns the per-host tint drawn everywhere a host or one of

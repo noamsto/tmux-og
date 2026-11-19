@@ -1158,7 +1158,7 @@
                 nativeBuildInputs = [pkgs.gnugrep];
                 CONF = tmuxConfig.tmuxConf;
               } ''
-                if ! grep -qF '#{?#{@bridge_placed},#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}' "$CONF"; then
+                if ! grep -qF '#{?#{@bridge_placed},#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@og_c_host_peach}}' "$CONF"; then
                   echo "status-format[1] has no @bridge_placed-gated per-host-coloured host badge — see docs/agents/status-bar.md" >&2
                   exit 1
                 fi
@@ -2815,6 +2815,28 @@
                 cp -r ${scriptsSrc coreScripts} scripts
                 cp -r ${testsSrc ["reflow-host-colour.bats"]} tests
                 bats tests/reflow-host-colour.bats
+                touch $out
+              '';
+
+            # Status-bar colour roles (#1203): the BUILT apply script (placeholder
+            # resolved) stamps @og_c_* for both flavors, and every @og_c_ name the
+            # formats/scripts/Go renderers reference exists in status-roles.
+            status-colors-tests =
+              pkgs.runCommand "status-colors-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.gawk pkgs.tmux];
+                PICKER_GENERATE = "${(import ./picker {inherit pkgs lib;})}/bin/tmux-picker-generate";
+                APPLY_SCRIPT = "${tmuxConfig.script.tmux-apply-theme-colors}/bin/tmux-apply-theme-colors";
+                LANG = "C.UTF-8";
+                LC_ALL = "C.UTF-8";
+              } ''
+                cp -r ${scriptsSrc (lib.attrNames (lib.filterAttrs (n: t: t == "regular" && lib.hasSuffix ".sh" n) (builtins.readDir ./scripts)))} scripts
+                cp -r ${testsSrc ["status-colors.bats"]} tests
+                mkdir -p config generator/render picker/remotebridge/daemon
+                cp ${./config/tmux.conf.tmpl} config/tmux.conf.tmpl
+                cp ${./config/tmux.conf.reference.nix} config/tmux.conf.reference.nix
+                cp ${./generator/render/status.go} generator/render/status.go
+                cp ${./picker/remotebridge/daemon/park.go} picker/remotebridge/daemon/park.go
+                bats tests/status-colors.bats
                 touch $out
               '';
 

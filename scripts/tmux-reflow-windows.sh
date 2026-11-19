@@ -594,7 +594,7 @@ if ((host_any)); then
 		picker_generate="@picker_generate@"
 		if [[ $picker_generate != @* ]]; then
 			while read -r h c; do
-				[[ $c =~ ^(peach|teal|pink|yellow|sky)$ ]] && host_color[$h]="#{@thm_$c}"
+				[[ $c =~ ^(peach|teal|pink|yellow|sky)$ ]] && host_color[$h]="#{@og_c_host_$c}"
 			done < <("$picker_generate" host-colors "$BRIDGE_HOSTS" "${marker_hosts[@]}" 2>/dev/null)
 		fi
 		sort_marker_hosts
@@ -697,13 +697,13 @@ flush_window_chunk
 # batch below: the value carries '#[' and '#{' that a re-parse would eat. Unset
 # when no placed window remains so a departed host's marker never lingers.
 if ((${#marker_hosts[@]})); then
-	marker="#[fg=#{@thm_overlay_1}]⇄"
+	marker="#[fg=#{@og_c_dim}]⇄"
 	marker_fallback='#{@thm_subtext_0}'
 	sep=" "
 	for h in "${marker_hosts[@]}"; do
 		hc=${host_color[$h]:-$marker_fallback}
 		marker+="${sep}#[fg=${hc}]${h}"
-		sep="#[fg=#{@thm_overlay_1}] · "
+		sep="#[fg=#{@og_c_dim}] · "
 	done
 	tmux set -t "$SESSION" @session_host_marker "$marker"
 else
@@ -788,15 +788,15 @@ ICONFG="#{?window_active,#[fg=#{@thm_fg}#,bg=#{@thm_bg}#,nobold],}"
 # a live one. No PR → no color directive. Rendered on the glyph half
 # (@window_pr_glyph) only — PRNUM below tints the #<n> half separately, and
 # @window_pr_pad is just column padding with no color of its own.
-PRCOLOR="#{?#{&&:${bopt[pr_number]},#{!=:${bopt[pr_number]},none}},#{?#{==:${bopt[pr_state]},merged},#[fg=#{@thm_mauve}],#{?#{==:${bopt[pr_state]},closed},#[fg=#{@thm_overlay_0}],#{?#{||:#{==:${bopt[pr_check_state]},failure},#{==:${bopt[pr_mergeable]},conflicting}},#[fg=#{@thm_red}],#{?#{==:${bopt[pr_check_state]},pending},#[fg=#{@thm_peach}],#[fg=#{@thm_green}]}}}},}"
+PRCOLOR="#{?#{&&:${bopt[pr_number]},#{!=:${bopt[pr_number]},none}},#{?#{==:${bopt[pr_state]},merged},#[fg=#{@thm_mauve}],#{?#{==:${bopt[pr_state]},closed},#[fg=#{@og_c_pr_closed}],#{?#{||:#{==:${bopt[pr_check_state]},failure},#{==:${bopt[pr_mergeable]},conflicting}},#[fg=#{@thm_red}],#{?#{==:${bopt[pr_check_state]},pending},#[fg=#{@og_c_pr_pending}],#[fg=#{@og_c_pr_success}]}}}},}"
 # The #<n> half: tinted by review decision and underlined for a queued
 # auto-merge, open PRs only. With no decision it keeps PRCOLOR's tint.
-PRNUM="#{?#{==:${bopt[pr_state]},open},#{?#{==:${bopt[pr_review]},approved},#[fg=#{@thm_green}],#{?#{==:${bopt[pr_review]},changes_requested},#[fg=#{@thm_red}],#{?#{==:${bopt[pr_review]},review_required},#[fg=#{@thm_overlay_0}],}}}#{?${bopt[pr_auto_merge]},#[underscore],},}"
+PRNUM="#{?#{==:${bopt[pr_state]},open},#{?#{==:${bopt[pr_review]},approved},#[fg=#{@og_c_pr_success}],#{?#{==:${bopt[pr_review]},changes_requested},#[fg=#{@thm_red}],#{?#{==:${bopt[pr_review]},review_required},#[fg=#{@og_c_pr_closed}],}}}#{?${bopt[pr_auto_merge]},#[underscore],},}"
 # "Last active" column for halted Claude windows (@window_claude_ago, kept fresh
 # by tmux-update-icons). Right-aligned and padded to AGO_W's fixed width so the
 # value (and an empty value, for active/non-claude windows) always occupies the
 # same cells — this is what keeps grid columns aligned as the value ticks and appears.
-AGO=" #[fg=#{@thm_overlay_1}]#{p-3:@window_claude_ago}"
+AGO=" #[fg=#{@og_c_dim}]#{p-3:@window_claude_ago}"
 # Agent-badge segment, emitted after "index: " (the @window_crew_disp carries a
 # trailing separator space). Tinted by its stamped @crew_color; re-assert BASE
 # after it so the label reverts to the tab color instead of inheriting the tint.
@@ -808,7 +808,7 @@ CREW=""
 # before the crew badge. Emitted only when some window carries one (host_any),
 # like the crew badge.
 HOST=""
-((host_any)) && HOST="#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
+((host_any)) && HOST="#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@og_c_host_peach}}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
 # A placed tab's index takes the same colour as its badge; non-placed tabs keep
 # BASE. BASE is re-asserted after it so the label reverts to the tab colour.
 IDXC="${IDX}"
@@ -831,13 +831,13 @@ ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${CREW}${L
 # tmux trims the list, not the right segment, to make room, so the right segment
 # is gated in-format on everything fitting: #{w:} ignores #[..] styles.
 FOLD_MIRROR='#{||:#{@bridge_win},#{@bridge_placed}}'
-FOLD_HC='#{?#{@window_host_color},#{E:@window_host_color},#{@thm_peach}}'
+FOLD_HC='#{?#{@window_host_color},#{E:@window_host_color},#{@og_c_host_peach}}'
 FOLD_IDX="#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_subtext_0}]}#{window_index}"
 FOLD_CUR="#[list=focus] #[bold]#{?${FOLD_MIRROR},#[fg=${FOLD_HC}],#[fg=#{@thm_mauve}]}#{window_index}#[fg=#{@thm_mauve}]: #{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@icon_remote} #{@bridge_host} #[fg=#{@thm_mauve}],}#{=/40/…:#{@window_label_id}#{@window_label_rest_long}}#[nobold]#[list=on]"
 FOLD_OTH="#[nobold] ${FOLD_IDX}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@icon_remote},} #{@window_icon_display}"
 FOLD_ITEMS="#{W:#{?window_active,${FOLD_CUR},${FOLD_OTH}}}"
 FOLD_RTXT="#{?#{@og_usage_short},#{@og_usage_short} ,}#{?${FOLD_MIRROR},#{@bridge_host},#{host_short}}"
-FOLD_RIGHT="#[align=right]#{?#{@og_usage_short},#[fg=#{@thm_subtext_0}]#{@og_usage_short} ,}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@bridge_host},#[fg=#{@thm_overlay_1}]#{host_short}} "
+FOLD_RIGHT="#[align=right]#{?#{@og_usage_short},#[fg=#{@thm_subtext_0}]#{@og_usage_short} ,}#{?${FOLD_MIRROR},#[fg=${FOLD_HC}]#{@bridge_host},#[fg=#{@og_c_dim}]#{host_short}} "
 FOLD_FIT="#{e|<=|:#{e|+|:#{e|+|:#{w:${FOLD_ITEMS}},#{w:#{session_name}}},#{e|+|:#{w:#{E:@session_host_marker}},#{e|+|:#{w:${FOLD_RTXT}},13}}},#{client_width}}"
 FOLD_FMT="#[align=left,bg=#{@thm_bg}]#{E:@og_icons_job}#[fg=#{?#{@claude_session_fg},#{@claude_session_fg},#{@thm_mauve}},bold] #{session_name} #[fg=#{@thm_subtext_0},nobold]│ #[list=on]#[list=left-marker]‹#[list=right-marker]›#[list=on]${FOLD_ITEMS}#[nolist]#{?#{@session_host_marker},  #{E:@session_host_marker},}#{?${FOLD_FIT},${FOLD_RIGHT},}"
 if [[ $FOLDED == 1 ]]; then
@@ -848,7 +848,7 @@ elif ((current_line == 0)); then
 	FMT0=$(tmux show -gv status-format[0] 2>/dev/null)
 	[[ -n $FMT0 ]] && tmux set -t "$SESSION" status-format[0] "$FMT0"
 	tmux set -t "$SESSION" status-format[1] \
-		"#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ╰─ #{W:${ENTRY}#{?next_window_index,${SEP},}}"
+		"#[align=left,bg=#{@thm_bg}]#[fg=#{@og_c_dim}] ╰─ #{W:${ENTRY}#{?next_window_index,${SEP},}}"
 	tmux set -t "$SESSION" status-format[2] ""
 	tmux set -t "$SESSION" status-format[3] ""
 	tmux set -t "$SESSION" status-format[4] ""
@@ -857,21 +857,21 @@ else
 	[[ -n $FMT0 ]] && tmux set -t "$SESSION" status-format[0] "$FMT0"
 	PREFIX1="#{?#{e|>|:#{session_windows},#{@window_split}},├,╰}─"
 	tmux set -t "$SESSION" status-format[1] \
-		"#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ${PREFIX1} #{W:#{?#{e|<=|:#{window_index},#{@window_split}},${ENTRY}#{?next_window_index,#{?#{e|<=|:#{next_window_index},#{@window_split}},${SEP},},},}}"
+		"#[align=left,bg=#{@thm_bg}]#[fg=#{@og_c_dim}] ${PREFIX1} #{W:#{?#{e|<=|:#{window_index},#{@window_split}},${ENTRY}#{?next_window_index,#{?#{e|<=|:#{next_window_index},#{@window_split}},${SEP},},},}}"
 
 	PREFIX2="#{?#{e|>|:#{session_windows},#{@window_split2}},├,╰}─"
 	tmux set -t "$SESSION" status-format[2] \
-		"#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ${PREFIX2} #{W:#{?#{e|>|:#{window_index},#{@window_split}},#{?#{e|<=|:#{window_index},#{@window_split2}},${ENTRY}#{?next_window_index,#{?#{e|<=|:#{next_window_index},#{@window_split2}},${SEP},},},},}}"
+		"#[align=left,bg=#{@thm_bg}]#[fg=#{@og_c_dim}] ${PREFIX2} #{W:#{?#{e|>|:#{window_index},#{@window_split}},#{?#{e|<=|:#{window_index},#{@window_split2}},${ENTRY}#{?next_window_index,#{?#{e|<=|:#{next_window_index},#{@window_split2}},${SEP},},},},}}"
 
 	PREFIX3="#{?#{e|>|:#{session_windows},#{@window_split3}},├,╰}─"
 	tmux set -t "$SESSION" status-format[3] \
-		"#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ${PREFIX3} #{W:#{?#{e|>|:#{window_index},#{@window_split2}},#{?#{e|<=|:#{window_index},#{@window_split3}},${ENTRY}#{?next_window_index,#{?#{e|<=|:#{next_window_index},#{@window_split3}},${SEP},},},},}}"
+		"#[align=left,bg=#{@thm_bg}]#[fg=#{@og_c_dim}] ${PREFIX3} #{W:#{?#{e|>|:#{window_index},#{@window_split2}},#{?#{e|<=|:#{window_index},#{@window_split3}},${ENTRY}#{?next_window_index,#{?#{e|<=|:#{next_window_index},#{@window_split3}},${SEP},},},},}}"
 
 	# Row 4 only ever holds windows when MAX_WIN_LINES rose to 4 on a tall
 	# client; at 3 rows @window_split3 stays 999 so this renders empty and tmux
 	# is left at `status 4`, which never asks for index 4 anyway.
 	tmux set -t "$SESSION" status-format[4] \
-		"#[align=left,bg=#{@thm_bg}]#[fg=#{@thm_overlay_1}] ╰─ #{W:#{?#{e|>|:#{window_index},#{@window_split3}},${ENTRY}#{?next_window_index,${SEP},},}}"
+		"#[align=left,bg=#{@thm_bg}]#[fg=#{@og_c_dim}] ╰─ #{W:#{?#{e|>|:#{window_index},#{@window_split3}},${ENTRY}#{?next_window_index,${SEP},},}}"
 fi
 
 # Force immediate status bar redraw
