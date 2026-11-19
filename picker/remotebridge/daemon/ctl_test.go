@@ -1535,8 +1535,13 @@ func TestToolVerbToggleArg(t *testing.T) {
 	if _, err := v.build("%5", "@2", "s", []string{"crew-dash", "", "bogus"}); err == nil || !strings.Contains(err.Error(), "unknown option") {
 		t.Fatal("a third argument other than toggle must be rejected")
 	}
-	if _, err := v.build("%5", "@2", "s", []string{"crew-dash-side", "", "toggle"}); err == nil || !strings.Contains(err.Error(), "does not toggle") {
-		t.Fatal("crew-dash-side must never dismiss")
+	side, err := v.build("%5", "@2", "s", []string{"crew-dash-side", "", "toggle"})
+	if err != nil || !strings.Contains(side[0], "kill-pane") {
+		t.Fatalf("crew-dash-side toggle must close a visible side pane: %v, %v", side, err)
+	}
+	plainSide, err := v.build("%5", "@2", "s", []string{"crew-dash-side", ""})
+	if err != nil || strings.Contains(plainSide[0], "kill-pane") {
+		t.Fatalf("a plain crew-dash-side press must never dismiss: %v, %v", plainSide, err)
 	}
 	plain, err := v.build("%5", "@2", "s", []string{"crew-dash", "/x"})
 	if err != nil {

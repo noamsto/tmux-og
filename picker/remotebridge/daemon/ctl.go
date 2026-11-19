@@ -384,11 +384,15 @@ func floatToolCommand(pane, win, tool, cwd string, toggle bool) string {
 }
 
 // sideToolCommand is the crew-dash-side press: focus the window's existing side
-// split, else split a new one right of pane when it fits, else open the
+// split (toggle closes it instead), else split a new one right of pane when it fits, else open the
 // ordinary crew-dash float. cwd is already tmux-quoted. Every command carries
 // its own -t and `;` separates them, for the reasons the tool verb spells out.
-func sideToolCommand(pane, win, cwd string) string {
+func sideToolCommand(pane, win, cwd string, toggle bool) string {
 	script := toolResolveScript(remoteToolSide)
+	act := "select-pane"
+	if toggle {
+		act = "kill-pane"
+	}
 	create := fmt.Sprintf("split-window -h -l %s -t %s -c %s %s ; set -p -t %s @pane_label %s",
 		tmuxQuote(sideWidthFormat), pane, cwd, tmuxQuote("exec /bin/sh -c "+tmuxQuote(script)), win, remoteToolSide)
 	fallback := floatToolCommand(pane, win, "crew-dash", cwd, false)
@@ -396,7 +400,7 @@ func sideToolCommand(pane, win, cwd string) string {
 		pane, tmuxQuote(sideFitsFormat), tmuxQuote(create), tmuxQuote(fallback))
 	focus := fmt.Sprintf("set -wF -t %s %s %s ; run-shell -t %s %s",
 		pane, floatRegister(remoteToolSide), tmuxQuote(sideTiledLookup),
-		pane, tmuxQuote(fmt.Sprintf("tmux select-pane -t #{q:%s}", floatRegister(remoteToolSide))))
+		pane, tmuxQuote(fmt.Sprintf("tmux %s -t #{q:%s}", act, floatRegister(remoteToolSide))))
 	return fmt.Sprintf("if-shell -t %s -F %s %s %s",
 		pane, tmuxQuote(sideTiledLookup), tmuxQuote(focus), tmuxQuote(open))
 }
@@ -711,7 +715,7 @@ var verbs = map[string]verb{
 	// gate cannot see a stashed pane and a remote may lack tmux-float-group. The
 	// cwd slot is always sent (possibly empty) so toggle lands at a[2]. Any tool's
 	// float is killed by toggle; only crew-dash also closes a side pane, and
-	// crew-dash-side refuses toggle, so --side never dismisses.
+	// crew-dash-side toggle closes its own visible pane, and a plain --side never dismisses.
 	"tool": {args: 1, optArgs: 2, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		if !remoteTools[a[0]] {
 			return nil, fmt.Errorf("tool: unknown tool %q", a[0])
@@ -730,11 +734,8 @@ var verbs = map[string]verb{
 				cwd = tmuxQuote(dir)
 			}
 		}
-		if toggle && tool == remoteToolSide {
-			return nil, fmt.Errorf("tool: %s does not toggle", tool)
-		}
 		if tool == remoteToolSide {
-			return []string{sideToolCommand(pane, win, cwd)}, nil
+			return []string{sideToolCommand(pane, win, cwd, toggle)}, nil
 		}
 		return []string{floatToolCommand(pane, win, tool, cwd, toggle)}, nil
 	}},
