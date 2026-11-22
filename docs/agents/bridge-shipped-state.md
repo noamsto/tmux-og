@@ -663,7 +663,9 @@ bridged window as agent-free. The bridge ships the remote's state instead:
   `tmux-update-icons` (window icons and `@active_pane_icon`), `usage.go`'s
   agent-pane liveness gate, and `statusline`'s top-right `<icon> <command>` unit
   — which read `pane_current_command` raw and so printed the renderer next to an
-  icon already resolved from `@bridge_proc` (#590).
+  icon already resolved from `@bridge_proc` (#590). The root `S-Enter` binding
+  (`config/tmux.conf.tmpl`) reads it too on a mirror, choosing the newline key
+  for the remote agent, since its local tty runs the renderer.
   - **`@bridge_proc` resolves an agent running under a wrapper (#956).** A
     wrapper script that keeps bash foreground and runs the agent as a child
     reports `bash` from `pane_current_command`, which read as a plain shell and
