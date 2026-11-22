@@ -86,8 +86,9 @@ func bridgeOpts() map[string]string {
 // session's: @crew_repo (stamped by the dispatcher) set and different from the
 // session directory's basename. It stays off a placed mirror, which already
 // carries its origin in the host badge. The colour is the per-repo hash
-// tmux-reflow-windows stamps in @window_repo_color, peach when unstamped. The single place the tag's format
-// lives, so a compact-mode conditional can wrap it later. Unescaped commas, as
+// tmux-reflow-windows stamps in @window_repo_color, peach when unstamped.
+// The visibility predicate is repeated in that script's FMT field (it charges
+// the tag's width): change both together. Unescaped commas, as
 // in bridgeOpts: the style commas are '#,'-escaped, the conditional's are not.
 const crewRepoTag = "#{?#{&&:#{@crew_repo},#{&&:#{!:#{@bridge_placed}},#{!=:#{@crew_repo},#{b:session_path}}}},#[fg=#{?#{@window_repo_color},#{E:@window_repo_color},#{@og_c_host_peach}}#,bg=#{@thm_bg}]#{@crew_repo} #{?window_active,#[fg=#{@thm_mauve}#,bg=#{@thm_bg}#,bold],#[fg=#{@thm_subtext_0}#,bg=#{@thm_bg}]},}"
 
