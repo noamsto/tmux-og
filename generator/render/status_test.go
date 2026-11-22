@@ -202,6 +202,15 @@ func TestCrewRepoTagEvaluates(t *testing.T) {
 	if got := eval(); !strings.Contains(got, "dispatcher ") {
 		t.Errorf("@crew_repo different: %q, want the repo name", got)
 	}
+	run("set-option", "-g", "@og_c_host_peach", "#aa0001")
+	run("set-option", "-g", "@og_c_host_teal", "#00bb02")
+	if got := eval(); !strings.Contains(got, "fg=#aa0001") {
+		t.Errorf("unstamped @window_repo_color: %q, want the peach fallback", got)
+	}
+	run("set-option", "-w", "-t", "probe:", "@window_repo_color", "#{@og_c_host_teal}")
+	if got := eval(); !strings.Contains(got, "fg=#00bb02") || strings.Contains(got, "#aa0001") {
+		t.Errorf("stamped @window_repo_color: %q, want teal and not peach", got)
+	}
 	run("set-option", "-w", "-t", "probe:", "@bridge_placed", "1")
 	if got := eval(); got != "" {
 		t.Errorf("placed mirror: %q, want empty (host badge already shows origin)", got)

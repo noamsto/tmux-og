@@ -195,19 +195,22 @@ has_zoom=0
 # @bridge_host is read only for a @bridge_placed window (a mirror placed into a
 # local session): every other window yields an empty field, so a '|' in a stray
 # window-scoped value cannot shift the columns after it.
+# The repo-tag field (#1216) follows it, evaluated with the same predicate as
+# status-format[1]'s crewRepoTag (generator/render/status.go) so a hidden tag
+# reads empty and its width is charged only when the tag is drawn; '|' squashed.
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
 # add unused variables.
-FMT='#{window_index}|#{window_id}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_glyph}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_manual_name}|#{automatic-rename}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{s/[|]/ /:window_name}|#{@window_bridge_name}|#{@window_task}'
+FMT='#{window_index}|#{window_id}|#{@window_label_clipped}|#{@branch}|#{pane_current_path}|#{window_zoomed_flag}|#{@issue_provider}|#{@issue_id}|#{@issue_title}|#{@pr_number}|#{@pr_glyph}|#{@issue_branch}|#{@crew_name}|#{s/[|]/ /:@crew_dispatcher_host}|#{@window_has_agent}|#{@window_manual_name}|#{automatic-rename}|#{@window_ai_name}|#{@bridge_win}|#{@bridge_label_id}|#{@bridge_label_rest_long}|#{@bridge_pr_plain}|#{@bridge_crew_name}|#{?#{@bridge_placed},#{@bridge_host},}|#{?#{&&:#{@crew_repo},#{&&:#{!:#{@bridge_placed}},#{!=:#{@crew_repo},#{b:session_path}}}},#{s/[|]/ /:@crew_repo},}|#{s/[|]/ /:window_name}|#{@window_bridge_name}|#{@window_task}'
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
-declare -A win_host win_host_dw win_host_disp win_bhost
+declare -A win_host win_host_dw win_host_disp win_bhost win_repo win_repo_dw
 host_any=0         # 1 when some window is placed (gates the badge fragment in ENTRY)
 CREW_HOST_ICON='⇄' # plain Unicode (not a Nerd Font glyph); nerd alt: nf-md-remote
 crew_colw=0        # widest codename → shared agent-badge column (0 when no window is tagged)
-while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prnum prglyph ibranch crew chost hasagent wmanual wrename wai bridge bid brest bpr bcrew bhost wname bname wtask; do
+while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prnum prglyph ibranch crew chost hasagent wmanual wrename wai bridge bid brest bpr bcrew bhost crepo wname bname wtask; do
 	indices+=("$idx")
 	win_wid[$idx]="$wid"
 	win_clip_prev[$idx]="$wclip"
@@ -342,6 +345,17 @@ while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prn
 		win_bhost[$idx]=""
 	fi
 
+	# Repo tag "<repo> " (#1216): drawn only by the single-line status-format[1],
+	# so it is charged in the fit totals below but not in the grid floor.
+	if [[ -n $crepo ]]; then
+		win_repo[$idx]="$crepo"
+		measure_display_width "${crepo} "
+		win_repo_dw[$idx]=$REPLY_DW
+	else
+		win_repo[$idx]=""
+		win_repo_dw[$idx]=0
+	fi
+
 	((total++))
 done < <(tmux list-windows -t "$SESSION" -F "$FMT")
 
@@ -418,8 +432,8 @@ for idx in "${indices[@]}"; do
 	pr_list+="${pr_list:+ }${win_pr_dw[$idx]}"
 	want_long_list+="${want_long_list:+ }$((floor + rest_long))"
 	want_short_list+="${want_short_list:+ }$((floor + rest_short))"
-	((total_long += win_long_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx]))
-	((total_short += win_short_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx]))
+	((total_long += win_long_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx] + win_repo_dw[$idx]))
+	((total_short += win_short_dw[$idx] + slot_overhead + win_pr_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx] + win_repo_dw[$idx]))
 done
 total_long=$((total_long + (total - 1) * SEP_WIDTH))
 total_short=$((total_short + (total - 1) * SEP_WIDTH))
@@ -601,6 +615,27 @@ if ((host_any)); then
 	fi
 fi
 
+# Repo-tag colour (#1216): byte-sum of the repo name mod the five host-palette
+# names, in pure bash (no fork), cached per repo. Stamped through the same
+# #{@og_c_host_<name>} indirection as @window_host_color.
+declare -A repo_color
+repo_palette=(peach teal pink yellow sky)
+# Sets REPLY to the colour indirection for repo $1.
+repo_color_of() {
+	local LC_ALL=C repo=$1 ch i sum=0 c
+	if [[ -n ${repo_color[$repo]:-} ]]; then
+		REPLY=${repo_color[$repo]}
+		return
+	fi
+	for ((i = 0; i < ${#repo}; i++)); do
+		ch=${repo:i:1}
+		printf -v c %d "'$ch"
+		((sum += c))
+	done
+	REPLY="#{@og_c_host_${repo_palette[sum % 5]}}"
+	repo_color[$repo]=$REPLY
+}
+
 # Per-window vars use tmux's argv command-sequence form: the sets are joined by
 # literal ';' arguments, and several windows share one exec (a full pass cost one
 # exec per window before, #1118). Not `tmux source -`: source re-parses a text
@@ -631,7 +666,11 @@ win_argv_bytes() {
 
 # Fills win_argv with one window's set sequence.
 build_window_argv() {
-	local idx=$1 target=${win_wid[$1]} hcolor=""
+	local idx=$1 target=${win_wid[$1]} hcolor="" rcolor=""
+	if [[ -n ${win_repo[$idx]} ]]; then
+		repo_color_of "${win_repo[$idx]}"
+		rcolor=$REPLY
+	fi
 	[[ ${win_bhost[$idx]} =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] && hcolor=${host_color[${win_bhost[$idx]}]:-}
 	win_argv=(
 		set -w -t "$target" @window_label_short "${win_short[$idx]}" ';'
@@ -646,7 +685,8 @@ build_window_argv() {
 		set -w -t "$target" @window_pr_pad "${win_pr_pad[$idx]}" ';'
 		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" ';'
 		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" ';'
-		set -w -t "$target" @window_host_color "$hcolor"
+		set -w -t "$target" @window_host_color "$hcolor" ';'
+		set -w -t "$target" @window_repo_color "$rcolor"
 	)
 	if [[ ${win_clip[$idx]} != "${win_clip_prev[$idx]}" ]]; then
 		if [[ -n ${win_clip[$idx]} ]]; then
