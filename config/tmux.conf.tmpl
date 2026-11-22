@@ -116,7 +116,9 @@ bind -N 'Clear screen' -n M-l send-keys C-l
 # Shift+Enter: process-aware newline for pi / Claude Code / Amp / OpenCode.
 # pi binds alt+enter to follow-up queueing, so it wants the raw CSI-u sequence
 # its own newline binding reads; every other CLI gets its own newline key.
-bind -N 'Insert newline in agent CLI' -n S-Enter if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^pi$'" { send-keys -H 1b 5b 31 33 3b 32 75 } { if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^(amp|bun|opencode)$'" { send-keys \\ Enter } { send-keys M-Enter } }
+# A mirror pane's local tty runs the bridge renderer, so there the remote agent
+# comes from @bridge_proc (unwrapped from its `.name-wrapped` spelling).
+bind -N 'Insert newline in agent CLI' -n S-Enter if-shell -F '{{.BridgeGate}}' { if-shell -F '#{==:#{s|^\.(.*)-wrapped$|\1|:@bridge_proc},pi}' { send-keys -H 1b 5b 31 33 3b 32 75 } { if-shell -F '#{m/r:^(amp|bun|opencode)$,#{s|^\.(.*)-wrapped$|\1|:@bridge_proc}}' { send-keys \\ Enter } { send-keys M-Enter } } } { if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^pi$'" { send-keys -H 1b 5b 31 33 3b 32 75 } { if-shell "ps -o comm= -t #{q:pane_tty} | grep -qE '^(amp|bun|opencode)$'" { send-keys \\ Enter } { send-keys M-Enter } } }
 
 # Pane splitting (| and _)
 unbind %

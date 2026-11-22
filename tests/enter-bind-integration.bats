@@ -156,3 +156,48 @@ wait_bytes() { # outfile expected-hex
 	shift_enter
 	wait_bytes "$out" 1b0d
 }
+
+# A mirror pane's local process is the bridge renderer, so the binding must read
+# the remote agent from @bridge_proc. The probe's local name is picked to disagree
+# with the stamp, so a pass proves the stamp decided.
+mirror_probe() { # proc outfile [local-name] -> prints "window_id pane_id"
+	local target pane
+	target="$(probe_window "$(probe_cmd "${3:-bash}" "$2")")"
+	pane="${target##* }"
+	inner set-option -p -t "$pane" @bridge_win 1
+	inner set-option -p -t "$pane" @bridge_pane 1
+	inner set-option -p -t "$pane" @bridge_proc "$1"
+	printf '%s\n' "$target"
+}
+
+@test "Shift+Enter in a mirror pane reaches a remote pi as CSI-u" {
+	out="$BATS_TEST_TMPDIR/mirror-pi.out"
+	arm_probe "$(mirror_probe pi "$out")" "$out" bash
+	shift_enter
+	wait_bytes "$out" 1b5b31333b3275
+}
+
+@test "Shift+Enter in a mirror pane reaches a remote wrapped pi as CSI-u" {
+	out="$BATS_TEST_TMPDIR/mirror-wrapped-pi.out"
+	arm_probe "$(mirror_probe .pi-wrapped "$out")" "$out" bash
+	shift_enter
+	wait_bytes "$out" 1b5b31333b3275
+}
+
+@test "Shift+Enter in a mirror pane reaches a remote amp, bun or opencode as backslash + Enter" {
+	local agent out
+	for agent in amp .bun-wrapped opencode; do
+		out="$BATS_TEST_TMPDIR/mirror-$agent.out"
+		arm_probe "$(mirror_probe "$agent" "$out")" "$out" bash
+		shift_enter
+		wait_bytes "$out" 5c0d
+	done
+}
+
+@test "Shift+Enter in a mirror pane reaches any other remote command as Alt+Enter" {
+	out="$BATS_TEST_TMPDIR/mirror-other.out"
+	# Local process is pi, so a ps-based branch would send CSI-u: only the stamp gives Alt+Enter.
+	arm_probe "$(mirror_probe vim "$out" pi)" "$out" pi
+	shift_enter
+	wait_bytes "$out" 1b0d
+}
