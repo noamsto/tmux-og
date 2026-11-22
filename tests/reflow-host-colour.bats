@@ -218,3 +218,72 @@ picker_token() {
 	[ -z "$(tmux show -wv -t S:1 @window_host_color)" ]
 	[[ "$(tmux show -v @session_host_marker)" == *'#[fg=#{@thm_subtext_0}]lab' ]]
 }
+
+@test "a foreign-repo tag is stamped one palette colour per repo, empty when hidden" {
+	tmux new-window -d
+	tmux new-window -d
+	tmux new-window -d
+	tmux set -wq -t S:0 @crew_repo foreignrepo
+	tmux set -wq -t S:1 @crew_repo foreignrepo
+	# The session's own repo (basename of session_path) draws no tag.
+	tmux set -wq -t S:2 @crew_repo "$(tmux display-message -t S:2 -p '#{b:session_path}')"
+	tmux set -wq -t S:3 @crew_repo foreignrepo
+	stamp_placed 3 lab
+
+	bash "$REFLOW" S 200 --force >/dev/null 2>&1
+
+	local c0 c1
+	c0=$(tmux show -wv -t S:0 @window_repo_color)
+	c1=$(tmux show -wv -t S:1 @window_repo_color)
+	[[ $c0 =~ ^\#\{@og_c_host_(peach|teal|pink|yellow|sky)\}$ ]]
+	[ "$c0" = "$c1" ]
+	[ -z "$(tmux show -wv -t S:2 @window_repo_color)" ]
+	[ -z "$(tmux show -wv -t S:3 @window_repo_color)" ]
+}
+
+@test "a foreign-repo tag is charged to the single-line fit, so the label clips and the PR stays whole" {
+	# #1216: the tag is drawn ahead of the badge by status-format[1] but was
+	# never counted, so a full row ran past the edge and clipped the PR number.
+	tmux set -wq -t S:0 @branch "feat/a-long-branch-name-with-room-to-clip"
+	tmux set -wq -t S:0 @pr_number 12
+	tmux set -wq -t S:0 @pr_state open
+	tmux set -wq -t S:0 @pr_check_state success
+	tmux set -wq -t S:0 @pr_glyph S
+	tmux new-window -d
+	tmux set -wq -t S:1 @branch "feat/another-branch"
+
+	row_is_whole() {
+		[ "$(tmux show-options -t S -qv status)" = 2 ] || return 1
+		case "$(tmux show -wv -t S:0 @window_label_disp)" in
+		*…) return 1 ;;
+		esac
+	}
+
+	# Narrowest width that renders one row with every label whole.
+	local lo=40 hi=200 mid full=0
+	while ((lo <= hi)); do
+		mid=$(((lo + hi) / 2))
+		bash "$REFLOW" S "$mid" --force >/dev/null 2>&1
+		if row_is_whole; then
+			full=$mid
+			hi=$((mid - 1))
+		else
+			lo=$((mid + 1))
+		fi
+	done
+	[ "$full" -gt 0 ]
+	# shellcheck source=/dev/null
+	source "$TDIR/lib-icons.sh"
+	measure_display_width "$(tmux show -wv -t S:0 @window_label_disp)"
+	local base=$REPLY_DW
+
+	tmux set -wq -t S:0 @crew_repo foreignrepo
+	bash "$REFLOW" S "$full" --force >/dev/null 2>&1
+
+	[ "$(tmux show-options -t S -qv status)" = 2 ]
+	[[ "$(tmux show -wv -t S:0 @window_label_disp)" == *… ]]
+	measure_display_width "$(tmux show -wv -t S:0 @window_label_disp)"
+	# "foreignrepo " is 12 cells: the label gives up at least that much.
+	[ "$((base - REPLY_DW))" -ge 12 ]
+	[ "$(tmux show -wv -t S:0 @window_pr_num)" = "#12" ]
+}
