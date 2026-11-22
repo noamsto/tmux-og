@@ -158,11 +158,11 @@ wait_bytes() { # outfile expected-hex
 }
 
 # A mirror pane's local process is the bridge renderer, so the binding must read
-# the remote agent from @bridge_proc. The probe is a bash process on purpose: its
-# ps name disagrees with the stamp, so a pass proves the stamp decided.
-mirror_probe() { # proc outfile -> prints "window_id pane_id"
+# the remote agent from @bridge_proc. The probe's local name is picked to disagree
+# with the stamp, so a pass proves the stamp decided.
+mirror_probe() { # proc outfile [local-name] -> prints "window_id pane_id"
 	local target pane
-	target="$(probe_window "$(probe_cmd bash "$2")")"
+	target="$(probe_window "$(probe_cmd "${3:-bash}" "$2")")"
 	pane="${target##* }"
 	inner set-option -p -t "$pane" @bridge_win 1
 	inner set-option -p -t "$pane" @bridge_pane 1
@@ -196,7 +196,8 @@ mirror_probe() { # proc outfile -> prints "window_id pane_id"
 
 @test "Shift+Enter in a mirror pane reaches any other remote command as Alt+Enter" {
 	out="$BATS_TEST_TMPDIR/mirror-other.out"
-	arm_probe "$(mirror_probe vim "$out")" "$out" bash
+	# Local process is pi, so a ps-based branch would send CSI-u: only the stamp gives Alt+Enter.
+	arm_probe "$(mirror_probe vim "$out" pi)" "$out" pi
 	shift_enter
 	wait_bytes "$out" 1b0d
 }
