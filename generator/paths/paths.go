@@ -53,6 +53,7 @@ var RequiredScripts = []string{
 	"tmux-float-nudge",
 	"tmux-float-group",
 	"tmux-crew-dash",
+	"tmux-prdash-mirror",
 	"tmux-grid-refit",
 	"tmux-issue-stamp",
 	"tmux-kill-pane-guard",
