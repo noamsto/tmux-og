@@ -45,11 +45,12 @@ const windowLabelFormat = "#{window_id}|#{@crew_name}|#{@crew_color}|#{@pr_numbe
 	"#{s/[|]/ /:@branch}|#{s/[|]/ /:#{?@worktree,#{@worktree},#{@git_root}}}|#{s/[|]/ /:@issue_title}|#{s/[|]/ /:@pr_title}|" +
 	"#{s/[|]/ /:@pr_review}|#{s/[|]/ /:@pr_auto_merge}|#{s/[|]/ /:@pr_check_progress}|" +
 	"#{s/[|]/ /:@crew_branch}|#{s/[|]/ /:@crew_id}|" +
+	"#{s/[|]/ /:@og_bridge_origin}|" +
 	"#{@window_label_id}|#{@window_label_rest_long}"
 
 // windowLabelFields is windowLabelFormat's field count, shared with the test
 // fixture so the parser and the fixture cannot drift apart.
-const windowLabelFields = 24
+const windowLabelFields = 25
 
 // labelRow is one remote window's carried label state, already sanitized and
 // validated. Comparable, so the unchanged-row check is a struct compare.
@@ -76,6 +77,8 @@ type labelRow struct {
 	prProgress    string
 	crewBranch    string
 	crewID        string
+	originDir     string // the dir the remote's origin probe ran for; "" when unstamped
+	repo          string // owner/name, only when originDir equals dir
 	labelID       string
 	labelRest     string
 }
@@ -108,6 +111,7 @@ var bridgeLabelOptions = []struct {
 	{"@bridge_pr_draft", func(r labelRow) string { return r.prDraft }},
 	{"@bridge_branch", func(r labelRow) string { return r.branch }},
 	{"@bridge_dir", func(r labelRow) string { return r.dir }},
+	{"@bridge_repo", func(r labelRow) string { return r.repo }},
 	{"@bridge_issue_title", func(r labelRow) string { return r.issueTitle }},
 	{"@bridge_pr_title", func(r labelRow) string { return r.prTitle }},
 	{"@bridge_pr_review", func(r labelRow) string { return r.prReview }},
@@ -188,6 +192,16 @@ func parseWindowLabels(body string) []labelRow {
 		if at(0) == "" {
 			continue
 		}
+		// The stamp is "<origin> <dir>"; the origin is scheme-less and has no
+		// space, so the first space splits it, and an origin-less stamp
+		// (" <dir>") still records which dir the probe ran for.
+		origin, stampDir, _ := strings.Cut(cleanLabelValueExact(at(22), urlMaxRunes+1+dirMaxRunes), " ")
+		originDir := matching(stampDir, dirRe)
+		dir := matching(cleanLabelValueExact(at(14), dirMaxRunes), dirRe)
+		repo := ""
+		if originDir != "" && originDir == dir {
+			repo = githubSlug(origin)
+		}
 		out = append(out, labelRow{
 			id:          at(0),
 			crewName:    cleanLabelValue(at(1), crewNameMaxRunes),
@@ -205,7 +219,7 @@ func parseWindowLabels(body string) []labelRow {
 			prURL:         matching(cleanLabelValueExact(at(11), urlMaxRunes), urlRe),
 			prDraft:       matching(cleanLabelValueExact(at(12), prDraftMaxRunes), prDraftRe),
 			branch:        matching(cleanLabelValueExact(at(13), branchMaxRunes), branchRe),
-			dir:           matching(cleanLabelValueExact(at(14), dirMaxRunes), dirRe),
+			dir:           dir,
 			issueTitle:    cleanLabelValue(at(15), labelTitleMaxRunes),
 			prTitle:       cleanLabelValue(at(16), labelTitleMaxRunes),
 			prReview:      matching(cleanLabelValueExact(at(17), reviewMaxRunes), reviewRe),
@@ -213,8 +227,10 @@ func parseWindowLabels(body string) []labelRow {
 			prProgress:    matching(cleanLabelValueExact(at(19), progressMaxRunes), progressRe),
 			crewBranch:    matching(cleanLabelValueExact(at(20), crewBranchMaxRunes), crewBranchRe),
 			crewID:        matching(cleanLabelValueExact(at(21), crewIDMaxRunes), crewIDRe),
-			labelID:       cleanLabelValue(at(22), labelTextMaxRunes),
-			labelRest:     cleanLabelValue(at(23), labelTitleMaxRunes),
+			originDir:     originDir,
+			repo:          repo,
+			labelID:       cleanLabelValue(at(23), labelTextMaxRunes),
+			labelRest:     cleanLabelValue(at(24), labelTitleMaxRunes),
 		})
 	}
 	return out
@@ -297,6 +313,7 @@ func matching(v string, re *regexp.Regexp) string {
 // one level up, window options rather than pane options.
 type labelShipper struct {
 	written   map[string]writtenLabels // remote window id -> what was last written for it
+	probed    map[string]string        // remote window id -> dir the origin probe last ran for
 	lastPoll  time.Time
 	lastApply time.Time // last time queued rows were applied; bounds the burst wait
 	lastGen   uint64    // registry generation the last backstop read was made against
@@ -325,6 +342,7 @@ type writtenLabels struct {
 func newLabelShipper() *labelShipper {
 	return &labelShipper{
 		written: map[string]writtenLabels{},
+		probed:  map[string]string{},
 		pending: map[string]labelRow{},
 	}
 }
@@ -355,11 +373,14 @@ func (s *labelShipper) flush(cfg Config, reg *registry, rt roundTrip, gen uint64
 		clear(s.pending)
 		s.lastApply = time.Now()
 		changed = s.apply(cfg, reg, rows)
+		s.probeOrigin(reg, rt, rows)
 	}
 	if due(s.lastPoll, pollFloor(s.subscribed, windowLabelPollInterval, windowLabelBackstopInterval), gen, s.lastGen) {
 		s.lastPoll, s.lastGen = time.Now(), gen
 		if l, ok := one(rt, fmt.Sprintf("list-windows -t %s -F %s", tmuxQuote(cfg.RemoteSession), tmuxQuote(ctlSafe(windowLabelFormat)))); ok && l.Kind != controlmode.Error {
-			changed = s.apply(cfg, reg, parseWindowLabels(string(l.Data))) || changed
+			rows := parseWindowLabels(string(l.Data))
+			changed = s.apply(cfg, reg, rows) || changed
+			s.probeOrigin(reg, rt, rows)
 		}
 	}
 	if changed {
@@ -418,7 +439,45 @@ func (s *labelShipper) apply(cfg Config, reg *registry, rows []labelRow) (change
 			delete(s.written, id)
 		}
 	}
+	for id := range s.probed {
+		if _, ok := reg.byRemoteID(id); !ok {
+			delete(s.probed, id)
+		}
+	}
 	return changed
+}
+
+// probeOrigin asks the remote to stamp @og_bridge_origin for every row whose
+// dir has no stamp of its own yet, once per (window, dir). An unmirrored window
+// is skipped: apply forgets it, which would otherwise re-probe it every pass. The answer comes
+// home as a label row, so a window whose origin never resolves is probed once,
+// not on every pass. All commands go out before any reply is awaited, so a
+// first connect over N windows costs one round-trip.
+func (s *labelShipper) probeOrigin(reg *registry, rt roundTrip, rows []labelRow) {
+	var cmds []string
+	for _, r := range rows {
+		if r.dir == "" || r.originDir == r.dir || s.probed[r.id] == r.dir {
+			continue
+		}
+		if _, mirrored := reg.byRemoteID(r.id); !mirrored {
+			continue
+		}
+		cmd, ok := originProbeCmd(r.id)
+		if !ok {
+			continue
+		}
+		s.probed[r.id] = r.dir
+		cmds = append(cmds, cmd)
+	}
+	if len(cmds) == 0 {
+		return
+	}
+	next := rt(cmds...)
+	for range cmds {
+		if _, ok := next(); !ok {
+			return
+		}
+	}
 }
 
 // clear unsets every option this bridge wrote, while the mirror windows still
