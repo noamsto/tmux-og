@@ -401,7 +401,7 @@ func TestLabelShipperOriginDirOnlyChange(t *testing.T) {
 		t.Error("an originDir-only change reported a change")
 	}
 	if len(calls) != n {
-		t.Errorf("an originDir-only change issued tmux calls: %v", calls[n:])
+		t.Errorf("an originDir-only change issued %d tmux call(s)", len(calls)-n)
 	}
 }
 

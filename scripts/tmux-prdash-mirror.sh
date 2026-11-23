@@ -11,7 +11,8 @@
 # resolves it, with @bridge_repo/@bridge_dir (window) and @bridge_sock (session,
 # the RAW socket path; --sock= is added here).
 #
-# prdash runs with an EMPTY repos root, which forces it to write only path-free
+# prdash runs with an empty-DIRECTORY repos root (an empty string would fall
+# back to ~/git), which forces it to write only path-free
 # hand-off entries (it cannot resolve a local checkout), in a private scratch dir
 # so it never sees a local checkout. Its action file is then forwarded in ONE ctl
 # call: a bulk `W` must run sequentially in a single remote float. The daemon
