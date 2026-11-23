@@ -729,7 +729,7 @@ signature deliberately omits `#{window_layout}`, which renders per client.
 
 ## Float border stamp gate (#1218)
 
-`window-layout-changed[60]` and `window-linked[60]` (same body; `break-pane` fires only the latter) each evaluate one zero-fork `if -F` (a float unstamped or a tile still stamped), then an in-process `run-shell -C`. Never forks; writes pane options only on a float<->tile transition.
+`window-layout-changed[60]` and `window-linked[60]` (same body; `break-pane` is caught only by the latter: the source window's layout hook no longer sees the moved pane) each evaluate one zero-fork `if -F` (a float unstamped or a tile still stamped), then an in-process `run-shell -C`. Never forks; writes pane options only on a float<->tile transition.
 
 ## Side-pane width guard gate (#1056, #1221)
 
