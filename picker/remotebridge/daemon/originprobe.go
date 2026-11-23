@@ -41,10 +41,17 @@ func githubSlug(origin string) string {
 	if !ok || strings.Contains(name, "/") {
 		return ""
 	}
-	if !slugOwnerRe.MatchString(owner) || !slugNameRe.MatchString(name) || name == "." || name == ".." {
+	if !validSlug(owner, name) {
 		return ""
 	}
 	return owner + "/" + name
+}
+
+// validSlug reports whether owner/name is a GitHub repo slug safe to splice into
+// a remote command line or a checkout path: the charset holds nothing a shell
+// or tmux treats specially, and "." / ".." would walk out of a repos root.
+func validSlug(owner, name string) bool {
+	return slugOwnerRe.MatchString(owner) && slugNameRe.MatchString(name) && name != "." && name != ".."
 }
 
 // originProbeScript is the POSIX body run under exec /bin/sh -c on the remote.

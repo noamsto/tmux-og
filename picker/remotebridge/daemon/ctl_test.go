@@ -388,7 +388,7 @@ func TestParseCtlRejects(t *testing.T) {
 		// A config reload can hand a new ctl to an old daemon; the mismatch must
 		// be a message, not a silently-ignored gesture.
 		{"version skew", []string{"1", "split-h", "%3"}, "reopen the bridge"},
-		{"version skew names the daemon's version", []string{"8", "dwindle-toggle", "%3"}, `this daemon speaks "10"`},
+		{"version skew names the daemon's version", []string{"8", "dwindle-toggle", "%3"}, `this daemon speaks "11"`},
 		{"dwindle-toggle takes no argument", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%3", "x"}, "wants 0 argument"},
 		{"dwindle-toggle refuses an unmirrored pane", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%99"}, "not mirrored"},
 		{"dwindle-toggle refuses a pane injection attempt", []string{wire.CtlProtocolVersion, "dwindle-toggle", "%3; kill-server"}, "not mirrored"},

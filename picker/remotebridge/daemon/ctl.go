@@ -188,11 +188,12 @@ type ctlRequest struct {
 // though the socket is 0600 same-user.
 type verb struct {
 	args int // trailing arguments after the pane id
-	// optArgs is how many FURTHER trailing arguments the verb tolerates. Only
-	// the tool verb has any: its cwd rides along when the bind can supply one
-	// and is absent from an older local config, and a verb that refused the
-	// shorter form would break a mirror mid-upgrade; a trailing "toggle" asks
-	// the press to dismiss a visible float instead of focusing it.
+	// optArgs is how many FURTHER trailing arguments the verb tolerates. The
+	// tool verb's cwd rides along when the bind can supply one and is absent
+	// from an older local config, and a verb that refused the shorter form
+	// would break a mirror mid-upgrade; a trailing "toggle" asks the press to
+	// dismiss a visible float instead of focusing it. handoff takes up to
+	// maxHandoffEntries lines.
 	optArgs int
 	windows bool
 	layout  bool
@@ -736,6 +737,36 @@ var verbs = map[string]verb{
 			return []string{sideToolCommand(pane, win, cwd, toggle)}, nil
 		}
 		return []string{floatToolCommand(pane, win, tool, cwd, toggle)}, nil
+	}},
+	// prdash run locally for a mirror window hands its worktree switches back
+	// here as raw `<key>\t<json>` lines, one argument each after the window's
+	// @bridge_dir; they run on the remote, where the checkout is.
+	//
+	// A float, not a run-shell: wt may prompt, and the float runs in the
+	// pressed pane's window with TMUX_PANE set, so worktrunk's post-switch hook
+	// switches that remote window exactly as prdash's own `wt switch` does.
+	//
+	// No reuse gate and its own prdash-handoff label: each press is a one-shot
+	// that exits when wt does, and the tool verb's floatLookup must never take
+	// it for a prdash float to focus.
+	//
+	// parseHandoff is the trust boundary: the lines come from a prdash process
+	// that read GitHub data, and nothing reaches the remote unless every entry
+	// passes. Even then the values ride only as positional parameters to a
+	// constant script, never as script text.
+	//
+	// Adding this verb bumped CtlProtocolVersion, so an older resident daemon
+	// answers "reopen the bridge" rather than "unknown verb".
+	"handoff": {args: 2, optArgs: maxHandoffEntries - 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
+		es, err := parseHandoff(a[1:])
+		if err != nil {
+			return nil, err
+		}
+		cwd := "'#{pane_current_path}'"
+		if dir, ok := remoteToolCwd(a[0]); ok {
+			cwd = tmuxQuote(dir)
+		}
+		return []string{handoffCommand(pane, win, cwd, es)}, nil
 	}},
 	// A mirror float's border drag, routed from the local float's inner box
 	// and window size (the remote window is converged to the same size). The
