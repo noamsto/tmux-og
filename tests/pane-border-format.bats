@@ -695,11 +695,12 @@ mkfloat() {
 	[ -n "$float" ] || skip "this tmux does not report pane_floating_flag"
 }
 
-# Installs the shipped window-layout-changed[60] float-stamp hook.
+# Installs the shipped window-layout-changed[60] and window-linked[60]
+# float-stamp hooks.
 install_float_hook() {
 	local conf="$OG_TMUX_DIR/float-hook.conf"
-	grep '^set-hook -g window-layout-changed\[60\]' "$(dirname "$BATS_TEST_DIRNAME")/config/tmux.conf.tmpl" >"$conf"
-	[ "$(wc -l <"$conf")" -eq 1 ]
+	grep -E '^set-hook -g (window-layout-changed|window-linked)\[60\]' "$(dirname "$BATS_TEST_DIRNAME")/config/tmux.conf.tmpl" >"$conf"
+	[ "$(wc -l <"$conf")" -eq 2 ]
 	tmux source-file "$conf"
 }
 
@@ -750,7 +751,11 @@ wait_stamp() {
 	install_float_hook
 	mkfloat
 	wait_stamp "$float" 1
-	[ "$(resolved_fmt "$float")" != "DISPATCH" ]
+	for _ in $(seq 1 50); do
+		[ "$(tmux display -p -t "$float" '#{pane_current_command}')" = sh ] && break
+		sleep 0.1
+	done
+	[ "$(resolved_fmt "$float")" = "━━ sh ━━" ]
 	[[ "$(style "$float" active)" == *"fg=#94e2d5"* ]]
 	[[ "$(style "$float" inactive)" == *"fg=#7f849c"* ]]
 }
@@ -764,17 +769,29 @@ wait_stamp() {
 	wait_stamp "$float" ""
 	[ -z "$(tmux show -pv -t "$float" pane-border-format)" ]
 	[ -z "$(tmux show -pv -t "$float" pane-active-border-style)" ]
+	[ -z "$(tmux show -pv -t "$float" pane-border-style)" ]
 	[ "$(tmux -u display -p -t "$float" '#{pane-border-format}')" = "DISPATCH" ]
 }
 
-@test "float hook: a popup keeps its pane_title format" {
+@test "float hook: break-pane of the float unstamps it (window-linked, no layout-changed)" {
 	install_float_hook
+	mkfloat
+	wait_stamp "$float" 1
+	tmux break-pane -d -s "$float"
+	wait_stamp "$float" ""
+	[ -z "$(tmux show -pv -t "$float" pane-border-style)" ]
+	[ -z "$(tmux show -pv -t "$float" pane-border-format)" ]
+}
+
+@test "float hook: a popup keeps its pane_title format" {
 	if ! tmux new-pane -t "$WIN" -O -K -C -x 60% -y 60% -X 20% -Y 20% -B heavy -A sh 2>/dev/null; then
 		skip "this tmux rejects -O/-K/-C at parse time"
 	fi
 	pfl="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}' | head -n1)"
 	[ -n "$pfl" ] || skip "this tmux does not report pane_floating_flag"
+	[ "$(tmux display -p -t "$pfl" '#{pane_modal_flag}')" = 1 ]
 	tmux set -p -t "$pfl" pane-border-format '#{pane_title}'
+	install_float_hook
 	tmux resize-pane -t "$pfl" -x 30
 	wait_stamp "$pfl" 1
 	[ "$(tmux show -pv -t "$pfl" pane-border-format)" = '#{pane_title}' ]

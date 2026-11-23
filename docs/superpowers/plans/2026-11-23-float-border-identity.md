@@ -47,7 +47,7 @@ Pieces:
 - `config/tmux.conf.tmpl` hook `window-layout-changed[60]` (index 60: `tests/dwindle.bats`
   installs a probe on [50]); exact text, one line, gate first:
   ```
-  set-hook -g window-layout-changed[60] { if -F '#{||:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{@og_float_stamped}}},x,}},#{P:#{?#{&&:#{!:#{pane_floating_flag}},#{@og_float_stamped}},x,}}}' { run-shell -C "#{P:#{?#{&&:#{pane_floating_flag},#{!:#{@og_float_stamped}}},set -p -t #{pane_id} @og_float_stamped 1 \; set -p -t #{pane_id} pane-border-style ##{E:@og_float_style} \; set -p -t #{pane_id} pane-active-border-style ##{E:@og_float_astyle} \; #{?pane_modal_flag,,set -p -t #{pane_id} pane-border-format ##{E:@og_float_fmt} \; },}#{?#{&&:#{!:#{pane_floating_flag}},#{@og_float_stamped}},set -pu -t #{pane_id} @og_float_stamped \; set -pu -t #{pane_id} pane-border-style \; set -pu -t #{pane_id} pane-active-border-style \; set -pu -t #{pane_id} pane-border-format \; ,}}" } }
+  set-hook -g window-layout-changed[60] { if -F '#{||:#{P:#{?#{&&:#{pane_floating_flag},#{!:#{@og_float_stamped}}},x,}},#{P:#{?#{&&:#{!:#{pane_floating_flag}},#{@og_float_stamped}},x,}}}' { run-shell -C "#{P:#{?#{&&:#{pane_floating_flag},#{!:#{@og_float_stamped}}},set -p -t #{pane_id} @og_float_stamped 1 \; set -p -t #{pane_id} pane-border-style '##{E:@og_float_style#}' \; set -p -t #{pane_id} pane-active-border-style '##{E:@og_float_astyle#}' \; #{?pane_modal_flag,,set -p -t #{pane_id} pane-border-format '##{E:@og_float_fmt#}' \; },}#{?#{&&:#{!:#{pane_floating_flag}},#{@og_float_stamped}},set -pu -t #{pane_id} @og_float_stamped \; set -pu -t #{pane_id} pane-border-style \; set -pu -t #{pane_id} pane-active-border-style \; set -pu -t #{pane_id} pane-border-format \; ,}}" } }
   ```
   Escaping (`##{E:...}`, `#{q:}` where needed) is settled by the stored-literal bats assertion
   below, not by assumption; the executor adjusts the quoting until `show -pv` returns the literal
@@ -77,16 +77,17 @@ Pieces:
 
 | consumer | disposition |
 | --- | --- |
-| dispatcher pane-level overrides on tiles | untouched (tiles never stamped; unstamp only when `@og_float_stamped` is set) |
+| dispatcher pane-level overrides on tiles | untouched unless the pane floated and re-tiled: stamp overwrites and unstamp unsets its pane-level border options (accepted leftover; re-decorate restores) |
 | dispatcher window-level override | beaten by the pane-level stamp on floats only (rule 4); tiles still show it |
 | popup-floats (`display-popup`, modal) | keep pane-level `#{pane_title}` format (format arm skipped when `pane_modal_flag`); get the float styles |
 | `tmux-float-group` hide/show | stash join tiles the pane -> layout-changed unstamps; `break-pane -W` restore -> restamps |
 | `@` toggle (`break-pane -W` / `join-pane`) | stamp / unstamp by the same hook |
+| plain `break-pane -s <float>` / `prefix + !` | fires `window-linked` only, so a second hook `window-linked[60]` (same body) unstamps |
 | `^o` remotepick float (modal, not a popup) | format arm skipped like popups (`pane_modal_flag`), so under a window-level dispatcher format it keeps that label: known limit, colour still float accent |
 | `tests/status-colors.bats` (role count) | changed: `[float]=teal` added |
 | tiled `crew-dash-side` (`@pane_label`, tiled) | unchanged: existing `@pane_label` branch kept (rule 3) |
 | mirror windows / `@bridge_pane` floats | stamped (daemon writes no border options); label uses `@bridge_proc` |
-| tmux-remux persistence | pane options may persist; documented leftover above |
+| tmux-remux persistence | never persists floats; a marker surviving without its options is not re-stamped |
 | `tmux.conf.reference.nix` | changes with the template; proven by the reference diff check |
 
 ## Steps
