@@ -695,8 +695,8 @@ mkfloat() {
 	[ -n "$float" ] || skip "this tmux does not report pane_floating_flag"
 }
 
-# Installs the shipped window-layout-changed[60] and window-linked[60]
-# float-stamp hooks.
+# Reads the two shipped [60] hooks from the template instead of copying them,
+# so the test runs the hook bodies that ship.
 install_float_hook() {
 	local conf="$OG_TMUX_DIR/float-hook.conf"
 	grep -E '^set-hook -g (window-layout-changed|window-linked)\[60\]' "$(dirname "$BATS_TEST_DIRNAME")/config/tmux.conf.tmpl" >"$conf"
@@ -704,7 +704,6 @@ install_float_hook() {
 	tmux source-file "$conf"
 }
 
-# Resolved (pane-scope) border format, directives stripped.
 resolved_fmt() {
 	tmux -u display -p -t "$1" '#{E:pane-border-format}' | plain
 }
@@ -737,7 +736,6 @@ expect_linux_cmd() {
 	[ "$(uname)" != Linux ] || [ "$cmd" = "$1" ]
 }
 
-# Polls until the pane's stamp marker is $2 ("1" or "").
 wait_stamp() {
 	local got
 	for _ in $(seq 1 50); do
