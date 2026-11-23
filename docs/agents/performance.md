@@ -727,6 +727,10 @@ signature deliberately omits `#{window_layout}`, which renders per client.
   nothing. A re-enabled window re-seeds from a live layout, so a toggle can
   never leave a stale cache to diff against.
 
+## Float border stamp gate (#1218)
+
+`window-layout-changed[60]` and `window-linked[60]` (same body; `break-pane` is caught only by the latter: the source window's layout hook no longer sees the moved pane) each evaluate one zero-fork `if -F` (a float unstamped or a tile still stamped), then an in-process `run-shell -C`. Never forks; writes pane options only on a float<->tile transition.
+
 ## Side-pane width guard gate (#1056, #1221)
 
 `window-layout-changed[30]` and `window-resized[30]` each evaluate one in-process

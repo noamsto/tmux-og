@@ -12,7 +12,7 @@ subtext_0 subtext_1 overlay_0 overlay_1 overlay_2"
 declare -gA MOCHA_OPT=(
 	[dim]=overlay_1 [pr_closed]=overlay_0 [pr_pending]=peach [pr_success]=green
 	[park]=overlay_0 [host_peach]=peach [host_teal]=teal [host_pink]=pink
-	[host_yellow]=yellow [host_sky]=sky
+	[host_yellow]=yellow [host_sky]=sky [float]=teal
 )
 
 declare -gA HEX
@@ -77,6 +77,7 @@ teardown() {
 	[ "$(tmux show -gv @og_c_pr_pending)" = "${HEX[maroon]}" ]
 	[ "$(tmux show -gv @og_c_pr_success)" = "${HEX[teal]}" ]
 	[ "$(tmux show -gv @og_c_park)" = "${HEX[overlay_2]}" ]
+	[ "$(tmux show -gv @og_c_float)" = "${HEX[teal]}" ]
 	# Latte host tints are literals (palette.HostPeach ... HostSky), not options.
 	local -A host=([host_peach]='#c4500a' [host_teal]='#179299' [host_pink]='#c03fa0'
 		[host_yellow]='#8f7000' [host_sky]='#127eae')

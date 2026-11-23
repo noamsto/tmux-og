@@ -76,10 +76,13 @@ fi
 # pane-border-style cannot hold a nested format, so read the stamped value back.
 og_dim=$(tmux show -gv @og_c_dim 2>/dev/null | tr -d '"')
 [[ -n $og_dim ]] || og_dim=$thm_overlay_1
+og_float=$(tmux show -gv @og_c_float 2>/dev/null | tr -d '"')
+[[ -n $og_float ]] || og_float=$thm_teal
 
 # --- Pane borders ---
 # Nested #{@thm_*} inside #[] don't expand at render time, so we interpolate here.
-# Branch order, first match wins: float label → aeye carousel → role pane →
+# Branch order, first match wins: any float (own label and accent) → tiled
+# @pane_label label → aeye carousel → role pane →
 # the window's anchor (top-left, non-floating) pane, which alone carries the
 # full title → multi-pane ● / dim bar. A "lead" role falls through to the
 # anchor branch; the codename already names it. Text carries no fg of its own:
@@ -141,7 +144,9 @@ NAME_SEG="${HOST_SEG}#{?${CODENAME},#{?${HOST_PLAIN}, · ,}#[bold]${CODENAME}#[n
 STATE_SEG="#{?${LEAD_STATE},#{?#{||:${HOST_PLAIN},${CODENAME}}, · ,}${LEAD_STATE},}"
 TITLE_SEG="#{?${TITLE_SHOWN},#{?#{||:#{||:${HOST_PLAIN},${CODENAME}},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_SHOWN}},}"
 
-FLOAT_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ #{@pane_label} ━━}"
+FLOAT_LABEL='#{?@pane_label,#{@pane_label},#{?@bridge_proc,#{@bridge_proc},#{pane_current_command}}}'
+FLOAT_BRANCH="#{?pane_active,#[fg=${og_float}]━━ ${FLOAT_LABEL} ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ ${FLOAT_LABEL} ━━}"
+LABEL_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ #{@pane_label} ━━}"
 AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ aeye ━━}"
 ROLE_BRANCH="━━ #[bold]${ROLE_NAME}#[nobold]#{?${STATE}, ${STATE_GLYPH} ${STATE},} ━━"
 ANCHOR_BRANCH="━━ ${NAME_SEG}${STATE_SEG}${TITLE_SEG} ━━"
@@ -153,17 +158,24 @@ ROLE_COND="#{&&:#{!=:${ROLE_NAME},},#{!=:${ROLE_NAME},lead}}"
 ANCHOR_COND="#{&&:${ANCHOR},#{||:#{!=:${TITLE_SHOWN},},#{||:#{!=:${HOST_PLAIN},},#{||:#{!=:${CODENAME},},#{&&:#{!=:${TITLE_RAW},},#{!=:${LEAD_STATE},}}}}}}"
 
 tmux setw -g pane-border-format \
-	"#{?@pane_label,${FLOAT_BRANCH},#{?${AEYE},${AEYE_BRANCH},#{?${ROLE_COND},${ROLE_BRANCH},#{?${ANCHOR_COND},${ANCHOR_BRANCH},${PLAIN_BRANCH}}}}}"
+	"#{?pane_floating_flag,${FLOAT_BRANCH},#{?@pane_label,${LABEL_BRANCH},#{?${AEYE},${AEYE_BRANCH},#{?${ROLE_COND},${ROLE_BRANCH},#{?${ANCHOR_COND},${ANCHOR_BRANCH},${PLAIN_BRANCH}}}}}}"
 
 # Border colour: aeye never takes a crew colour; everything else falls through
 # role colour (bridged, then local) → window agent colour (bridged, then local
 # while occupied, the status bar's #671 gate) → mauve/overlay_1.
 ROLE_COLOR_CHAIN_MAUVE="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${thm_mauve}},${thm_mauve}}}}}"
 ROLE_COLOR_CHAIN_OVERLAY="#{?@bridge_crew_role_color,#{@bridge_crew_role_color},#{?@crew_role_color,#{@crew_role_color},#{?@bridge_crew_color,#{@bridge_crew_color},#{?@window_has_agent,#{?@crew_color,#{@crew_color},${og_dim}},${og_dim}}}}}"
+
+# Floats carry their own accent ahead of every crew arm. The float-stamp hook
+# points each float's pane-level options at these globals by indirection, so
+# re-running this script (theme switch) refreshes them.
+tmux set -g @og_float_fmt "${FLOAT_BRANCH}"
+tmux set -g @og_float_astyle "bg=${thm_bg},fg=${og_float}"
+tmux set -g @og_float_style "bg=${thm_bg},fg=${og_dim}"
 tmux setw -g pane-active-border-style \
-	"bg=${thm_bg},fg=#{?${AEYE},${thm_mauve},${ROLE_COLOR_CHAIN_MAUVE}}"
+	"bg=${thm_bg},fg=#{?pane_floating_flag,${og_float},#{?${AEYE},${thm_mauve},${ROLE_COLOR_CHAIN_MAUVE}}}"
 tmux setw -g pane-border-style \
-	"bg=${thm_bg},fg=#{?${AEYE},${og_dim},${ROLE_COLOR_CHAIN_OVERLAY}}"
+	"bg=${thm_bg},fg=#{?pane_floating_flag,${og_dim},#{?${AEYE},${og_dim},${ROLE_COLOR_CHAIN_OVERLAY}}}"
 
 # --- tmux-fingers hints (requires colourN format, not hex) ---
 tmux set -g @fingers-hint-style "fg=colour$(hex_to_256 "$thm_crust"),bg=colour$(hex_to_256 "$thm_mauve"),bold"
