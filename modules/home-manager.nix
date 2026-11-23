@@ -1165,7 +1165,7 @@ in {
           # The dispatcher finds the launcher with `command -v tmux-crew-dash` from a
           # pane shell, whose PATH may be rebuilt from the profile without the tmux
           # wrapper's script dir. The H bind pins the store path and needs none of this.
-          ++ [tmuxConfig.script.tmux-crew-dash]
+          ++ [tmuxConfig.script.tmux-crew-dash tmuxConfig.script.tmux-pane-chain]
           ++ lib.optionals cfg.enrich.enable [
             tmuxConfig.script.tmux-issue-stamp
             tmuxConfig.script.tmux-issue-stamp-linear

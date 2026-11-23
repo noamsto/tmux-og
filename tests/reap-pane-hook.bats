@@ -160,3 +160,17 @@ kill_pane_cmd() {
 	kill_pane_cmd t "$a_dead"
 	wait_for 5 six_gone "$a_dead"
 }
+
+@test "production hook: an exited parent closes its @pane_parent children" {
+	t new-session -d -s alpha -x 80 -y 24 -c "$PWD" -- sleep 300
+	local parent child other
+	parent="$(t list-panes -t alpha -F '#{pane_id}')"
+	child="$(t split-window -d -P -F '#{pane_id}' -t alpha -c "$PWD" -- sleep 300)"
+	other="$(t split-window -d -P -F '#{pane_id}' -t alpha -c "$PWD" -- sleep 300)"
+	t set-option -p -t "$child" @pane_parent "$parent"
+
+	kill_pane_cmd t "$parent"
+	child_gone() { ! t list-panes -a -F '#{pane_id}' | grep -qx "$child"; }
+	wait_for 5 child_gone
+	t list-panes -a -F '#{pane_id}' | grep -qx "$other"
+}

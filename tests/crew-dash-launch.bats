@@ -754,3 +754,26 @@ side_panes() {
 	[ -z "$(side_panes)" ]
 	messages | grep -q 'no side dash in a mirror window'
 }
+
+@test "--detached stamps the float dash as a child of the target pane" {
+	local id
+	run crew_dash --detached "$TILE"
+	[ "$status" -eq 0 ]
+	id="$(dash_panes "$WIN")"
+	[[ $id == %* ]] || skip "this tmux cannot create a floating pane"
+	[ "$(tmux display-message -p -t "$id" '#{@pane_parent}')" = "$TILE" ]
+}
+
+@test "--side --detached stamps the side dash as a child of the target pane" {
+	run crew_dash --side --detached "$TILE"
+	[ "$status" -eq 0 ]
+	[ "$(tmux display-message -p -t "$(side_panes)" '#{@pane_parent}')" = "$TILE" ]
+}
+
+@test "a plain press stamps no @pane_parent on the float or the side dash" {
+	local id
+	id="$(first_dash)"
+	[ -z "$(tmux display-message -p -t "$id" '#{@pane_parent}')" ]
+	crew_dash --side "$TILE"
+	[ -z "$(tmux display-message -p -t "$(side_panes)" '#{@pane_parent}')" ]
+}
