@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // A tile needs this much interior to be worth drawing at all — narrower and a
@@ -149,7 +150,7 @@ func (m tuiModel) renderTile(item listItem, selected, focused bool, outerW, oute
 
 // tileLabel is the identity the top border carries, cropped to the tile.
 func (m tuiModel) tileLabel(item listItem, innerW int) string {
-	label := truncateCells(stripTreePrefix(item.plain), max(innerW-4, 0))
+	label := probekit.TruncateCells(stripTreePrefix(item.plain), max(innerW-4, 0))
 	if label == "" {
 		return strings.Repeat("─", innerW)
 	}
@@ -175,7 +176,7 @@ func (m tuiModel) tileBody(item listItem, innerW, innerH int) []string {
 		}
 		dim := ansiFg(m.thmColorHex(palette.Faint))
 		lines := make([]string, innerH)
-		lines[0] = dim + truncateCells(note, innerW) + "\033[0m"
+		lines[0] = dim + probekit.TruncateCells(note, innerW) + "\033[0m"
 		return lines
 	}
 	lines := strings.Split(content, "\n")

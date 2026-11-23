@@ -16,6 +16,7 @@ import (
 
 	"github.com/noamsto/tmux-og/picker/claudestatus"
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // cardSepSeq makes each card call's separator unique. The rows carry pane paths
@@ -170,7 +171,7 @@ func readCardTask(path string) string {
 		return ""
 	}
 	data, _ := io.ReadAll(io.LimitReader(f, 4096))
-	return sanitizeStatusText(string(data))
+	return probekit.SanitizeStatusText(string(data))
 }
 
 // cardRun runs the card's tmux invocation; a test seam.
@@ -214,7 +215,7 @@ func cardAge(now, ts int64) string {
 }
 
 // renderSessionCard draws the window roster card at width cells. Every
-// untrusted string passes sanitizeStatusText before it is sized or coloured,
+// untrusted string passes probekit.SanitizeStatusText before it is sized or coloured,
 // and every emitted line is clamped to width.
 func renderSessionCard(c sessionCard, opts map[string]string, theme string, width int, now int64) string {
 	if width <= 0 {
@@ -235,7 +236,7 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 	const dim = "\033[2m"
 	clamp := func(s string) string { return truncateVisibleWidth(s, width) }
 
-	path := sanitizeStatusText(c.path)
+	path := probekit.SanitizeStatusText(c.path)
 	if home := os.Getenv("HOME"); home != "" && (path == home || strings.HasPrefix(path, home+"/")) {
 		path = "~" + path[len(home):]
 	}
@@ -245,9 +246,9 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 	}
 	host := ""
 	if len(c.windows) > 0 {
-		host = sanitizeStatusText(c.windows[0].w.bridgeHost)
+		host = probekit.SanitizeStatusText(c.windows[0].w.bridgeHost)
 	}
-	head := cMauve + truncateCells(sanitizeStatusText(sessionDisplayName(c.name, host)), max(width, 1)) + reset + cDim + "  ·  " + count
+	head := cMauve + probekit.TruncateCells(probekit.SanitizeStatusText(sessionDisplayName(c.name, host)), max(width, 1)) + reset + cDim + "  ·  " + count
 	if path != "" {
 		head += "  ·  " + path
 	}
@@ -269,7 +270,7 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		default:
 			r.marker = " "
 		}
-		r.name = truncateCells(sanitizeStatusText(w.name), 24)
+		r.name = probekit.TruncateCells(probekit.SanitizeStatusText(w.name), 24)
 		icons, dw := buildProcIcons(w.procs, maxIconsPicker)
 		r.icons, r.iconDW = appendAgentIcon(icons, dw, w.agent, theme, dim, reset)
 		r.iconDW -= trailingSpaces(r.icons)
@@ -277,16 +278,16 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		if w.bridgeWin {
 			br = w.bridgeName
 		}
-		r.branch = truncateCells(sanitizeStatusText(br), 28)
+		r.branch = probekit.TruncateCells(probekit.SanitizeStatusText(br), 28)
 		var badge []string
-		if id := truncateCells(strings.TrimSpace(sanitizeStatusText(w.labelID)), 16); id != "" {
+		if id := probekit.TruncateCells(strings.TrimSpace(probekit.SanitizeStatusText(w.labelID)), 16); id != "" {
 			badge = append(badge, cMauve+id+reset)
-			r.badgeDW += iconCellWidth(id)
+			r.badgeDW += probekit.IconCellWidth(id)
 		}
-		pr := truncateCells(sanitizeStatusText(w.prPlain), 14)
+		pr := probekit.TruncateCells(probekit.SanitizeStatusText(w.prPlain), 14)
 		if b := colorPRBadge(pr, w.prState, w.prCheck, w.prMergeable, w.prReview, w.prAutoMerge, prCols); b != "" {
 			badge = append(badge, b)
-			r.badgeDW += iconCellWidth(strings.TrimSpace(pr))
+			r.badgeDW += probekit.IconCellWidth(strings.TrimSpace(pr))
 		}
 		if len(badge) == 2 {
 			r.badgeDW++
@@ -294,12 +295,12 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 		r.badge = strings.Join(badge, " ")
 		r.age = cardAge(now, cw.activity)
 		if cw.detail != "" {
-			r.detail = sanitizeStatusText(cw.detail)
+			r.detail = probekit.SanitizeStatusText(cw.detail)
 		}
 		idxDW = max(idxDW, len(r.idx))
-		nameDW = max(nameDW, iconCellWidth(r.name))
+		nameDW = max(nameDW, probekit.IconCellWidth(r.name))
 		iconDW = max(iconDW, r.iconDW)
-		branchDW = max(branchDW, iconCellWidth(r.branch))
+		branchDW = max(branchDW, probekit.IconCellWidth(r.branch))
 		badgeDW = max(badgeDW, r.badgeDW)
 		ageDW = max(ageDW, len(r.age))
 	}
@@ -347,11 +348,11 @@ func renderSessionCard(c sessionCard, opts map[string]string, theme string, widt
 			}
 			b.WriteString(strings.Repeat(" ", max(0, col-dw)))
 		}
-		name := truncateCells(r.name, max(nameDW, 1))
-		cell(name, iconCellWidth(name), nameDW, "")
+		name := probekit.TruncateCells(r.name, max(nameDW, 1))
+		cell(name, probekit.IconCellWidth(name), nameDW, "")
 		cell(r.icons, r.iconDW, iconDW, "")
-		br := truncateCells(r.branch, max(branchDW, 1))
-		cell(br, iconCellWidth(br), branchDW, cFaint)
+		br := probekit.TruncateCells(r.branch, max(branchDW, 1))
+		cell(br, probekit.IconCellWidth(br), branchDW, cFaint)
 		cell(r.badge, r.badgeDW, badgeDW, "")
 		if ageDW > 0 {
 			b.WriteString(" " + strings.Repeat(" ", ageDW-len(r.age)) + cDim + r.age + reset)

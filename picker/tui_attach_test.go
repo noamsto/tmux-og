@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // attachTestModel is a Remote-section model (remoteFixture, cursor unset)
@@ -612,7 +613,7 @@ func TestWindowModeHostRowEnterKeepsSessionBehaviour(t *testing.T) {
 	}
 
 	t.Run("needs auth runs the handshake in the popup", func(t *testing.T) {
-		m := hostModel(fmt.Errorf("%w: exit status 255", errRemoteNeedsAuth))
+		m := hostModel(fmt.Errorf("%w: exit status 255", probekit.ErrRemoteNeedsAuth))
 		next, cmd := m.activateCurrent()
 		if cmd == nil {
 			t.Fatal("want an ExecProcess cmd")
@@ -626,7 +627,7 @@ func TestWindowModeHostRowEnterKeepsSessionBehaviour(t *testing.T) {
 	})
 
 	t.Run("host key changed refuses", func(t *testing.T) {
-		m := hostModel(fmt.Errorf("%w: x", errRemoteHostKeyChanged))
+		m := hostModel(fmt.Errorf("%w: x", probekit.ErrRemoteHostKeyChanged))
 		next, cmd := m.activateCurrent()
 		if cmd != nil || !strings.Contains(next.(tuiModel).statusMsg, "host key") {
 			t.Errorf("cmd=%v status=%q, want a host-key refusal", cmd, next.(tuiModel).statusMsg)
@@ -634,7 +635,7 @@ func TestWindowModeHostRowEnterKeepsSessionBehaviour(t *testing.T) {
 	})
 
 	t.Run("tailscale check refuses", func(t *testing.T) {
-		m := hostModel(fmt.Errorf("%w: x", errRemoteTailscaleCheck))
+		m := hostModel(fmt.Errorf("%w: x", probekit.ErrRemoteTailscaleCheck))
 		next, cmd := m.activateCurrent()
 		if got := next.(tuiModel).statusMsg; cmd != nil || !strings.Contains(got, "tailscale check") || !strings.Contains(got, "ssh lab") {
 			t.Errorf("cmd=%v status=%q, want the tailscale refusal", cmd, got)

@@ -7,43 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 )
-
-func TestSanitizeStatusText(t *testing.T) {
-	cases := []struct {
-		name, in, want string
-	}{
-		{"csi", "\x1b[31mred\x1b[0m", "red"},
-		{"osc bel", "a\x1b]0;t\x07b", "ab"},
-		{"osc st", "a\x1b]8;;u\x1b\\b", "ab"},
-		{"two-byte esc", "a\x1bcb", "ab"},
-		{"c1 csi", "a\u009b31mb", "a31mb"},
-		{"bidi", "a\u202eb\u2066c", "abc"},
-		{"bidi rlm", "a\u200fb", "ab"},
-		{"bidi alm", "a\u061cb", "ab"},
-		{"bidi lrm", "a\u200eb", "ab"},
-		{"whitespace collapse", "a\n\t b", "a b"},
-		{"trim", "  a  ", "a"},
-		{"cap", strings.Repeat("x", 300), strings.Repeat("x", 200)},
-		{"cap counts collapsed spaces", strings.Repeat("ab \n", 100), strings.Repeat("ab ", 66) + "ab"},
-		{"plain unicode", "héllo ✓", "héllo ✓"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := sanitizeStatusText(tc.in)
-			if got != tc.want {
-				t.Errorf("sanitizeStatusText(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-			if n := utf8.RuneCountInString(got); n > 200 {
-				t.Errorf("len = %d runes, want <= 200", n)
-			}
-		})
-	}
-}
 
 // shrinkAttachTimings sets a short kill grace and overrides the given phase
 // budgets for one test, restoring both afterwards.

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 func TestClassifyKillErr(t *testing.T) {
@@ -33,23 +35,23 @@ func TestClassifyKillErr(t *testing.T) {
 		{"exit 127 (tmux missing)", exitErr(127), "", "", false, errRemoteKillUnrunnable},
 		{"exit 126 (tmux not executable)", exitErr(126), "", "", false, errRemoteKillUnrunnable},
 		{"exit 2 (uncertain tmux failure) keeps the row", exitErr(2), "", "", false, errRemoteKillUnrunnable},
-		{"timeout beats the exit status", exitErr(1), "", "", true, errRemoteUnreachable},
-		{"ssh binary missing", errors.New(`exec: "ssh": not found`), "", "", false, errRemoteUnreachable},
+		{"timeout beats the exit status", exitErr(1), "", "", true, probekit.ErrRemoteUnreachable},
+		{"ssh binary missing", errors.New(`exec: "ssh": not found`), "", "", false, probekit.ErrRemoteUnreachable},
 
 		// 255 keeps the probe classifier's host-level states.
-		{"bare 255", exitErr(255), "", "", false, errRemoteUnreachable},
-		{"unknown host key", exitErr(255), "", "Host key verification failed.", false, errRemoteNeedsAuth},
-		{"password refused", exitErr(255), "", "noams@mbp: Permission denied (publickey,password).", false, errRemoteNeedsAuth},
-		{"refused", exitErr(255), "", "ssh: connect to host lab port 22: Connection refused", false, errRemoteUnreachable},
+		{"bare 255", exitErr(255), "", "", false, probekit.ErrRemoteUnreachable},
+		{"unknown host key", exitErr(255), "", "Host key verification failed.", false, probekit.ErrRemoteNeedsAuth},
+		{"password refused", exitErr(255), "", "noams@mbp: Permission denied (publickey,password).", false, probekit.ErrRemoteNeedsAuth},
+		{"refused", exitErr(255), "", "ssh: connect to host lab port 22: Connection refused", false, probekit.ErrRemoteUnreachable},
 		{
 			"host key changed",
 			exitErr(255), "", "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.", false,
-			errRemoteHostKeyChanged,
+			probekit.ErrRemoteHostKeyChanged,
 		},
 		{
 			"tailscale check banner",
 			exitErr(255), "Tailscale SSH requires an additional check.\n", "", true,
-			errRemoteTailscaleCheck,
+			probekit.ErrRemoteTailscaleCheck,
 		},
 	}
 	for _, tc := range cases {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 func TestParseRemoteWindowsOutput(t *testing.T) {
@@ -55,7 +57,7 @@ func TestParseRemoteWindowsOutput(t *testing.T) {
 }
 
 // Names stay raw: the session name drives the exact =sess actions, and
-// sanitizing happens only where a name is rendered (remoteDisplayName).
+// sanitizing happens only where a name is rendered (probekit.DisplayName).
 func TestParseRemoteWindowsOutputKeepsRawNames(t *testing.T) {
 	sess := "  s\x1b[31m\x07 "
 	win := " w\u202e\x1b[0m "
@@ -78,17 +80,6 @@ func TestParseRemoteWindowsOutputNoServer(t *testing.T) {
 	}
 	if got.Identity.MachineID != "id" || got.Identity.User != "user" {
 		t.Fatalf("identity = %+v", got.Identity)
-	}
-}
-
-func TestRemoteDisplayName(t *testing.T) {
-	raw := "a\x1b[31mb\x07c\u202ed" + strings.Repeat("x", 100)
-	got := remoteDisplayName(raw)
-	if want := truncateCells(sanitizeStatusText(raw), 40); got != want {
-		t.Fatalf("remoteDisplayName = %q, want %q", got, want)
-	}
-	if strings.ContainsAny(got, "\x1b\x07\u202e") {
-		t.Fatalf("remoteDisplayName left a control in %q", got)
 	}
 }
 
@@ -354,8 +345,8 @@ func TestRemoteWindowRowItemSanitizesNames(t *testing.T) {
 			t.Errorf("%q carries a remote control sequence", s)
 		}
 	}
-	if got := visibleWidth(row.remoteWindowName); got > remoteDisplayNameCells {
-		t.Errorf("window name is %d cells, want <= %d", got, remoteDisplayNameCells)
+	if got := visibleWidth(row.remoteWindowName); got > probekit.DisplayNameCells {
+		t.Errorf("window name is %d cells, want <= %d", got, probekit.DisplayNameCells)
 	}
 	if row.remoteSess != w.Session || row.target != "remote:lab:"+w.Session+":@1" {
 		t.Errorf("raw session must stay in remoteSess/target: %+v", row)
@@ -446,7 +437,7 @@ func TestCollectRemoteWindowItemsNoServer(t *testing.T) {
 	writeRemoteWindowCache("lab", sampleRemoteWindows(), time.Now())
 	opts := map[string]string{"@remote_bridge_hosts": "lab"}
 
-	items := collectRemoteWindowItems(opts, nil, winProbe(remoteProbeResult{}, errRemoteNoServer))
+	items := collectRemoteWindowItems(opts, nil, winProbe(remoteProbeResult{}, probekit.ErrRemoteNoServer))
 	if len(items) != 2 {
 		t.Fatalf("want header + host row, got %d: %+v", len(items), items)
 	}
@@ -505,9 +496,9 @@ func TestCollectRemoteWindowItemsInteractiveStates(t *testing.T) {
 		note  string
 		check func(listItem) bool
 	}{
-		{"needs auth", fmt.Errorf("%w: x", errRemoteNeedsAuth), "(auth needed — Enter to connect)", func(r listItem) bool { return r.remoteNeedsAuth }},
-		{"host key", fmt.Errorf("%w: x", errRemoteHostKeyChanged), "(host key changed — verify manually)", func(r listItem) bool { return r.remoteInert }},
-		{"tailscale", &tailscaleCheckErr{url: "https://login.tailscale.com/a/xyz"}, "(tailscale check — run: ssh lab)", func(r listItem) bool {
+		{"needs auth", fmt.Errorf("%w: x", probekit.ErrRemoteNeedsAuth), "(auth needed — Enter to connect)", func(r listItem) bool { return r.remoteNeedsAuth }},
+		{"host key", fmt.Errorf("%w: x", probekit.ErrRemoteHostKeyChanged), "(host key changed — verify manually)", func(r listItem) bool { return r.remoteInert }},
+		{"tailscale", &probekit.TailscaleCheckErr{URL: "https://login.tailscale.com/a/xyz"}, "(tailscale check — run: ssh lab)", func(r listItem) bool {
 			return r.remoteTailscaleCheck && r.remoteTailscaleURL == "https://login.tailscale.com/a/xyz"
 		}},
 	}
@@ -633,7 +624,7 @@ func TestRemoteWindowRowItemSearchTextKeepsFullNames(t *testing.T) {
 	if !strings.Contains(row.searchText, "zebrafinal") {
 		t.Errorf("searchText = %q, want the last word of the long name", row.searchText)
 	}
-	if visibleWidth(row.remoteWindowName) > remoteDisplayNameCells {
+	if visibleWidth(row.remoteWindowName) > probekit.DisplayNameCells {
 		t.Errorf("remoteWindowName must stay truncated, got %q", row.remoteWindowName)
 	}
 }

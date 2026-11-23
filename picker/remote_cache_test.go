@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // TestMain points XDG_CACHE_HOME at a regular file, so the remote session
@@ -138,10 +140,10 @@ func TestRemoteCacheStaleBoundary(t *testing.T) {
 	at := func(age time.Duration) remoteSessionCache {
 		return remoteSessionCache{SavedAt: now.Add(-age).UnixMilli()}
 	}
-	if remoteCacheStale(at(remoteCacheStaleAfter), now) {
+	if remoteCacheStale(at(probekit.RemoteCacheStaleAfter), now) {
 		t.Error("exactly the threshold must still be fresh")
 	}
-	if !remoteCacheStale(at(remoteCacheStaleAfter+time.Millisecond), now) {
+	if !remoteCacheStale(at(probekit.RemoteCacheStaleAfter+time.Millisecond), now) {
 		t.Error("past the threshold must be stale")
 	}
 }
@@ -151,7 +153,7 @@ func TestCollectRemoteItemsWritesCache(t *testing.T) {
 	opts := map[string]string{"@remote_bridge_hosts": "lab serverless"}
 	probe := func(host string) (remoteProbeResult, error) {
 		if host == "serverless" {
-			return remoteProbeResult{}, errRemoteNoServer
+			return remoteProbeResult{}, probekit.ErrRemoteNoServer
 		}
 		return probeWithSessions("mono", "other"), nil
 	}
@@ -198,9 +200,9 @@ func TestCollectRemoteItemsUnreachableKeepsCachedRows(t *testing.T) {
 
 func TestCollectRemoteItemsSpecialStatesIgnoreCache(t *testing.T) {
 	for name, probeErr := range map[string]error{
-		"needs auth":       errRemoteNeedsAuth,
-		"host key changed": errRemoteHostKeyChanged,
-		"tailscale check":  &tailscaleCheckErr{},
+		"needs auth":       probekit.ErrRemoteNeedsAuth,
+		"host key changed": probekit.ErrRemoteHostKeyChanged,
+		"tailscale check":  &probekit.TailscaleCheckErr{},
 	} {
 		t.Run(name, func(t *testing.T) {
 			useRemoteCache(t)
@@ -312,7 +314,7 @@ func writeRawRemoteCache(t *testing.T, host, body string) {
 	t.Helper()
 	dir := useRemoteCache(t)
 	writeRemoteSessionCache(host, nil, time.Now())
-	path := filepath.Join(dir, hostFileName(host)+".json")
+	path := filepath.Join(dir, probekit.HostFileName(host)+".json")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

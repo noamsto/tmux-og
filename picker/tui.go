@@ -21,6 +21,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // listItem is one row in the picker list.
@@ -71,7 +72,7 @@ type listItem struct {
 	remoteHostSessionIDs     map[string]string // remote host row: the live probe's session name → $N for every session, bridged included; mirror rows take their kill id from it
 	remoteHostSessionCreated map[string]string // remote host row: the same probe's session name → #{session_created}, which mirror rows take alongside the id (same probe, so the pair can't disagree); nil off a live probe
 	remoteWindowPane         string            // remote window row: the window's active pane id (%N) from the live probe; a cached row has none
-	remoteWindowName         string            // remote window row: render-safe window name (remoteDisplayName)
+	remoteWindowName         string            // remote window row: render-safe window name (probekit.DisplayName)
 	remoteLive               bool              // remote window row: returned by this popup's probe, not read from the cache — only a live row may be killed
 }
 
@@ -2144,7 +2145,7 @@ func (m tuiModel) handleKillConfirm(key string) (tea.Model, tea.Cmd) {
 // remoteRowLabel is the sanitized "host", "host/sess" or "host/sess:idx" text
 // used to name a remote row in status/hint lines.
 func remoteRowLabel(it listItem) string {
-	return sanitizeStatusText(rawRemoteRowLabel(it))
+	return probekit.SanitizeStatusText(rawRemoteRowLabel(it))
 }
 
 // rawRemoteRowLabel is remoteRowLabel before sanitizing, for a caller that
@@ -2201,17 +2202,17 @@ func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
 		}
 		switch {
 		case it.cancelled:
-			msgs = append(msgs, sanitizeStatusText("cancelled killing "+what))
+			msgs = append(msgs, probekit.SanitizeStatusText("cancelled killing "+what))
 		case it.err == nil:
 			logEvent("picker", "event", kind, "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID)
 			forget = append(forget, it.item)
 		case errors.Is(it.err, errRemoteSessionGone):
 			logEvent("picker", "event", kind+"_gone", "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID)
-			msgs = append(msgs, sanitizeStatusText(what+" was already gone"))
+			msgs = append(msgs, probekit.SanitizeStatusText(what+" was already gone"))
 			forget = append(forget, it.item)
 		default:
 			logEvent("picker", "event", kind+"_failed", "host", it.item.remoteHost, "sess", it.item.remoteSess, "window", it.item.remoteWindowID, "error", it.err.Error())
-			msgs = append(msgs, sanitizeStatusText(remoteKillFailure(what, it.err)))
+			msgs = append(msgs, probekit.SanitizeStatusText(remoteKillFailure(what, it.err)))
 		}
 	}
 	m = m.forgetRemoteRows(forget)
@@ -2221,7 +2222,7 @@ func (m tuiModel) finishKill(res killResult) (tea.Model, tea.Cmd) {
 	case res.outcome == killRunCancelled:
 		// No target was attempted before the cancel landed, so res.results is
 		// empty and the per-item branches above never ran.
-		m.statusMsg = sanitizeStatusText("cancelled remote kill of " + label)
+		m.statusMsg = probekit.SanitizeStatusText("cancelled remote kill of " + label)
 	}
 	return m, nil
 }
@@ -2250,11 +2251,11 @@ func (m tuiModel) handleKillRunKey(key string) (tea.Model, tea.Cmd) {
 func remoteKillFailure(what string, err error) string {
 	prefix := what + ": "
 	switch {
-	case errors.Is(err, errRemoteNeedsAuth):
+	case errors.Is(err, probekit.ErrRemoteNeedsAuth):
 		return prefix + "ssh needs auth"
-	case errors.Is(err, errRemoteHostKeyChanged):
+	case errors.Is(err, probekit.ErrRemoteHostKeyChanged):
 		return prefix + "host key changed"
-	case errors.Is(err, errRemoteTailscaleCheck):
+	case errors.Is(err, probekit.ErrRemoteTailscaleCheck):
 		return prefix + "tailscale check required"
 	case errors.Is(err, errRemoteKillUnrunnable):
 		return prefix + "could not run tmux"
@@ -2980,7 +2981,7 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 	t := item.target
 	if item.remoteDirPath != "" {
 		// The path lives on the host; the local filesystem has nothing to show.
-		host, path := item.remoteDirHost, sanitizeStatusText(item.remoteDirPath)
+		host, path := item.remoteDirHost, probekit.SanitizeStatusText(item.remoteDirPath)
 		return func() tea.Msg {
 			msg := "new session on " + host + "\n\n" + path + "\n\nEnter creates the session on " + host + " and opens it as a mirror"
 			return previewMsg{content: msg, target: t, scrollTop: true}
@@ -2998,7 +2999,7 @@ func (m tuiModel) loadPreviewCmd() tea.Cmd {
 		mirrorTarget := item.remoteMirrorTarget
 		winCard := ""
 		if item.remoteWindowID != "" {
-			winCard = "/" + remoteDisplayName(sess) + ":" + strconv.Itoa(item.remoteWindowIndex) + " " + item.remoteWindowName
+			winCard = "/" + probekit.DisplayName(sess) + ":" + strconv.Itoa(item.remoteWindowIndex) + " " + item.remoteWindowName
 		}
 		return func() tea.Msg {
 			var msg string
@@ -3598,7 +3599,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		icons, dw = appendAgentIcon(icons, dw, w.agent, theme, dim, reset)
 		icons, dw = appendIssueIDs(icons, dw, w.agent.issues, cDim, reset)
 
-		name := truncateCells(w.name, 40)
+		name := probekit.TruncateCells(w.name, 40)
 
 		leadPlain := fmt.Sprintf("%d: ", w.index)
 		leadColored := leadPlain
@@ -3610,7 +3611,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			}
 			leadColored += crew + " "
 		}
-		leadDW := iconCellWidth(leadPlain)
+		leadDW := probekit.IconCellWidth(leadPlain)
 
 		var ri rawIdentity
 		var idSearch string
@@ -3624,7 +3625,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			}
 			idSearch = w.branch
 		} else if w.bridgeName != "" {
-			ri = rawIdentity{kind: 0, text: truncateCells(w.bridgeName, 40)}
+			ri = rawIdentity{kind: 0, text: probekit.TruncateCells(w.bridgeName, 40)}
 			idSearch = w.bridgeName
 		} else {
 			ri = rawIdentity{kind: 0, text: name}
@@ -3633,7 +3634,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 
 		prBadge := colorPRBadge(w.prPlain, w.prState, w.prCheck, w.prMergeable, w.prReview, w.prAutoMerge, prCols)
 		prPlain := strings.TrimSpace(w.prPlain)
-		prDW := iconCellWidth(prPlain)
+		prDW := probekit.IconCellWidth(prPlain)
 
 		// A mirror's local pane PIDs measure the renderer, so it never shows them.
 		cpu, mem := resourcePlaceholder, resourcePlaceholder
@@ -3645,7 +3646,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			path = "~" + path[len(home):]
 		}
 		hostCol = max(hostCol, visibleWidth(w.bridgeHost))
-		maxPathDW = max(maxPathDW, iconCellWidth(path))
+		maxPathDW = max(maxPathDW, probekit.IconCellWidth(path))
 		dataCPU = max(dataCPU, visibleWidth(cpu))
 		dataMem = max(dataMem, visibleWidth(mem))
 
@@ -3660,7 +3661,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		maxIconDW = max(maxIconDW, dw)
 		maxPrDW = max(maxPrDW, prDW)
 		if w.zoomed {
-			maxZoomDW = max(maxZoomDW, iconCellWidth(" 󰁌"))
+			maxZoomDW = max(maxZoomDW, probekit.IconCellWidth(" 󰁌"))
 		}
 	}
 	if hostCol > 0 {
@@ -3699,7 +3700,7 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 				dw += 1 + f.maxCPU + 3 + f.maxMem
 			}
 			if f.showPath {
-				dw += 1 + iconCellWidth(iDir) + 1 + pathCostDW
+				dw += 1 + probekit.IconCellWidth(iDir) + 1 + pathCostDW
 			}
 			return dw
 		}
@@ -3752,13 +3753,13 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 		switch ri.kind {
 		case 1: // issue: id accent + dim title
 			id := ri.id
-			idW := iconCellWidth(id)
+			idW := probekit.IconCellWidth(id)
 			rest := ri.rest
 			if idW >= budget {
-				id = truncateCells(id, budget)
+				id = probekit.TruncateCells(id, budget)
 				rest = ""
-			} else if idW+iconCellWidth(rest) > budget {
-				rest = truncateCells(rest, budget-idW)
+			} else if idW+probekit.IconCellWidth(rest) > budget {
+				rest = probekit.TruncateCells(rest, budget-idW)
 			}
 			plain := id + rest
 			colored := cMauve + id + reset
@@ -3767,11 +3768,11 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			}
 			return colored, plain
 		case 2: // branch: faint, optional glyph
-			br := truncateCells(ri.text, max(budget-iconCellWidth(ri.leadGlyph), 1))
+			br := probekit.TruncateCells(ri.text, max(budget-probekit.IconCellWidth(ri.leadGlyph), 1))
 			plain := ri.leadGlyph + br
 			return cFaint + plain + reset, plain
 		default: // name: plain
-			nm := truncateCells(ri.text, budget)
+			nm := probekit.TruncateCells(ri.text, budget)
 			return nm, nm
 		}
 	}
@@ -3893,8 +3894,8 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 			leadPlainPadded := padToWidth(r.leadPlain, r.leadDW, maxLeadDW)
 			labelColored := lead + idColored + zoom
 			labelPlain := leadPlainPadded + idPlain + zoom
-			labelColored = padToWidth(labelColored, iconCellWidth(labelPlain), labelCol)
-			labelPlain = padToWidth(labelPlain, iconCellWidth(labelPlain), labelCol)
+			labelColored = padToWidth(labelColored, probekit.IconCellWidth(labelPlain), labelCol)
+			labelPlain = padToWidth(labelPlain, probekit.IconCellWidth(labelPlain), labelCol)
 
 			display := fmt.Sprintf("%s %s %s %s",
 				cDim+tree+reset, activeMarker, labelColored, icons)
@@ -3911,8 +3912,8 @@ func renderWindowItemsWith(windows []windowData, sessActivity map[string]int64, 
 				plain += " " + cpuPad + r.cpu + " / " + memPad + r.mem
 			}
 			if maxPrDW > 0 {
-				display += " " + padToWidth(r.prBadge, iconCellWidth(r.prPlain), maxPrDW)
-				plain += " " + padToWidth(r.prPlain, iconCellWidth(r.prPlain), maxPrDW)
+				display += " " + padToWidth(r.prBadge, probekit.IconCellWidth(r.prPlain), maxPrDW)
+				plain += " " + padToWidth(r.prPlain, probekit.IconCellWidth(r.prPlain), maxPrDW)
 			}
 			if showPath && r.path != "" {
 				display += " " + cBlue + iDir + reset + " " + cDim + r.path + reset
@@ -3966,10 +3967,10 @@ const sessionFoldFrac = 3
 func foldSessionPrefix(session, cDim, reset string, identityCap int) (prefix, plain string, remainingCap int) {
 	const sep = " / "
 	sessCap := max(identityCap/sessionFoldFrac, 1)
-	name := truncateCells(session, sessCap)
+	name := probekit.TruncateCells(session, sessCap)
 	plain = name + sep
 	prefix = cDim + name + reset + sep
-	remainingCap = max(identityCap-iconCellWidth(plain), 1)
+	remainingCap = max(identityCap-probekit.IconCellWidth(plain), 1)
 	return prefix, plain, remainingCap
 }
 
@@ -4060,7 +4061,7 @@ func shiftLineLeft(line string, n int) string {
 			}
 			i = j
 		} else {
-			skipped += runeCellWidth(runes[i])
+			skipped += probekit.RuneCellWidth(runes[i])
 			i++
 		}
 	}
@@ -4092,7 +4093,7 @@ func truncateVisibleWidth(line string, maxCells int) string {
 			i = j - 1
 			continue
 		}
-		w := runeCellWidth(runes[i])
+		w := probekit.RuneCellWidth(runes[i])
 		if cells+w > maxCells {
 			break
 		}
@@ -4104,7 +4105,7 @@ func truncateVisibleWidth(line string, maxCells int) string {
 }
 
 // fitVisibleWidth truncates or pads a line to exactly targetCells visible cells,
-// using runeCellWidth which handles nerd font PUA correctly (go-runewidth reports 0).
+// using probekit.RuneCellWidth which handles nerd font PUA correctly (go-runewidth reports 0).
 func fitVisibleWidth(line string, targetCells int) string {
 	truncated := truncateVisibleWidth(line, targetCells)
 	cells := visibleWidth(truncated)
@@ -4130,7 +4131,7 @@ func visibleWidth(s string) int {
 			i = j - 1
 			continue
 		}
-		cells += runeCellWidth(runes[i])
+		cells += probekit.RuneCellWidth(runes[i])
 	}
 	return cells
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // remoteWindow is one window of a remote tmux session. Session is the raw name
@@ -42,15 +43,6 @@ const remoteWindowRowsFormat = "#{?#{@bridge_win},M|,W|#{session_id}|#{window_id
 var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `' \; list-windows -a -F '` + remoteWindowRowsFormat + `'`)
 
 var remoteListWindowsCmd = remoteIdentityPreamble + `; ` + remoteListWindowsBody
-
-// remoteDisplayNameCells caps a remote session or window name on a row.
-const remoteDisplayNameCells = 40
-
-// remoteDisplayName is the one place a remote session or window name is made
-// render-safe; the raw name stays for actions.
-func remoteDisplayName(s string) string {
-	return truncateCells(sanitizeStatusText(s), remoteDisplayNameCells)
-}
 
 // isDigits reports whether s is a non-empty run of ASCII digits.
 func isDigits(s string) bool {
@@ -164,13 +156,13 @@ func remoteWindowCacheDir() string {
 }
 
 func writeRemoteWindowCache(host string, windows []remoteWindow, now time.Time) {
-	writeOwnerOnlyJSON(remoteWindowCacheDir(), hostFileName(host)+".json",
+	probekit.WriteOwnerOnlyJSON(remoteWindowCacheDir(), probekit.HostFileName(host)+".json",
 		remoteWindowCache{Host: host, SavedAt: now.UnixMilli(), Windows: windows})
 }
 
 func readRemoteWindowCache(host string) (remoteWindowCache, bool) {
 	var c remoteWindowCache
-	if !readOwnerOnlyJSON(remoteWindowCacheDir(), hostFileName(host)+".json", &c) || c.Host != host {
+	if !probekit.ReadOwnerOnlyJSON(remoteWindowCacheDir(), probekit.HostFileName(host)+".json", &c) || c.Host != host {
 		return remoteWindowCache{}, false
 	}
 	return c, true
@@ -230,9 +222,9 @@ func sshKillRemoteWindowCtx(ctx context.Context, host, sessionID, id, created st
 // render-safe here; remoteSess and target keep the raw session for actions.
 func remoteWindowRowItem(host string, w remoteWindow, note, cHost, cDim string, dim bool) listItem {
 	reset := "\033[0m"
-	sess := remoteDisplayName(w.Session)
-	name := remoteDisplayName(w.Name)
-	fullSess, fullName := sanitizeStatusText(w.Session), sanitizeStatusText(w.Name)
+	sess := probekit.DisplayName(w.Session)
+	name := probekit.DisplayName(w.Name)
+	fullSess, fullName := probekit.SanitizeStatusText(w.Session), probekit.SanitizeStatusText(w.Name)
 	idx := strconv.Itoa(w.Index)
 	body := sess + " " + idx + ": " + name
 	plain := body
@@ -300,7 +292,7 @@ func pendingRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]boo
 	for _, h := range hosts {
 		items = append(items, remoteHostRowItem(tmuxOpts, h, remotePendingNote))
 		if c, ok := readRemoteWindowCache(h); ok {
-			items = append(items, cachedRemoteWindowRows(c, bridges, savedAtStale(c.SavedAt, now), false, now, hostColor(h), cDim)...)
+			items = append(items, cachedRemoteWindowRows(c, bridges, probekit.SavedAtStale(c.SavedAt, now), false, now, hostColor(h), cDim)...)
 		}
 	}
 	return items
@@ -379,7 +371,7 @@ func collectRemoteWindowItems(tmuxOpts map[string]string, bridges map[string]boo
 					res.cached = cachedRemoteWindowRows(c, bridges, true, true, now, hostColor(h), cDim)
 				}
 			case remoteProbeTailscaleCheck:
-				res.tailscaleURL = tailscaleCheckURL(err)
+				res.tailscaleURL = probekit.TailscaleCheckURL(err)
 			case remoteProbeNeedsAuth, remoteProbeHostKeyChanged:
 			}
 			results[i] = res
