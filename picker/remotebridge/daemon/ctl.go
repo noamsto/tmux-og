@@ -754,9 +754,6 @@ var verbs = map[string]verb{
 	// that read GitHub data, and nothing reaches the remote unless every entry
 	// passes. Even then the values ride only as positional parameters to a
 	// constant script, never as script text.
-	//
-	// Adding this verb bumped CtlProtocolVersion, so an older resident daemon
-	// answers "reopen the bridge" rather than "unknown verb".
 	"handoff": {args: 2, optArgs: maxHandoffEntries - 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		es, err := parseHandoff(a[1:])
 		if err != nil {

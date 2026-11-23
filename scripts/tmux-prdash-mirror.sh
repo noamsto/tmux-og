@@ -11,15 +11,14 @@
 # resolves it, with @bridge_repo/@bridge_dir (window) and @bridge_sock (session,
 # the RAW socket path; --sock= is added here).
 #
-# prdash runs with an empty-DIRECTORY repos root (an empty string would fall
-# back to ~/git), which forces it to write only path-free
-# hand-off entries (it cannot resolve a local checkout), in a private scratch dir
-# so it never sees a local checkout. Its action file is then forwarded in ONE ctl
-# call: a bulk `W` must run sequentially in a single remote float. The daemon
-# caps a hand-off at 32 entries; a larger one is refused here rather than
-# forwarded partially. Lines go as argv, never through a shell string.
+# prdash runs in a private scratch dir with an empty-DIRECTORY repos root (an
+# empty string would fall back to ~/git), so it finds no local checkout and
+# writes only path-free hand-off entries. Its action file is then forwarded in
+# ONE ctl call: a bulk `W` must run sequentially in a single remote float. The
+# daemon caps a hand-off at 32 entries; a larger one is refused here rather than
+# forwarded partially.
 #
-# An invalid @bridge_repo falls back to today's remote prdash (ctl `tool`). An
+# An invalid @bridge_repo falls back to the remote prdash (ctl `tool`). An
 # invalid pane id (never a remote pane) only notifies.
 
 set -uo pipefail
