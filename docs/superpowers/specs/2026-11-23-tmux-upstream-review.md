@@ -221,8 +221,8 @@ The draft's use case is hypothetical: its wording ("We keep a pane option `@floa
 
 One line per recommended tmux-og change, as `title — verdict — doc path`. None is filed.
 
-- Restore floats after hide and show without `join-pane -b` on tmux at or after `0a3b2a1a` (version-gated) — breaks us — `docs/agents/floats.md`
-- Version-gate the float `resize-pane -y` row compensation and drop it once all tmux is at or after `541bc85e` — breaks us — `docs/agents/floats.md`
+- Restore floats after hide and show without `join-pane -b` on tmux at or after `0a3b2a1a` (probe-gated or rev-marker-gated) — breaks us — `docs/agents/floats.md`
+- Gate the float `resize-pane -y` row compensation on a probe or rev marker per site (remote for `floatGeomCommand`, local for `floatResizeArgv`) and drop it once all tmux is at or after `541bc85e` — breaks us — `docs/agents/floats.md`
 - Regenerate `stockmenus.txt` and drop `Edit` from `paneMenuLocalItems` for `d13ee046` — breaks us — `docs/agents/bridge-daemon.md`
 - Re-measure keystroke latency (echo during streaming output, not only idle) against the 5 ms output batch of `e644e74b`, and fall back to pin `f4146fd6` (no `9bf987ea`) if it regresses — breaks us — `docs/agents/performance.md`
 - Bump the `tmux-upstream` pin to `b243b8ec` once the four items above are done — adopt — `docs/superpowers/specs/2026-11-23-tmux-upstream-review.md`
