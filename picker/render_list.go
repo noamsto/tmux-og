@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 func (m tuiModel) renderList() string {
@@ -425,7 +426,7 @@ func (m tuiModel) renderKillConfirm() string {
 		prompt = "kill " + strconv.Itoa(n) + " remote sessions?"
 	}
 	if isMirrorWindowKill(m.killConfirm[0]) {
-		prompt = "kill " + sanitizeStatusText(m.killConfirm[0].target) + " on the remote?"
+		prompt = "kill " + probekit.SanitizeStatusText(m.killConfirm[0].target) + " on the remote?"
 	}
 	// The (y/N) answer is the one part that must never be truncated away,
 	// so reserve its cells and clip only the name/question to the rest.

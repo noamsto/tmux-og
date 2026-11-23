@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // maxRemoteDirCandidates bounds the dirs kept per host before the
@@ -95,8 +96,8 @@ func filterRemoteDirs(entries []string) []remoteDir {
 		if !strings.HasPrefix(raw, "/") || !validEmitField(raw) || strings.Contains(raw, `\`) {
 			continue
 		}
-		name := sanitizeStatusText(sessionNameFromPath(raw))
-		shown := sanitizeStatusText(raw)
+		name := probekit.SanitizeStatusText(sessionNameFromPath(raw))
+		shown := probekit.SanitizeStatusText(raw)
 		if name == "" || shown == "" {
 			continue
 		}

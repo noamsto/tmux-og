@@ -9,13 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // attachPhase is one og-remote-open phase line on OG_REMOTE_OPEN_PROGRESS_FD.
@@ -209,7 +208,7 @@ func (r *attachRun) run() {
 	}
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		r.finish(attachResult{outcome: attachFailed, phase: phaseLaunch, msg: sanitizeStatusText(err.Error())})
+		r.finish(attachResult{outcome: attachFailed, phase: phaseLaunch, msg: probekit.SanitizeStatusText(err.Error())})
 		return
 	}
 	defer func() { _ = pr.Close() }()
@@ -227,7 +226,7 @@ func (r *attachRun) run() {
 	err = cmd.Start()
 	_ = pw.Close()
 	if err != nil {
-		r.finish(attachResult{outcome: attachFailed, phase: phaseLaunch, msg: sanitizeStatusText(err.Error())})
+		r.finish(attachResult{outcome: attachFailed, phase: phaseLaunch, msg: probekit.SanitizeStatusText(err.Error())})
 		return
 	}
 	pgid := cmd.Process.Pid // Setsid: the launcher leads its own group
@@ -330,9 +329,9 @@ func classifyAttach(err error, cmd *exec.Cmd, phase attachPhase, timedOut, cance
 	if cancelled {
 		return attachResult{outcome: attachCancelled, phase: phase}
 	}
-	msg := sanitizeStatusText(lastNonEmptyLine(stderr))
+	msg := probekit.SanitizeStatusText(lastNonEmptyLine(stderr))
 	if msg == "" {
-		msg = sanitizeStatusText(err.Error())
+		msg = probekit.SanitizeStatusText(err.Error())
 	}
 	return attachResult{outcome: attachFailed, phase: phase, msg: msg}
 }
@@ -374,69 +373,4 @@ func (s *attachSupervisor) stop(wait time.Duration) {
 	case <-r.done:
 	case <-time.After(wait):
 	}
-}
-
-const statusTextMaxRunes = 200
-
-// sanitizeStatusText makes remote-derived text safe for a terminal sink: the
-// daemon's stripWindowName targets a tmux format instead and keeps C1 and bidi
-// controls, which are exactly the threats here (0x9b is a one-byte CSI).
-func sanitizeStatusText(s string) string {
-	var b strings.Builder
-	runes := 0
-	space := false
-	for i := 0; i < len(s) && runes < statusTextMaxRunes; {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		i += size
-		switch {
-		case r == 0x1b:
-			i = skipEscape(s, i)
-			continue
-		case unicode.IsSpace(r):
-			space = b.Len() > 0
-			continue
-		case unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r):
-			continue
-		}
-		if space {
-			b.WriteByte(' ')
-			runes++
-			space = false
-		}
-		if runes < statusTextMaxRunes {
-			b.WriteRune(r)
-			runes++
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// skipEscape returns the index just past the escape sequence whose ESC ended
-// at i: a CSI through its final byte, a string sequence (OSC, DCS, SOS, PM,
-// APC) through BEL or ST, or else the one character after ESC.
-func skipEscape(s string, i int) int {
-	if i >= len(s) {
-		return i
-	}
-	switch s[i] {
-	case '[':
-		for i++; i < len(s); i++ {
-			if s[i] >= 0x40 && s[i] <= 0x7e {
-				return i + 1
-			}
-		}
-		return i
-	case ']', 'P', 'X', '^', '_':
-		for i++; i < len(s); i++ {
-			if s[i] == 0x07 {
-				return i + 1
-			}
-			if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '\\' {
-				return i + 2
-			}
-		}
-		return i
-	}
-	_, size := utf8.DecodeRuneInString(s[i:])
-	return i + size
 }

@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
+)
 
 // iconMap's glyphs come from $TMUX_OG_CONFIG at runtime and vary by config
 // (e.g. the tmux-conf-extraction-assertions matrix overrides claude's icon to
@@ -50,7 +54,7 @@ func TestBuildProcIconsDedupesWrappedAndPlain(t *testing.T) {
 	if want := claudeIcon + " "; got != want {
 		t.Errorf("buildProcIcons([.claude-wrapped claude]) = %q, want %q", got, want)
 	}
-	if wantDW := iconCellWidth(claudeIcon) + 1; dw != wantDW {
+	if wantDW := probekit.IconCellWidth(claudeIcon) + 1; dw != wantDW {
 		t.Errorf("display width = %d, want %d", dw, wantDW)
 	}
 }

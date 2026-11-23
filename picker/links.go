@@ -27,6 +27,7 @@ import (
 
 	"github.com/noamsto/tmux-og/picker/linkjoin"
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 type linksAction int
@@ -154,7 +155,7 @@ func linksActionCmd(action linksAction, text, origin, client string) (cmd *exec.
 // sanitized, with '#' and '%' doubled so tmux expands neither as a format nor
 // through strftime.
 func linksFailArgv(client, verb, detail string) []string {
-	msg := "links: " + verb + " failed: " + sanitizeStatusText(detail)
+	msg := "links: " + verb + " failed: " + probekit.SanitizeStatusText(detail)
 	argv := []string{"display-message"}
 	if client != "" {
 		argv = append(argv, "-c", client)
@@ -365,7 +366,7 @@ func (m linksModel) renderRow(l linkjoin.Link, selected bool) string {
 		// Mantle against base is ~1.07:1, so the background alone does not mark the row.
 		lead = lipgloss.NewStyle().Foreground(m.color(palette.Accent)).Render("▶")
 	}
-	line := lead + tag + " " + truncateVisibleWidth(sanitizeStatusText(elideLeft(l.Text, min(linkW, statusTextMaxRunes))), linkW)
+	line := lead + tag + " " + truncateVisibleWidth(probekit.SanitizeStatusText(elideLeft(l.Text, min(linkW, probekit.StatusTextMaxRunes))), linkW)
 	if marker != "" {
 		line += overlay.Render(marker)
 	}
@@ -393,9 +394,9 @@ func elideLeft(s string, cells int) string {
 	}
 	runes := []rune(s)
 	w, i := 0, len(runes)
-	for i > 0 && w+runeCellWidth(runes[i-1]) <= cells-1 {
+	for i > 0 && w+probekit.RuneCellWidth(runes[i-1]) <= cells-1 {
 		i--
-		w += runeCellWidth(runes[i])
+		w += probekit.RuneCellWidth(runes[i])
 	}
 	return "…" + string(runes[i:])
 }

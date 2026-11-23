@@ -1,0 +1,20 @@
+plain	héllo wörld	héllo wörld	héllo wörld
+csi	a\x1b[31mb\x1b[0m	ab	ab
+csi_unterminated	a\x1b[31	a	a
+osc_bel	a\x1b]0;title\x07b	ab	ab
+osc_st	a\x1b]8;;u\x1b\\b	ab	ab
+dcs_st	a\x1bPq#0;2\x1b\\b	ab	ab
+two_byte_esc	a\x1bcb	ab	ab
+esc_eats_next_char	a\x1b\nb	ab	ab
+trailing_esc	a\x1b	a	a
+c0_bel	a\x07b	ab	ab
+del	a\x7fb	ab	ab
+c1_utf8_csi	a\u009b31mb	a31mb	a31mb
+c1_raw_byte_9b	a\x9bb	a\uFFFDb	ab
+invalid_utf8	a\xffb	a\uFFFDb	ab
+bidi_overrides	a\u202eb\u2066c	abc	abc
+bidi_marks	a\u200fb\u061cc\u200ed	abcd	abcd
+newline_tab	a\n\tb	a b	a\n\tb
+carriage_return	a\rb	a b	ab
+nbsp	a\u00a0b	a b	a\u00a0b
+edge_spaces	\x20\x20a\x20\x20	a	\x20\x20a\x20\x20

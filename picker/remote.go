@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +21,7 @@ import (
 	"github.com/noamsto/tmux-og/picker/mirrorname"
 	"github.com/noamsto/tmux-og/picker/ownerdir"
 	"github.com/noamsto/tmux-og/picker/palette"
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // remoteProbeTimeout bounds each per-host ssh list-sessions probe so a down
@@ -119,15 +119,8 @@ func remoteSelfCacheDir() string {
 // remoteListSessionsCmd: no `var=value` shell assignments.
 const remoteRestorableCmd = `hostname; $(command -v tmux-remux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux-remux) list --json 2>/dev/null`
 
-const sshConnectFailureExit = 255
-
 var (
-	errRemoteUnreachable    = errors.New("remote unreachable")
-	errRemoteNoServer       = errors.New("remote tmux server not running")
-	errRemoteNeedsAuth      = errors.New("remote needs interactive authentication")
-	errRemoteHostKeyChanged = errors.New("remote host key changed")
-	errRemoteTailscaleCheck = errors.New("remote requires a Tailscale SSH check")
-	errRemoteSessionGone    = errors.New("remote session already gone")
+	errRemoteSessionGone = errors.New("remote session already gone")
 	// errRemoteKillUnrunnable is a reachable host whose tmux the ssh command
 	// could not execute (exit 126/127, or any other non-1 tmux failure). The
 	// session may still exist, so the row is kept rather than forgotten.
@@ -234,19 +227,8 @@ func isRemoteSelf(local, remote remoteIdentity) bool {
 	return local.MachineID == remote.MachineID && local.User == remote.User
 }
 
-// hostFileName maps an ssh host alias onto a single safe path segment.
-// Distinct hosts can collide, so a reader that cares must verify the host.
-func hostFileName(host string) string {
-	return strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			return r
-		}
-		return '_'
-	}, host)
-}
-
 func remoteSelfCachePath(host string) string {
-	return filepath.Join(remoteSelfCacheDir(), hostFileName(host))
+	return filepath.Join(remoteSelfCacheDir(), probekit.HostFileName(host))
 }
 
 func markCachedRemoteSelfAlias(host string) {
@@ -295,10 +277,6 @@ func dropCachedSelfAliases(hosts []string) []string {
 	return out
 }
 
-// remoteCacheStaleAfter is how old a cached session list may get before its
-// rows render dimmed with their age.
-const remoteCacheStaleAfter = 5 * time.Minute
-
 // remoteSessionCache is one host's last answered probe. Sessions is the raw
 // list, before bridge suppression, so a mirror detached since still shows.
 type remoteSessionCache struct {
@@ -322,54 +300,8 @@ func remoteSessionCacheDir() string {
 }
 
 func writeRemoteSessionCache(host string, sessions []string, now time.Time) {
-	writeOwnerOnlyJSON(remoteSessionCacheDir(), hostFileName(host)+".json",
+	probekit.WriteOwnerOnlyJSON(remoteSessionCacheDir(), probekit.HostFileName(host)+".json",
 		remoteSessionCache{Host: host, SavedAt: now.UnixMilli(), Sessions: sessions})
-}
-
-// writeOwnerOnlyJSON atomically writes v as dir/name, creating dir 0700. A
-// dir that is not owner-only is never written into.
-func writeOwnerOnlyJSON(dir, name string, v any) {
-	if dir == "" || os.MkdirAll(dir, 0o700) != nil || !ownerdir.OwnerOnly(dir) {
-		return
-	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return
-	}
-	f, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return
-	}
-	_, werr := f.Write(data)
-	if cerr := f.Close(); werr != nil || cerr != nil {
-		_ = os.Remove(f.Name())
-		return
-	}
-	// Rename, so a picker reading concurrently never sees a torn file.
-	if os.Rename(f.Name(), filepath.Join(dir, name)) != nil {
-		_ = os.Remove(f.Name())
-	}
-}
-
-// readOwnerOnlyJSON decodes dir/name into v, trusting it only when dir is
-// owner-only and the entry is a regular file owned by this uid.
-func readOwnerOnlyJSON(dir, name string, v any) bool {
-	if dir == "" || !ownerdir.OwnerOnly(dir) {
-		return false
-	}
-	path := filepath.Join(dir, name)
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) { //nolint:gosec // G115: value is non-negative and fits uint32
-		return false
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path built from trusted local state, not user input
-	if err != nil {
-		return false
-	}
-	return json.Unmarshal(data, v) == nil
 }
 
 // forgetRemoteSessionCache drops sess from host's cached listing, preserving
@@ -391,18 +323,14 @@ func forgetRemoteSessionCache(host, sess string) {
 
 func readRemoteSessionCache(host string) (remoteSessionCache, bool) {
 	var c remoteSessionCache
-	if !readOwnerOnlyJSON(remoteSessionCacheDir(), hostFileName(host)+".json", &c) || c.Host != host {
+	if !probekit.ReadOwnerOnlyJSON(remoteSessionCacheDir(), probekit.HostFileName(host)+".json", &c) || c.Host != host {
 		return remoteSessionCache{}, false
 	}
 	return c, true
 }
 
 func remoteCacheStale(c remoteSessionCache, now time.Time) bool {
-	return savedAtStale(c.SavedAt, now)
-}
-
-func savedAtStale(savedAt int64, now time.Time) bool {
-	return now.Sub(time.UnixMilli(savedAt)) > remoteCacheStaleAfter
+	return probekit.SavedAtStale(c.SavedAt, now)
 }
 
 // firstPaintBridges indexes the mirror sessions already in the list under the
@@ -516,13 +444,13 @@ func probeStateOf(err error) remoteProbeState {
 	switch {
 	case err == nil:
 		return remoteProbeOK
-	case errors.Is(err, errRemoteNoServer):
+	case errors.Is(err, probekit.ErrRemoteNoServer):
 		return remoteProbeNoServer
-	case errors.Is(err, errRemoteNeedsAuth):
+	case errors.Is(err, probekit.ErrRemoteNeedsAuth):
 		return remoteProbeNeedsAuth
-	case errors.Is(err, errRemoteHostKeyChanged):
+	case errors.Is(err, probekit.ErrRemoteHostKeyChanged):
 		return remoteProbeHostKeyChanged
-	case errors.Is(err, errRemoteTailscaleCheck):
+	case errors.Is(err, probekit.ErrRemoteTailscaleCheck):
 		return remoteProbeTailscaleCheck
 	}
 	return remoteProbeUnreachable
@@ -555,75 +483,8 @@ func remoteSessionsForHost(host string, bridges map[string]bool, probe func(stri
 	return out, remoteProbeOK
 }
 
-// authFailurePatterns are the ssh stderr signatures meaning a human at a real
-// terminal could fix this by answering a prompt. Only consulted on exit 255,
-// where the failure is ssh's own.
-var authFailurePatterns = []string{
-	"Host key verification failed",
-	// The "(" anchors on ssh's own "Permission denied (publickey,password)."
-	// rather than the bare phrase, which also appears in a local firewall's
-	// "ssh: connect to host X port 22: Permission denied" (EACCES) — a
-	// genuinely down host, not one a prompt could fix.
-	"Permission denied (",
-	"Too many authentication failures",
-	"keyboard-interactive",
-}
-
-// hostKeyChangedPattern is ssh's warning that the host key no longer matches
-// known_hosts. Kept out of authFailurePatterns deliberately: this is the
-// signature of a MITM as much as of a reinstalled host, so it must never reach
-// a flow that invites the user to connect. ssh prints it alongside "Host key
-// verification failed", so it is matched first.
-const hostKeyChangedPattern = "REMOTE HOST IDENTIFICATION HAS CHANGED"
-
-// revokedHostKeyPattern is ssh's refusal banner for a key listed in a
-// RevokedHostKeys file. It prints no hostKeyChangedPattern alongside it, only a
-// bare "Host key verification failed.", which would otherwise fall into
-// authFailurePatterns and offer to connect to a host ssh has already refused.
-const revokedHostKeyPattern = "REVOKED HOST KEY DETECTED"
-
-// tailscaleCheckPattern is Tailscale SSH's own banner when the peer's ACL
-// rule requires an interactive re-check (`action: "check"`). It arrives on
-// STDOUT over the already-established ssh session, not through ssh's own
-// auth flow, and blocks until the check clears — which is why the probe
-// always exhausts remoteProbeTimeout instead of exiting 255 (#486).
-const tailscaleCheckPattern = "Tailscale SSH requires an additional check"
-
-// tailscaleCheckURLPattern extracts the per-attempt login URL tailscaled
-// prints on the line after tailscaleCheckPattern (e.g. "# To authenticate,
-// visit: https://login.tailscale.com/a/xyz"). Restricted to a URL-safe
-// character class and capped in length deliberately: this is
-// remote-controlled stdout, and an unrestricted \S capture matches ESC
-// (0x1B) — the remote-row preview is not run through stripStringEscapes,
-// so an uncapped capture could carry ANSI into a row fitVisibleWidth
-// accounts for in visible cells.
-var tailscaleCheckURLPattern = regexp.MustCompile(`To authenticate, visit:\s*([A-Za-z0-9:/_.\-]{1,200})`)
-
-// detectTailscaleCheck reports whether stdout carries tailscaled's "check"
-// banner and, if so, the login URL it printed (empty if the banner's shape
-// ever changes upstream and the URL line isn't found).
-func detectTailscaleCheck(stdout string) (url string, ok bool) {
-	if !strings.Contains(stdout, tailscaleCheckPattern) {
-		return "", false
-	}
-	if m := tailscaleCheckURLPattern.FindStringSubmatch(stdout); len(m) == 2 {
-		return m[1], true
-	}
-	return "", true
-}
-
-// classifyProbeErr decides which failure a non-zero probe was. ssh exits 255
-// when it could not reach the host; any other status is the remote command's
-// own, so the host answered and only its tmux server is missing (#266). Within
-// 255, stderr distinguishes a host that merely wants an interactive answer from
-// one that is genuinely down (#357) — an unrecognised 255 stays unreachable, so
-// being wrong costs a stale label rather than a pointless password prompt. The
-// timeout branch also inspects stdout: a Tailscale SSH "check" host is killed
-// by the probe's own deadline rather than exiting 255, but tailscaled's check
-// banner still arrives on stdout before the process is killed, so a killed
-// probe's stdout is still usable evidence (#486).
 // classifyKillErr maps a failed kill-session ssh round trip to the same
-// host-level states classifyProbeErr maps a probe to, with one difference: a
+// host-level states probekit.ClassifyProbeErr maps a probe to, with one difference: a
 // non-255 exit is the remote tmux command's own failure. Exit 1 is tmux
 // reporting the session already absent (or no server), so it maps to
 // errRemoteSessionGone; a command that could not be executed at all (126/127,
@@ -632,73 +493,27 @@ func detectTailscaleCheck(stdout string) (url string, ok bool) {
 // rather than forgetting a session never proven gone.
 func classifyKillErr(err error, stdout, stderr string, timedOut bool) error {
 	if timedOut {
-		if url, ok := detectTailscaleCheck(stdout); ok {
-			return &tailscaleCheckErr{url: url}
+		if url, ok := probekit.DetectTailscaleCheck(stdout); ok {
+			return &probekit.TailscaleCheckErr{URL: url}
 		}
-		return fmt.Errorf("%w: kill timed out", errRemoteUnreachable)
+		return fmt.Errorf("%w: kill timed out", probekit.ErrRemoteUnreachable)
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() != sshConnectFailureExit {
+	if errors.As(err, &exitErr) && exitErr.ExitCode() != probekit.SSHConnectFailureExit {
 		if exitErr.ExitCode() == 1 {
 			return fmt.Errorf("%w: %w", errRemoteSessionGone, err)
 		}
 		return fmt.Errorf("%w: %w", errRemoteKillUnrunnable, err)
 	}
-	if strings.Contains(stderr, hostKeyChangedPattern) || strings.Contains(stderr, revokedHostKeyPattern) {
-		return fmt.Errorf("%w: %w", errRemoteHostKeyChanged, err)
+	if strings.Contains(stderr, probekit.HostKeyChangedPattern) || strings.Contains(stderr, probekit.RevokedHostKeyPattern) {
+		return fmt.Errorf("%w: %w", probekit.ErrRemoteHostKeyChanged, err)
 	}
-	for _, p := range authFailurePatterns {
+	for _, p := range probekit.AuthFailurePatterns {
 		if strings.Contains(stderr, p) {
-			return fmt.Errorf("%w: %w", errRemoteNeedsAuth, err)
+			return fmt.Errorf("%w: %w", probekit.ErrRemoteNeedsAuth, err)
 		}
 	}
-	return fmt.Errorf("%w: %w", errRemoteUnreachable, err)
-}
-
-func classifyProbeErr(err error, stdout, stderr string, timedOut bool) error {
-	if timedOut {
-		if url, ok := detectTailscaleCheck(stdout); ok {
-			return &tailscaleCheckErr{url: url}
-		}
-		return fmt.Errorf("%w: probe timed out", errRemoteUnreachable)
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() != sshConnectFailureExit {
-		return fmt.Errorf("%w: %w", errRemoteNoServer, err)
-	}
-	if strings.Contains(stderr, hostKeyChangedPattern) || strings.Contains(stderr, revokedHostKeyPattern) {
-		return fmt.Errorf("%w: %w", errRemoteHostKeyChanged, err)
-	}
-	for _, p := range authFailurePatterns {
-		if strings.Contains(stderr, p) {
-			return fmt.Errorf("%w: %w", errRemoteNeedsAuth, err)
-		}
-	}
-	return fmt.Errorf("%w: %w", errRemoteUnreachable, err)
-}
-
-// tailscaleCheckErr carries the login URL classifyProbeErr captured for a
-// Tailscale SSH "check" host; tailscaleCheckURL recovers it via errors.As.
-type tailscaleCheckErr struct {
-	url string
-}
-
-func (e *tailscaleCheckErr) Error() string {
-	if e.url == "" {
-		return errRemoteTailscaleCheck.Error()
-	}
-	return errRemoteTailscaleCheck.Error() + ": " + e.url
-}
-
-func (e *tailscaleCheckErr) Unwrap() error { return errRemoteTailscaleCheck }
-
-// tailscaleCheckURL recovers the login URL classifyProbeErr captured for a
-// Tailscale SSH "check" host, or "" if err isn't that state or carried none.
-func tailscaleCheckURL(err error) string {
-	if e, ok := errors.AsType[*tailscaleCheckErr](err); ok && e != nil {
-		return e.url
-	}
-	return ""
+	return fmt.Errorf("%w: %w", probekit.ErrRemoteUnreachable, err)
 }
 
 // remoteAuthStartFailure classifies the tea.ExecProcess callback error for the
@@ -725,7 +540,7 @@ var killWaitDelay = 500 * time.Millisecond
 // checks before acting. It returns nil on success and a classified error
 // otherwise: errRemoteKillNoID when sessionID is not a $N id or created is not
 // digits (no ssh is spawned), errRemoteSessionGone when the id's session is
-// absent or no longer the probed one, errRemoteUnreachable (or the
+// absent or no longer the probed one, probekit.ErrRemoteUnreachable (or the
 // auth/host-key/tailscale states) when ssh itself could not complete.
 func sshKillRemoteSession(host, sessionID, created string) error {
 	return sshKillRemoteSessionCtx(context.Background(), host, sessionID, created)
@@ -779,8 +594,8 @@ func sshKillCtx(ctx context.Context, host, body string) error {
 
 // sshListRemoteSessions runs the same path/tmpdir resolution as
 // og-remote-open so a remote without tmux on the non-interactive PATH still
-// lists. Returns session names, or an error wrapping errRemoteUnreachable /
-// errRemoteNoServer.
+// lists. Returns session names, or an error wrapping probekit.ErrRemoteUnreachable /
+// probekit.ErrRemoteNoServer.
 func sshListRemoteSessions(host string) (remoteProbeResult, error) {
 	return sshProbe(host, remoteListSessionsCmd, parseRemoteProbeOutput)
 }
@@ -805,7 +620,7 @@ func sshProbe(host, remoteCmd string, parse func(string) remoteProbeResult) (rem
 	err := cmd.Run()
 	parsed := parse(stdout.String())
 	if err != nil {
-		return parsed, classifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
+		return parsed, probekit.ClassifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
 	}
 	return parsed, nil
 }
@@ -949,7 +764,7 @@ func sshListRestorableSessions(host string) (remuxManifest, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return remuxManifest{}, classifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
+		return remuxManifest{}, probekit.ClassifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
 	}
 	return restorableFromProbeOutput(stdout.String())
 }
@@ -1316,7 +1131,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 					res.cached = cachedRemoteSessionRows(c, bridges, true, true, now, hostColor(h), cDim)
 				}
 			case remoteProbeTailscaleCheck:
-				res.tailscaleURL = tailscaleCheckURL(err)
+				res.tailscaleURL = probekit.TailscaleCheckURL(err)
 			case remoteProbeNeedsAuth, remoteProbeHostKeyChanged:
 			}
 			if state == remoteProbeNoServer {
