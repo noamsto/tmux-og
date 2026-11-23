@@ -1,0 +1,31 @@
+direction: right
+
+events: "disturbing events" {
+  resize: "client attach / resize\nwindow resize"
+  close: "sibling pane closes"
+  dwindle: "dwindle balance\nselect-layout"
+  restore: "remux restore\nrelaunch: set-hook -R"
+}
+
+gate: "window-layout-changed[30]\nwindow-resized[30]\nin-process if -F" {class: accent}
+hold: "after-resize-pane[10]\n@pane_pref_hold = WxH_count\n(split ratchets, close ends)" {class: good}
+hand: "hand resize-pane\n(key / border drag)"
+
+guard: "tmux-pane-pref-width\n(was tmux-carousel-guard)" {class: good}
+
+panes: "@pane_pref_width pct,min,max,keep" {
+  dash: "crew-dash-side\n32,50,80,80" {class: good}
+  carousel: "carousel\n40,20,0,40" {class: good}
+}
+
+crewdash: "tmux-crew-dash --side\nstamps at creation" {class: good}
+
+events.resize -> gate
+events.close -> gate
+events.dwindle -> gate
+events.restore -> gate
+hand -> hold: "stamps" {class: good}
+hold -> gate: "skip while held"
+gate -> guard: "fork only if a pane\nis outside its band" {style.animated: true}
+guard -> panes: "self-stamp defaults,\nresize back to clamp(pct)" {class: good}
+crewdash -> panes.dash
