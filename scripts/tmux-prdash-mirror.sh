@@ -26,9 +26,11 @@ set -uo pipefail
 prdash=$1
 ctl=$2
 
-IFS='|' read -r pane repo sock client dir < <(
+# The socket is last: its path may hold '|'; the dir cannot (the remote label
+# format rewrites it and the daemon rejects whitespace).
+IFS='|' read -r pane repo client dir sock < <(
 	tmux display-message -p -t "$TMUX_PANE" \
-		'#{@og_prdash_origin}|#{@bridge_repo}|#{@bridge_sock}|#{client_name}|#{@bridge_dir}'
+		'#{@og_prdash_origin}|#{@bridge_repo}|#{client_name}|#{@bridge_dir}|#{@bridge_sock}'
 )
 
 if [[ ! $pane =~ ^%[0-9]+$ ]]; then

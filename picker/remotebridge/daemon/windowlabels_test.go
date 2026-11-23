@@ -384,6 +384,27 @@ func TestLabelShipperApply(t *testing.T) {
 	}
 }
 
+// originDir is carried in the row but stamps no option, so a row differing only
+// in it must neither exec a bare tmux nor report a change.
+func TestLabelShipperOriginDirOnlyChange(t *testing.T) {
+	reg := newRegistry()
+	reg.add("@1", "@101")
+	s := newLabelShipper()
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	row := labelRow{id: "@1", dir: "/w/a"}
+	s.apply(cfg, reg, []labelRow{row})
+	n := len(calls)
+	row.originDir = "/w/a"
+	if s.apply(cfg, reg, []labelRow{row}) {
+		t.Error("an originDir-only change reported a change")
+	}
+	if len(calls) != n {
+		t.Errorf("an originDir-only change issued tmux calls: %v", calls[n:])
+	}
+}
+
 // Teardown ends in kill-session, so clear is near-vacuous in production and
 // this is the only place it is provable.
 func TestLabelShipperClear(t *testing.T) {

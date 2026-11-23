@@ -93,6 +93,15 @@ launch() { env TMUX_PANE="$PANE" bash scripts/tmux-prdash-mirror.sh "$BATS_TEST_
 	[ -z "$(ls -A "$WORK_PARENT")" ]
 }
 
+@test "a socket path holding a pipe reaches ctl whole and pane/dir stay correct" {
+	stamp o/n %5
+	tmux set-option -t S @bridge_sock '/s/a|b/sock'
+	printf '%s\n' 'W|o/n#1|x' >"$FIXTURE"
+	run launch
+	[ "$status" -eq 0 ]
+	[ "$(cat "$OUT/ctl.argv")" = "$(printf '%s\n' "--display-error=$CLIENT" '--sock=/s/a|b/sock' handoff %5 /r/d 'W|o/n#1|x')" ]
+}
+
 @test "no hand-off lines: ctl is not called" {
 	stamp o/n %5
 	run launch

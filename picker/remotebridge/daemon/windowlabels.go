@@ -426,6 +426,9 @@ func (s *labelShipper) apply(cfg Config, reg *registry, rows []labelRow) (change
 			}
 			argv = append(argv, "set-option", "-w", "-t", mw.localWin, o.opt, v)
 		}
+		if len(argv) == 0 {
+			continue
+		}
 		_ = cfg.LocalTmux(argv...)
 		changed = true
 	}
