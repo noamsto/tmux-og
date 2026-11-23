@@ -88,6 +88,7 @@ var (
 	HostPink        = rl("@thm_pink", "#f5c2e7", "", "#c03fa0")
 	HostYellow      = rl("@thm_yellow", "#f9e2af", "", "#8f7000")
 	HostSky         = rl("@thm_sky", "#89dceb", "", "#127eae")
+	StatusFloat     = rl("@thm_teal", "#94e2d5", "@thm_teal", "#179299")
 )
 
 // NamedRole labels a role for contrast reports.
@@ -102,7 +103,7 @@ var StatusRoles = []NamedRole{
 	{"dim", StatusDim}, {"pr_closed", StatusPRClosed}, {"pr_pending", StatusPRPending},
 	{"pr_success", StatusPRSuccess}, {"park", StatusPark},
 	{"host_peach", HostPeach}, {"host_teal", HostTeal}, {"host_pink", HostPink},
-	{"host_yellow", HostYellow}, {"host_sky", HostSky},
+	{"host_yellow", HostYellow}, {"host_sky", HostSky}, {"float", StatusFloat},
 }
 
 // RowRoles lists every foreground role the session and window row builders

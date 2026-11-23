@@ -729,6 +729,8 @@ signature deliberately omits `#{window_layout}`, which renders per client.
 
 ## Side-pane width guard gate (#1056, #1221)
 
+`window-layout-changed[60]` (float border stamp, #1218) is the same shape: a zero-fork `if -F` gate (a float unstamped or a tile still stamped) then an in-process `run-shell -C`.
+
 `window-layout-changed[30]` and `window-resized[30]` each evaluate one in-process
 `if -F`. It forks `tmux-pane-pref-width` only when a tiled side pane (a pane
 carrying `@pane_pref_width`) is outside its `[min, max]` band in a window wider

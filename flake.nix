@@ -3033,13 +3033,15 @@
                 # floating pane and reads pane_floating_flag, same trap as
                 # float-refit-tests above (nixpkgs' stock tmux advertises but
                 # rejects these new-pane flags at parse time).
-                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.gnused (mkTmux pkgs)];
                 # the drawn-flip test runs the real reflow, which measures display width.
                 LANG = "C.UTF-8";
                 LC_ALL = "C.UTF-8";
               } ''
                 cp -r ${scriptsSrc (coreScripts ++ ["tmux-apply-theme-colors.sh"])} scripts
                 cp -r ${testsSrc ["pane-border-format.bats"]} tests
+                mkdir config
+                cp ${./config/tmux.conf.tmpl} config/tmux.conf.tmpl
                 export HOME=$TMPDIR
                 bats tests/pane-border-format.bats
                 touch $out

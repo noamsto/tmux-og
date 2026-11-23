@@ -24,7 +24,7 @@ var oldLatte = map[string]string{
 	"dim": "#8c8fa1", "pr_closed": "#9ca0b0", "pr_pending": "#fe640b",
 	"pr_success": "#40a02b", "park": "#9ca0b0", "host_peach": "#fe640b",
 	"host_teal": "#179299", "host_pink": "#ea76cb", "host_yellow": "#df8e1d",
-	"host_sky": "#04a5e5",
+	"host_sky": "#04a5e5", "float": "#179299",
 }
 
 type darkHalf struct{ opt, hex string }
@@ -44,6 +44,7 @@ var darkLiterals = map[string]darkHalf{
 	"park": {"@thm_overlay_0", "#6c7086"}, "host_peach": {"@thm_peach", "#fab387"},
 	"host_teal": {"@thm_teal", "#94e2d5"}, "host_pink": {"@thm_pink", "#f5c2e7"},
 	"host_yellow": {"@thm_yellow", "#f9e2af"}, "host_sky": {"@thm_sky", "#89dceb"},
+	"float": {"@thm_teal", "#94e2d5"},
 }
 
 func namedRoles() []NamedRole {
@@ -103,7 +104,7 @@ func TestStatusDarkLiterals(t *testing.T) {
 		"dim": "@thm_overlay_1", "pr_closed": "@thm_overlay_0", "pr_pending": "@thm_peach",
 		"pr_success": "@thm_green", "park": "@thm_overlay_0", "host_peach": "@thm_peach",
 		"host_teal": "@thm_teal", "host_pink": "@thm_pink", "host_yellow": "@thm_yellow",
-		"host_sky": "@thm_sky",
+		"host_sky": "@thm_sky", "float": "@thm_teal",
 	}
 	if len(StatusRoles) != len(old) {
 		t.Errorf("%d status roles, %d pinned", len(StatusRoles), len(old))

@@ -682,3 +682,132 @@ line1_has() {
 	[[ $out == *"#(touch $OG_TMUX_DIR/ran-host)"* ]]
 	[ ! -e "$OG_TMUX_DIR/ran-host" ]
 }
+
+# --- float border identity (#1218) ---
+
+# Opens a plain (non-modal) float in $WIN and sets $float, or skips when this
+# tmux lacks floating panes.
+mkfloat() {
+	if ! tmux new-pane -t "$WIN" -x 40% -y 40% -X 10% -Y 10% -B heavy sh 2>/dev/null; then
+		skip "this tmux rejects new-pane float flags at parse time"
+	fi
+	float="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}' | head -n1)"
+	[ -n "$float" ] || skip "this tmux does not report pane_floating_flag"
+}
+
+# Installs the shipped window-layout-changed[60] float-stamp hook.
+install_float_hook() {
+	local conf="$OG_TMUX_DIR/float-hook.conf"
+	grep '^set-hook -g window-layout-changed\[60\]' "$(dirname "$BATS_TEST_DIRNAME")/config/tmux.conf.tmpl" >"$conf"
+	[ "$(wc -l <"$conf")" -eq 1 ]
+	tmux source-file "$conf"
+}
+
+# Resolved (pane-scope) border format, directives stripped.
+resolved_fmt() {
+	tmux -u display -p -t "$1" '#{E:pane-border-format}' | plain
+}
+
+# Polls until the pane's stamp marker is $2 ("1" or "").
+wait_stamp() {
+	local got
+	for _ in $(seq 1 50); do
+		got="$(tmux show -pv -t "$1" @og_float_stamped 2>/dev/null || true)"
+		[ "$got" = "$2" ] && return 0
+		sleep 0.1
+	done
+	echo "# @og_float_stamped=$got, want $2" >&3
+	return 1
+}
+
+@test "float accent: a labelled float ignores the window's crew colour" {
+	tmux setw -t "$WIN" @crew_color colour99
+	tmux setw -t "$WIN" @window_has_agent 1
+	mkfloat
+	tmux set -p -t "$float" @pane_label lazygit
+	[ "$(render "$float")" = "━━ lazygit ━━" ]
+	[[ "$(style "$float" active)" == *"fg=#94e2d5"* ]]
+	[[ "$(style "$float" inactive)" == *"fg=#7f849c"* ]]
+	[[ "$(style "$float" active)" != *"colour99"* ]]
+}
+
+@test "float label: an unlabelled float shows its command, a mirror float its @bridge_proc" {
+	mkfloat
+	# pane_current_command is briefly the launching shell's name; wait for it to settle.
+	for _ in $(seq 1 50); do
+		[ "$(tmux display -p -t "$float" '#{pane_current_command}')" = sh ] && break
+		sleep 0.1
+	done
+	[ "$(render "$float")" = "━━ sh ━━" ]
+	tmux set -p -t "$float" @bridge_proc remote-tool
+	[ "$(render "$float")" = "━━ remote-tool ━━" ]
+}
+
+@test "float hook: a float under a window-level format and style still gets the float decoration" {
+	tmux setw -t "$WIN" pane-border-format 'DISPATCH'
+	tmux setw -t "$WIN" pane-border-style 'fg=#ff0000'
+	tmux setw -t "$WIN" pane-active-border-style 'fg=#ff0000'
+	install_float_hook
+	mkfloat
+	wait_stamp "$float" 1
+	[ "$(resolved_fmt "$float")" != "DISPATCH" ]
+	[[ "$(style "$float" active)" == *"fg=#94e2d5"* ]]
+	[[ "$(style "$float" inactive)" == *"fg=#7f849c"* ]]
+}
+
+@test "float hook: joining the float back unstamps the tile, the window override wins again" {
+	tmux setw -t "$WIN" pane-border-format 'DISPATCH'
+	install_float_hook
+	mkfloat
+	wait_stamp "$float" 1
+	tmux join-pane -d -s "$float" -t "$WIN"
+	wait_stamp "$float" ""
+	[ -z "$(tmux show -pv -t "$float" pane-border-format)" ]
+	[ -z "$(tmux show -pv -t "$float" pane-active-border-style)" ]
+	[ "$(tmux -u display -p -t "$float" '#{pane-border-format}')" = "DISPATCH" ]
+}
+
+@test "float hook: a popup keeps its pane_title format" {
+	install_float_hook
+	if ! tmux new-pane -t "$WIN" -O -K -C -x 60% -y 60% -X 20% -Y 20% -B heavy -A sh 2>/dev/null; then
+		skip "this tmux rejects -O/-K/-C at parse time"
+	fi
+	pfl="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}' | head -n1)"
+	[ -n "$pfl" ] || skip "this tmux does not report pane_floating_flag"
+	tmux set -p -t "$pfl" pane-border-format '#{pane_title}'
+	tmux resize-pane -t "$pfl" -x 30
+	wait_stamp "$pfl" 1
+	[ "$(tmux show -pv -t "$pfl" pane-border-format)" = '#{pane_title}' ]
+	[[ "$(style "$pfl" active)" == *"fg=#94e2d5"* ]]
+}
+
+@test "tiled @pane_label pane keeps the label and the crew colour (crew-dash-side)" {
+	tmux setw -t "$WIN" @crew_color colour99
+	tmux setw -t "$WIN" @window_has_agent 1
+	install_float_hook
+	tmux split-window -h -d -t "$WIN"
+	tile="$(tmux list-panes -t "$WIN" -F '#{pane_id} #{pane_active}' | awk '$2==0{print $1}')"
+	tmux set -p -t "$tile" @pane_label dash
+	[ "$(render "$tile")" = "━━ dash ━━" ]
+	[[ "$(style "$tile" inactive)" == *"colour99"* ]]
+	[ -z "$(tmux show -pv -t "$tile" @og_float_stamped)" ]
+}
+
+@test "float stamp is a live indirection: literal stored, follows theme and command changes" {
+	install_float_hook
+	mkfloat
+	wait_stamp "$float" 1
+	[ "$(tmux show -pv -t "$float" pane-border-format)" = '#{E:@og_float_fmt}' ]
+	[ "$(tmux show -pv -t "$float" pane-active-border-style)" = '#{E:@og_float_astyle}' ]
+
+	tmux set -g @thm_teal '#112233'
+	bash "$SCRIPT"
+	[[ "$(style "$float" active)" == *"fg=#112233"* ]]
+
+	tmux respawn-pane -k -t "$float" 'exec sleep 60'
+	for _ in $(seq 1 50); do
+		[[ "$(resolved_fmt "$float")" == *sleep* ]] && break
+		sleep 0.1
+	done
+	[ "$(resolved_fmt "$float")" = "━━ sleep ━━" ]
+}
