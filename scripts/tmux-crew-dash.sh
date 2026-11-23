@@ -52,11 +52,12 @@ STASH=scratch-og-float-stash
 LABEL=crew-dash
 GROUP=crew
 SIDE_LABEL=crew-dash-side
+SIDE_PCT=32
 SIDE_MIN=50
 SIDE_MAX=80
 SIDE_KEEP=80
-# The side pane's @pane_pref_width (pct,min,max,keep): the same 32%/50/80/80 as the split rule, kept by tmux-pane-pref-width.
-SIDE_PREF="32,50,80,80"
+# The side pane's @pane_pref_width (pct,min,max,keep), kept by tmux-pane-pref-width.
+SIDE_PREF="$SIDE_PCT,$SIDE_MIN,$SIDE_MAX,$SIDE_KEEP"
 FLOAT_GROUP="${OG_FLOAT_GROUP_BIN:-@float_group@}"
 BRIDGE_CTL="${OG_BRIDGE_CTL_BIN:-@bridge_ctl@}"
 
@@ -159,7 +160,7 @@ open_side() {
 		notify "window is zoomed, opened the crew dash float instead"
 		return 1
 	fi
-	w=$((ww * 32 / 100))
+	w=$((ww * SIDE_PCT / 100))
 	((w < SIDE_MIN)) && w=$SIDE_MIN
 	((w > SIDE_MAX)) && w=$SIDE_MAX
 	if ((pw - w - 1 < SIDE_KEEP)); then

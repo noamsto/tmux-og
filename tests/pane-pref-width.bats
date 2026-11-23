@@ -440,6 +440,7 @@ poll_layout_changes_over() {
 
 	# A no-op resize of A and another trigger, both at the same geometry.
 	tmux resize-pane -t "$MAIN" -x 121
+	drop_hold
 	fire_same
 	sleep "$SETTLE"
 	[ "$(fork_count)" -eq 1 ]
@@ -922,6 +923,7 @@ EOF
 	make_side "$float"
 	: >"$FORKS"
 	tmux resize-pane -t "$SIDE" -x 80
+	drop_hold
 	tmux set-option -w -u -t "$WIN" @pane_pref_sig
 	fire_same
 	assert_no_fork
@@ -945,13 +947,67 @@ EOF
 	# As a key binding runs it: a client command, not a guard resize.
 	tmux resize-pane -t "$SIDE" -x 120
 	sleep "$SETTLE"
-	[ "$(hold)" = "250x50:2" ]
+	[ "$(hold)" = "250x50_2" ]
 	[ "$(width_of "$SIDE")" -eq 120 ]
 	[ "$(fork_count)" -eq 0 ]
 
 	tmux resize-window -t "$WIN" -x 200 -y 50
 	# 32% of 200, under the 119-column cap.
 	poll_width "$SIDE" 64
+}
+
+@test "a split of the main pane keeps a hand resize" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	[ "$(hold)" = "250x50_2" ]
+
+	split_v "$MAIN"
+	sleep "$SETTLE"
+	[ "$(width_of "$SIDE")" -eq 120 ]
+	[ "$(fork_count)" -eq 0 ]
+	[ "$(hold)" = "250x50_2" ]
+}
+
+@test "a horizontal split of the main pane keeps a hand resize" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	[ "$(hold)" = "250x50_2" ]
+
+	split_h "$MAIN"
+	sleep "$SETTLE"
+	[ "$(width_of "$SIDE")" -eq 120 ]
+	[ "$(fork_count)" -eq 0 ]
+	[ "$(hold)" = "250x50_2" ]
+}
+
+@test "closing a pane that existed at the hand resize drops the hold" {
+	wide_window
+	local mid side
+	mid="$(split_h "$MAIN")"
+	side="$(split_h "$mid")"
+	make_side "$side"
+	tmux select-layout -t "$WIN" even-horizontal
+	arm_guard_hooks
+	tmux resize-pane -t "$side" -x 120
+	[ "$(hold)" = "250x50_3" ]
+	[ "$(fork_count)" -eq 0 ]
+
+	tmux kill-pane -t "$mid"
+
+	poll_forks 1
+	sleep "$SETTLE"
+	[ -z "$(hold)" ]
+	# 32% of the pair, inside 50..80 and leaving the partner its keep.
+	local span want
+	span=$(($(width_of "$MAIN") + 1 + $(width_of "$side")))
+	want=$((span * 32 / 100))
+	((want < 50)) && want=50
+	((want > 80)) && want=80
+	((want > span - 1 - 80)) && want=$((span - 1 - 80))
+	[ "$(width_of "$side")" -eq "$want" ]
+	[ "$want" -eq 80 ]
 }
 
 @test "zooming twice does not hold the layout" {
@@ -970,7 +1026,7 @@ EOF
 	arm_guard_hooks
 
 	tmux resize-pane -t "$SIDE" -x 120
-	[ "$(hold)" = "250x50:2" ]
+	[ "$(hold)" = "250x50_2" ]
 
 	tmux resize-window -t "$WIN" -x 160 -y 50
 	# 75 is in band: the stale hold is cleared and nothing restores.

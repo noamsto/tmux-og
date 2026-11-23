@@ -82,42 +82,48 @@ who likes the dash a bit narrower.
 ### Hand-resize rule
 
 A deliberate `resize-pane` (keyboard `prefix + M-arrow`, a mouse border drag)
-holds the window's layout until the window's size or its tiled pane count next
-changes. A border drag runs `resize-pane -M` once, at drag start (the motions
+holds the window's layout until the window next resizes or a pane that existed
+at the hand resize closes; a split keeps it. A border drag runs `resize-pane -M` once, at drag start (the motions
 that follow go through tmux's `mouse_drag_update`), so the hook fires once per
-drag, before the move; the key does not change during a drag, so the hold
-still covers the drag's result. A plain border click with no drag also stamps
-a hold (harmless: it only defers a restore to the next size or count change).
+drag, before the move; the stamp does not depend on widths, so the hold still
+covers the drag's result. A plain border click with no drag also stamps a hold
+(harmless: it only defers a restore to the next window resize or pane close).
 
 - A new `after-resize-pane[10]` hook stamps window option `@pane_pref_hold` =
-  `<window_width>x<window_height>:<tiled count>` — only in a window that has
+  `<window_width>x<window_height>_<tiled count>` (`_`, because `:` ends
+  `s///`) — only in a window that has
   a tiled side pane (one with `@pane_pref_width`, the `crew-dash-side` label
   or `@claude_img_src`: the gate's trip set, so a not-yet-stamped dash holds
   too), is not a mirror, not a grid, when the
   resized pane is tiled, the arguments are not a zoom toggle
   (`#{hook_arguments}` without `-Z`; zoom fires this hook too, and a hold
   stamped on unzoom would suppress the restore of a squeeze that happened
-  while zoomed), and the value differs from the current hold.
-- The guard's gate skips while `@pane_pref_hold` equals the current key.
+  while zoomed), and the window is not already held. A second hand resize while held keeps
+  the original, lower count.
+- The guard's gate skips while the hold is held: the stamped size equals the
+  current window size and the current tiled count is at least the stamped one.
   This depends on the hold landing before the resize's own
   `window-layout-changed[30]` gate runs: the `after-*` hook is inserted into
   the issuing client's queue right after the command, while the layout
   notification goes to the global queue, which runs later. A bats case drives
   a hand resize the way a key binding does and asserts it sticks.
 - A stale hold is dropped in-process: each `[30]` hook body first runs
-  `if -F '<hold set and != current key>' { set -wu @pane_pref_hold }`, so a
-  size or count change clears it even when nothing trips at that moment
-  (otherwise a 250 → 160 → 250 round trip, or a split followed by a close,
-  would bring the old key back and re-arm a hold the user's resize no longer
-  explains). The write happens only when a stale hold exists.
+  `if -F '<hold set and not held>' { set -wu @pane_pref_hold }`, so a size
+  change or a pane close clears it even when nothing trips at that moment
+  (otherwise a 250 → 160 → 250 round trip would bring the old size back and
+  re-arm a hold the user's resize no longer explains). The write happens only when a stale hold exists.
 - The guard's own `resize-pane` also fires the hook; its apply list unsets
   `@pane_pref_hold` right after the `resize-pane` (measured: an `after-*` hook
   runs before the next command of the same list).
 
-Why size + count and not "until the next window resize" alone: a sibling
-closing is one of the disturbing events this issue is about, and dwindle's
-evening arrives as a `select-layout` at an unchanged size and count, which a
-size-only key could not tell from a hand resize that preceded it.
+Why size + a count floor and not "until the next window resize" alone: a
+sibling closing is one of the disturbing events this issue is about, and
+dwindle's evening arrives as a `select-layout` at an unchanged size, which a
+size-only key could not tell from a hand resize that preceded it. Why a floor
+and not equality: a split must not drop a hand resize (splitting the main pane
+after widening the side snapped it back). Why not side widths: a border drag
+runs `resize-pane -M` once at drag start and its motions fire no hook, so the
+stamp would carry the pre-drag widths.
 
 ### Gate (in-process, no fork when nothing is off)
 
@@ -130,7 +136,8 @@ hold:
    `@pane_pref_width` unset), or a pane with
    `@pane_pref_width` whose width is under `min` or over a non-zero `max`,
    in a window wider than `min + keep` (the old literal `61` generalised);
-3. `@pane_pref_hold` differs from `WxH:<tiled count>`;
+3. the hold is not held: `@pane_pref_hold` (`WxH_<tiled count>`) names a
+   different window size, or the current tiled count is under the stamped one;
 4. the tiled geometry signature differs from `@pane_pref_sig` (the old
    `@carousel_guard_sig`, same format and same "written before the fork,
    cleared on a successful restore" semantics).
@@ -193,7 +200,7 @@ target window:
   `resize-pane`) and do hold.
 - `#{hook_arguments}` is empty on a resident server older than the one this
   was measured on (#407); there, a zoom toggle also stamps a hold, which only
-  delays a restore until the next size or count change.
+  delays a restore until the next window resize or pane close.
 - aeye's launcher stamping its own `@pane_pref_width` (other repo; follow-up).
 - A reloaded resident server keeps a stale `@carousel_guard_sig` on windows
   the old guard touched. Nothing reads it any more; it is left to die with the
@@ -222,8 +229,9 @@ production hook lines sourced as today), on a scratch server:
 - a window narrower than `min + 1 + keep` forks nothing;
 - a hand `resize-pane` outside the band sticks; the next window resize
   restores it; a `resize-pane -Z` stamps no hold;
-- a hold survives at its key, and a 250 → 160 → 250 round trip (and a split
-  then close) clears it so the dash is restored at 250;
+- a hold survives a split of the main pane (either axis), and a 250 → 160 → 250
+  round trip (and closing a pane that existed at the hand resize) clears it so
+  the dash is restored at 250;
 - an unstamped `crew-dash-side` pane gets `32,50,80,80` and is restored;
 - the carousel: unstamped carousel gets `40,20,0,40`, a squeezed one is
   restored to 40% of the pair (the #1056 cases carried over with their width

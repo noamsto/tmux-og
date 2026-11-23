@@ -7,15 +7,18 @@ side pane declares `@pane_pref_width "<pct>,<min>,<max>,<keep>"`.
 ## Shared literals (every step uses these byte-for-byte)
 
 ```
-KEY  = #{window_width}x#{window_height}:#{n:#{P:#{?pane_floating_flag,,x}}}
+SIZE = #{window_width}x#{window_height}
+COUNT = #{n:#{P:#{?pane_floating_flag,,x}}}
+HOLDVAL = SIZE_COUNT  (`_`, not `:`, which ends tmux's `s///`)
+HELD = #{&&:#{==:#{s/_.*//:@pane_pref_hold},SIZE},#{e|>=|:COUNT,#{s/^.*_//:@pane_pref_hold}}}
 SIG  = #{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}
 MIN  = #{s/^[^,]*,([^,]*),.*/\1/:@pane_pref_width}
 MAX  = #{s/^[^,]*,[^,]*,([^,]*),.*/\1/:@pane_pref_width}
 KEEP = #{s/^.*,//:@pane_pref_width}
 SIDE = #{||:#{@claude_img_src},#{==:#{@pane_label},crew-dash-side}}
 TRIP = #{?pane_floating_flag,,#{?@pane_pref_width,#{?#{&&:#{||:#{e|<|:#{pane_width},MIN},#{&&:#{e|>|:MAX,0},#{e|>|:#{pane_width},MAX}}},#{e|>|:#{window_width},#{e|+|:MIN,KEEP}}},1,},#{?SIDE,1,}}}
-GATE = #{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{&&:#{P:TRIP},#{&&:#{!=:KEY,#{@pane_pref_hold}},#{!=:SIG,#{@pane_pref_sig}}}}}}
-STALE = #{&&:#{@pane_pref_hold},#{!=:KEY,#{@pane_pref_hold}}}
+GATE = #{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{&&:#{P:TRIP},#{&&:#{!:HELD},#{!=:SIG,#{@pane_pref_sig}}}}}}
+STALE = #{&&:#{@pane_pref_hold},#{!:HELD}}
 HOLD = #{&&:#{&&:#{!:#{pane_floating_flag}},#{!:#{m:*-Z*,#{hook_arguments}}}},#{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{P:#{?pane_floating_flag,,#{?#{||:#{@pane_pref_width},SIDE},1,}}},#{!=:KEY,#{@pane_pref_hold}}}}}
 Defaults (script only): crew-dash-side label -> 32,50,80,80 ; @claude_img_src -> 40,20,0,40
 ```
@@ -28,7 +31,7 @@ Hooks (`config/tmux.conf.tmpl`, replacing the two `[30]` lines and their comment
 ```
 set-hook -g window-layout-changed[30] { if -F 'STALE' { set -wu @pane_pref_hold } ; if -F 'GATE' { set -wF @pane_pref_sig 'SIG' ; run-shell -b "{{index .Paths.Scripts "tmux-pane-pref-width"}} #{q:window_id}" } }
 set-hook -g window-resized[30]        { <same body> }
-set-hook -g after-resize-pane[10]     { if -F 'HOLD' { set -wF @pane_pref_hold 'KEY' } }
+set-hook -g after-resize-pane[10]     { if -F 'HOLD' { set -wF @pane_pref_hold 'HOLDVAL' } }
 ```
 
 ## Steps
@@ -128,7 +131,7 @@ New cases (a 250x50 window, main + side `32,50,80,80` labelled
 6. `@crew_grid 1` window / zoomed window / floating option pane: no fork.
 7. window narrower than min+1+keep (e.g. 120): no fork.
 8. hand resize (`resize-pane -t side -x 120` from a client command, as a key
-   bind runs it) sticks, `@pane_pref_hold` = KEY, no fork; then resize-window
+   bind runs it) sticks, `@pane_pref_hold` = `250x50_2`, no fork; then resize-window
    to 200 → restored to clamp(32% of 200)=64.
 9. `resize-pane -Z` twice: no hold.
 10. A-B-A: hand resize to 120 at 250, resize-window 160 (side in band →
@@ -136,6 +139,11 @@ New cases (a 250x50 window, main + side `32,50,80,80` labelled
 11. unstamped `crew-dash-side` pane grown to 125 → stamped `32,50,80,80`
     and restored to 80.
 12. guard's own resize leaves no hold (`@pane_pref_hold` unset after a restore).
+12a. hand resize side to 120, then `split-window -v` of main: side stays 120,
+    no fork, hold kept (a split must not drop a hand resize).
+12b. same with `split-window -h` of main.
+12c. main|mid|side, side hand-resized to 120 (hold count 3), kill mid: hold
+    cleared and the side restored to its band.
 13. literal check: both `[30]` bodies identical; script `SIG_FMT` equals the
     gate's SIG; defaults in the script match the spec.
 Verify: `bats tests/pane-pref-width.bats` with `TMUX_OG_CONF` unset
