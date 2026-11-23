@@ -43,28 +43,33 @@ order=()
 wwidth=0
 snapshot=
 read_sig=
-while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph opt src side layout sig; do
-	# The window can change between the gate and this backgrounded run. Only a
-	# zoom needs the marker cleared, so an unzoom back to this same geometry is
-	# restored instead of suppressed; a mirror window is daemon-owned and never
-	# written, and the gate writes no marker in a mirror or grid window.
-	if [[ $zoomed == 1 || $bridge == 1 || $grid == 1 ]]; then
-		[[ $zoomed == 1 && $bridge != 1 ]] && tmux set -wu -t "$target" @pane_pref_sig 2>/dev/null
-		exit 0
-	fi
-	wwidth=$ww
-	snapshot=$layout
-	read_sig=$sig
-	[[ $floating == 1 ]] && continue
-	order+=("$pane")
-	left[$pane]=$pl
-	top[$pane]=$pt
-	width[$pane]=$pw
-	height[$pane]=$ph
-	pref[$pane]=$opt
-	img[$pane]=$src
-	label[$pane]=$side
-done < <(tmux list-panes -t "$target" -F "#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@pane_pref_width}|#{?@claude_img_src,1,}|#{?#{==:#{@pane_label},crew-dash-side},1,}|#{window_layout}|$SIG_FMT" 2>/dev/null)
+# The layout and signature are read once, by display-message, not per row: on
+# next-3.9 a #{P:} in a list-panes -F row makes every row report the first
+# row's values once pane index order differs from creation order (after the
+# first pane closes), pane_id included.
+{
+	IFS='|' read -r snapshot read_sig
+	while IFS='|' read -r ww zoomed bridge grid pane floating pl pt pw ph opt src side; do
+		# The window can change between the gate and this backgrounded run. Only a
+		# zoom needs the marker cleared, so an unzoom back to this same geometry is
+		# restored instead of suppressed; a mirror window is daemon-owned and never
+		# written, and the gate writes no marker in a mirror or grid window.
+		if [[ $zoomed == 1 || $bridge == 1 || $grid == 1 ]]; then
+			[[ $zoomed == 1 && $bridge != 1 ]] && tmux set -wu -t "$target" @pane_pref_sig 2>/dev/null
+			exit 0
+		fi
+		wwidth=$ww
+		[[ $floating == 1 ]] && continue
+		order+=("$pane")
+		left[$pane]=$pl
+		top[$pane]=$pt
+		width[$pane]=$pw
+		height[$pane]=$ph
+		pref[$pane]=$opt
+		img[$pane]=$src
+		label[$pane]=$side
+	done
+} < <(tmux display-message -p -t "$target" "#{window_layout}|$SIG_FMT" \; list-panes -t "$target" -F "#{window_width}|#{window_zoomed_flag}|#{?@bridge_win,1,}|#{@crew_grid}|#{pane_id}|#{pane_floating_flag}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{@pane_pref_width}|#{?@claude_img_src,1,}|#{?#{==:#{@pane_label},crew-dash-side},1,}" 2>/dev/null)
 
 # Resolve each pane's preference. A malformed value leaves the pane out of
 # every set: it is neither restored nor protected.

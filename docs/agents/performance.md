@@ -734,7 +734,7 @@ signature deliberately omits `#{window_layout}`, which renders per client.
 carrying `@pane_pref_width`) is outside its `[min, max]` band in a window wider
 than `min + keep`, or a side pane (`crew-dash-side` label or `@claude_img_src`)
 carries no option yet, in a window that is not a mirror, not a grid and not
-zoomed, whose `@pane_pref_hold` is not held (see below),
+zoomed, whose `@pane_pref_hold` is not held (the stamp differs from the current key; see below),
 and whose tiled geometry differs from `@pane_pref_sig`. Every other event is a
 format evaluation and nothing else.
 
@@ -762,15 +762,18 @@ format evaluation and nothing else.
   checked by the rollback, so a pre-existing narrow plain pane (a 15-column
   sidebar) never blocks a restore.
 - The hold: `after-resize-pane[10]` is a format-only gate (no fork) that writes
-  `@pane_pref_hold` as `<w>x<h>_<tiled count>` (it skips while the hold is
-  held). Held means the window size is unchanged and the current tiled count is
-  at least the stamped one, so a split keeps it. Side widths are not the key: a
+  `@pane_pref_hold` as `<w>x<h>_<tiled count>` (it skips while the stamp
+  equals the current key). The stamp is the key `<w>x<h>_<tiled count>`, and the
+  `[30]` step ratchets it to the new key when the size is unchanged and the
+  count grew, so a split keeps the hold and any pane close ends it. Side widths are not the key: a
   border drag runs `resize-pane -M` once, at drag start, and its motions fire no
   hook, so a width stamp would carry the pre-drag widths. The one run per drag
   costs one write per drag, not one per mouse event.
-- The `[30]` hooks drop a stale hold with one `set -wu`, only when a hold exists
-  and is no longer held (size changed or the count dropped below the stamp); a window without a hold
-  does no write. The script unsets the hold right after its own resize.
+- The `[30]` hooks act on a stale hold only when a hold exists and its stamp
+  differs from the current key: an equality test after the `[30]` step, then one
+  `set -wF` ratchet (size unchanged, count grew: once per split while held) or
+  one `set -wu` (size changed or the count did not grow); a window without a
+  hold, or with an equal stamp, does no write. The script unsets the hold right after its own resize.
 - This is an option write on an event path, which the #793 findings warn
   about (every write runs `recalculate_sizes()` plus a redraw of every client).
   It is acceptable here because it happens only on the rare trip path, once per

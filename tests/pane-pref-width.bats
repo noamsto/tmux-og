@@ -966,7 +966,7 @@ EOF
 	sleep "$SETTLE"
 	[ "$(width_of "$SIDE")" -eq 120 ]
 	[ "$(fork_count)" -eq 0 ]
-	[ "$(hold)" = "250x50_2" ]
+	[ "$(hold)" = "250x50_3" ]
 }
 
 @test "a horizontal split of the main pane keeps a hand resize" {
@@ -979,7 +979,7 @@ EOF
 	sleep "$SETTLE"
 	[ "$(width_of "$SIDE")" -eq 120 ]
 	[ "$(fork_count)" -eq 0 ]
-	[ "$(hold)" = "250x50_2" ]
+	[ "$(hold)" = "250x50_3" ]
 }
 
 @test "closing a pane that existed at the hand resize drops the hold" {
@@ -1008,6 +1008,81 @@ EOF
 	((want > span - 1 - 80)) && want=$((span - 1 - 80))
 	[ "$(width_of "$side")" -eq "$want" ]
 	[ "$want" -eq 80 ]
+}
+
+@test "closing a pane split after a hand resize restores the side pane" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	local x
+	x="$(split_h "$MAIN")"
+	[ "$(hold)" = "250x50_3" ]
+
+	# The closed pane's columns go to the side pane (185), out of its band.
+	tmux kill-pane -t "$x"
+
+	poll_width "$SIDE" 80
+	[ -z "$(hold)" ]
+	[ "$(fork_count)" -eq 1 ]
+}
+
+@test "closing a pane split after a hand resize under dwindle restores the side pane" {
+	[[ -n ${TMUX_OG_CONF:-} ]] || skip "TMUX_OG_CONF unset: the dwindle hook names a store binary"
+	local hooks="$BATS_TEST_TMPDIR/dwindle-hooks.conf"
+	grep -E '^[[:space:]]*set-hook -g window-layout-changed\[20\] .*tmux-dwindle' "$TMUX_OG_CONF" >"$hooks"
+	side_pair 80
+	tmux set-option -w -t "$WIN" @dwindle on
+	tmux source-file "$hooks"
+	fire_same
+	local tries=0
+	while ((tries < POLL_TRIES)); do
+		[[ -n "$(tmux show-options -w -v -t "$WIN" @dwindle_cache 2>/dev/null)" ]] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$(tmux show-options -w -v -t "$WIN" @dwindle_cache)" ]
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	local x
+	x="$(split_h "$MAIN")"
+
+	# Dwindle evens the row (side 125) after the close; the hold must not survive it.
+	tmux kill-pane -t "$x"
+
+	poll_width "$SIDE" 80
+	[ -z "$(hold)" ]
+	sleep "$SETTLE"
+	[ "$(width_of "$SIDE")" -eq 80 ]
+}
+
+@test "a side pane is read by id when pane order differs from creation order" {
+	wide_window
+	local side b
+	side="$(split_h "$MAIN")"
+	make_side "$side"
+	b="$(split_h "$MAIN")"
+	tmux kill-pane -t "$MAIN"
+	tmux resize-pane -t "$b" -x 124
+	[ "$(width_of "$side")" -eq 125 ]
+	arm_guard_hooks
+
+	fire_same
+
+	poll_width "$side" 80
+}
+
+@test "closing a pane split after a hand resize ends the hold" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	local x
+	x="$(split_v "$MAIN")"
+	[ "$(hold)" = "250x50_3" ]
+
+	tmux kill-pane -t "$x"
+
+	poll_width "$SIDE" 80
+	[ -z "$(hold)" ]
 }
 
 @test "zooming twice does not hold the layout" {

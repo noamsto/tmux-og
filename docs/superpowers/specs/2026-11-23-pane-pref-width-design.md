@@ -82,12 +82,13 @@ who likes the dash a bit narrower.
 ### Hand-resize rule
 
 A deliberate `resize-pane` (keyboard `prefix + M-arrow`, a mouse border drag)
-holds the window's layout until the window next resizes or a pane that existed
-at the hand resize closes; a split keeps it. A border drag runs `resize-pane -M` once, at drag start (the motions
+holds the window's layout until the window changes size or any tiled pane
+closes; a split keeps it. A border drag runs `resize-pane -M` once, at drag start (the motions
 that follow go through tmux's `mouse_drag_update`), so the hook fires once per
 drag, before the move; the stamp does not depend on widths, so the hold still
 covers the drag's result. A plain border click with no drag also stamps a hold
 (harmless: it only defers a restore to the next window resize or pane close).
+Cost: closing a pane added after the hand resize also ends the hold.
 
 - A new `after-resize-pane[10]` hook stamps window option `@pane_pref_hold` =
   `<window_width>x<window_height>_<tiled count>` (`_`, because `:` ends
@@ -99,16 +100,17 @@ covers the drag's result. A plain border click with no drag also stamps a hold
   (`#{hook_arguments}` without `-Z`; zoom fires this hook too, and a hold
   stamped on unzoom would suppress the restore of a squeeze that happened
   while zoomed), and the window is not already held. A second hand resize while held keeps
-  the original, lower count.
-- The guard's gate skips while the hold is held: the stamped size equals the
-  current window size and the current tiled count is at least the stamped one.
+  the stamp.
+- The guard's gate skips while the stamp equals the current key
+  (`<window_width>x<window_height>_<tiled count>`).
   This depends on the hold landing before the resize's own
   `window-layout-changed[30]` gate runs: the `after-*` hook is inserted into
   the issuing client's queue right after the command, while the layout
   notification goes to the global queue, which runs later. A bats case drives
   a hand resize the way a key binding does and asserts it sticks.
 - A stale hold is dropped in-process: each `[30]` hook body first runs
-  `if -F '<hold set and not held>' { set -wu @pane_pref_hold }`, so a size
+  `if -F '<hold set and stamp != key>' { if -F '<size unchanged and count grew>' { set -wF @pane_pref_hold '<key>' } { set -wu @pane_pref_hold } }`:
+  a split ratchets the stamp to the new key, so a size
   change or a pane close clears it even when nothing trips at that moment
   (otherwise a 250 → 160 → 250 round trip would bring the old size back and
   re-arm a hold the user's resize no longer explains). The write happens only when a stale hold exists.
@@ -136,8 +138,8 @@ hold:
    `@pane_pref_width` unset), or a pane with
    `@pane_pref_width` whose width is under `min` or over a non-zero `max`,
    in a window wider than `min + keep` (the old literal `61` generalised);
-3. the hold is not held: `@pane_pref_hold` (`WxH_<tiled count>`) names a
-   different window size, or the current tiled count is under the stamped one;
+3. the hold is not held: `@pane_pref_hold` (`WxH_<tiled count>`) differs from
+   the current key `WxH_<tiled count>`;
 4. the tiled geometry signature differs from `@pane_pref_sig` (the old
    `@carousel_guard_sig`, same format and same "written before the fork,
    cleared on a successful restore" semantics).

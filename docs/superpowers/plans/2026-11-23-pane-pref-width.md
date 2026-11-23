@@ -10,7 +10,9 @@ side pane declares `@pane_pref_width "<pct>,<min>,<max>,<keep>"`.
 SIZE = #{window_width}x#{window_height}
 COUNT = #{n:#{P:#{?pane_floating_flag,,x}}}
 HOLDVAL = SIZE_COUNT  (`_`, not `:`, which ends tmux's `s///`)
-HELD = #{&&:#{==:#{s/_.*//:@pane_pref_hold},SIZE},#{e|>=|:COUNT,#{s/^.*_//:@pane_pref_hold}}}
+KEY = SIZE_COUNT
+HELD = #{==:#{@pane_pref_hold},KEY}
+GREW = #{&&:#{==:#{s/_.*//:@pane_pref_hold},SIZE},#{e|>|:COUNT,#{s/^.*_//:@pane_pref_hold}}}
 SIG  = #{window_width}x#{window_height}:#{P:#{?pane_floating_flag,,#{pane_id}.#{pane_left}.#{pane_top}.#{pane_width}.#{pane_height} }}
 MIN  = #{s/^[^,]*,([^,]*),.*/\1/:@pane_pref_width}
 MAX  = #{s/^[^,]*,[^,]*,([^,]*),.*/\1/:@pane_pref_width}
@@ -18,7 +20,7 @@ KEEP = #{s/^.*,//:@pane_pref_width}
 SIDE = #{||:#{@claude_img_src},#{==:#{@pane_label},crew-dash-side}}
 TRIP = #{?pane_floating_flag,,#{?@pane_pref_width,#{?#{&&:#{||:#{e|<|:#{pane_width},MIN},#{&&:#{e|>|:MAX,0},#{e|>|:#{pane_width},MAX}}},#{e|>|:#{window_width},#{e|+|:MIN,KEEP}}},1,},#{?SIDE,1,}}}
 GATE = #{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{!:#{window_zoomed_flag}},#{&&:#{P:TRIP},#{&&:#{!:HELD},#{!=:SIG,#{@pane_pref_sig}}}}}}
-STALE = #{&&:#{@pane_pref_hold},#{!:HELD}}
+STALE = #{&&:#{@pane_pref_hold},#{!:HELD}}   (ratchet: if GREW set the hold to KEY, else unset it)
 HOLD = #{&&:#{&&:#{!:#{pane_floating_flag}},#{!:#{m:*-Z*,#{hook_arguments}}}},#{&&:#{&&:#{!:#{@bridge_win}},#{!=:#{@crew_grid},1}},#{&&:#{P:#{?pane_floating_flag,,#{?#{||:#{@pane_pref_width},SIDE},1,}}},#{!=:KEY,#{@pane_pref_hold}}}}}
 Defaults (script only): crew-dash-side label -> 32,50,80,80 ; @claude_img_src -> 40,20,0,40
 ```
@@ -29,7 +31,7 @@ one line each, as today.)
 Hooks (`config/tmux.conf.tmpl`, replacing the two `[30]` lines and their comment):
 
 ```
-set-hook -g window-layout-changed[30] { if -F 'STALE' { set -wu @pane_pref_hold } ; if -F 'GATE' { set -wF @pane_pref_sig 'SIG' ; run-shell -b "{{index .Paths.Scripts "tmux-pane-pref-width"}} #{q:window_id}" } }
+set-hook -g window-layout-changed[30] { if -F 'STALE' { if -F 'GREW' { set -wF @pane_pref_hold 'HOLDVAL' } { set -wu @pane_pref_hold } } ; if -F 'GATE' { set -wF @pane_pref_sig 'SIG' ; run-shell -b "{{index .Paths.Scripts "tmux-pane-pref-width"}} #{q:window_id}" } }
 set-hook -g window-resized[30]        { <same body> }
 set-hook -g after-resize-pane[10]     { if -F 'HOLD' { set -wF @pane_pref_hold 'HOLDVAL' } }
 ```
@@ -140,8 +142,14 @@ New cases (a 250x50 window, main + side `32,50,80,80` labelled
     and restored to 80.
 12. guard's own resize leaves no hold (`@pane_pref_hold` unset after a restore).
 12a. hand resize side to 120, then `split-window -v` of main: side stays 120,
-    no fork, hold kept (a split must not drop a hand resize).
+    no fork, hold ratcheted to `250x50_3` (a split must not drop a hand resize).
 12b. same with `split-window -h` of main.
+12d. hand resize side to 120, `split-window -h` of main, kill that new pane:
+    side restored to 80, hold unset, one fork; same under dwindle (never left
+    at 125); a `split-window -v` then close also ends the hold.
+12e. side split off main, b split off main, kill main, b resized so the side
+    is 125: fire the layout, side restored to 80 (the script reads the side
+    pane by id when pane order differs from creation order).
 12c. main|mid|side, side hand-resized to 120 (hold count 3), kill mid: hold
     cleared and the side restored to its band.
 13. literal check: both `[30]` bodies identical; script `SIG_FMT` equals the
