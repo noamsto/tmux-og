@@ -709,6 +709,34 @@ resolved_fmt() {
 	tmux -u display -p -t "$1" '#{E:pane-border-format}' | plain
 }
 
+# Sets $cmd to the pane's #{pane_current_command} once it stops changing.
+# The name is platform-dependent (the launching shell, then the exec'd
+# program), so assertions compare against what tmux reports, not a literal.
+settled_cmd() {
+	local prev="" cur="" same=0
+	for _ in $(seq 1 50); do
+		cur="$(tmux display -p -t "$1" '#{pane_current_command}')"
+		if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then
+			same=$((same + 1))
+			[ "$same" -ge 3 ] && break
+		else
+			same=0
+		fi
+		prev="$cur"
+		sleep 0.2
+	done
+	if [ "$same" -lt 3 ]; then
+		echo "# pane_current_command never settled for $1 (last: '$cur')" >&3
+		return 1
+	fi
+	cmd="$cur"
+}
+
+# Linux reports the literal; only other platforms are data-driven.
+expect_linux_cmd() {
+	[ "$(uname)" != Linux ] || [ "$cmd" = "$1" ]
+}
+
 # Polls until the pane's stamp marker is $2 ("1" or "").
 wait_stamp() {
 	local got
@@ -734,12 +762,9 @@ wait_stamp() {
 
 @test "float label: an unlabelled float shows its command, a mirror float its @bridge_proc" {
 	mkfloat
-	# pane_current_command is briefly the launching shell's name; wait for it to settle.
-	for _ in $(seq 1 50); do
-		[ "$(tmux display -p -t "$float" '#{pane_current_command}')" = sh ] && break
-		sleep 0.1
-	done
-	[ "$(render "$float")" = "━━ sh ━━" ]
+	settled_cmd "$float"
+	expect_linux_cmd sh
+	[ "$(render "$float")" = "━━ $cmd ━━" ]
 	tmux set -p -t "$float" @bridge_proc remote-tool
 	[ "$(render "$float")" = "━━ remote-tool ━━" ]
 }
@@ -751,11 +776,9 @@ wait_stamp() {
 	install_float_hook
 	mkfloat
 	wait_stamp "$float" 1
-	for _ in $(seq 1 50); do
-		[ "$(tmux display -p -t "$float" '#{pane_current_command}')" = sh ] && break
-		sleep 0.1
-	done
-	[ "$(resolved_fmt "$float")" = "━━ sh ━━" ]
+	settled_cmd "$float"
+	expect_linux_cmd sh
+	[ "$(resolved_fmt "$float")" = "━━ $cmd ━━" ]
 	[[ "$(style "$float" active)" == *"fg=#94e2d5"* ]]
 	[[ "$(style "$float" inactive)" == *"fg=#7f849c"* ]]
 }
@@ -821,10 +844,15 @@ wait_stamp() {
 	bash "$SCRIPT"
 	[[ "$(style "$float" active)" == *"fg=#112233"* ]]
 
+	settled_cmd "$float"
+	before="$cmd"
 	tmux respawn-pane -k -t "$float" 'exec sleep 60'
 	for _ in $(seq 1 50); do
-		[[ "$(resolved_fmt "$float")" == *sleep* ]] && break
+		[ "$(tmux display -p -t "$float" '#{pane_current_command}')" != "$before" ] && break
 		sleep 0.1
 	done
-	[ "$(resolved_fmt "$float")" = "━━ sleep ━━" ]
+	settled_cmd "$float"
+	[ "$cmd" != "$before" ]
+	expect_linux_cmd sleep
+	[ "$(resolved_fmt "$float")" = "━━ $cmd ━━" ]
 }
