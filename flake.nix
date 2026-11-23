@@ -1002,19 +1002,22 @@
                 touch $out
               '';
 
-            # The carousel-guard WIRING (#1056). Both setters are indexed [30] so
-            # they coexist with grid-refit at index 0 (layout-changed) and 10
-            # (resized), dwindle [20], float-refit at 0 and nudge [20]: an
-            # unindexed second setter would silently replace those. The bare `-gu`
-            # clears must still precede them, or they would wipe the [30] hooks
-            # on every config reload.
-            carousel-guard-conf-assertions =
-              pkgs.runCommand "carousel-guard-conf-assertions" {
+            # The side-pane width guard WIRING (#1221). The [30] setters coexist
+            # with grid-refit at index 0 (layout-changed) and 10 (resized), dwindle
+            # [20], float-refit at 0 and nudge [20]: an unindexed second setter
+            # would silently replace those. The bare `-gu` clears must still
+            # precede every setter, or they would wipe the hooks on each config
+            # reload; after-resize-pane is bare-cleared once, above its [10]
+            # setter, and nothing may re-clear it later. The two [30] bodies are
+            # one gate and must not drift apart.
+            pane-pref-width-conf-assertions =
+              pkgs.runCommand "pane-pref-width-conf-assertions" {
                 nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
                 CONF = tmuxConfig.tmuxConf;
               } ''
-                grep -E 'set-hook -g window-layout-changed\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
-                grep -E 'set-hook -g window-resized\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-carousel-guard #\{q:window_id\}' "$CONF"
+                grep -E 'set-hook -g window-layout-changed\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-pane-pref-width #\{q:window_id\}' "$CONF"
+                grep -E 'set-hook -g window-resized\[30\][[:space:]]+.*/nix/store/[^ ]*/bin/tmux-pane-pref-width #\{q:window_id\}' "$CONF"
+                grep -E 'set-hook -g after-resize-pane\[10\][[:space:]]+.*@pane_pref_hold' "$CONF"
 
                 lclear=$(grep -n 'set-hook -gu window-layout-changed' "$CONF" | head -1 | cut -d: -f1)
                 lsetter=$(grep -n 'set-hook -g window-layout-changed\[30\]' "$CONF" | head -1 | cut -d: -f1)
@@ -1022,6 +1025,15 @@
                 clear=$(grep -n 'set-hook -gu window-resized' "$CONF" | head -1 | cut -d: -f1)
                 setter=$(grep -n 'set-hook -g window-resized\[30\]' "$CONF" | head -1 | cut -d: -f1)
                 [ "$clear" -lt "$setter" ]
+                rclear=$(grep -n 'set-hook -gu after-resize-pane' "$CONF" | head -1 | cut -d: -f1)
+                rsetter=$(grep -n 'set-hook -g after-resize-pane\[10\]' "$CONF" | head -1 | cut -d: -f1)
+                [ "$rclear" -lt "$rsetter" ]
+                [ "$(grep -n 'set-hook -gu after-resize-pane' "$CONF" | tail -1 | cut -d: -f1)" -lt "$rsetter" ]
+
+                lbody=$(grep 'set-hook -g window-layout-changed\[30\]' "$CONF" | sed -E 's/^[[:space:]]*set-hook -g window-layout-changed\[30\][[:space:]]+//')
+                wbody=$(grep 'set-hook -g window-resized\[30\]' "$CONF" | sed -E 's/^[[:space:]]*set-hook -g window-resized\[30\][[:space:]]+//')
+                [ -n "$lbody" ]
+                [ "$lbody" = "$wbody" ]
                 touch $out
               '';
 
@@ -2984,21 +2996,21 @@
                 touch $out
               '';
 
-            carousel-guard-tests =
-              pkgs.runCommand "carousel-guard-tests" {
+            pane-pref-width-tests =
+              pkgs.runCommand "pane-pref-width-tests" {
                 # mkTmux, not pkgs.tmux: the test creates a real floating pane,
                 # same trap as float-refit-tests above.
                 nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
-                # The test sources the *production* [30] hook lines out of the
+                # The test sources the *production* hook lines out of the
                 # rendered conf, so it exercises the real gate, not a hand-rolled
                 # copy; the dwindle case also runs the store-built tmux-dwindle.
                 TMUX_OG_CONF = tmuxConfig.tmuxConf;
               } ''
-                cp -r ${scriptsSrc (coreScripts ++ ["tmux-carousel-guard.sh"])} scripts
-                cp -r ${testsSrc ["carousel-guard.bats"]} tests
+                cp -r ${scriptsSrc (coreScripts ++ ["tmux-pane-pref-width.sh"])} scripts
+                cp -r ${testsSrc ["pane-pref-width.bats"]} tests
                 cp -r ${./config} config
                 export HOME=$TMPDIR
-                bats tests/carousel-guard.bats
+                bats tests/pane-pref-width.bats
                 touch $out
               '';
 

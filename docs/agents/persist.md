@@ -28,6 +28,12 @@ layer (replaces tmux-resurrect/tmux-continuum). Enabled by default via
 - Storage: `$XDG_DATA_HOME/tmux-remux/state.db` + scrollbacks dir.
 - `restoreMode` defaults to `"off"` (manual `prefix + R` only). Set to `"auto"`
   to apply the smart filter on tmux server start.
+- The crew-dash side pane's `@remux_relaunch` re-stamps `@pane_label` and
+  `@pane_pref_width` (tmux-remux restores no pane options) and runs
+  `tmux set-hook -R -t "$TMUX_PANE" window-layout-changed`, so the width guard
+  re-checks a restored dash even when the attaching client's size matches the
+  snapshot; `-R` runs every index of that hook (grid gate, dwindle cache
+  re-seed, the guard, autofold).
 - Pi sessions resume like the other agents via `persist.resumePi` (default false):
   the flake Home Manager module symlinks `pi-hookyard-plugin` under
   `~/.local/share/pi/extensions/tmux-og` and idempotently adds its bridge to
