@@ -1,17 +1,18 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2016 # the #{...} fixtures are literal tmux formats
-# Tests the carousel width guard (#1056): the window-layout-changed[30] and
-# window-resized[30] hooks that fork scripts/tmux-carousel-guard.sh when a
-# tiled image-carousel pane (@claude_img_src) is squeezed under 20 columns, and
-# the script that grows it back to 40% of the space it splits with its host.
-# tmux never grows a squeezed pane on its own, so without the guard every case
-# that expects a restore stays at 1 column.
+# Tests the side-pane width guard (#1221): the window-layout-changed[30] and
+# window-resized[30] hooks that fork scripts/tmux-pane-pref-width.sh when a
+# tiled pane with @pane_pref_width (or an unstamped image carousel or
+# crew-dash-side pane) is outside its width band, the after-resize-pane[10] hook
+# that records a deliberate hand resize as @pane_pref_hold, and the script that
+# restores the pane to <pct>% of its row span. tmux never grows a squeezed pane
+# on its own, so without the guard every case that expects a restore stays put.
 #
 # Why a running server and not a conf grep: the interesting part is what tmux
 # does with the gate (it must fork exactly when the guard can help, and never
 # twice at one geometry) and what the resize does to the layout. The hook lines
 # are the production ones — from the rendered conf when TMUX_OG_CONF is set
-# (the carousel-guard-tests check), else from config/tmux.conf.tmpl — with the
+# (the pane-pref-width-tests check), else from config/tmux.conf.tmpl — with the
 # guard path swapped for a recorder that logs each fork and then execs the
 # repo script, so "how many times did the gate fork" is a line count.
 #
@@ -23,7 +24,7 @@
 #     window-layout-changed at an unchanged geometry, which a same-size
 #     resize-window does not reliably do.
 #   - "Zero forks" is a fixed settle followed by an empty fork log and an
-#     unset @carousel_guard_sig (the gate writes it synchronously before it
+#     unset @pane_pref_sig (the gate writes it synchronously before it
 #     forks); where cheap, a positive control afterwards proves the hooks were
 #     armed and the negative was not vacuous.
 #   - Every pane runs `sleep 600`, so no shell prompt moves anything.
@@ -45,7 +46,7 @@ setup() {
 	unset TMUX
 
 	REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-	GUARD="$REPO_ROOT/scripts/tmux-carousel-guard.sh"
+	GUARD="$REPO_ROOT/scripts/tmux-pane-pref-width.sh"
 	TEMPLATE="$REPO_ROOT/config/tmux.conf.tmpl"
 
 	OG_TMUX_DIR="/tmp/og-cg-$$-${BATS_TEST_NUMBER}"
@@ -63,7 +64,7 @@ setup() {
 	# so the recorder bakes in absolute paths.
 	FORKS="$BATS_TEST_TMPDIR/forks.log"
 	: >"$FORKS"
-	RECORDER="$BATS_TEST_TMPDIR/carousel-guard-recorder"
+	RECORDER="$BATS_TEST_TMPDIR/pane-pref-recorder"
 	cat >"$RECORDER" <<EOF
 #!$(command -v bash)
 printf '%s\n' "\$*" >>'$FORKS'
@@ -77,6 +78,7 @@ EOF
 	# store path). Start from no layout hooks, as the flake check's bare tmux does.
 	tmux set-hook -gu window-layout-changed
 	tmux set-hook -gu window-resized
+	tmux set-hook -gu after-resize-pane
 	WIN="$(tmux display-message -p -t S '#{window_id}')"
 	MAIN="$(tmux display-message -p -t S '#{pane_id}')"
 }
@@ -88,34 +90,71 @@ teardown() {
 	rm -rf "${OG_TMUX_DIR:-}"
 }
 
-# guard_hook_lines — the two production [30] setters, guard path replaced by
-# the recorder.
+# guard_hook_lines — the three production setters (both [30] gates and the
+# after-resize-pane[10] hold), guard path replaced by the recorder.
 guard_hook_lines() {
+	local pat='^[[:space:]]*set-hook -g (window-layout-changed\[30\]|window-resized\[30\]|after-resize-pane\[10\])'
 	if [[ -n ${TMUX_OG_CONF:-} ]]; then
-		grep -E '^[[:space:]]*set-hook .*tmux-carousel-guard' "$TMUX_OG_CONF" |
-			sed -E "s|/nix/store/[^ \"]*/bin/tmux-carousel-guard|$RECORDER|g"
+		grep -E "$pat" "$TMUX_OG_CONF" |
+			sed -E "s|/nix/store/[^ \"]*/bin/tmux-pane-pref-width|$RECORDER|g"
 		return
 	fi
-	local placeholder='{{index .Paths.Scripts "tmux-carousel-guard"}}' line
+	local placeholder='{{index .Paths.Scripts "tmux-pane-pref-width"}}' line
 	while IFS= read -r line; do
 		printf '%s\n' "${line//"$placeholder"/$RECORDER}"
-	done < <(grep -E '^[[:space:]]*set-hook .*tmux-carousel-guard' "$TEMPLATE")
+	done < <(grep -E "$pat" "$TEMPLATE")
 }
 
 arm_guard_hooks() {
 	local hooks="$BATS_TEST_TMPDIR/guard-hooks.conf"
 	guard_hook_lines >"$hooks"
-	# Both setters, each forking the recorder: a hook still naming the real
-	# guard would fork unlogged and turn every zero-fork assertion vacuous.
-	[ "$(grep -c . "$hooks")" -eq 2 ]
+	# Both [30] gates fork the recorder and the hold hook has no script: a hook
+	# still naming the real guard would fork unlogged and turn every zero-fork
+	# assertion vacuous.
+	[ "$(grep -c . "$hooks")" -eq 3 ]
 	[ "$(grep -cF "$RECORDER #{q:window_id}" "$hooks")" -eq 2 ]
-	if grep -q 'tmux-carousel-guard' "$hooks"; then return 1; fi
+	[ "$(grep -c 'after-resize-pane\[10\]' "$hooks")" -eq 1 ]
+	if grep -q 'tmux-pane-pref-width' "$hooks"; then return 1; fi
 	tmux source-file "$hooks"
 }
 
-# make_carousel <pane> <host>: stamp <pane> the way aeye's launcher does.
+# make_carousel <pane> <host>: stamp <pane> the way aeye's launcher does, plus
+# the default preference the guard would otherwise stamp on its first fork (an
+# unstamped carousel trips the gate once, which most cases must not count).
 make_carousel() {
+	make_carousel_unstamped "$1" "$2"
+	tmux set-option -p -t "$1" @pane_pref_width 40,20,0,40
+}
+
+make_carousel_unstamped() {
 	tmux set-option -p -t "$1" @claude_img_src "x-${2#%}"
+}
+
+# make_side <pane>: a crew-dash-side pane with its stamped preference.
+make_side() {
+	tmux set-option -p -t "$1" @pane_label crew-dash-side
+	tmux set-option -p -t "$1" @pane_pref_width 32,50,80,80
+}
+
+pref_of() { tmux show-options -p -v -t "$1" @pane_pref_width 2>/dev/null || true; }
+
+hold() { tmux show-options -w -v -t "$WIN" @pane_pref_hold 2>/dev/null || true; }
+
+# drop_hold: forget the hold an armed hand resize-pane just stamped, so the
+# next event is judged by the gate alone.
+drop_hold() { tmux set-option -w -u -t "$WIN" @pane_pref_hold; }
+
+# wide_window: 250x50, hooks unarmed. window-size becomes manual, so the
+# resize-window calls below stick.
+wide_window() { tmux resize-window -t "$WIN" -x 250 -y 50; }
+
+# side_pair <width>: MAIN | SIDE at 250 columns, SIDE at <width> (hooks unarmed).
+side_pair() {
+	wide_window
+	SIDE="$(split_h "$MAIN")"
+	make_side "$SIDE"
+	tmux resize-pane -t "$MAIN" -x $((249 - $1))
+	[ "$(width_of "$SIDE")" -eq "$1" ]
 }
 
 split_h() { tmux split-window -h -t "$1" -P -F '#{pane_id}' 'sleep 600'; }
@@ -125,7 +164,7 @@ width_of() { tmux display-message -p -t "$1" '#{pane_width}'; }
 
 fork_count() { grep -c . "$FORKS" || true; }
 
-marker() { tmux show-options -w -v -t "$WIN" @carousel_guard_sig 2>/dev/null || true; }
+marker() { tmux show-options -w -v -t "$WIN" @pane_pref_sig 2>/dev/null || true; }
 
 layout() { tmux display-message -p -t "$WIN" '#{window_layout}'; }
 
@@ -204,6 +243,23 @@ crushing_row() {
 	[ "$(width_of "$CAR")" -eq 1 ]
 }
 
+# crushing_nested: [[K | H] / Y] | C, C a squeezed carousel at the right edge
+# with no partner beside it. Restoring C takes its columns from the whole left
+# column, and tmux takes them from K first (22 -> 1). Leaves K in MAIN and the
+# panes in ROW, the carousel in CAR.
+crushing_nested() {
+	local h y
+	h="$(split_h "$MAIN")"
+	y="$(tmux split-window -v -f -t "$MAIN" -P -F '#{pane_id}' 'sleep 600')"
+	CAR="$(tmux split-window -h -f -t "$MAIN" -P -F '#{pane_id}' 'sleep 600')"
+	make_carousel "$CAR" "$MAIN"
+	tmux resize-pane -t "$CAR" -x 1
+	tmux resize-pane -t "$MAIN" -x 22
+	ROW=("$MAIN" "$h" "$y")
+	[ "$(width_of "$MAIN")" -eq 22 ]
+	[ "$(width_of "$CAR")" -eq 1 ]
+}
+
 # poll_layout_changes_over <n>: wait until arm_counter counted more than <n>.
 poll_layout_changes_over() {
 	local tries=0
@@ -219,30 +275,39 @@ poll_layout_changes_over() {
 @test "a squeezed side carousel is restored to 40% of the pair" {
 	local car
 	car="$(split_h "$MAIN")"
-	make_carousel "$car" "$MAIN"
+	make_carousel_unstamped "$car" "$MAIN"
+	tmux resize-pane -t "$MAIN" -x 152
 	arm_guard_hooks
 
-	tmux resize-pane -t "$MAIN" -x 152
+	# Squeezed unarmed and refired: a hand resize with the hooks armed is a
+	# deliberate one and holds the layout (see the hand-resize case).
+	fire_same
 
 	# 154 columns, 152/1: S = 154, target 61, the agent pane keeps 92.
 	poll_width "$car" 61
 	[ "$(width_of "$MAIN")" -eq 92 ]
 	# A successful restore clears the marker in the resize's own command list.
 	[ -z "$(marker)" ]
+	# The guard stamped the carousel default it applied.
+	[ "$(pref_of "$car")" = "40,20,0,40" ]
 }
 
 @test "an identical re-squeeze is restored again" {
 	local car
 	car="$(split_h "$MAIN")"
 	make_carousel "$car" "$MAIN"
-	arm_guard_hooks
 	tmux resize-pane -t "$MAIN" -x 152
+	local squeezed
+	squeezed="$(layout)"
+	arm_guard_hooks
+	fire_same
 	poll_width "$car" 61
 	poll_forks 1
 
 	# Same pane ids, same 152/1 at 154: the SIG the gate wrote before the
 	# first fork. A marker surviving the restore would suppress this one.
-	tmux resize-pane -t "$MAIN" -x 152
+	# select-layout, not resize-pane: that would stamp a hand-resize hold.
+	tmux select-layout -t "$WIN" "$squeezed"
 	poll_forks 2
 	poll_width "$car" 61
 }
@@ -327,6 +392,8 @@ poll_layout_changes_over() {
 	car="$(split_h "$MAIN")"
 	make_carousel "$car" "$MAIN"
 	tmux resize-pane -t "$MAIN" -x 148
+	drop_hold
+	fire_same
 	poll_width "$car" 60
 	[ "$(width_of "$FLOAT")" -eq "$fw" ]
 }
@@ -345,6 +412,8 @@ poll_layout_changes_over() {
 	# Positive control: squeezed again at full width, it is restored.
 	tmux resize-window -t "$WIN" -x 154
 	tmux resize-pane -t "$MAIN" -x 152
+	drop_hold
+	fire_same
 	poll_width "$CAR" 61
 }
 
@@ -371,6 +440,7 @@ poll_layout_changes_over() {
 
 	# A no-op resize of A and another trigger, both at the same geometry.
 	tmux resize-pane -t "$MAIN" -x 121
+	drop_hold
 	fire_same
 	sleep "$SETTLE"
 	[ "$(fork_count)" -eq 1 ]
@@ -487,7 +557,7 @@ poll_layout_changes_over() {
 }
 
 @test "a restore that crushes a neighbour is rolled back" {
-	crushing_row
+	crushing_nested
 	local before
 	before="$(layout)"
 	arm_guard_hooks
@@ -511,7 +581,7 @@ poll_layout_changes_over() {
 }
 
 @test "a rollback forks nothing more and the layout stays put" {
-	crushing_row
+	crushing_nested
 	arm_guard_hooks
 	arm_counter
 
@@ -615,8 +685,9 @@ EOF
 	local car
 	car="$(split_h "$MAIN")"
 	make_carousel "$car" "$MAIN"
-	arm_guard_hooks
 	tmux resize-pane -t "$MAIN" -x 152
+	arm_guard_hooks
+	fire_same
 	poll_width "$car" 61
 	sleep "$SETTLE"
 	arm_counter
@@ -693,6 +764,383 @@ EOF
 	[ "$(fork_count)" -le 2 ]
 }
 
+@test "a restore that would take a side crew dash under 50 columns is rolled back" {
+	# [[DASH | H] / Y] | CAR: the donor is the whole left column and tmux takes
+	# the columns from DASH first (70 -> 40), which keeps the 20-column floor but
+	# not the 50 columns its @pane_pref_width promises.
+	local h y
+	h="$(split_h "$MAIN")"
+	y="$(tmux split-window -v -f -t "$MAIN" -P -F '#{pane_id}' 'sleep 600')"
+	CAR="$(tmux split-window -h -f -t "$MAIN" -P -F '#{pane_id}' 'sleep 600')"
+	make_carousel "$CAR" "$MAIN"
+	tmux set-option -p -t "$MAIN" @pane_pref_width 32,50,80,80
+	tmux resize-pane -t "$CAR" -x 1
+	tmux resize-pane -t "$MAIN" -x 70
+	[ "$(width_of "$MAIN")" -eq 70 ]
+	arm_guard_hooks
+
+	fire_same
+	poll_forks 1
+	sleep "$SETTLE"
+	[ "$(width_of "$MAIN")" -eq 70 ]
+	[ "$(width_of "$CAR")" -eq 1 ]
+	[ -n "$(marker)" ]
+
+	# Positive control: the same geometry without the preference is restored.
+	tmux set-option -p -u -t "$MAIN" @pane_pref_width
+	tmux set-option -w -u -t "$WIN" @pane_pref_sig
+	fire_same
+	poll_width "$CAR" 61
+	[ "$(width_of "$MAIN")" -eq 40 ]
+	: "$h" "$y"
+}
+
+@test "a squeezed side pane is restored when the window shrinks" {
+	side_pair 80
+	arm_guard_hooks
+
+	tmux resize-window -t "$WIN" -x 160 -y 50
+
+	# 32% of 160; the shrink alone left it at 35, under its 50 minimum.
+	poll_width "$SIDE" 51
+	poll_forks 1
+	[ -z "$(marker)" ]
+}
+
+@test "a side pane that grew past its maximum when a sibling closed is restored" {
+	wide_window
+	local mid side
+	side="$(split_h "$MAIN")"
+	mid="$(split_h "$side")"
+	make_side "$side"
+	tmux select-layout -t "$WIN" even-horizontal
+	tmux resize-pane -t "$side" -x 80
+	[ "$(width_of "$side")" -eq 80 ]
+	arm_guard_hooks
+
+	# Closing the pane to its right hands that pane's columns to the side pane,
+	# the previous sibling: it grows past its 80-column maximum.
+	tmux kill-pane -t "$mid"
+
+	poll_forks 1
+	poll_width "$side" 80
+	sleep "$SETTLE"
+	[ "$(fork_count)" -eq 1 ]
+	[ "$(width_of "$MAIN")" -eq 169 ]
+}
+
+@test "a pane close racing dwindle's balance leaves the side pane at its width" {
+	[[ -n ${TMUX_OG_CONF:-} ]] || skip "TMUX_OG_CONF unset: the dwindle hook names a store binary"
+	local hooks="$BATS_TEST_TMPDIR/dwindle-hooks.conf"
+	grep -E '^[[:space:]]*set-hook -g window-layout-changed\[20\] .*tmux-dwindle' "$TMUX_OG_CONF" >"$hooks"
+	[ "$(grep -c . "$hooks")" -eq 1 ]
+
+	wide_window
+	local mid side
+	side="$(split_h "$MAIN")"
+	mid="$(split_h "$side")"
+	make_side "$side"
+	tmux select-layout -t "$WIN" even-horizontal
+	tmux resize-pane -t "$side" -x 80
+	[ "$(width_of "$side")" -eq 80 ]
+
+	# Dwindle diffs against the layout its previous event cached, so the cache
+	# must hold the three-pane layout before the close; the guard is armed
+	# after that so it does not act on the build.
+	tmux set-option -w -t "$WIN" @dwindle on
+	tmux source-file "$hooks"
+	fire_same
+	local tries=0
+	while ((tries < POLL_TRIES)); do
+		[[ -n "$(tmux show-options -w -v -t "$WIN" @dwindle_cache 2>/dev/null)" ]] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$(tmux show-options -w -v -t "$WIN" @dwindle_cache)" ]
+	arm_guard_hooks
+	arm_counter
+
+	tmux kill-pane -t "$mid"
+
+	poll_width "$side" 80
+	sleep "$SETTLE"
+	local settled
+	settled="$(layout_changes)"
+	sleep "$SETTLE"
+	[ "$(layout_changes)" -eq "$settled" ]
+	[ "$(width_of "$side")" -eq 80 ]
+	[ "$(fork_count)" -le 2 ]
+}
+
+@test "a side pane inside its band forks nothing" {
+	side_pair 64
+	arm_guard_hooks
+
+	fire_same
+	tmux resize-window -t "$WIN" -x 250 -y 45
+	tmux resize-window -t "$WIN" -x 250 -y 50
+	assert_no_fork
+	[ "$(width_of "$SIDE")" -eq 64 ]
+}
+
+@test "a side pane that overshot its maximum on regrowth is restored" {
+	side_pair 80
+	tmux resize-window -t "$WIN" -x 160 -y 50
+	tmux resize-pane -t "$SIDE" -x 60
+	# Stretch the side pane past 80 with the window still at 160, then regrow.
+	tmux resize-pane -t "$SIDE" -x 70
+	tmux resize-window -t "$WIN" -x 250 -y 50
+	[ "$(width_of "$SIDE")" -gt 80 ]
+	arm_guard_hooks
+
+	fire_same
+
+	poll_width "$SIDE" 80
+}
+
+@test "grid, zoomed and floating panes fork nothing for a side pane" {
+	side_pair 125
+	tmux set-option -w -t "$WIN" @crew_grid 1
+	arm_guard_hooks
+	fire_same
+	assert_no_fork
+	[ "$(width_of "$SIDE")" -eq 125 ]
+	tmux set-option -w -u -t "$WIN" @crew_grid
+
+	tmux resize-pane -Z -t "$MAIN"
+	tmux resize-window -t "$WIN" -x 249 -y 50
+	assert_no_fork
+	tmux resize-pane -Z -t "$MAIN"
+	poll_forks 1
+	tmux set-option -w -u -t "$WIN" @pane_pref_sig
+
+	# A floating option pane under its minimum is not tiled, so it is left alone.
+	local float
+	float="$(tmux new-pane -t "$WIN" -x 10 -y 5 -X 3 -Y 3 -P -F '#{pane_id}' 'sleep 600' 2>/dev/null)" ||
+		skip "this tmux cannot create a floating pane"
+	[ "$(tmux display-message -p -t "$float" '#{pane_floating_flag}')" = 1 ] ||
+		skip "this tmux does not report pane_floating_flag"
+	make_side "$float"
+	: >"$FORKS"
+	tmux resize-pane -t "$SIDE" -x 80
+	drop_hold
+	tmux set-option -w -u -t "$WIN" @pane_pref_sig
+	fire_same
+	assert_no_fork
+}
+
+@test "a window too narrow for the side pane's minimum and keep forks nothing" {
+	side_pair 80
+	tmux resize-window -t "$WIN" -x 120 -y 50
+	[ "$(width_of "$SIDE")" -lt 50 ]
+	arm_guard_hooks
+
+	fire_same
+	tmux resize-window -t "$WIN" -x 125 -y 50
+	assert_no_fork
+}
+
+@test "a hand resize sticks until the window itself changes size" {
+	side_pair 80
+	arm_guard_hooks
+
+	# As a key binding runs it: a client command, not a guard resize.
+	tmux resize-pane -t "$SIDE" -x 120
+	sleep "$SETTLE"
+	[ "$(hold)" = "250x50_2" ]
+	[ "$(width_of "$SIDE")" -eq 120 ]
+	[ "$(fork_count)" -eq 0 ]
+
+	tmux resize-window -t "$WIN" -x 200 -y 50
+	# 32% of 200, under the 119-column cap.
+	poll_width "$SIDE" 64
+}
+
+@test "a split of the main pane keeps a hand resize" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	[ "$(hold)" = "250x50_2" ]
+
+	split_v "$MAIN"
+	sleep "$SETTLE"
+	[ "$(width_of "$SIDE")" -eq 120 ]
+	[ "$(fork_count)" -eq 0 ]
+	[ "$(hold)" = "250x50_3" ]
+}
+
+@test "a horizontal split of the main pane keeps a hand resize" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	[ "$(hold)" = "250x50_2" ]
+
+	split_h "$MAIN"
+	sleep "$SETTLE"
+	[ "$(width_of "$SIDE")" -eq 120 ]
+	[ "$(fork_count)" -eq 0 ]
+	[ "$(hold)" = "250x50_3" ]
+}
+
+@test "closing a pane that existed at the hand resize drops the hold" {
+	wide_window
+	local mid side
+	mid="$(split_h "$MAIN")"
+	side="$(split_h "$mid")"
+	make_side "$side"
+	tmux select-layout -t "$WIN" even-horizontal
+	arm_guard_hooks
+	tmux resize-pane -t "$side" -x 120
+	[ "$(hold)" = "250x50_3" ]
+	[ "$(fork_count)" -eq 0 ]
+
+	tmux kill-pane -t "$mid"
+
+	poll_forks 1
+	sleep "$SETTLE"
+	[ -z "$(hold)" ]
+	# 32% of the pair, inside 50..80 and leaving the partner its keep.
+	local span want
+	span=$(($(width_of "$MAIN") + 1 + $(width_of "$side")))
+	want=$((span * 32 / 100))
+	((want < 50)) && want=50
+	((want > 80)) && want=80
+	((want > span - 1 - 80)) && want=$((span - 1 - 80))
+	[ "$(width_of "$side")" -eq "$want" ]
+	[ "$want" -eq 80 ]
+}
+
+@test "closing a pane split after a hand resize restores the side pane" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	local x
+	x="$(split_h "$MAIN")"
+	[ "$(hold)" = "250x50_3" ]
+
+	# The closed pane's columns go to the side pane (185), out of its band.
+	tmux kill-pane -t "$x"
+
+	poll_width "$SIDE" 80
+	[ -z "$(hold)" ]
+	[ "$(fork_count)" -eq 1 ]
+}
+
+@test "closing a pane split after a hand resize under dwindle restores the side pane" {
+	[[ -n ${TMUX_OG_CONF:-} ]] || skip "TMUX_OG_CONF unset: the dwindle hook names a store binary"
+	local hooks="$BATS_TEST_TMPDIR/dwindle-hooks.conf"
+	grep -E '^[[:space:]]*set-hook -g window-layout-changed\[20\] .*tmux-dwindle' "$TMUX_OG_CONF" >"$hooks"
+	side_pair 80
+	tmux set-option -w -t "$WIN" @dwindle on
+	tmux source-file "$hooks"
+	fire_same
+	local tries=0
+	while ((tries < POLL_TRIES)); do
+		[[ -n "$(tmux show-options -w -v -t "$WIN" @dwindle_cache 2>/dev/null)" ]] && break
+		sleep 0.1
+		((tries++)) || true
+	done
+	[ -n "$(tmux show-options -w -v -t "$WIN" @dwindle_cache)" ]
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	local x
+	x="$(split_h "$MAIN")"
+
+	# Dwindle evens the row (side 125) after the close; the hold must not survive it.
+	tmux kill-pane -t "$x"
+
+	poll_width "$SIDE" 80
+	[ -z "$(hold)" ]
+	sleep "$SETTLE"
+	[ "$(width_of "$SIDE")" -eq 80 ]
+}
+
+@test "a side pane is read by id when pane order differs from creation order" {
+	wide_window
+	local side b
+	side="$(split_h "$MAIN")"
+	make_side "$side"
+	b="$(split_h "$MAIN")"
+	tmux kill-pane -t "$MAIN"
+	tmux resize-pane -t "$b" -x 124
+	[ "$(width_of "$side")" -eq 125 ]
+	arm_guard_hooks
+
+	fire_same
+
+	poll_width "$side" 80
+}
+
+@test "closing a pane split after a hand resize ends the hold" {
+	side_pair 80
+	arm_guard_hooks
+	tmux resize-pane -t "$SIDE" -x 120
+	local x
+	x="$(split_v "$MAIN")"
+	[ "$(hold)" = "250x50_3" ]
+
+	tmux kill-pane -t "$x"
+
+	poll_width "$SIDE" 80
+	[ -z "$(hold)" ]
+}
+
+@test "zooming twice does not hold the layout" {
+	side_pair 125
+	arm_guard_hooks
+	tmux set-option -w -t "$WIN" @pane_pref_sig "stale"
+
+	tmux resize-pane -Z -t "$MAIN"
+	tmux resize-pane -Z -t "$MAIN"
+
+	[ -z "$(hold)" ]
+}
+
+@test "a hand resize then a shrink and regrow is restored when the size returns" {
+	side_pair 80
+	arm_guard_hooks
+
+	tmux resize-pane -t "$SIDE" -x 120
+	[ "$(hold)" = "250x50_2" ]
+
+	tmux resize-window -t "$WIN" -x 160 -y 50
+	# 75 is in band: the stale hold is cleared and nothing restores.
+	[ "$(width_of "$SIDE")" -eq 75 ]
+	sleep "$SETTLE"
+	[ -z "$(hold)" ]
+	[ "$(fork_count)" -eq 0 ]
+
+	tmux resize-window -t "$WIN" -x 250 -y 50
+	poll_width "$SIDE" 80
+}
+
+@test "an unstamped side pane is stamped and restored" {
+	wide_window
+	local side
+	side="$(split_h "$MAIN")"
+	tmux set-option -p -t "$side" @pane_label crew-dash-side
+	tmux resize-pane -t "$MAIN" -x 124
+	[ "$(width_of "$side")" -eq 125 ]
+	[ -z "$(pref_of "$side")" ]
+	arm_guard_hooks
+
+	fire_same
+
+	poll_width "$side" 80
+	[ "$(pref_of "$side")" = "32,50,80,80" ]
+}
+
+@test "the guard's own resize leaves no hold behind" {
+	side_pair 80
+	arm_guard_hooks
+
+	tmux resize-window -t "$WIN" -x 160 -y 50
+	poll_width "$SIDE" 51
+	sleep "$SETTLE"
+	[ -z "$(hold)" ]
+	[ -z "$(marker)" ]
+}
+
 @test "both hook bodies are identical and the gate literals match the script" {
 	local lines
 	lines="$(grep -E '^set-hook -g (window-layout-changed|window-resized)\[30\] ' "$TEMPLATE")"
@@ -703,50 +1151,20 @@ EOF
 	[ -n "$lc" ]
 	[ "$lc" = "$rs" ]
 
-	local min_cols main_min_cols
-	min_cols="$(sed -n 's/^MIN_COLS=//p' "$GUARD")"
-	main_min_cols="$(sed -n 's/^MAIN_MIN_COLS=//p' "$GUARD")"
-	[ -n "$min_cols" ]
-	[ -n "$main_min_cols" ]
-	[[ $lc == *"#{e|<|:#{pane_width},$min_cols}"* ]]
-	[[ $lc == *"#{e|>=|:#{window_width},$((min_cols + 1 + main_min_cols))}"* ]]
-
 	# The script's rollback re-stamps the marker with SIG_FMT; any drift from
 	# the gate's signature would make the rolled-back window fork again.
 	local sig_fmt hook_sig
 	sig_fmt="$(sed -n "s/^SIG_FMT='\(.*\)'\$/\1/p" "$GUARD")"
-	hook_sig="$(sed -nE "s/.*set -wF @carousel_guard_sig '([^']*)'.*/\1/p" <<<"$lc")"
+	hook_sig="$(sed -nE "s/.*set -wF @pane_pref_sig '([^']*)'.*/\1/p" <<<"$lc")"
 	[ -n "$sig_fmt" ]
 	[ "$sig_fmt" = "$hook_sig" ]
-	[[ $lc == *"#{!=:$sig_fmt,#{@carousel_guard_sig}}"* ]]
-}
+	[[ $lc == *"#{!=:$sig_fmt,#{@pane_pref_sig}}"* ]]
 
-@test "a restore that would take a side crew dash under 50 columns is rolled back" {
-	# MAIN | DASH | CAR at the right edge: the donor rule resizes CAR and tmux
-	# takes the columns from DASH, which keeps the 20-column floor but not the
-	# 50 columns tmux-crew-dash --side promises.
-	local dash
-	dash="$(split_h "$MAIN")"
-	CAR="$(split_h "$dash")"
-	make_carousel "$CAR" "$MAIN"
-	tmux select-layout -t "$WIN" even-horizontal
-	tmux set-option -p -t "$dash" @pane_label crew-dash-side
-	tmux resize-pane -t "$CAR" -x 1
-	local want
-	want="$(width_of "$dash")"
-	[ "$want" -ge 90 ]
-	arm_guard_hooks
-
-	fire_same
-	poll_forks 1
-	sleep "$SETTLE"
-	[ "$(width_of "$dash")" -eq "$want" ]
-	[ "$(width_of "$CAR")" -eq 1 ]
-	[ -n "$(marker)" ]
-
-	# Positive control: the same geometry without the label is restored.
-	tmux set-option -p -u -t "$dash" @pane_label
-	tmux set-option -w -u -t "$WIN" @carousel_guard_sig
-	fire_same
-	poll_width "$CAR" 61
+	grep -qx 'SIDE_DASH_DEFAULT=32,50,80,80' "$GUARD"
+	grep -qx 'CAROUSEL_DEFAULT=40,20,0,40' "$GUARD"
+	# The gate reads min and max with a \1 backreference; a dropped one would
+	# make the substitution return the whole option.
+	[[ $lc == *'#{s/^[^,]*,([^,]*),.*/\1/:@pane_pref_width}'* ]]
+	[[ $lc == *'#{s/^[^,]*,[^,]*,([^,]*),.*/\1/:@pane_pref_width}'* ]]
+	[[ $lc == *'#{s/^.*,//:@pane_pref_width}'* ]]
 }

@@ -501,12 +501,18 @@ side_panes() {
 	[ "$(tmux display-message -p -t "$TILE" '#{pane_width}')" -ge 80 ]
 	[ "$(tmux display-message -p -t "$id" '#{pane_start_command}')" = '"exec crew dash --narrow"' ]
 	[ "$(active_pane "$WIN")" = "$id" ]
-	[ "$(tmux display-message -p -t "$id" '#{@remux_relaunch}')" = "tmux set -p @pane_label crew-dash-side; exec crew dash --narrow" ]
+	# shellcheck disable=SC2016 # the relaunch stores a literal "$TMUX_PANE"
+	[ "$(tmux display-message -p -t "$id" '#{@remux_relaunch}')" = 'tmux set -p @pane_label crew-dash-side; tmux set -p @pane_pref_width 32,50,80,80; tmux set-hook -R -t "$TMUX_PANE" window-layout-changed; exec crew dash --narrow' ]
 }
 
 @test "--side sizes the pane to 32% of the window" {
 	crew_dash --side "$TILE"
 	[ "$(tmux display-message -p -t "$(side_panes)" '#{pane_width}')" -eq 64 ]
+}
+
+@test "--side stamps @pane_pref_width 32,50,80,80" {
+	crew_dash --side "$TILE"
+	[ "$(tmux display-message -p -t "$(side_panes)" '#{@pane_pref_width}')" = 32,50,80,80 ]
 }
 
 @test "--side runs plain crew dash when crew lacks --narrow" {
@@ -515,7 +521,8 @@ side_panes() {
 	local id
 	id="$(side_panes)"
 	[ "$(tmux display-message -p -t "$id" '#{pane_start_command}')" = '"exec crew dash"' ]
-	[ "$(tmux display-message -p -t "$id" '#{@remux_relaunch}')" = "tmux set -p @pane_label crew-dash-side; exec crew dash" ]
+	# shellcheck disable=SC2016 # the relaunch stores a literal "$TMUX_PANE"
+	[ "$(tmux display-message -p -t "$id" '#{@remux_relaunch}')" = 'tmux set -p @pane_label crew-dash-side; tmux set -p @pane_pref_width 32,50,80,80; tmux set-hook -R -t "$TMUX_PANE" window-layout-changed; exec crew dash' ]
 }
 
 @test "a second --side focuses the existing pane and creates nothing" {

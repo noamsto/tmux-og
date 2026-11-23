@@ -40,8 +40,9 @@
 # `crew-dash-side` tool, so the REMOTE side gets the split too; a daemon older than
 # that tool answers `unknown tool`, and the script retries once with the `crew-dash`
 # float tool and tells the user. @remux_relaunch re-stamps the label and
-# re-execs the dash, so a remux restore keeps the pane findable. The carousel guard
-# (tmux-carousel-guard) keeps a restore from squeezing it under 50 columns.
+# re-execs the dash, so a remux restore keeps the pane findable. The pane carries
+# @pane_pref_width 32,50,80,80 and tmux-pane-pref-width resizes it back into 50..80
+# after a resize, a sibling close or a restore.
 #
 # The new-pane flags and the @float_geom stamp below are separate literals nothing
 # compares: change both together.
@@ -51,9 +52,12 @@ STASH=scratch-og-float-stash
 LABEL=crew-dash
 GROUP=crew
 SIDE_LABEL=crew-dash-side
+SIDE_PCT=32
 SIDE_MIN=50
 SIDE_MAX=80
 SIDE_KEEP=80
+# The side pane's @pane_pref_width (pct,min,max,keep), kept by tmux-pane-pref-width.
+SIDE_PREF="$SIDE_PCT,$SIDE_MIN,$SIDE_MAX,$SIDE_KEEP"
 FLOAT_GROUP="${OG_FLOAT_GROUP_BIN:-@float_group@}"
 BRIDGE_CTL="${OG_BRIDGE_CTL_BIN:-@bridge_ctl@}"
 
@@ -156,7 +160,7 @@ open_side() {
 		notify "window is zoomed, opened the crew dash float instead"
 		return 1
 	fi
-	w=$((ww * 32 / 100))
+	w=$((ww * SIDE_PCT / 100))
 	((w < SIDE_MIN)) && w=$SIDE_MIN
 	((w > SIDE_MAX)) && w=$SIDE_MAX
 	if ((pw - w - 1 < SIDE_KEEP)); then
@@ -174,8 +178,10 @@ open_side() {
 		return 0
 	}
 	# The relaunch runs in the user's default shell, fish included: keep it POSIX and fish-safe.
+	# The set-hook -R re-runs the window's layout hooks so the width guard re-checks the restored pane (tmux-remux restores no pane options).
 	tmux set-option -p -t "$sid" @pane_label "$SIDE_LABEL" \; \
-		set-option -p -t "$sid" @remux_relaunch "tmux set -p @pane_label $SIDE_LABEL; exec crew dash$narrow"
+		set-option -p -t "$sid" @pane_pref_width "$SIDE_PREF" \; \
+		set-option -p -t "$sid" @remux_relaunch "tmux set -p @pane_label $SIDE_LABEL; tmux set -p @pane_pref_width $SIDE_PREF; tmux set-hook -R -t \"\$TMUX_PANE\" window-layout-changed; exec crew dash$narrow"
 	return 0
 }
 if ((side)) && open_side; then

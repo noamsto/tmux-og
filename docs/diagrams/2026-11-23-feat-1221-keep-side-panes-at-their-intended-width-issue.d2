@@ -1,0 +1,29 @@
+direction: right
+
+events: "disturbing events" {
+  resize: "client attach / resize\n(window-size latest)"
+  close: "sibling pane closes"
+  restore: "tmux-remux restore\n(select-layout snapshot)"
+}
+
+tmux: "tmux layout engine" {
+  spread: "spreads width delta\nevenly over the row"
+  donate: "closed pane's columns\ngo to one neighbour"
+}
+
+dwindle: "tmux-dwindle balance\nwindow-layout-changed[20]"
+
+guard: "tmux-carousel-guard\n[30] hooks" {class: warn}
+
+dash: "crew-dash-side\n32% clamped 50..80" {class: warn}
+carousel: "aeye carousel\n(@claude_img_src)"
+
+events.resize -> tmux.spread
+events.restore -> tmux.spread
+events.close -> tmux.donate
+events.close -> dwindle: "count drop"
+tmux.spread -> dash: "80 -> 35 / 51 -> 96" {class: warn}
+tmux.donate -> dash: "80 -> 165" {class: warn}
+dwindle -> dash: "evens cell: 80 -> 125" {class: warn}
+guard -> carousel: "restores only\nwhen < 20 cols"
+guard -> dash: "never restores width\n(only blocks crush < 50)" {class: warn}

@@ -727,40 +727,61 @@ signature deliberately omits `#{window_layout}`, which renders per client.
   nothing. A re-enabled window re-seeds from a live layout, so a toggle can
   never leave a stale cache to diff against.
 
-## Carousel guard gate (#1056)
+## Side-pane width guard gate (#1056, #1221)
 
 `window-layout-changed[30]` and `window-resized[30]` each evaluate one in-process
-`if -F`. It forks `tmux-carousel-guard` only when a tiled carousel pane
-(`@claude_img_src`) is under 20 columns in a window at least 61 wide that is
-not a mirror, not a grid and not zoomed, and the tiled geometry differs from
-`@carousel_guard_sig`. Every other event is a format evaluation and nothing else.
+`if -F`. It forks `tmux-pane-pref-width` only when a tiled side pane (a pane
+carrying `@pane_pref_width`) is outside its `[min, max]` band in a window wider
+than `min + keep`, or a side pane (`crew-dash-side` label or `@claude_img_src`)
+carries no option yet, in a window that is not a mirror, not a grid and not
+zoomed, whose `@pane_pref_hold` is not held (the stamp differs from the current key; see below),
+and whose tiled geometry differs from `@pane_pref_sig`. Every other event is a
+format evaluation and nothing else.
 
+- The per-pane regex parse of `@pane_pref_width` (`#{s/.../:@pane_pref_width}`)
+  runs only inside `#{?@pane_pref_width,...}`, so a pane without the option
+  costs one empty test.
 - The marker is written before the fork, so a burst of layout events forks once
   and a window tmux cannot grow (or one the script declines) stops forking at
   that geometry instead of looping on its own resize.
-- The script clears it on a successful restore (the carousel reached 20
-  columns, checked in the same command list as the `resize-pane`), or when the
-  window is (or became) zoomed; a mirror or grid window is never written. A
-  marker cleared by a restore means "fixed", so an identical re-squeeze later is
+- The script clears it on a successful restore (the pane reached its band,
+  checked in the same command list as the `resize-pane`), or when the window is
+  (or became) zoomed; a mirror or grid window is never written. A marker
+  cleared by a restore means "fixed", so an identical re-squeeze later is
   restored again; a lingering one would suppress it.
-- A restore that crushed another tiled pane under 20 columns is rolled back to
-  the script's `#{window_layout}` snapshot in the same command list, and the
-  marker is re-stamped with the restored geometry (the script's `SIG_FMT`,
+- A restore that crushed another protected pane (a plain pane that was at least
+  20 columns, or another pref pane that was at least its own `min`, now under it) is rolled back to the
+  script's `#{window_layout}` snapshot in the same command list, and the marker
+  is re-stamped with the restored geometry (the script's `SIG_FMT`,
   byte-identical to the gate's), so the rollback's own layout change forks
   nothing.
 - The apply list is guarded by the window signature the script read
   (`#{==:<SIG_FMT>,<sig as read>}`, as `tmux-dwindle`'s stale-view guard): a
   window that changed between read and apply is left untouched, and the gate
-  forks again at the new geometry. Only pane widths of at least 20 in the
-  snapshot are protected by the rollback check, so a pre-existing narrow pane
-  (a 15-column sidebar) never blocks a restore.
+  forks again at the new geometry. Only panes protected in the snapshot are
+  checked by the rollback, so a pre-existing narrow plain pane (a 15-column
+  sidebar) never blocks a restore.
+- The hold: `after-resize-pane[10]` is a format-only gate (no fork) that writes
+  `@pane_pref_hold` as `<w>x<h>_<tiled count>` (it skips while the stamp
+  equals the current key). The stamp is the key `<w>x<h>_<tiled count>`, and the
+  `[30]` step ratchets it to the new key when the size is unchanged and the
+  count grew, so a split keeps the hold and any pane close ends it. Side widths are not the key: a
+  border drag runs `resize-pane -M` once, at drag start, and its motions fire no
+  hook, so a width stamp would carry the pre-drag widths. The one run per drag
+  costs one write per drag, not one per mouse event.
+- The `[30]` hooks act on a stale hold only when a hold exists and its stamp
+  differs from the current key: an equality test after the `[30]` step, then one
+  `set -wF` ratchet (size unchanged, count grew: once per split while held) or
+  one `set -wu` (size changed or the count did not grow); a window without a
+  hold, or with an equal stamp, does no write. The script unsets the hold right after its own resize.
 - This is an option write on an event path, which the #793 findings warn
   about (every write runs `recalculate_sizes()` plus a redraw of every client).
   It is acceptable here because it happens only on the rare trip path, once per
-  distinct squeezed geometry; the concern is a write on every event.
-- `tests/carousel-guard.bats` (`carousel-guard-tests`, part of `nix flake check`)
+  distinct out-of-band geometry, once per hold key and once per stale hold; the
+  concern is a write on every event.
+- `tests/pane-pref-width.bats` (`pane-pref-width-tests`, part of `nix flake check`)
   pins the fork counts, the rollback's quiet settle, and that the gate's
-  `20`/`61` literals and signature format match the script.
+  literals and signature format match the script.
 
 ## Fingers state prune (#1066)
 
