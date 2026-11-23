@@ -182,6 +182,7 @@ open_side() {
 	tmux set-option -p -t "$sid" @pane_label "$SIDE_LABEL" \; \
 		set-option -p -t "$sid" @pane_pref_width "$SIDE_PREF" \; \
 		set-option -p -t "$sid" @remux_relaunch "tmux set -p @pane_label $SIDE_LABEL; tmux set -p @pane_pref_width $SIDE_PREF; tmux set-hook -R -t \"\$TMUX_PANE\" window-layout-changed; exec crew dash$narrow"
+	((detached)) && tmux set-option -p -t "$sid" @pane_parent "$pane"
 	return 0
 }
 if ((side)) && open_side; then
@@ -274,4 +275,5 @@ tmux set-option -p -t "$id" @float_geom '96% 94% 2% 3%' \; \
 	set-option -p -t "$id" remain-on-exit off \; \
 	set-option -p -t "$id" @pane_label "$LABEL" \; \
 	set-option -p -t "$id" @float_group "$GROUP"
+((detached)) && tmux set-option -p -t "$id" @pane_parent "$pane"
 exit 0

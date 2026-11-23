@@ -2,6 +2,10 @@
 # Invoked by the pane-exited/pane-died hooks with #{q:hook_pane}.
 set -euo pipefail
 
+# Children first: this must run for every hook pane, lib or no lib.
+PANE_CHAIN="${OG_PANE_CHAIN_BIN:-@pane_chain@}"
+[[ -x $PANE_CHAIN ]] && "$PANE_CHAIN" close-children "${1:-}" || true
+
 # Guarded so the RAW script still runs under bats, where @lib_claude@ is not
 # substituted: nothing to reap without the lib, so exit rather than crash on an
 # undefined function. In the built script the placeholder is always substituted

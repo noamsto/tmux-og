@@ -219,8 +219,8 @@
     raw = builtins.readFile ../scripts/${name}.sh;
     patched =
       builtins.replaceStrings
-      ["@lib_icons@" "@lib_claude@"]
-      ["${lib-icons}" "${lib-claude}"]
+      ["@lib_icons@" "@lib_claude@" "@pane_chain@"]
+      ["${lib-icons}" "${lib-claude}" "${script.tmux-pane-chain}/bin/tmux-pane-chain"]
       raw;
   in
     pkgs.writeShellScriptBin name patched;
@@ -323,6 +323,7 @@
     "tmux-float-nudge"
     "tmux-float-group"
     "tmux-crew-dash"
+    "tmux-pane-chain"
     "tmux-grid-refit"
     "tmux-pane-pref-width"
     "tmux-default-size"
@@ -842,6 +843,7 @@
     "tmux-float-nudge"
     "tmux-float-group"
     "tmux-crew-dash"
+    "tmux-pane-chain"
     "tmux-grid-refit"
     "tmux-kill-pane-guard"
     "tmux-pane-pref-width"

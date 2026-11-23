@@ -92,4 +92,4 @@ layer (replaces tmux-resurrect/tmux-continuum). Enabled by default via
   with the historical cwd, so the hook's cwd read never races an async `cd`
   (#100). This depends on tmux-remux continuing to pass `-c` at creation; if a
   future tmux-remux bump stops doing that, this would need revisiting.
-
+- **`@pane_parent` (#1222) is not persisted.** tmux-remux saves no such pane option and pane ids (`%N`) change on restore, so a stored parent id would be stale. The parent/child chain is dropped on restore, with no remap: a restored crew dash is window-owned and no longer closes with the dispatcher pane.

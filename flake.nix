@@ -919,6 +919,8 @@
                 nativeBuildInputs = [pkgs.gnugrep pkgs.gnused pkgs.coreutils];
                 CONF = tmuxConfig.tmuxConf;
                 CREW_DASH = "${tmuxConfig.script.tmux-crew-dash}/bin/tmux-crew-dash";
+                REAP = "${tmuxConfig.script.tmux-reap-pane}/bin/tmux-reap-pane";
+                PANE_CHAIN = "${tmuxConfig.script.tmux-pane-chain}/bin/tmux-pane-chain";
                 FLOAT_GROUP = "${tmuxConfig.script.tmux-float-group}/bin/tmux-float-group";
                 BRIDGE_CTL = tmuxConfig.picker-bridge-ctl-bin;
                 SMART_NAV = "${tmuxConfig.script.tmux-smart-nav}/bin/tmux-smart-nav";
@@ -933,6 +935,12 @@
                 # bats suite overrides the path through OG_FLOAT_GROUP_BIN, so a
                 # placeholder-name drift would build clean and test green.
                 ! grep -qF '@float_group@' "$CREW_DASH"
+
+                # The reap hook reaches tmux-pane-chain by a substituted store path.
+                # Its bats suites override the path through OG_PANE_CHAIN_BIN, so a
+                # placeholder-name drift would build clean and test green.
+                ! grep -qF '@pane_chain@' "$REAP"
+                grep -qF "$PANE_CHAIN" "$REAP"
                 grep -qF "$FLOAT_GROUP" "$CREW_DASH"
                 # Same for the bridge ctl a mirror window's press runs (OG_BRIDGE_CTL_BIN).
                 ! grep -qF '@bridge_ctl@' "$CREW_DASH"
@@ -2941,6 +2949,17 @@
                 cp -r ${testsSrc ["float-group.bats"]} tests
                 export HOME=$TMPDIR
                 bats tests/float-group.bats
+                touch $out
+              '';
+
+            pane-chain-tests =
+              pkgs.runCommand "pane-chain-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep (mkTmux pkgs)];
+              } ''
+                cp -r ${scriptsSrc ["tmux-pane-chain.sh" "tmux-reap-pane.sh" "tmux-float-group.sh"]} scripts
+                cp -r ${testsSrc ["pane-chain.bats"]} tests
+                export HOME=$TMPDIR
+                bats tests/pane-chain.bats
                 touch $out
               '';
 
