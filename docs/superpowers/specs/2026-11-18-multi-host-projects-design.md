@@ -125,7 +125,7 @@ inherited from the window the action starts in.
 | `wt switch <branch>` typed in a pane | either | Runs on the pane's host, under that host's own post-switch hook, so the outcome is the hook's: a new window (mirrored back when it lands in a remote session a daemon watches), an existing window selected (the local view does not move: a placed daemon never moves it), or the current window taken over. Agent sessions skip the hook (`$CLAUDECODE` and friends). Not changed by this design; see "Remote prerequisites". |
 | Open an existing branch from a picker, or `og project open <branch>` | none (entry point) | Resolve `branch → host` from the cached snapshots. One host: ensure pickup (3.1), create or focus the window there. Two hosts: prefer the host of the current window if it has the branch, else ask. None: error. |
 | New worktree (picker flow, `og project new <branch> [--host H]`) | none | The host is an explicit choice, default **local** (owner decision D3). Created on that host from a fresh `origin/<default>` (question 4). |
-| Picker "open" on a worktree already open | none | Never open a second window. Identity is `(host, worktree path)`. Open in the project session (local, or a mirror: `@bridge_host` plus `@bridge_dir`/`@bridge_pane`, the placed-window match `placeFocus` uses): focus it. Open natively on the host outside the leaf: mirror that window (section 3.6). |
+| Picker "open" on a worktree already open | none | Never open a second window. Identity is `(host, worktree path)`. Open in the project session (local, or a mirror: `@bridge_host` plus the window-scoped `@bridge_dir` for the worktree path; `@bridge_pane` is pane-scoped and holds the remote pane id that `placeFocus` matches, not a path): focus it. Open natively on the host outside the leaf: mirror that window (section 3.6). |
 
 **Opening a window on a remote host** is ssh to the host (it rides the picker's
 ControlMaster) running
@@ -522,3 +522,147 @@ absolute-checked. No credential or secret is read or written by any step.
 - The worktrunk hooks and `tmux-worktree-match`: local-only, and mirrors are
   invisible to them by the `@bridge_*` rule.
 - Dedicated and filtered mirror behaviour.
+
+## P0 findings
+
+Plan phase P0, run on `halo` (tmux `next-3.9`, `wt 0.81.0`, Tailscale 1.104.6).
+Every tmux repro ran on a scratch server (`-L`, own `TMUX_TMPDIR`,
+`CLAUDE_STATUS_DIR`, `XDG_DATA_HOME`). Remote steps used the tailnet peer
+`argon` (aarch64 NixOS). It has no tmux and no `wt`, so the repros that need a
+remote tmux server or `wt` ran locally; the `argon` facts below are PATH and
+shell facts only. `ssh localhost` was refused (unknown host key; not accepted,
+to avoid editing `known_hosts`).
+
+1. **`wt switch -c <branch> --base <ref>`** creates the branch from `<ref>`,
+   not from the local default branch. Proof: a throwaway repo whose local
+   `main` was one commit ahead of `refs/remotes/origin/main`;
+   `wt switch -c feat/x --base origin/main --no-hooks --no-cd` made `feat/x`
+   equal to `origin/main` (`617a785`), not `main` (`7a7dce5`). The path follows
+   the host's `worktree-path` template: the user's global template placed it
+   under `~/git/.worktrees/<repo>/<branch>`, and
+   `WORKTRUNK_CONFIG_PATH=<file>` holding
+   `worktree-path = "{{ repo_path }}/../wt-{{ branch | sanitize }}"` placed it
+   at `../wt-feat-y`. **Confirms D5**: `--base` accepts a remote ref. Caveat:
+   with no template configured the default is `../<repo>.<branch>`, so
+   `og project new` must read the created path from `wt` (or
+   `git worktree list --porcelain`), never compute it.
+2. **`wt` on a non-interactive ssh PATH.** On `argon`,
+   `ssh argon -- sh -c 'command -v wt; command -v zoxide; command -v tmux'`
+   prints nothing. Its `$PATH` is `/run/wrappers/bin:~/.nix-profile/bin:/nix/profile/bin:…:/run/current-system/sw/bin`
+   and `/etc/profiles/per-user/` does not exist, so `argon` simply lacks the
+   tools (the expected `wt not found on argon`). Its login shell is **fish**:
+   a bare `ssh host -- 'cmd'` runs under fish, so every remote script keeps the
+   `remoteZoxideScript` rule (no quote or backslash). On `halo`, `wt` lives at
+   `/etc/profiles/per-user/<user>/bin/wt` and is also on the PATH. **The
+   per-user fallback is needed**, as for zoxide: `command -v wt`, then
+   `/etc/profiles/per-user/$(id -un)/bin/wt`. A standalone home-manager host's
+   `~/.nix-profile/bin` is already on the PATH.
+3. **Stamp read and leaf creation.** In `picker/remoteopen/remote.go`,
+   `firstRemoteSession` runs `list-sessions -F '#{session_name}' | head -1` and
+   `hasSession` runs `has-session -t =<sess>`, both as
+   `rm.ssh(rm.host, rm.env()+…)`. `projectStamps` slots in beside `hasSession`
+   with the same shape. Verified on a scratch `next-3.9`:
+   - `display-message -p -t '=leaf:' '#{session_id}'` prints `$1`.
+   - `show-options -qv -t '$1' @og_project_leaf` prints the stamp when set, and
+     an empty value with exit 0 when unset.
+   - `show-options -v -t =leaf …` fails (`no such session: =leaf`), confirming #474.
+   - `new-session -d -P -F '#{window_id}|#{pane_id}' -s leaf -c /tmp \; set-option -t 'leaf:' @og_project_leaf KEY1`
+     prints `@1|%1` (the first window), and the stamp reads back.
+   - **Confirms 3.3 item 1** (the `$N` requirement), and shows why it matters: for a **missing** session,
+     `display-message -p -t '=nope:' '#{session_id}'` prints an **empty line
+     with exit 0**, not an error. The launcher must require a `$N` answer and
+     treat anything else as "cannot resolve", never trust the exit status.
+   - On `next-3.9`, `show-options -qv -t '=leaf:'` (trailing colon) also
+     resolves. Not relied on: older tmux differs and #474 stands, so the `$N`
+     route stays.
+4. **Mirror identity names** (read from the daemon code, not a live placed
+   daemon: `picker/remotebridge/daemon/windowlabels.go:45,110`,
+   `daemon.go:1131-1150,2681`, `picker/tui.go:1890-1906`). `@bridge_dir` is
+   **window-scoped** and holds the remote's `@worktree`, falling back to
+   `@git_root`: the remote worktree path, and the only mirror stamp usable as
+   the `(host, worktree path)` identity. `@bridge_pane` is **pane-scoped** on
+   the renderer pane and holds the remote **pane id** (`%N`).
+   `@bridge_session_path` is **session-scoped on a dedicated mirror** (on a placed mirror
+   `mirrorOpts.writeOwn` stamps it window-scoped on every window the daemon
+   owns, `mirroropts.go:10-33`) and holds the remote session's
+   `#{session_path}`, read once at bridge start: the session's creation dir,
+   not a window's worktree. `placeFocus` keys on `(local session id, host,
+   remote pane id, remote session name)` (`findPlacedWindow`), **not on a
+   path**. **Spec change, applied** (section 2, the "Picker open on a worktree
+   already open" row): path identity comes from `@bridge_dir`; `@bridge_pane`
+   is the launcher's wait key for a window it just created.
+5. **`git remote get-url`.** With
+   `url."https://github.com/".insteadOf = git@github.com:` it prints
+   `https://github.com/noamsto/tmux-og.git` (rewritten). With origin
+   `git@gh-work:org/repo.git` and an ssh `Host gh-work` alias
+   (`HostName github.com`) it prints the alias unchanged, while `ssh -G gh-work`
+   resolves `hostname github.com`. **Confirms section 1**: the
+   `remotes = [ … ]` alias layer is required.
+6. **`picker/ogconfig/ogconfig.go`** is a fixed-field `Config` struct decoded
+   from `$TMUX_OG_CONFIG` (process icons, splash tips); `Load` returns
+   `ok=false` when the env is unset and callers keep built-in defaults.
+   **Decision: a sibling reader** in `picker/project/registry.go` with its own
+   env var and file (what P1a plans), not an extension of `Config`: the
+   registry belongs to one feature, and growing `Config` would couple the
+   picker and splash binaries to its shape.
+7. **`og project` and the model.** In `picker/ogcli/models.go` a model is a
+   kong struct plus a hand-written `help`, and `table.go:74` fails table load
+   when a model verb also has subverbs. So `project` is declared as **one
+   verb**, no `project x` entries (matches P1a). **Contradicts the plan:**
+   `runVerb` (`run.go:74`) intercepts a **sole** `--help`/`-h` and never execs
+   the target, so with no model `og project --help` prints only
+   `og project — <summary>` and the target path, **not** the binary's usage.
+   Every other argument is passed through raw (`og project status --help`
+   reaches the binary). **Proposed change:** P1a adds a `project` model: the
+   `ogVerbSpec` entry needs `model = "project"` (nothing else references a
+   `models.go` entry), and the model struct keeps the passthrough positional
+   (`Args []string` tagged `arg:"" optional:"" passthrough:""`), because
+   `leafType` (`ogcli/model.go:77`) replaces `passthroughVerb` with it and
+   completion would otherwise reject `og project status`. Or accept
+   summary-only help. Recommended: the model, with a test that
+   `og project --help` prints its help.
+8. **Tailscale as an optional host source** (measured on `halo`, 5 peers).
+   - **Call.** `tailscale status --json` talks to the local daemon only (no
+     ssh, no network): 13 ms and ~3 KB for 5 peers. With `tailscaled` absent
+     it fails **after 2.0 s** with exit 1
+     (`failed to connect to local tailscaled`). `BackendState` is `Running`
+     here; any other value (`NeedsLogin`, `Stopped`) means "no data". The call
+     runs async under a short timeout (about 2 s) off the Update goroutine,
+     like every probe in 5.1, and any failure means "no tailscale source",
+     never a user-facing error. Never from `#()`/`status-format`.
+   - **Fields.** Per peer: `DNSName` (`argon.<tailnet>.ts.net.`; its first
+     label is the MagicDNS name ssh resolves, so **use this** as the host),
+     `HostName` (the machine's own hostname, which can differ: `mbp-m4-pro`
+     against MagicDNS `mbp`, and an iPhone reports `localhost`), `Online`,
+     `OS` (`linux`, `macOS`, `iOS`), `Tags` (null here; tagged nodes list
+     `tag:…`), `ShareeNode` (shared-in nodes; false here) and `ExitNode`. The
+     candidate filter is `OS` in {`linux`, `macOS`} (this excludes `iOS`,
+     `android`; `windows` only if configured) and `ShareeNode` false. `Self`
+     is not in `Peer`.
+   - **`Online` is not "ssh works".** `a check-mode peer` is `Online: true`, yet
+     `ssh -o BatchMode=yes -o ConnectTimeout=5 a check-mode peer true` printed
+     `# Tailscale SSH requires an additional check.` with a login URL and hung
+     until `timeout 12` killed it (exit 124): `check` mode ignores
+     `ConnectTimeout`. This is the #486 failure
+     (`docs/superpowers/plans/2026-09-03-picker-tailscale-check.md`,
+     `remoteProbeTailscaleCheck`). So `Online=false` can only **skip** a host
+     (do not dial; dim the cached row); `Online=true` never proves
+     reachability, and the existing probe timeout and `classifyProbeErr` stay
+     the authority.
+   - **Recommendation (proposed spec change; optional, opt-in).** A tailscale
+     host source, off unless enabled, that (a) lists peers missing from
+     `@remote_bridge_hosts` as suggestions the user adds by hand, never
+     auto-added, and (b) supplies an offline signal. It slots into **P1a** (a
+     `picker/project/tailscale.go` reader returning `[]Peer{Name, Online, OS}`
+     with the timeout above, a pure parser tested on a captured JSON fixture)
+     and **P2a** (the tick and the host strip skip and dim `Online=false`
+     hosts; a host absent from the tailnet is unaffected). The opt-in is a
+     named switch, `programs.tmux-og.projects.tailscale.enable` (default
+     `false`), and with it off no `tailscale` process is ever executed.
+     Entries of `@remote_bridge_hosts` are ssh aliases, so peers are matched to
+     them by `ssh -G <alias>` `hostname` (first label), not by alias string;
+     an alias that does not resolve to a peer is simply not subject to the
+     offline signal, and a peer reachable only under an alias may be suggested
+     again. tmux-og is public:
+     the configured list is always the fallback and the only source when
+     Tailscale is unavailable, and no code path requires Tailscale.
