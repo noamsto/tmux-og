@@ -10,8 +10,9 @@ import (
 
 // safeText strips terminal-active bytes from text that came from the remote
 // (probe output, daemon log) before it reaches the local terminal. It keeps
-// \n and \t so a log tail stays readable. Twin of skipEscape in
-// picker/probekit/sanitize.go; testdata/strip-escapes.tsv pins the two together.
+// \n and \t so a log tail stays readable. Counterpart of probekit's
+// SanitizeStatusText; its skipEscape mirrors picker/probekit/sanitize.go's, and
+// picker/probekit/testdata/strip-escapes.tsv pins each function's own column.
 func safeText(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); {
