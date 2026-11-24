@@ -4880,8 +4880,9 @@ PRDASH
 
 # handoff_press runs the mirror launcher exactly as the float does.
 handoff_press() {
+	local script="${PRDASH_MIRROR:-$BATS_TEST_DIRNAME/../scripts/tmux-prdash-mirror.sh}"
 	TMUX="$($DST display-message -p '#{socket_path}'),0,0" TMUX_PANE="$rig_local_pane" \
-		bash "$BATS_TEST_DIRNAME/../scripts/tmux-prdash-mirror.sh" "$BATS_TEST_TMPDIR/prdash" "$CTL"
+		bash "$script" "$BATS_TEST_TMPDIR/prdash" "$CTL"
 }
 
 # wait_client_view <want> polls until the attached local client's
