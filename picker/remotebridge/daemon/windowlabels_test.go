@@ -20,11 +20,11 @@ func TestParseWindowLabels(t *testing.T) {
 	full := "@1|nova|#89b4fa|123|open|success|mergeable| PR #123|" +
 		"github|460|https://github.com/o/r/issues/460|https://github.com/o/r/pull/123|1|" +
 		"feat/460-card|/home/noams/wt/card|Card reads bridge state|Ship the card|" +
-		"approved|1|3/8|feat/985-x|1791968080-89470|GH #460| ship it"
+		"approved|1|3/8|feat/985-x|1791968080-89470|github.com/o/r.git /home/noams/wt/card|GH #460| ship it"
 	// The remote's #{s/[|]/ /:…} has already run over positions 8-16, so a title
 	// that held a '|' arrives carrying a space and shifts nothing. Only the
 	// trailing @window_label_rest_long is unwrapped, where a '|' lands in itself.
-	piped := "@2|orbit|#[fg=red]|none|OPEN|success|unknown|||||||||a  piped title|||||||| a #[fg=red]title | with a pipe"
+	piped := "@2|orbit|#[fg=red]|none|OPEN|success|unknown|||||||||a  piped title||||||||| a #[fg=red]title | with a pipe"
 	if n := strings.Count(full, "|") + 1; n != windowLabelFields {
 		t.Fatalf("full fixture has %d fields, want %d", n, windowLabelFields)
 	}
@@ -60,6 +60,7 @@ func TestParseWindowLabels(t *testing.T) {
 		issueTitle: "Card reads bridge state", prTitle: "Ship the card",
 		prReview: "approved", prAutoMerge: "1", prProgress: "3/8",
 		crewBranch: "feat/985-x", crewID: "1791968080-89470",
+		originDir: "/home/noams/wt/card", repo: "o/r",
 		labelID: "GH #460", labelRest: " ship it",
 	}
 	if got[0] != want0 {
@@ -215,12 +216,12 @@ func TestWindowLabelValidation(t *testing.T) {
 	// The titles and the label segments are display text, so they strip markup
 	// and truncate where the identity fields above drop whole. Dropping a title
 	// for holding markup would regress what already ships.
-	for _, f := range []int{15, 16, 22, 23} {
+	for _, f := range []int{15, 16, 23, 24} {
 		if got := rowField(t, oneRow(t, f, "a #[fg=red]title"), f); got != "a title" {
 			t.Errorf("field %d: markup value = %q, want it stripped and kept", f, got)
 		}
 	}
-	for f, limit := range map[int]int{15: labelTitleMaxRunes, 16: labelTitleMaxRunes, 22: labelTextMaxRunes, 23: labelTitleMaxRunes} {
+	for f, limit := range map[int]int{15: labelTitleMaxRunes, 16: labelTitleMaxRunes, 23: labelTextMaxRunes, 24: labelTitleMaxRunes} {
 		got := []rune(rowField(t, oneRow(t, f, strings.Repeat("x", 300)), f))
 		if len(got) != limit {
 			t.Errorf("field %d capped to %d runes, want %d", f, len(got), limit)
@@ -230,7 +231,7 @@ func TestWindowLabelValidation(t *testing.T) {
 	// LocalTmux execs without a shell, so tmux's own args_parse would read this
 	// as a flag. The titles have no validator to fall back on, so this drop and
 	// the ';' one below are their only guard.
-	for _, f := range []int{15, 16, 22, 23} {
+	for _, f := range []int{15, 16, 23, 24} {
 		if got := rowField(t, oneRow(t, f, "-n oops"), f); got != "" {
 			t.Errorf("field %d: flag-shaped value = %q, want it dropped", f, got)
 		}
@@ -239,12 +240,12 @@ func TestWindowLabelValidation(t *testing.T) {
 	// A lone ';' is the separator apply joins its per-window sequence with:
 	// tmux fails the whole batch on it and drops every later option in the
 	// sequence. One *inside* a value is not a separator and is kept.
-	for _, f := range []int{1, 7, 15, 16, 22, 23} {
+	for _, f := range []int{1, 7, 15, 16, 23, 24} {
 		if got := rowField(t, oneRow(t, f, ";"), f); got != "" {
 			t.Errorf("field %d: lone ';' = %q, want it dropped", f, got)
 		}
 	}
-	if got := oneRow(t, 23, " a;b").labelRest; got != " a;b" {
+	if got := oneRow(t, 24, " a;b").labelRest; got != " a;b" {
 		t.Errorf("labelRest(%q) = %q, want it kept", " a;b", got)
 	}
 }
@@ -298,8 +299,10 @@ func rowField(t *testing.T, r labelRow, i int) string {
 	case 21:
 		return r.crewID
 	case 22:
-		return r.labelID
+		return r.originDir
 	case 23:
+		return r.labelID
+	case 24:
 		return r.labelRest
 	}
 	t.Fatalf("rowField: index %d is not mapped to a labelRow field", i)
@@ -378,6 +381,27 @@ func TestLabelShipperApply(t *testing.T) {
 	s.apply(cfg, reg, nil)
 	if len(s.written) != 0 {
 		t.Errorf("written = %v, want the departed window forgotten", s.written)
+	}
+}
+
+// originDir is carried in the row but stamps no option, so a row differing only
+// in it must neither exec a bare tmux nor report a change.
+func TestLabelShipperOriginDirOnlyChange(t *testing.T) {
+	reg := newRegistry()
+	reg.add("@1", "@101")
+	s := newLabelShipper()
+	var calls [][]string
+	cfg := mirrorCfg(&calls)
+
+	row := labelRow{id: "@1", dir: "/w/a"}
+	s.apply(cfg, reg, []labelRow{row})
+	n := len(calls)
+	row.originDir = "/w/a"
+	if s.apply(cfg, reg, []labelRow{row}) {
+		t.Error("an originDir-only change reported a change")
+	}
+	if len(calls) != n {
+		t.Errorf("an originDir-only change issued %d tmux call(s)", len(calls)-n)
 	}
 }
 

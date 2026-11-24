@@ -298,7 +298,7 @@ The remote publishes its own caches and the daemon ships them across (#743).
 
 ## URL Opens (remote → controller)
 
-`o` on a PR/issue/check in a mirrored prdash, and any other `$BROWSER`-aware
+`o` on a PR/issue/check in a mirrored prdash (the remote-leg fallback; the local prdash of #1236 opens URLs with the local `BROWSER` and never crosses the bridge), and any other `$BROWSER`-aware
 tool on the remote, opens in the controller's browser instead of the remote's
 (#854). `scripts/og-open.sh` is `$BROWSER` on every tmux-og host; the daemon
 side is `picker/remotebridge/daemon/openurl.go`.
@@ -921,7 +921,7 @@ ships the remote window's own label state across instead.
   The format gains the remote's `@crew_branch` and `@crew_id` (stamped by the
   dispatcher; tmux-og stamps neither, and an older dispatcher's mirror carries
   neither), each `#{s/[|]/ /:…}`-wrapped, **before** the label pair so
-  `@window_label_rest_long` stays last (row positions 20 and 21 of 24). They are
+  `@window_label_rest_long` stays last (row positions 20 and 21 of 25). They are
   identity fields, so they **drop whole** via `cleanLabelValueExact` and then a
   regex: branch cap 255, `^[A-Za-z0-9][A-Za-z0-9._/+-]*$`; id cap 64,
   `^[A-Za-z0-9._-]+$`. Neither admits `#`, `|`, whitespace or a leading `-`,
@@ -936,6 +936,7 @@ ships the remote window's own label state across instead.
   unwrapped, kept last so its own `|` lands inside it rather than shifting the
   row. `@bridge_dir` is `#{?@worktree,#{@worktree},#{@git_root}}` resolved
   remotely, so no consumer re-implements that fallback.
+- **`@bridge_repo` is the remote window's GitHub `owner/name`, for the local prdash (#1236).** The row carries the remote window option `@og_bridge_origin` (row position 22, `"<origin> <dir>"`), stamped by a daemon-sent probe, never by a remote tmux-og script: `originProbeCmd` runs `run-shell -b -t <win>` with `git -C <@worktree, else @git_root> remote get-url origin`, with the scheme (`*://`) and userinfo (`*@`) stripped REMOTE-side, so a credentialed https origin never crosses the wire. A remote window with no `@worktree`/`@git_root` stamps nothing and ships no repo, so the `prefix + p` press falls back to the remote prdash. The probe runs once per (window, dir) (`labelShipper.probed`) and only for a mirrored window whose stamp's dir differs from the row's `@bridge_dir`; the answer comes home as a label row, so a window whose origin never resolves is probed once, not every pass. The daemon sets `@bridge_repo` only when the stamp's dir equals the row's dir (a stamp left by an earlier cwd ships no repo until the re-probe lands) and `githubSlug` accepts the origin: host exactly `github.com` (`github.com.evil`/`notgithub.com` rejected), `owner/name` valid (owner `[A-Za-z0-9-]` up to 39, name `[A-Za-z0-9._-]+`, not `.`/`..`), scheme/userinfo stripped again defensively. Scope is the window, like `@bridge_dir` (not the pane, so a pane `cd` into another repo inside the same window does not change it). Freshness is by dir only: an origin URL changed under an unchanged dir (`git remote set-url`) is not re-probed and `@bridge_repo` stays stale until the window's dir changes (the stamp lives on the remote window, so reopening the bridge does not clear it). A daemon older than this ships no `@bridge_repo`.
 - Liveness: the codename and label track the remote live; `@pr_*` is only as
   fresh as the remote's own `tmux-pr-enrich` poll. That poll is **server-wide**
   (`list-windows -a`), so a remote with a real client attached to any session

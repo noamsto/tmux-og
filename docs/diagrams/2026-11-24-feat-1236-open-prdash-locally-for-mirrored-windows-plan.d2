@@ -1,0 +1,35 @@
+direction: right
+title: "#1236 after: local prdash, hand-offs forwarded through the bridge" {near: top-center; shape: text; style.font-size: 20}
+
+local: "Local host" {
+  bind: "prdashBind (changed)\nif bridgeGate && @bridge_repo"
+  script: "tmux-prdash-mirror (new)\nreads @og_prdash_origin, @bridge_repo"
+  prdash: "local prdash --repo o/n\nPRDASH_ACTION_FILE, empty REPOS_ROOT"
+  ctl: "ctl handoff <pane> <dir> <lines> (new)"
+  fallback: "ctl tool prdash\n(today, unchanged)"
+  bind -> script: "set -wF stash + floatReuse"
+  script -> prdash
+  prdash -> script: "{...} entries"
+  script -> ctl
+  bind -> fallback: "no @bridge_repo"
+}
+
+daemon: "bridge daemon" {
+  labels: "windowlabels.go (changed)\n@og_bridge_origin → @bridge_repo"
+  probe: "originprobe.go (new)\ngithubSlug, probe per (win,dir)"
+  verb: "handoff.go (new)\nparseHandoff validates, ctl v11"
+  probe -> labels
+}
+
+remote: "Remote host" {
+  origin: "run-shell: git remote get-url\n→ @og_bridge_origin"
+  float: "float prdash-handoff\nsh positional args"
+  wt: "wt -C <checkout> switch\n(post-switch → window)"
+  float -> wt
+}
+
+daemon.probe -> remote.origin: "on dir change"
+remote.origin -> daemon.labels: "label subscription"
+daemon.labels -> local.bind: "@bridge_repo" {style.stroke-dash: 3}
+local.ctl -> daemon.verb: "FrameCtl"
+daemon.verb -> remote.float: "new-pane"

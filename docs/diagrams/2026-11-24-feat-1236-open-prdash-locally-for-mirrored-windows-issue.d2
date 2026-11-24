@@ -1,0 +1,23 @@
+direction: right
+title: "#1236 today: prefix+p in a mirror runs prdash on the remote" {near: top-center; shape: text; style.font-size: 20}
+
+local: "Local host" {
+  bind: "prdashBind\n(bridgedFloatTool)"
+  ctl: "og-remote-bridge-ctl\ntool <pane> prdash <dir>"
+  mirror: "mirror window\n(renders remote float)"
+  bind -> ctl: "bridgeGate true"
+}
+
+daemon: "bridge daemon\nctl.go `tool` verb" {
+  labels: "windowlabels.go\nships @bridge_dir, @bridge_pr_url…\nno owner/name"
+}
+
+remote: "Remote host" {
+  float: "remote prdash float\n(needs prdash installed)"
+  wt: "wt switch <branch>\n(post-switch → window switch)"
+  float -> wt: "enter / W"
+}
+
+local.ctl -> daemon: "FrameCtl"
+daemon -> remote.float: "new-pane (control mode)"
+remote.float -> local.mirror: "%output stream\n(latency)" {style.stroke-dash: 3}

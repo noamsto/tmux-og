@@ -11,9 +11,10 @@ import (
 func keysPaths() *paths.Paths {
 	return &paths.Paths{
 		Scripts: map[string]string{
-			"tmux-pr-enrich":   "/store/tmux-pr-enrich",
-			"tmux-issue-stamp": "/store/tmux-issue-stamp",
-			"og-remote-detach": "/store/og-remote-detach",
+			"tmux-pr-enrich":     "/store/tmux-pr-enrich",
+			"tmux-issue-stamp":   "/store/tmux-issue-stamp",
+			"og-remote-detach":   "/store/og-remote-detach",
+			"tmux-prdash-mirror": "/store/tmux-prdash-mirror",
 		},
 		Bin: map[string]string{
 			"og-remote-bridge-ctl": "/store/ctl",
@@ -111,5 +112,41 @@ func TestBridgeGateNotPlacedValue(t *testing.T) {
 	const want = "#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{!:#{@bridge_placed}}}"
 	if bridgeGateNotPlaced != want {
 		t.Fatalf("bridgeGateNotPlaced = %q, want %q", bridgeGateNotPlaced, want)
+	}
+}
+
+// In a mirror window with a known repo the bind runs prdash locally through
+// tmux-prdash-mirror; every other case keeps today's remote-leg bind
+// byte for byte.
+func TestPrdashBindOpensLocallyInMirrorWithRepo(t *testing.T) {
+	prdash := "/store/prdash"
+	p := keysPaths()
+	p.Prdash = &prdash
+	got := prdashBind(p)
+
+	prefix := `bind-key -N 'Open PR dashboard' p if-shell -F '#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{@bridge_repo}}' { set -wF @og_prdash_origin "#{@bridge_pane}" ; `
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("bind prefix =\n%q\nwant prefix\n%q", got, prefix)
+	}
+
+	local := floatReuse("prdash", floatNewPaneGuard(floatFull, "",
+		`/store/tmux-prdash-mirror /store/prdash /store/ctl \; set -p @pane_label prdash`))
+	if !strings.Contains(got, prefix+local+" } {") {
+		t.Fatalf("local branch missing:\n%q\nwant\n%q", got, local)
+	}
+
+	oldElse := bridgedFloatToolBody(p, "prdash", floatFull, "-c '#{pane_current_path}' ",
+		`/store/prdash \; set -p @pane_label prdash`)
+	if !strings.HasSuffix(got, " { "+oldElse+" }") {
+		t.Fatalf("else block drifted from bridgedFloatToolBody:\n%q", got)
+	}
+}
+
+// The body split must leave every other tool's bind unchanged.
+func TestBridgedFloatToolIsKeyPlusBody(t *testing.T) {
+	p := keysPaths()
+	want := "bind-key -N 'Open btop' b " + bridgedFloatToolBody(p, "btop", floatFull, "", `btop \; set -p @pane_label btop`)
+	if got := btopBind(p); got != want {
+		t.Fatalf("btopBind =\n%q\nwant\n%q", got, want)
 	}
 }

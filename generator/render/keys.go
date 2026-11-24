@@ -129,8 +129,14 @@ func floatReuse(tool, guard string) string {
 // to a shell that would otherwise split it on a space. An unset option quotes
 // as an empty argument, which the verb reads as "no cwd".
 func bridgedFloatTool(p *paths.Paths, key, note, tool string, f floatShape, prefix, suffix string) string {
-	return fmt.Sprintf("bind-key -N '%s' %s if-shell -F '%s' { run-shell \"%s tool #{q:@bridge_pane} %s #{qs:@bridge_dir}\" } { %s }",
-		note, key, bridgeGate, bridgeCtl(p), tool, floatReuse(tool, floatNewPaneGuard(f, prefix, suffix)))
+	return "bind-key -N '" + note + "' " + key + " " + bridgedFloatToolBody(p, tool, f, prefix, suffix)
+}
+
+// bridgedFloatToolBody is the if-shell half of bridgedFloatTool, so prdashBind
+// can reuse it as the fallback branch of its own gate.
+func bridgedFloatToolBody(p *paths.Paths, tool string, f floatShape, prefix, suffix string) string {
+	return fmt.Sprintf("if-shell -F '%s' { run-shell \"%s tool #{q:@bridge_pane} %s #{qs:@bridge_dir}\" } { %s }",
+		bridgeGate, bridgeCtl(p), tool, floatReuse(tool, floatNewPaneGuard(f, prefix, suffix)))
 }
 
 // carouselBind is empty when the toggle package is not wired in. It carries no
@@ -144,13 +150,32 @@ func carouselBind(p *paths.Paths) string {
 		bridgeGate, bridgeCtl(p), *p.CarouselToggle)
 }
 
+// prdash PR dashboard (prefix+p), scoped to the pane's repo. `enter` on a
+// worktree row hands the worktree off: locally prdash execs `wt switch` itself
+// as it exits, so the tmux window switches when the pane closes; in a mirror
+// the launcher forwards the hand-off to the remote instead.
+//
+// In a mirror window whose repo is known (@bridge_repo, stamped by the daemon)
+// prdash runs locally: it only reads GitHub, so there is no stream latency and
+// no remote tool is needed. Without @bridge_repo (an old daemon, no GitHub
+// remote, probe not landed yet) the press falls back to the remote leg.
+//
+// The pressed pane's @bridge_pane is stashed in the window option
+// @og_prdash_origin because new-pane's shell-command and -e values are not
+// format-expanded (measured on next-3.9), so the launcher reads it back.
 func prdashBind(p *paths.Paths) string {
 	if p.Prdash == nil {
 		return ""
 	}
-	return bridgedFloatTool(p, "p", "Open PR dashboard", "prdash", floatFull, "-c '#{pane_current_path}' ",
+	local := floatReuse("prdash", floatNewPaneGuard(floatFull, "",
+		p.Scripts["tmux-prdash-mirror"]+" "+*p.Prdash+" "+p.Bin["og-remote-bridge-ctl"]+" \\; set -p @pane_label prdash"))
+	remote := bridgedFloatToolBody(p, "prdash", floatFull, "-c '#{pane_current_path}' ",
 		*p.Prdash+" \\; set -p @pane_label prdash")
+	return "bind-key -N 'Open PR dashboard' p if-shell -F '" + prdashMirrorGate +
+		"' { set -wF @og_prdash_origin \"#{@bridge_pane}\" ; " + local + " } { " + remote + " }"
 }
+
+const prdashMirrorGate = "#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{@bridge_repo}}"
 
 func lazygitBind(p *paths.Paths) string {
 	return bridgedFloatTool(p, "g", "Open lazygit", "lazygit", floatFull, "-c '#{pane_current_path}' ",

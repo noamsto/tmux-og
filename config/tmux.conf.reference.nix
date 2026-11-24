@@ -509,18 +509,30 @@
   # (#643). It is #{qs:}, not #{q:} — the value is a path, and run-shell hands it
   # to a shell that would otherwise split it on a space. An unset option quotes
   # as an empty argument, which the verb reads as "no cwd".
-  bridgedFloatTool = key: note: tool: float: prefix: suffix: "bind-key -N '${note}' ${key} if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} tool #{q:@bridge_pane} ${tool} #{qs:@bridge_dir}\" } { ${floatReuse tool (floatNewPaneGuard float prefix suffix)} }";
+  bridgedFloatToolBody = tool: float: prefix: suffix: "if-shell -F '${bridgeGate}' { run-shell \"${bridgeCtl} tool #{q:@bridge_pane} ${tool} #{qs:@bridge_dir}\" } { ${floatReuse tool (floatNewPaneGuard float prefix suffix)} }";
+  bridgedFloatTool = key: note: tool: float: prefix: suffix: "bind-key -N '${note}' ${key} ${bridgedFloatToolBody tool float prefix suffix}";
 
-  # prdash PR dashboard (prefix+p), scoped to the pane's repo. `enter` opens a git
-  # worktree: prdash execs `wt switch` itself as it exits, so the tmux window
-  # switches when the pane closes.
+  # prdash PR dashboard (prefix+p), scoped to the pane's repo. `enter` on a
+  # worktree row hands the worktree off: locally prdash execs `wt switch` itself
+  # as it exits, so the tmux window switches when the pane closes; in a mirror
+  # the launcher forwards the hand-off to the remote instead.
+  #
+  # In a mirror window whose repo is known (@bridge_repo, stamped by the daemon)
+  # prdash runs locally: it only reads GitHub, so there is no stream latency and
+  # no remote tool is needed. Without @bridge_repo (an old daemon, no GitHub
+  # remote, probe not landed yet) the press falls back to the remote leg.
+  #
+  # The pressed pane's @bridge_pane is stashed in the window option
+  # @og_prdash_origin because new-pane's shell-command and -e values are not
+  # format-expanded (measured on next-3.9), so the launcher reads it back.
   #
   # -X/-Y are required: without them tmux cascades each new float down-right,
   # and the cascade counter survives kill-pane. @pane_label → mauve border title.
   prdashBind =
     lib.optionalString (prdash != null)
-    (bridgedFloatTool "p" "Open PR dashboard" "prdash" floatFull "-c '#{pane_current_path}' "
-      "${prdash}/bin/prdash \\; set -p @pane_label prdash");
+    "bind-key -N 'Open PR dashboard' p if-shell -F '#{&&:#{&&:#{@bridge_win},#{@bridge_pane}},#{@bridge_repo}}' { set -wF @og_prdash_origin \"#{@bridge_pane}\" ; ${floatReuse "prdash" (floatNewPaneGuard floatFull ""
+        "${script.tmux-prdash-mirror}/bin/tmux-prdash-mirror ${prdash}/bin/prdash ${picker-bridge-ctl-bin} \\; set -p @pane_label prdash")} } { ${bridgedFloatToolBody "prdash" floatFull "-c '#{pane_current_path}' "
+      "${prdash}/bin/prdash \\; set -p @pane_label prdash"} }";
 
   # In kitty-pane mode (AEYE_HOST=kitty) the carousel is a kitty split that doesn't
   # know about tmux focus, so reconcile it whenever the on-screen window changes —

@@ -2976,6 +2976,17 @@
                 touch $out
               '';
 
+            prdash-mirror-tests =
+              pkgs.runCommand "prdash-mirror-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils (mkTmux pkgs)];
+              } ''
+                cp -r ${scriptsSrc ["tmux-prdash-mirror.sh"]} scripts
+                cp -r ${testsSrc ["prdash-mirror.bats"]} tests
+                export HOME=$TMPDIR
+                bats tests/prdash-mirror.bats
+                touch $out
+              '';
+
             float-nudge-drag-tests =
               pkgs.runCommand "float-nudge-drag-tests" {
                 # A real attached client fed SGR mouse reports from a pty host
