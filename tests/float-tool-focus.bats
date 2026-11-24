@@ -98,7 +98,9 @@ press() { # key
 # lands while the server is still finishing the previous one's float is dropped,
 # not delayed: measured here, a second press sent straight after the first float
 # appears never reaches its bind at all (the bind's own window option stays
-# unset), and any pause of 0.2s or more before it makes it land. Resending is
+# unset), and any pause of 0.2s or more before it makes it land. Whether the drop
+# is this harness (keys fed through the outer server into a busy inner client)
+# or the bind itself is not established; a follow-up tracks it. Resending is
 # safe because the bind is idempotent: with the float open it focuses it, and a
 # stacking bind would still leave the first float unfocused and a second one
 # open, which the assertions after this call catch.

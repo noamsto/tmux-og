@@ -633,10 +633,12 @@ sorted_tiled_dims() {
 	initial_dims="$(sorted_dims "$SRC" rem)"
 	$OBS resize-window -t obs -x 80 -y 24
 
-	# Wait for the asserted state itself: the geometry reconcile has landed AND
-	# the re-seed that follows it has painted the same screen. Dimensions agree
-	# before the repaint does, so a dims-only exit would sample the screens
-	# early; a daemon that never re-seeds leaves them different until the bound.
+	# Wait for the asserted state itself: the mirror has taken the remote's new
+	# size AND shows the same screen. Dimensions agree before the repaint does, so
+	# a dims-only exit sampled the screens early. A daemon that never follows the
+	# remote's geometry leaves them different until the bound. This case does not
+	# isolate the re-seed: tmux rewraps the mirror pane's own grid, so plain
+	# output converges with or without it (measured with the re-seed disabled).
 	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		src_dims="$(sorted_dims "$SRC" rem)"
@@ -656,7 +658,7 @@ sorted_tiled_dims() {
 			echo "--- mirror screen ---"
 			echo "$dst_screen"
 			echo "--- dg.log ---"
-			sed -n '1,60p' "$BATS_TEST_TMPDIR/dg.log"
+			tail -40 "$BATS_TEST_TMPDIR/dg.log"
 		} >&3 2>&1 || true
 	fi
 

@@ -8,7 +8,7 @@ remote: "remote window\nand float-refit hook"
 mirror: "mirror float box\nand reseeded screen"
 stamp: "hook stamps @refit_for\n(set-option -gF)" { class: accent }
 
-obs -> hook: "SIGWINCH / key" { style.animated: true }
+obs -> hook: "SIGWINCH (client resize)" { style.animated: true }
 hook -> poll: "mtime advances" { style.animated: true }
 poll -> remote: "window resize" { style.animated: true }
 remote -> mirror: "reconcile + reseed" { style.animated: true }

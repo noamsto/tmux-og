@@ -110,7 +110,7 @@ settle() {
 	while :; do
 		sleep 1
 		after="$(reload_count)"
-		[ "$after" = "$before" ] && return 0
+		[ "$after" = "$before" ] && lock_gone && return 0
 		before="$after"
 		((SECONDS < deadline)) || return 0
 	done
@@ -129,10 +129,11 @@ report() {
 }
 
 # report_until TARGET light|dark CONDITION... -- reports, then waits for the
-# condition, resending the same report every 3s: on a loaded runner the attach
-# client may not be reading its tty yet when the first report arrives, so one
-# send can be lost. A repeat of an already-applied report is a no-op (see "repeat
-# light report"), so the resend cannot change what a positive case asserts.
+# condition. On a loaded runner the attach client may not be reading its tty yet
+# when the first report arrives, so one send can be lost; the same report is
+# resent every 3s, but only while the hook has not stamped it
+# (@og_client_theme_want is not yet the reported kind). A slow apply therefore
+# never starts a second handler job, which would hold the lock after settle.
 report_until() {
 	local target=$1 kind=$2 deadline=$((SECONDS + 20)) next
 	shift 2
@@ -141,7 +142,7 @@ report_until() {
 	while ! "$@"; do
 		((SECONDS < deadline)) || return 1
 		if ((SECONDS >= next)); then
-			report "$target" "$kind"
+			[ "$(inner show-options -gv @og_client_theme_want 2>/dev/null)" = "$kind" ] || report "$target" "$kind"
 			next=$((SECONDS + 3))
 		fi
 		sleep 0.1
@@ -323,12 +324,11 @@ write_fake_toggle() {
 	wait_for 20 has_client_count 2
 
 	report "$CLIENT1" dark
-	report "$client2" light
+	report_until "$client2" light flavor_is latte
 	settle
 
 	# The reload sets the flavor before it re-derives @thm_*, so the flavor
 	# reading latte does not mean thm_bg is set yet: wait on thm_bg itself.
-	wait_for 20 flavor_is latte
 	wait_for 20 thm_bg_is '#eff1f5'
 }
 
@@ -355,8 +355,7 @@ write_fake_toggle() {
 	theme_setup
 	printf 'bogus-command-xyz\n' >"$HOME/.config/tmux/tmux.conf"
 
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 
 	local bg
@@ -407,10 +406,9 @@ write_fake_toggle() {
 	# A fresh report issued after the detach: any earlier attach-time report
 	# from the ssh client would have been gated out while CLIENT1 was still
 	# present, so re-issuing here is what makes this observable.
-	report "$client_ssh" light
+	report_until "$client_ssh" light flavor_is latte
 
-	wait_for 20 flavor_is latte
-	thm_bg_is '#eff1f5'
+	wait_for 20 thm_bg_is '#eff1f5'
 }
 
 @test "a failing plugin in the reload never paints a pane" {

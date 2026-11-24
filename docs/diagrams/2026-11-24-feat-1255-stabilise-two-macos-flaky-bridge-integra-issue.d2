@@ -7,11 +7,11 @@ poll: "daemon watchLocalClient\n1s poll, then\nrefresh-client -C"
 remote: "remote window\nand float-refit hook"
 mirror: "mirror float box\nand reseeded screen"
 
-obs -> hook: "SIGWINCH / key" { style.animated: true }
+obs -> hook: "SIGWINCH (client resize)" { style.animated: true }
 hook -> poll: "mtime advances" { style.animated: true }
 poll -> remote: "window resize" { style.animated: true }
 remote -> mirror: "reconcile + reseed" { style.animated: true }
 
 test -> obs: "send"
-test -> remote: "reads once, fixed 5s / 2s / 0.5s" { class: warn }
+test -> remote: "short fixed bounds (5s, 2s), one read after 0.5s" { class: warn }
 test -> mirror: "samples before the chain lands" { class: warn }
