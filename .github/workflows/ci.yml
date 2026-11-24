@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push to a PR supersedes its in-flight run. main is not cancelled:
+# each main commit runs to completion. A main push gets a per-run group,
+# because a shared group would leave only one pending run and drop the rest.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Platform-independent, so it runs once here instead of on both build legs.
   lint:
@@ -37,20 +44,48 @@ jobs:
     env:
       NIX_CONFIG: accept-flake-config = true
     steps:
+      # Full history, so the darwin docs-only diff below can use the merge base.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Darwin on a PR only. A PR whose changes all fall in the docs-only set
+      # skips the rest of this job's steps, which still concludes success
+      # (a skipped job would block merging). Docs-only set: docs/** (minus
+      # docs/media/, whose demo.sh the demo app reads) and *.md at any depth
+      # (minus claude-plugin/, whose skills and README the checks copy into
+      # their sandbox).
+      - id: scope
+        if: matrix.system == 'aarch64-darwin' && github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --no-renames --name-only "$BASE_SHA...HEAD")
+          docs_only=true
+          while IFS= read -r f; do
+            case "$f" in
+              claude-plugin/*|docs/media/*) docs_only=false ;;
+              docs/*|*.md) ;;
+              *) docs_only=false ;;
+            esac
+          done <<< "$changed"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
       - uses: DeterminateSystems/determinate-nix-action@v3
+        if: steps.scope.outputs.docs_only != 'true'
       # Read-only, like lint: no authToken, so cachix-action never writes the
       # token into the runner's config where PR-controlled builds could read it.
       - uses: cachix/cachix-action@v17
+        if: steps.scope.outputs.docs_only != 'true'
         with:
           name: lazytmux
       # Evaluates the non-check outputs (devShells, modules, overlays, apps)
       # that nix-fast-build below does not touch.
       - run: nix flake check --no-build
+        if: steps.scope.outputs.docs_only != 'true'
       # --skip-cached: outputs already in lazytmux are neither rebuilt nor
       # downloaded. Main pushes everything it built (below), so a PR re-builds
       # only derivations whose inputs it changed.
       - id: fast-build
+        if: steps.scope.outputs.docs_only != 'true'
         run: >-
           nix run --inputs-from . nixpkgs#nix-fast-build --
           --no-nom --skip-cached
