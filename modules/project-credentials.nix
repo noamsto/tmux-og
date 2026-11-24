@@ -24,7 +24,15 @@
     else firstSegment value;
   userinfo = userinfoOf authority;
   schemeMayCarryUser = builtins.elem scheme ["ssh" "git" "git+ssh" "ssh+git"];
+  # A transport name before the first colon with no `://` is a mistyped scheme; refuse it.
+  malformedScheme =
+    !hasScheme
+    && lib.hasInfix "@" value
+    && lib.hasInfix ":" value
+    && builtins.elem (lib.toLower (builtins.head (lib.splitString ":" value)))
+    ["http" "https" "ssh" "git" "file" "ftp" "ftps" "git+ssh" "ssh+git" "git+https"];
 in
   lib.hasInfix "?" value
+  || malformedScheme
   || lib.hasInfix "#" value
   || (userinfo != null && !((!hasScheme || schemeMayCarryUser) && plainUserinfo userinfo))

@@ -163,6 +163,8 @@ func declaredKey(name, what, raw string) (string, error) {
 
 var plainUserinfo = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+var malformedSchemes = map[string]bool{"http": true, "https": true, "ssh": true, "git": true, "file": true, "ftp": true, "ftps": true, "git+ssh": true, "ssh+git": true, "git+https": true}
+
 // credentialBearing reports whether a declared remote may embed a secret. It is the Go twin of
 // modules/project-credentials.nix; testdata/credential-cases.json pins both. A query or fragment
 // is refused outright; userinfo is allowed only as a plain ssh/git username (ssh://git@host,
@@ -175,6 +177,11 @@ func credentialBearing(raw string) bool {
 	authority, _, _ := strings.Cut(rest, "/")
 	if !hasScheme {
 		authority, _, _ = strings.Cut(raw, "/")
+	}
+	// A transport name before the first colon with no `://` is a mistyped scheme (`https:/u:TOK@h/o/r`)
+	// that would otherwise read as scp form; refuse it even for a bare username.
+	if head, _, ok := strings.Cut(raw, ":"); !hasScheme && ok && strings.Contains(raw, "@") && malformedSchemes[strings.ToLower(head)] {
+		return true
 	}
 	at := strings.LastIndexByte(authority, '@')
 	if at < 0 {
