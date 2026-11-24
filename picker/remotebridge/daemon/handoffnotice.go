@@ -79,7 +79,6 @@ func notifyClients(out func(...string) (string, error), run func(...string) erro
 	}
 }
 
-// notifyHost is notifyClients against cfg's host session.
 func notifyHost(cfg Config, msg string) {
 	if cfg.LocalTmuxOut == nil || cfg.LocalTmux == nil {
 		return
