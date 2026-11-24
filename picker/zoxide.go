@@ -150,17 +150,21 @@ func sessionFilterMaps(sessions []sessionData) (paths, names map[string]bool) {
 
 // isExcluded reports whether path matches any blacklist pattern. A pattern
 // matches when it equals the path, is an ancestor dir of it (subtree exclude),
-// or globs the full path or basename via filepath.Match. So "/tmp/*" drops
-// /tmp children, ".ssh" drops any dir named .ssh, and "/home/x/Downloads"
-// drops that dir and everything under it. Malformed globs are skipped.
+// globs the path or any ancestor of it (never "/") via filepath.Match, or
+// globs the path's basename. So "/tmp/*" drops /tmp/a and everything under
+// it, ".ssh" drops any dir named .ssh (its descendants are not matched by
+// basename), and "/home/x/Downloads" drops that dir and everything under it.
+// Malformed globs are skipped.
 func isExcluded(path string, patterns []string) bool {
 	base := filepath.Base(path)
 	for _, pat := range patterns {
 		if pat == path || strings.HasPrefix(path, pat+"/") {
 			return true
 		}
-		if ok, err := filepath.Match(pat, path); err == nil && ok {
-			return true
+		for p := path; p != "/" && p != "." && p != ""; p = filepath.Dir(p) {
+			if ok, err := filepath.Match(pat, p); err == nil && ok {
+				return true
+			}
 		}
 		if ok, err := filepath.Match(pat, base); err == nil && ok {
 			return true

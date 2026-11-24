@@ -17,16 +17,34 @@ import (
 // session-name collision and dedupe pass trims them to maxZoxideSuggestions.
 const maxRemoteDirCandidates = 100
 
-// remoteZoxideScript lists the host's zoxide dirs, one per line. The `-d`
-// filter drops dead dirs and, since a newline inside a path splits it into
-// fragments on this line-delimited wire, almost always the fragments too.
-// printf %s, not echo "$l": dash's echo expands backslashes. A host without
-// zoxide yields empty stdout and exit 0 (head's), the normal no-section case.
+// remoteZoxideScript lists the host's zoxide dirs, one per line, in rank order.
+// Per entry: the `-d` filter drops dead dirs and, since a newline inside a path
+// splits it into fragments on this line-delimited wire, almost always the
+// fragments too. Then it mirrors collapseWorktree on the host's filesystem:
+// walk up (${p%/*}) to the nearest .git; a .git file is a linked worktree, so
+// its first line is read (`read`, no fork per entry), `gitdir: ` stripped, a
+// relative gitdir joined onto the dir, and a gitdir holding /.git/worktrees/
+// folds the entry to the main repo root (kept only if still a dir). A .git
+// dir leaves the entry alone. A relative gitdir (worktree.useRelativePaths)
+// leaves .. segments in the folded path, so the emit normalizes with a logical
+// cd (builtin, no fork; the loop is a pipeline subshell, so changing dir is
+// harmless) and prints $PWD. The awk dedupe keeps first
+// occurrence; $0 is spelled ${D}0 with D=$ so the body needs no quote or
+// backslash. printf %s, not echo "$l": dash's echo expands backslashes. A host
+// without zoxide yields empty stdout and exit 0 (head's), the normal
+// no-section case.
 // No single quote or backslash: the body rides inside shellQuote's single
 // quotes, where a fish login shell treats \ and \' as escapes (double quotes
 // are fine and needed, so a path with a space survives).
-const remoteZoxideScript = `z=$(command -v zoxide 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/zoxide); ` +
-	`"$z" query -l 2>/dev/null | while IFS= read -r l; do [ -d "$l" ] && printf %s "$l" && echo; done | head -n 300`
+const remoteZoxideScript = `z=$(command -v zoxide 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/zoxide); D=$; ` +
+	`"$z" query -l 2>/dev/null | while IFS= read -r l; do ` +
+	`case $l in /*) ;; *) continue;; esac; [ -d "$l" ] || continue; r=$l; p=$l; ` +
+	`while [ -n "$p" ]; do ` +
+	`if [ -f "$p/.git" ]; then g=; IFS= read -r g < "$p/.git"; g=${g#gitdir: }; ` +
+	`case $g in /*) ;; *) g=$p/$g;; esac; ` +
+	`case $g in */.git/worktrees/*) r=${g%%/.git/worktrees/*};; esac; break; fi; ` +
+	`[ -e "$p/.git" ] && break; p=${p%/*}; done; ` +
+	`[ -d "$r" ] && cd -- "$r" 2>/dev/null && printf %s "$PWD" && echo; done | awk "!s[${D}0]++" | head -n 300`
 
 var remoteZoxideBody = "sh -c " + shellQuote(remoteZoxideScript)
 

@@ -45,6 +45,30 @@ func TestIsExcluded(t *testing.T) {
 	}
 }
 
+func TestIsExcludedDescendants(t *testing.T) {
+	pats := []string{"/tmp/*", "/home/*/scratch", ".ssh"}
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/tmp/claude-1000/a/scratchpad/x", true}, // deep under a glob child
+		{"/tmp/a/b/c", true},
+		{"/home/u/scratch/proj/deep", true}, // glob ancestor mid-path
+		{"/home/u/other/proj", false},
+		{"/tmpx/a/b", false},           // sibling prefix is not an ancestor
+		{"/home/u/.ssh/keys/x", false}, // basename pattern is not applied to ancestors
+		{"/home/u/.ssh", true},
+	}
+	for _, c := range cases {
+		if got := isExcluded(c.path, pats); got != c.want {
+			t.Errorf("isExcluded(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+	if !isExcluded("/a/b", []string{"/*"}) {
+		t.Errorf("/* should exclude /a/b via its ancestor /a")
+	}
+}
+
 func TestSessionNameFromPath(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"/home/n/Data/git/tmux-og", "tmux-og"},
