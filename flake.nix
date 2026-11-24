@@ -137,7 +137,7 @@
           # nativeBuildInputs entry above breaks loudly instead of silently
           # dropping the regression check.
           OG_REQUIRE_TMUX = "1";
-          # Same for the probe-script tests, for git, sh and dash.
+          # Same for the probe-script and remote-zoxide script tests, for git, sh and dash.
           OG_REQUIRE_GIT = "1";
           checkPhase = ''
             runHook preCheck
