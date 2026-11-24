@@ -67,9 +67,8 @@ teardown() {
 }
 
 BUDGET_SECS=12
-# Every condition wait below polls the asserted state against this wall-clock
-# bound and fails with the last values it saw: the wait is for a slow runner,
-# the assertion is unchanged.
+# Wall-clock bound for every condition wait below; each fails with the last
+# values it saw.
 CONVERGE_SECS=20
 
 # mirror_up mirrors a remote window holding a tiled split and one float, then
@@ -217,8 +216,7 @@ sgr() {
 # wait_agree waits up to CONVERGE_SECS for the remote float and its mirror to
 # report the same geometry, which must also differ from $1 (the geometry before
 # the drag) unless $2 is passed (a snap-back drag, whose final geometry equals
-# the pre-drag one). A drag that never lands leaves both at $1, so the longer
-# bound cannot let it pass.
+# the pre-drag one).
 wait_agree() {
 	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + CONVERGE_SECS))
 	while :; do

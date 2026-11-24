@@ -94,16 +94,12 @@ press() { # key
 }
 
 # press_until <key> <cmd...> presses, then waits for the asserted state,
-# pressing the same key again every 3s until it holds (20s overall). A press that
-# lands while the server is still finishing the previous one's float is dropped,
-# not delayed: measured here, a second press sent straight after the first float
-# appears never reaches its bind at all (the bind's own window option stays
-# unset), and any pause of 0.2s or more before it makes it land. Whether the drop
-# is this harness (keys fed through the outer server into a busy inner client)
-# or the bind itself is not established; a follow-up tracks it. Resending is
-# safe because the bind is idempotent: with the float open it focuses it, and a
-# stacking bind would still leave the first float unfocused and a second one
-# open, which the assertions after this call catch.
+# pressing again every 3s until it holds (20s overall). A second press sent
+# straight after the first float appears is dropped, not delayed: its bind never
+# runs (the window option it sets stays unset), while a pause of 0.2s or more
+# before it makes it land. Whether the harness (keys fed through the outer
+# server) or the bind drops it is not established. Resending is safe: with the
+# float open the bind only focuses it.
 press_until() {
 	local key=$1 deadline=$((SECONDS + 20)) next
 	shift
