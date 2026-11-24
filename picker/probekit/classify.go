@@ -51,7 +51,7 @@ const RevokedHostKeyPattern = "REVOKED HOST KEY DETECTED"
 // rule requires an interactive re-check (`action: "check"`). It arrives on
 // STDOUT over the already-established ssh session, not through ssh's own
 // auth flow, and blocks until the check clears — which is why the probe
-// always exhausts remoteProbeTimeout instead of exiting 255 (#486).
+// always exhausts ProbeTimeout instead of exiting 255 (#486).
 const tailscaleCheckPattern = "Tailscale SSH requires an additional check"
 
 // tailscaleCheckURLPattern extracts the per-attempt login URL tailscaled

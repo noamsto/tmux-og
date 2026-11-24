@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 func TestFilterRemoteDirsSanitizes(t *testing.T) {
@@ -82,7 +84,7 @@ func TestRemoteZoxideScriptQuoting(t *testing.T) {
 	if strings.ContainsAny(remoteZoxideScript, `'\`) {
 		t.Fatalf("script must hold no quote or backslash (login shell may be fish): %s", remoteZoxideScript)
 	}
-	argv := remoteZoxideArgv("lab")
+	argv := probekit.SSHArgv("lab", remoteZoxideBody)
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{"BatchMode=yes", "ConnectTimeout=2", "-T lab -- "} {
 		if !strings.Contains(joined, want) {

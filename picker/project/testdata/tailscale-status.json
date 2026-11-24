@@ -1,0 +1,64 @@
+{
+  "Version": "1.0.0",
+  "BackendState": "Running",
+  "Self": {
+    "DNSName": "selfbox.example.ts.net.",
+    "HostName": "selfbox",
+    "OS": "linux",
+    "Online": true
+  },
+  "Peer": {
+    "nodekey:0001": {
+      "DNSName": "lab.example.ts.net.",
+      "HostName": "lab",
+      "OS": "linux",
+      "Online": true,
+      "ShareeNode": false,
+      "ExitNode": false
+    },
+    "nodekey:0002": {
+      "DNSName": "mbp.example.ts.net.",
+      "HostName": "mbp-m4-pro",
+      "OS": "macOS",
+      "Online": false,
+      "ShareeNode": false
+    },
+    "nodekey:0003": {
+      "DNSName": "phone.example.ts.net.",
+      "HostName": "localhost",
+      "OS": "iOS",
+      "Online": true
+    },
+    "nodekey:0004": {
+      "DNSName": "guest.example.ts.net.",
+      "HostName": "guest",
+      "OS": "linux",
+      "Online": true,
+      "ShareeNode": true
+    },
+    "nodekey:0005": {
+      "DNSName": "deskwin.example.ts.net.",
+      "HostName": "deskwin",
+      "OS": "windows",
+      "Online": true
+    },
+    "nodekey:0006": {
+      "DNSName": "evil$(id);x.example.ts.net.",
+      "HostName": "evil",
+      "OS": "linux",
+      "Online": true
+    },
+    "nodekey:0007": {
+      "DNSName": "Cabin.example.ts.net.",
+      "HostName": "cabin",
+      "OS": "linux",
+      "Online": true
+    },
+    "nodekey:0008": {
+      "DNSName": "",
+      "HostName": "nameless",
+      "OS": "linux",
+      "Online": true
+    }
+  }
+}

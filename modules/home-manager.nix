@@ -14,6 +14,39 @@
 }: let
   cfg = config.programs.tmux-og;
 
+  projectType = lib.types.submodule {
+    options = {
+      remote = lib.mkOption {
+        type = lib.types.str;
+        description = "Project key (github.com/<owner>/<repo>) or an origin URL of it.";
+      };
+      remotes = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Alias keys or origin URLs folded into this project.";
+      };
+      hosts = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.submodule {
+          options.path = lib.mkOption {
+            type = lib.types.str;
+            description = "Checkout path on that host.";
+          };
+        });
+        default = {};
+        description = "Per-host checkout path, keyed by ssh alias (`local` for this machine).";
+      };
+    };
+  };
+
+  # Credentials in a declared origin URL would land in the world-readable
+  # /nix/store registry JSON; the rule is shared with the Go registry check.
+  urlHasCredentials = import ./project-credentials.nix {inherit lib;};
+  projectsWithCredentials = lib.attrNames (lib.filterAttrs (
+      name: p:
+        name != "tailscale" && lib.any urlHasCredentials ([p.remote] ++ p.remotes)
+    )
+    cfg.projects);
+
   # Per-emulator defaults. terminfoPath uses an if-expression (not lib.optionalString)
   # because Nix evaluates function arguments strictly — the string interpolation would
   # force pkgs.<name> even when the condition is false.
@@ -125,6 +158,8 @@
     pickerLayout = cfg.picker.layout;
     remoteBridgeHosts = lib.concatStringsSep " " cfg.remote.hosts;
     remoteAuthPersistSeconds = cfg.remote.authPersistSeconds;
+    projects = builtins.removeAttrs cfg.projects ["tailscale"];
+    projectsTailscale = cfg.projects.tailscale.enable;
     inherit (cfg) prefix defaultShell focusFollowsMouse copyModeLineNumbers;
     # Pass the resolved TERM string so tmux.conf can derive terminal-features
     # without needing to re-encode emulator names. Null when no preset is active.
@@ -405,6 +440,43 @@ in {
           launcher call to that host, regardless of whether a mirror is open.
         '';
       };
+    };
+
+    projects = lib.mkOption {
+      type = lib.types.submodule {
+        freeformType = lib.types.attrsOf projectType;
+        options.tailscale.enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            Let `og project status` run `tailscale status --json` and list
+            Tailscale peers that are not in `remote.hosts` as suggested hosts.
+            Off by default: with it off no `tailscale` process ever runs. A peer
+            being Online means "worth trying", never "reachable".
+          '';
+        };
+      };
+      default = {};
+      example = lib.literalExpression ''
+        {
+          widget = {
+            remote = "github.com/acme/widget";
+            remotes = ["git@github.com:acme/widget-old.git"];
+            hosts.lab.path = "/srv/widget";
+          };
+          tailscale.enable = true;
+        }
+      '';
+      description = ''
+        Declared multi-host projects for `og project`, keyed by project name.
+        Entirely optional: discovery finds checkouts on the local machine and
+        on `remote.hosts` without it, and this only adds names, folds alias
+        origin URLs into one project and pins a checkout path per host.
+        `remote` is a project key or origin URL; `remotes` are alias keys or
+        URLs of the same project; `hosts.<host>.path` pins the checkout on that
+        host (`local` names this machine). The name `tailscale` is reserved for
+        the `tailscale.enable` option below, so no project can be called that.
+      '';
     };
 
     persist = {
@@ -1141,6 +1213,15 @@ in {
             on the rebuild-stable profile path, which agentIntegration installs.
           '';
         }
+        ++ map (name: {
+          assertion = false;
+          message = ''
+            programs.tmux-og.projects.${name}: `remote` or `remotes` carries credentials
+            in a URL, and the registry is a world-readable file in the Nix store.
+            Declare the key (host/owner/repo) instead, e.g. github.com/acme/widget.
+          '';
+        })
+        projectsWithCredentials
         ++ lib.optional (resumePiEnable && piHookyardPlugin == null) {
           assertion = false;
           message = "programs.tmux-og.persist.resumePi requires the tmux-og flake module, which supplies pi-hookyard-plugin.";

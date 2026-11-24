@@ -40,7 +40,7 @@ const remoteWindowRowsFormat = "#{?#{@bridge_win},M|,W|#{session_id}|#{window_id
 // name may hold `|`; the window line joins its session by session_id, and the S
 // line carries #{session_created} for the same kill guard the session probe
 // uses. `\;` is a literal `;` argument under both fish and bash.
-var remoteListWindowsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `' \; list-windows -a -F '` + remoteWindowRowsFormat + `'`)
+var remoteListWindowsBody = probekit.RemoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `' \; list-windows -a -F '` + remoteWindowRowsFormat + `'`)
 
 var remoteListWindowsCmd = remoteIdentityPreamble + `; ` + remoteListWindowsBody
 

@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // Live check: real sshListRemoteSessions against a fish-login remote.
@@ -15,14 +17,14 @@ func TestSSHListRemoteSessionsLive(t *testing.T) {
 		t.Skip("set LIVE_REMOTE_PROBE=<ssh-host>")
 	}
 
-	seed := exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-T", host, "--",
-		"env TMUX_TMPDIR=/run/user/$(id -u) $(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux) -f /dev/null new-session -d -s probe-verify")
+	seed := exec.Command("ssh", probekit.SSHArgv(host,
+		"env TMUX_TMPDIR=/run/user/$(id -u) $(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux) -f /dev/null new-session -d -s probe-verify")...)
 	if out, err := seed.CombinedOutput(); err != nil {
 		t.Fatalf("seed remote session: %v\n%s", err, out)
 	}
 	t.Cleanup(func() {
-		_ = exec.Command("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=2", "-T", host, "--",
-			"env TMUX_TMPDIR=/run/user/$(id -u) $(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux) kill-session -t probe-verify").Run()
+		_ = exec.Command("ssh", probekit.SSHArgv(host,
+			"env TMUX_TMPDIR=/run/user/$(id -u) $(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux) kill-session -t probe-verify")...).Run()
 	})
 
 	result, err := sshListRemoteSessions(host)

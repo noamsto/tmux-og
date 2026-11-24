@@ -74,7 +74,7 @@ func (r *killRun) finish(res killResult) {
 
 // run iterates targets in order; before each, a non-nil ctx.Err() stops the
 // loop (killRunCancelled) without attempting it. The ssh kill derives its own
-// remoteProbeTimeout deadline from ctx, so a cancel propagates into the
+// probekit.ProbeTimeout deadline from ctx, so a cancel propagates into the
 // in-flight ssh instead of only gating the next target.
 func (r *killRun) run() {
 	if !r.started.CompareAndSwap(false, true) {

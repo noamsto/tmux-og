@@ -90,7 +90,7 @@ func TestRemoteListWindowsCmdFishSafe(t *testing.T) {
 		t.Fatalf("cmd = %q, want the identity preamble first", cmd)
 	}
 	if got := strings.Count(cmd, "env TMUX_TMPDIR="); got != 2 {
-		t.Fatalf("cmd = %q, want both remoteTmuxCmd legs (got %d)", cmd, got)
+		t.Fatalf("cmd = %q, want both probekit.RemoteTmuxCmd legs (got %d)", cmd, got)
 	}
 	if !strings.Contains(cmd, `list-sessions -F '`+remoteSessionRowsFormat+`' \; list-windows -a -F '`+remoteWindowRowsFormat+`'`) {
 		t.Fatalf("cmd = %q, want list-sessions \\; list-windows -a", cmd)

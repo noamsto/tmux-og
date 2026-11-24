@@ -21,6 +21,7 @@ This file holds only what every task needs. The measured evidence, invariants an
 | tmux-remux persistence, `@remux_relaunch`, pi resume | `docs/agents/persist.md` |
 | `tmux-splash` | `docs/agents/splash.md` |
 | The `og` dispatcher (`picker/ogcli`, `mkOg`, `share/og/table.json`, the `model` registry, fish/bash/zsh completion, `og-dispatch` leak guard) | `docs/agents/og-dispatcher.md` |
+| `og project`, `picker/project` (project identity/key rules, host snapshot probe, registry, `og project status`), `programs.tmux-og.projects`, the optional Tailscale host source | `docs/agents/projects.md` |
 | Typing lag, forks per hook event, the `if -F` refit-hook gates, the keystroke-latency probe and harness | `docs/agents/performance.md` |
 | Why a tmux rule below exists (format delimiters, session targeting, scratch servers, `-B` monitor hooks) | `docs/agents/tmux-gotchas.md` |
 

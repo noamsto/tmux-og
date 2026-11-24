@@ -1,0 +1,34 @@
+direction: right
+
+og: "og project status\n(ogcli project model)" {class: good}
+shim: "scripts/og-project.sh\n@project_bin@ @projects_config@" {class: good}
+bin: "og-project-bin\nproject/cmd/project" {class: good}
+
+project: "picker/project" {
+  identity: "identity.go\nNormalizeKey, Slug, LeafName" {class: good}
+  registry: "registry.go\nTMUX_OG_PROJECTS + Merge" {class: good}
+  probe: "probe.go\nProbeScript + ParseProbe\nHeadsScript + ParseHeads" {class: good}
+  status: "status.go\nrender via SanitizeStatusText" {class: good}
+  ts: "tailscale.go\nopt-in peer source" {class: good}
+}
+
+probekit: "picker/probekit\n+ ProbeTimeout family\n+ RemoteTmuxCmd, SSHArgv" {class: accent}
+hm: "programs.tmux-og.projects\n(home-manager)" {class: good}
+
+remote: "each host (local: sh, remote: ssh)" {
+  git: "git worktrees\norigin, drift"
+  tmux: "tmux @git_root"
+  zox: "zoxide dirs"
+}
+
+og -> shim -> bin
+hm -> shim: "registry JSON"
+bin -> project.status
+project.status -> project.registry: merge
+project.status -> project.probe: "one probe per host"
+project.status -> project.ts: "if enabled"
+project.probe -> project.identity: "validate key, path, branch"
+project.probe -> probekit: "timeouts, ssh argv, classify"
+project.probe -> remote.git: "sh -c ProbeScript" {style.animated: true}
+project.probe -> remote.tmux {style.animated: true}
+project.probe -> remote.zox {style.animated: true}

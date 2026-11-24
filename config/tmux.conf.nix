@@ -43,6 +43,12 @@
   # tmux sessions (prefix + s remote section). Empty => no remote section.
   remoteBridgeHosts ? "",
   remoteAuthPersistSeconds ? 14400,
+  # programs.tmux-og.projects without its `tailscale` key: project name -> {remote,
+  # remotes, hosts.<host>.path}. Optional; `og project` discovers checkouts without it.
+  projects ? {},
+  # Whether `og project status` may run `tailscale status` to suggest hosts. False
+  # => no tailscale process ever runs.
+  projectsTailscale ? false,
   # tmux prefix key (literal character). Default backtick.
   prefix ? "`",
   # Absolute path to the shell tmux spawns in new panes (default-shell).
@@ -280,6 +286,7 @@
   picker-card-bin = "${picker-generate}/bin/tmux-enrich-card";
   picker-bridge-ctl-bin = "${picker-generate}/bin/og-remote-bridge-ctl";
   picker-remote-launcher-bin = "${picker-generate}/bin/og-remote-launcher";
+  picker-project-bin = "${picker-generate}/bin/og-project-bin";
   picker-bridge-daemon-bin = "${picker-generate}/bin/og-remote-bridge-daemon";
   picker-bridge-renderer-bin = "${picker-generate}/bin/og-remote-bridge-renderer";
   picker-session-res-bin = "${picker-generate}/bin/tmux-session-resources";
@@ -351,6 +358,7 @@
     "og-remote-detach"
     "og-remote-auth"
     "og-remote-theme"
+    "og-project"
     "og-open"
     "og-notify"
     "og-notify-center"
@@ -504,6 +512,33 @@
         picker-bridge-renderer-bin
         "${script.tmux-reflow-windows}/bin/tmux-reflow-windows"
         "${script.og-remote-loading}/bin/og-remote-loading"
+      ]
+      (builtins.readFile ../scripts/${name}.sh)
+    );
+
+  # og-project is a shim over the Go binary og-project-bin (the name differs
+  # because wrapperBinDir holds both). The registry is the declared projects as
+  # JSON for the binary's TMUX_OG_PROJECTS; og-remote-open is pinned for the
+  # reason @reflow@ above spells out.
+  projectsConfig = pkgs.writeText "tmux-og-projects.json" (builtins.toJSON {
+    projects =
+      lib.mapAttrs (_: p: {
+        inherit (p) remote remotes;
+        hosts = lib.mapAttrs (_: h: {inherit (h) path;}) p.hosts;
+      })
+      projects;
+    bridgeHosts = lib.filter (h: h != "") (lib.filter builtins.isString (builtins.split "[[:space:]]+" remoteBridgeHosts));
+    tailscale = projectsTailscale;
+  });
+  scriptsWithProject = ["og-project"];
+  mkProjectScript = name:
+    pkgs.writeShellScriptBin name (
+      builtins.replaceStrings
+      ["@project_bin@" "@remote_open@" "@projects_config@"]
+      [
+        picker-project-bin
+        "${script.og-remote-open}/bin/og-remote-open"
+        "${projectsConfig}"
       ]
       (builtins.readFile ../scripts/${name}.sh)
     );
@@ -685,6 +720,8 @@
     then mkScriptWithLog name
     else if builtins.elem name scriptsWithRemote
     then mkRemoteScript name
+    else if builtins.elem name scriptsWithProject
+    then mkProjectScript name
     else if builtins.elem name scriptsWithRemotePicker
     then mkScriptRemotePicker name
     else if builtins.elem name scriptsWithPickerBin
@@ -729,6 +766,11 @@
     "remote theme" = {
       script = "og-remote-theme";
       summary = "Fan a light/dark theme toggle out to mirrored hosts";
+    };
+    "project" = {
+      script = "og-project";
+      summary = "Show a project's checkouts and drift across hosts";
+      model = "project";
     };
     "pick session" = {
       script = "tmux-session-picker";

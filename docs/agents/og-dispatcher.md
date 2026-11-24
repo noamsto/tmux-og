@@ -13,15 +13,24 @@ stays `ogVerbSpec` in `config/tmux.conf.nix`; the binary reads it at runtime.
 - **`mkOg` stays a function over a table**, so the stub instances in the flake
   checks cost an `install`, not a Go build.
 - **`model`:** optional name of a Go-backed verb, looked up in
-  `picker/ogcli/models.go` (only `remote-open` today). kong parses that verb's
-  flags for completion and a hand-written `--help` text that states the
+  `picker/ogcli/models.go` (`remote-open` and `project` today). kong parses that
+  verb's flags for completion and a hand-written `--help` text that states the
   target's real grammar. kong never validates the argv: anything but a sole
-  `--help`/`-h` is exec'd raw, so `remoteopen.ParseArgs` is the only validator
-  (it is strictly positional: `--into` is argument 3, no `--into=value`, and
-  dash-leading host/session names are legal) and exit codes are the launcher's.
-  A test pins each declared flag as a literal token in an argv `ParseArgs`
-  accepts. A model on a verb that also has subverbs, or an unknown model, fails
-  table load.
+  `--help`/`-h` is exec'd raw. For `remote-open`, `remoteopen.ParseArgs` is the
+  only validator (it is strictly positional: `--into` is argument 3, no
+  `--into=value`, and dash-leading host/session names are legal) and exit codes
+  are the launcher's; a test pins each declared flag as a literal token in an
+  argv `ParseArgs` accepts. For `project`, `og-project-bin` itself is the
+  validator. A model on a verb that also has subverbs, or an unknown model, fails
+  table load. `project` is a help-only model: `og` intercepts a sole
+  `--help`/`-h` and never runs the target, so without a model `og project
+  --help` would print only the summary and the target path, not
+  og-project-bin's usage (P0 finding 7). Its struct declares no flags, only one
+  `arg:"" optional:"" passthrough:""` positional: a model replaces the verb's
+  passthrough leaf, and without that positional completion would reject
+  `og project status`. It is one verb with no `project x` entries, and
+  `og project status --help` reaches the binary raw. The model's help is
+  `project.Usage` (`picker/project/usage.go`), shared with the binary.
 - **Hand resolver:** the longest-match resolver is a 1:1 port of `og.sh`
   because kong cannot express a node with both positional args and subcommands,
   which `status`/`notify` need (`status --flag` is the bare verb, `status x`

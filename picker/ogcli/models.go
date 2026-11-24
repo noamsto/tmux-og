@@ -1,11 +1,14 @@
 package ogcli
 
+import "github.com/noamsto/tmux-og/picker/project"
+
 // models is the registry of Go-backed verbs, keyed by the table's "model"
 // field. Each entry gives completion the verb's flags and --help its text;
 // kong never parses the verb's argv at exec time: the target gets it raw and
 // stays its own sole validator.
 var models = map[string]modelSpec{
 	"remote-open": {new: func() any { return &remoteOpen{} }, help: remoteOpenHelp},
+	"project":     {new: func() any { return &projectVerb{} }, help: project.Usage},
 }
 
 type modelSpec struct {
@@ -47,4 +50,10 @@ type remoteOpen struct {
 	Win    string `arg:"" optional:"" help:"Window: a numeric index or an @id."`
 	Into   string `help:"Place the remote window into this local session"`
 	Window string `help:"With --into: place this remote window (@<id> or @<option>=<value>)"`
+}
+
+// projectVerb keeps the passthrough positional so completion still accepts
+// `og project status`; og-project-bin parses its own subcommands.
+type projectVerb struct {
+	Args []string `arg:"" optional:"" passthrough:"" help:"Subcommand and its arguments."`
 }

@@ -1,0 +1,23 @@
+direction: right
+
+og: "og dispatcher\npicker/ogcli\n(no project verb)"
+launcher: "og-remote-open\nplaced mirrors (--into)"
+picker: "session picker\npicker/remote.go\nper-host ssh probe"
+probekit: "picker/probekit\nHostFileName, ClassifyProbeErr\nSanitizeStatusText"
+timeout: "remoteProbeTimeout\nremoteTmuxCmd\n(package main only)" {class: warn}
+
+remote: "remote host" {
+  git: "git checkouts\n+ worktrees"
+  tmux: "tmux windows\n@git_root"
+  zox: "zoxide dirs"
+}
+
+missing: "missing: project identity,\nregistry, host snapshot,\nog project status" {class: warn}
+
+og -> launcher: "og remote open"
+picker -> remote.tmux: "list-sessions / windows" {style.animated: true}
+picker -> probekit: uses
+picker -> timeout: owns
+launcher -> remote.tmux: "control mode" {style.animated: true}
+missing -> remote.git: "nothing reads\norigin / branches" {class: warn}
+missing -> timeout: "cannot import" {class: warn}
