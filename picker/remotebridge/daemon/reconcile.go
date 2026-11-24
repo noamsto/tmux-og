@@ -908,11 +908,8 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 			fmt.Fprintf(os.Stderr, "daemon: reconcile float new-pane for %s: no pane id in %q\n", cell.ID, out)
 			continue
 		}
-		// No @float_geom: the box is the remote's, written only by reconcile and
-		// the ctl verbs. tmux-float-refit's window-resized replay is a second
-		// writer that cannot compensate resize-pane -y's extra row under
-		// pane-border-status top and replays a stale box mid-resize; it skips an
-		// unstamped float.
+		// No @float_geom: tmux-float-refit would replay it as a second writer of a
+		// box only the remote owns.
 		w.localFloats[cell.ID] = local
 		w.floatGeom[cell.ID] = appliedFloat{cell, L.W, L.H}
 		// Created bare and respawned rather than created running the renderer:
