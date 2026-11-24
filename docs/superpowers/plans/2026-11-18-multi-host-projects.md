@@ -48,11 +48,12 @@ its own criteria hold.
 | P2b | Worktree picker and new-worktree flow | yes | P1b, P1c, P2a |
 | P3 | Host-grouped tab ordering (opt-in) | no | P1b |
 | P4 | `adopt`, `--offline`, hub adoption (D9), bridge-shipped snapshot | no | P2b |
+| P5 | Host views: filtered hub, host bar, omni window (spec "Host views (post-v1)") | no | P1b; P2a for reachability; P3 optional |
 
 P1a, P1b, P1c, P2a and P2b are each independently shippable and each leaves the
 product working: after P1a the user can read their project map, after P1b they
 can route opens by CLI, after P1c they can create worktrees, after P2 the
-pickers show it. P3 and P4 are optional follow-ups the owner may drop.
+pickers show it. P3, P4 and P5 are optional follow-ups the owner may drop.
 
 ## P0: Verification spike (no production code)
 
@@ -160,6 +161,7 @@ twins one for that reason): `hostFileName` (`remote.go`), `readOwnerOnlyJSON`,
 - [ ] **Step 3:** `open.go` against a fake runner: unreachable host fails fast with nothing created; leaf created once with its first window as the target (no stray window); a leaf of the same name stamped with a different key is refused; wait times out → worktree left, error names the step; unsafe path/branch refused before any runner call.
 - [ ] **Step 4:** bats `tests/og-project-open.bats` (wired into `flake.nix` like P1a's: `testsSrc ["og-project-open.bats" …]`, `scriptsSrc [...]` for only the files it reads, the built picker binaries on `PATH`) on a scratch local server pair (one server as "local", a second `-L` server reached through a fake `ssh` wrapper as "remote"): `og project open` twice leaves one daemon and one window; a dedicated `og-remote-open` of the leaf is refused; a second local session cannot start a second daemon. Every tmux call uses its own `TMUX_TMPDIR`/`-L`; teardown kills only those servers.
 - [ ] **Step 5:** `detach` kills only the daemon's own windows; `attach` starts the pickup with no window creation.
+- [ ] **Step 5a (host-views seams, no behaviour change; spec "What P1b must expose"):** the leaf daemon is always started `--into <hub id>`, never into another session; `open.go` calls an `ensureHostVisible(host)` seam between the pickup wait and `select-window` (a no-op until P5); `localscan.go` stays `list-panes -a`, pinned by a unit test over a fake `list-panes -a` reply holding a stamped mirror pane in a non-hub session (not a bats case with a real daemon: the shipped daemon rebuilds a moved window within 1 to 4 s, so that test could pass on the replacement).
 - [ ] **Step 6:** docs updates listed above.
 - **Acceptance:**
   - The spec's first four v1 acceptance bullets pass in bats.
@@ -230,8 +232,49 @@ remote-stamped snapshot shipped like `@bridge_res` so a live mirror needs no
 ssh. Each is its own PR with its own criteria; none is committed to by this
 plan.
 
+## P5 (post-v1, opt-in): Host views
+
+Design and measured findings: spec "Host views (post-v1)" (#1244). A hub gets a
+host bar (chips, click or `prefix + V`), a filtered view (hide a host's windows
+by moving them into a holding session) and an omni window (one shell tab on the
+active host, following the branch). A stub: each step becomes its own PR with
+its own criteria once the owner confirms D10 to D14. **Sequenced after P1b**
+(the hub, leaf pickup and `ensureHostVisible` seam must exist); P2a supplies
+host state and worktrees for chips and the branch-follow rule; P3 is
+independent and composes with it.
+
+**Files (expected):**
+
+- Modify `picker/remotebridge/daemon/{placed.go,localpanes.go,reconcilewindows.go}` (+ tests): own windows are those stamped with the daemon's `@bridge_sock` in any session (`list-windows -a` / `list-panes -a` filtered by stamp) in `localWindowSet`, `mirrorPaneRows` and `hostWindows` (which splits: an `-a` own-window listing for `ownWindows` and its callers, and the hub-scoped listing kept for `unregisterPlacedNudge`), plus the two pane maps `localPaneMap` (`cmd/daemon/main.go`) and `paste.go:764` (the spike did not measure these two). Client queries stay on the hub.
+- Modify `tests/remote-m2-integration.bats`: "into: a window moved to another session is still mirrored, not rebuilt" (unlinked 4 s with a remote echo every 1.2 s, then SIGTERM kills it too), plus Go unit tests for the three measured queries and the two pane maps.
+- Create `picker/project/view.go` (+ test): view state (`@og_view_hosts`, `@og_active_host`), pure planners returning tmux argv for hide, show, toggle, cycle and the omni swap; host names through the existing validator; chip keys `ogh:<index>`.
+- Modify `picker/project/cmd/project/main.go`: `view` verb (`og project view [toggle|only|all|cycle|<index>]`) and `bar` (stamps `@og_hostbar` from the snapshot cache).
+- Modify `generator/render/status.go`, `config/tmux.conf.tmpl`, `config/tmux.conf.reference.nix` (byte-identical): `#{E:@og_hostbar}` in the global `status-format[0]` and the folded line; the dispatch bind `MouseDown1Status` (`if -F '#{m:ogh:*,#{mouse_status_range}}'` to `og project view`, else `switch-client -t =`; the spike clicked with `h:` keys, so P5 re-verifies with `ogh:`); `prefix + V` (D11), added to the which-key table; the `window-linked` hide hook behind a zero-fork `if -F` on `@og_project`, `@bridge_host` and the host not being in `@og_view_hosts` (without the last, a show is undone by its own `window-linked`); a conf-assertions check for all four.
+- Modify `config/tmux.conf.tmpl` `window-unlinked`: skip the reflow while `@og_view_batch` is set and for `@og_project_hold` sessions, in a zero-fork `if -F` (`--debounce` is not enough: it coalesces passes, not forks), per the spec's fork budget.
+- Modify the pickers' session and window rows to hide `@og_project_hold` sessions; `docs/agents/persist.md` check that the holding session is not persisted.
+- Modify `docs/agents/projects.md`, `status-bar.md` (host bar, fold, ownership of `status-format[0]`), `bridge-daemon.md` (stamp-scoped ownership), `performance.md` (toggle fork budget), `scripts.md`.
+
+**Steps:**
+
+- [ ] **Step 1 (test first, daemon):** the bats case above and Go tests for the stamp-scoped queries (the three measured ones and the two pane maps), red against the current daemon (the window is replaced within 4 s), then implement. All existing `into:` cases stay green unmodified. Gate: the three commands.
+- [ ] **Step 2:** `view.go` planners and the `view` verb against a fake runner: hide is one `move-window` invocation per host, show the same into the hub id, `ensureHostVisible` links before `select-window`; a window with no `@bridge_host` is never moved by a host's hide (the local chip's windows are those with no `@bridge_host` and no `@og_omni`), and an `@og_omni` slot is never hidden, only swapped.
+- [ ] **Step 3:** the `window-linked` hide hook and the holding session (created at the first hide, stamped `@og_project_hold`, `@og_hold_id` on the hub); zero forks for a session without `@og_project`; a show is not undone by the hook and a new window of a shown host stays (measured against `performance.md`).
+- [ ] **Step 4:** host bar: `@og_hostbar` indirection in `status-format[0]` and the folded line, the click dispatch bind and `prefix + V`; verify on a scratch server with a pty client and SGR mouse (the spike's `click` method): a chip click reaches `view`, a tab click still selects the window, right-click on a chip and the fold are checked.
+- [ ] **Step 5:** omni slots: `@og_omni`, `link-window -k` swap (only over a slot also linked in the holding session), the branch-follow rule (same branch present: `cd` only at a shell prompt; absent: keep the cwd and report; unreachable: do not switch), lazy slot creation.
+- [ ] **Step 6:** measure forks per toggle (`strace -f -e trace=execve` with a client attached; hide k windows is one invocation and one reflow) and record the table in `performance.md`.
+- **Acceptance:**
+  - Hiding a host removes its windows from `next-window`, `prefix + n/p` and the pickers; showing it restores them; no window is rebuilt, duplicated or left in the holding session after teardown (bats).
+  - A new window of a hidden host never appears in the hub for more than one hook run, and showing a host is not undone by the hook (a new window of a shown host stays).
+  - Hiding the active host leaves its omni slot in the hub.
+  - A chip click switches the active host; a tab click still selects its window; `prefix + V` cycles; the chips survive a structural reflow and the fold.
+  - The omni window follows the same branch on each host when it exists and otherwise stays put with a message; an unreachable host is not switched to.
+  - A user with no project configured sees no change and no new fork (hook gates).
+  - Gate: the three commands.
+- **Risks:** the daemon change touches the placed teardown path, so it is the first, separately reviewed step; a stale `@og_hostbar` after a host-list change (stamp on the snapshot tick and on `reload`); `-k` on a slot not linked elsewhere destroys it (the planner refuses; tested); the fallback (status-only filter) is a separate PR if C proves unsafe.
+
 ## Decisions this plan cannot make
 
 The owner decisions D1–D9 in the spec carry recommendations; this plan builds
 the recommendations. D6 (the keybinding) is the only one the plan defers to a
-live check (P2b step 4).
+live check (P2b step 4). D10–D14 (host views) are the spec's post-v1 section's;
+P5 is a stub until the owner confirms them.
