@@ -560,3 +560,88 @@ rel() {
 	wait_tiled_agree "$skewed_local"
 	[[ "$(tiled_geoms "$SRC")" == "$remote_before" ]]
 }
+
+# --- local client resize (#1241) ---
+
+# resize_client resizes the observer's window, which is the pty the mirror's
+# attached client lives in: the client sees a real SIGWINCH, exactly as a
+# terminal resize does. It returns once the REMOTE window has taken the new
+# size (the client's rows less the two status lines), so a mismatch read afterwards
+# is a settled one, not the pre-resize state both servers still agree on.
+resize_client() {
+	local want="$1x$(($2 - 2))" deadline=$((SECONDS + 5))
+	$OBS resize-window -t obs -x "$1" -y "$2"
+	until [[ "$($SRC display-message -p -t "$RF" '#{window_width}x#{window_height}')" == "$want" ]]; do
+		((SECONDS < deadline)) || {
+			printf 'remote window never reached %s\n' "$want" >&3
+			return 1
+		}
+		sleep 0.1
+	done
+}
+
+# settle_agree gives the local float 4s to report the remote float's box, then
+# holds half a second and checks again: a local writer that lands after the
+# reconcile (the window-resized hook's fork) would only show in the second read.
+settle_agree() {
+	local l r deadline=$((SECONDS + 4))
+	until [[ "$(geom "$DST" "$LF")" == "$(geom "$SRC" "$RF")" ]]; do
+		((SECONDS < deadline)) && {
+			sleep 0.1
+			continue
+		}
+		break
+	done
+	sleep 0.5
+	l="$(geom "$DST" "$LF")"
+	r="$(geom "$SRC" "$RF")"
+	[[ $l == "$r" ]] && return 0
+	printf 'mirrored float disagrees with its remote after a client resize: local=%s remote=%s\n--- daemon log ---\n' "$l" "$r" >&3
+	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+	return 1
+}
+
+@test "a local client resize leaves a float on the top row the remote's size" {
+	mirror_up -x 40 -y 12 -X 10 -Y 5
+	# Shrinking squeezes the float against the top row (its inner top is row 1)
+	# in both windows; growing back leaves the remote float where it is.
+	resize_client 45 14
+	settle_agree
+	resize_client 150 40
+	settle_agree
+}
+
+# The remote's own tmux-float-refit re-derives a stamped float from percentages
+# on every resize; the mirror must follow what it does, with no stamp of its
+# own to help. The hook stands in for that script's resize-pane/move-pane.
+@test "a local client resize follows a remote float the remote refits itself" {
+	mirror_up -x 60% -y 70% -X 20% -Y 15%
+	$SRC set-hook -g window-resized "resize-pane -t $RF -x 60% -y 70% ; move-pane -t $RF -X 20% -Y 15%"
+	local sz
+	for sz in "60 20" "150 40" "45 14" "100 32"; do
+		# shellcheck disable=SC2086 # word-split into width and height
+		resize_client $sz
+		settle_agree
+	done
+}
+
+# A borderless float flush against the far edge: its heavy-bordered local box
+# reaches past a 99-column window, so tmux slides it back one column, while the
+# remote's float still fits. The local inner box cannot match the remote's at
+# 99 columns, so the shrink is only waited out, not compared; the remote cell
+# never changes across the shrink and regrow, so only the window size tells the
+# daemon the box must be replayed once it fits again.
+@test "a borderless float near the far edge follows the remote back after a shrink and regrow" {
+	mirror_up -B none -x 89 -y 12 -X 10 -Y 5
+	resize_client 99 32
+	local deadline=$((SECONDS + 4))
+	until [[ "$(geom "$DST" "$LF")" == "9,5 89x12" ]]; do
+		((SECONDS < deadline)) || {
+			printf 'local float never clamped at 99 columns: %s\n' "$(geom "$DST" "$LF")" >&3
+			return 1
+		}
+		sleep 0.1
+	done
+	resize_client 100 32
+	settle_agree
+}

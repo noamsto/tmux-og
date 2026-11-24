@@ -249,7 +249,7 @@ func TestDispatchLayoutChangeFloatOnlyBurstSeedsNoTiledPane(t *testing.T) {
 	}
 	w := shapedMirror(t)
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	script := strings.Join([]string{
 		"%begin 1 1 1", "@1 " + floatMovedLayout + " %0 0", "%end 1 1 1", // readLayout: the float moved
 	}, "\n") + "\n" + floatSeedScript(2, "FLOAT")

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
 )
 
@@ -280,7 +279,7 @@ func TestReconcileZoomAssertNeverTargetsAFloat(t *testing.T) {
 		remoteID: "@1", localWin: "@101",
 		remotePanes: []string{"%0", "%1"}, localPanes: []string{"%l0", "%l1"},
 		localFloats: map[string]string{"%9": "%l9"},
-		floatGeom:   map[string]controlmode.PaneCell{"%9": float9},
+		floatGeom:   map[string]appliedFloat{"%9": appliedFloat9},
 		layout:      tiledLayout,
 	}
 
@@ -345,7 +344,7 @@ func TestReconcileZoomAssertTargetsTiledPaneBesideFloat(t *testing.T) {
 		remoteID: "@1", localWin: "@101",
 		remotePanes: []string{"%0", "%1"}, localPanes: []string{"%l0", "%l1"},
 		localFloats: map[string]string{"%9": "%l9"},
-		floatGeom:   map[string]controlmode.PaneCell{"%9": float9},
+		floatGeom:   map[string]appliedFloat{"%9": appliedFloat9},
 		layout:      tiledLayout,
 	}
 
