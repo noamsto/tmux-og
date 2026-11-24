@@ -1088,6 +1088,7 @@ two_controllers_up() {
 }
 
 @test "a non-current mirrored window converges after a client detaches that the daemon handles late (#1257)" {
+	# Setup as the #979 case above, which explains obs-d and why the human leaves by kill-session.
 	$SRC new-session -d -s rem -x 120 -y 40
 	$SRC new-window -t 'rem:{end}' -a
 	$SRC select-window -t rem:1

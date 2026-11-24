@@ -789,9 +789,6 @@ func (o ownerCtl) dropped(name string) {
 	member := o.own.dropMember(name)
 	left := o.own.takeDeparted(name)
 	if !member && !left {
-		if o.own.isOwner() {
-			o.logf("%s left; not in the member set, no recalculation", name)
-		}
 		return
 	}
 	if o.ownsNow() {
@@ -811,7 +808,7 @@ func (o ownerCtl) ownsNow() bool {
 func (o ownerCtl) recalc(name string) {
 	cmd, ok := recalcCmd(o.cv)
 	if !ok {
-		o.logf("%s left; no client size recorded yet, skipping recalculation", name)
+		o.logf("%q left; no client size recorded yet, skipping recalculation", name)
 		return
 	}
 	o.send(cmd)
