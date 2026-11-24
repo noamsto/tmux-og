@@ -367,7 +367,7 @@ func TestSeedBidiModes(t *testing.T) {
 // against a literal the test owns, so an edit of clearScreen cannot move the
 // pin: tmux copies the screen into history on ED2 and on ED0 at home, so
 // neither may appear, and the clear lands once, after every mode write and
-// before the captured bytes (#1239).
+// before the captured bytes.
 func TestSeedClearDoesNotScrollIntoHistory(t *testing.T) {
 	const want = "\x1b[H\x1b[2K\x1b[2;1H\x1b[J\x1b[H"
 	if clearScreen != want {

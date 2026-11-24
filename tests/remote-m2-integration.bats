@@ -6246,7 +6246,7 @@ sibling_diag() {
 	[ "$dst_screen" = "$src_screen" ]
 }
 
-# #1239: a reseed repaints the visible screen and never adds lines to the
+# A reseed repaints the visible screen and never adds lines to the
 # mirror pane's local history, so the mirror's history_size must equal the
 # remote's (which grows only by what the remote itself scrolled off, e.g. on a
 # shrink). The painter fills a fixed main-screen frame by CUP and repaints it

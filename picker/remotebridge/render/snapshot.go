@@ -65,7 +65,7 @@ type Extra struct {
 // clearScreen blanks the pane and homes the cursor without adding a line to
 // its history. Under scroll-on-clear tmux copies the visible screen into
 // history on ED2 and on ED0 at home, so every seed would otherwise stack one
-// more copy of the screen into the mirror (#1239). Erasing row 1 first leaves
+// more copy of the screen into the mirror. Erasing row 1 first leaves
 // nothing to copy, and the ED0 from row 2 then no longer starts at home.
 const clearScreen = "\x1b[H\x1b[2K\x1b[2;1H\x1b[J\x1b[H"
 
