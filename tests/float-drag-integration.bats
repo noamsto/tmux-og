@@ -67,6 +67,10 @@ teardown() {
 }
 
 BUDGET_SECS=12
+# Every condition wait below polls the asserted state against this wall-clock
+# bound and fails with the last values it saw: the wait is for a slow runner,
+# the assertion is unchanged.
+CONVERGE_SECS=20
 
 # mirror_up mirrors a remote window holding a tiled split and one float, then
 # attaches a real client to the mirror. Sets RF (remote float), LF (its local
@@ -210,12 +214,13 @@ sgr() {
 	sleep 0.1
 }
 
-# wait_agree waits up to 2s for the remote float and its mirror to report the
-# same geometry, which must also differ from $1 (the geometry before the
-# drag) unless $2 is passed (a snap-back drag, whose final geometry equals
-# the pre-drag one).
+# wait_agree waits up to CONVERGE_SECS for the remote float and its mirror to
+# report the same geometry, which must also differ from $1 (the geometry before
+# the drag) unless $2 is passed (a snap-back drag, whose final geometry equals
+# the pre-drag one). A drag that never lands leaves both at $1, so the longer
+# bound cannot let it pass.
 wait_agree() {
-	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + 2))
+	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + CONVERGE_SECS))
 	while :; do
 		l="$(geom "$DST" "$LF")"
 		r="$(geom "$SRC" "$RF")"
@@ -225,16 +230,16 @@ wait_agree() {
 		((SECONDS < deadline)) || break
 		sleep 0.1
 	done
-	printf 'no agreement within 2s: before=%s local=%s remote=%s\n--- daemon log ---\n' "$before" "$l" "$r" >&3
+	printf 'no agreement within %ss: before=%s local=%s remote=%s\n--- daemon log ---\n' "$CONVERGE_SECS" "$before" "$l" "$r" >&3
 	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
 	return 1
 }
 
 # wait_tiled_agree is wait_agree's counterpart for the whole tiled layout: it
-# waits up to 2s for every tiled pane's geometry to agree between the mirror
-# and the remote.
+# waits up to CONVERGE_SECS for every tiled pane's geometry to agree between the
+# mirror and the remote.
 wait_tiled_agree() {
-	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + 2))
+	local before="$1" allow_same="${2:-}" l r deadline=$((SECONDS + CONVERGE_SECS))
 	while :; do
 		l="$(tiled_geoms "$DST")"
 		r="$(tiled_geoms "$SRC")"
@@ -244,7 +249,7 @@ wait_tiled_agree() {
 		((SECONDS < deadline)) || break
 		sleep 0.1
 	done
-	printf 'no tiled agreement within 2s: before=%s\nlocal:\n%s\nremote:\n%s\n--- daemon log ---\n' "$before" "$l" "$r" >&3
+	printf 'no tiled agreement within %ss: before=%s\nlocal:\n%s\nremote:\n%s\n--- daemon log ---\n' "$CONVERGE_SECS" "$before" "$l" "$r" >&3
 	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
 	return 1
 }
@@ -532,7 +537,7 @@ rel() {
 	sgr 0 "$x" "$y" M
 	sgr 32 $((x - 10)) "$y" M
 	sgr 0 $((x - 10)) "$y" m
-	local wdeadline=$((SECONDS + 2))
+	local wdeadline=$((SECONDS + CONVERGE_SECS))
 	while ((SECONDS < wdeadline)); do
 		[[ "$(pfield "$ll" pane_width)" == "$((w0 - 10))" ]] && break
 		sleep 0.1
@@ -569,34 +574,48 @@ rel() {
 # size (the client's rows less the two status lines), so a mismatch read afterwards
 # is a settled one, not the pre-resize state both servers still agree on.
 resize_client() {
-	local want="$1x$(($2 - 2))" deadline=$((SECONDS + 5))
+	local want="$1x$(($2 - 2))" deadline=$((SECONDS + CONVERGE_SECS))
 	$OBS resize-window -t obs -x "$1" -y "$2"
 	until [[ "$($SRC display-message -p -t "$RF" '#{window_width}x#{window_height}')" == "$want" ]]; do
 		((SECONDS < deadline)) || {
-			printf 'remote window never reached %s\n' "$want" >&3
+			printf 'remote window never reached %s within %ss: remote now %s, local mirror now %s\n--- daemon log ---\n' \
+				"$want" "$CONVERGE_SECS" "$($SRC display-message -p -t "$RF" '#{window_width}x#{window_height}')" \
+				"$($DST display-message -p -t "$LF" '#{window_width}x#{window_height}')" >&3
+			tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
 			return 1
 		}
 		sleep 0.1
 	done
 }
 
-# settle_agree gives the local float 4s to report the remote float's box, then
-# holds half a second and checks again: a local writer that lands after the
-# reconcile (the window-resized hook's fork) would only show in the second read.
+# settle_agree [expected-remote-window] waits for the local float to report the
+# remote float's box, then holds half a second and checks again: a local writer
+# that lands after the reconcile (the window-resized hook's fork) would only show
+# in the second read. With an expected "WxH" it first waits for the remote's own
+# refit hook (it stamps @refit_for) to have run at that size, so agreement is
+# read against the refit's result, not the box from before it landed.
 settle_agree() {
-	local l r deadline=$((SECONDS + 4))
-	until [[ "$(geom "$DST" "$LF")" == "$(geom "$SRC" "$RF")" ]]; do
-		((SECONDS < deadline)) && {
+	local expected="${1:-}" l r deadline=$((SECONDS + CONVERGE_SECS))
+	if [[ -n $expected ]]; then
+		until [[ "$($SRC show-options -gv @refit_for)" == "$expected" ]]; do
+			((SECONDS < deadline)) || {
+				printf 'remote refit never ran at %s within %ss: @refit_for=%s remote=%s\n--- daemon log ---\n' \
+					"$expected" "$CONVERGE_SECS" "$($SRC show-options -gv @refit_for)" "$(geom "$SRC" "$RF")" >&3
+				tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+				return 1
+			}
 			sleep 0.1
-			continue
-		}
-		break
+		done
+	fi
+	until [[ "$(geom "$DST" "$LF")" == "$(geom "$SRC" "$RF")" ]]; do
+		((SECONDS < deadline)) || break
+		sleep 0.1
 	done
 	sleep 0.5
 	l="$(geom "$DST" "$LF")"
 	r="$(geom "$SRC" "$RF")"
 	[[ $l == "$r" ]] && return 0
-	printf 'mirrored float disagrees with its remote after a client resize: local=%s remote=%s\n--- daemon log ---\n' "$l" "$r" >&3
+	printf 'mirrored float disagrees with its remote after a client resize (waited %ss): local=%s remote=%s\n--- daemon log ---\n' "$CONVERGE_SECS" "$l" "$r" >&3
 	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
 	return 1
 }
@@ -616,12 +635,15 @@ settle_agree() {
 # own to help. The hook stands in for that script's resize-pane/move-pane.
 @test "a local client resize follows a remote float the remote refits itself" {
 	mirror_up -x 60% -y 70% -X 20% -Y 15%
-	$SRC set-hook -g window-resized "resize-pane -t $RF -x 60% -y 70% ; move-pane -t $RF -X 20% -Y 15%"
-	local sz
+	# The hook's last command stamps the window size it just refit for (-F: a
+	# hook command's formats expand only under it), the signal settle_agree waits
+	# on before it compares the mirror with the remote.
+	$SRC set-hook -g window-resized "resize-pane -t $RF -x 60% -y 70% ; move-pane -t $RF -X 20% -Y 15% ; set-option -gF @refit_for '#{window_width}x#{window_height}'"
+	local sz w h
 	for sz in "60 20" "150 40" "45 14" "100 32"; do
-		# shellcheck disable=SC2086 # word-split into width and height
-		resize_client $sz
-		settle_agree
+		read -r w h <<<"$sz"
+		resize_client "$w" "$h"
+		settle_agree "${w}x$((h - 2))"
 	done
 }
 
@@ -634,10 +656,10 @@ settle_agree() {
 @test "a borderless float near the far edge follows the remote back after a shrink and regrow" {
 	mirror_up -B none -x 89 -y 12 -X 10 -Y 5
 	resize_client 99 32
-	local deadline=$((SECONDS + 4))
+	local deadline=$((SECONDS + CONVERGE_SECS))
 	until [[ "$(geom "$DST" "$LF")" == "9,5 89x12" ]]; do
 		((SECONDS < deadline)) || {
-			printf 'local float never clamped at 99 columns: %s\n' "$(geom "$DST" "$LF")" >&3
+			printf 'local float never clamped at 99 columns within %ss: %s\n' "$CONVERGE_SECS" "$(geom "$DST" "$LF")" >&3
 			return 1
 		}
 		sleep 0.1
