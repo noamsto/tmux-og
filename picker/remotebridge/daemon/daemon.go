@@ -1567,6 +1567,12 @@ func runMirror(cfg Config) error {
 					_ = cfg.LocalTmux(argv...)
 				}
 			case len(l.Args) > 1 && (pin.id == "" || l.Args[0] == pin.id):
+				if cfg.filter.excludes(l.Args[1]) {
+					if cst.handoff.take() {
+						notifyHost(cfg, noticeWindowNotMirrored)
+					}
+					break
+				}
 				selectedBeforeAdd = l.Args[1]
 			}
 		case controlmode.WindowAdd:

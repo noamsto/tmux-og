@@ -187,13 +187,12 @@ launch() { env TMUX_PANE="$PANE" bash scripts/tmux-prdash-mirror.sh "$BATS_TEST_
 	grep -q 'hand-off failed: exit status 7' "$OG_SHIM_LOG"
 }
 
-@test "a failing ctl whose error quotes a #(command) runs nothing" {
+@test "a failing ctl whose error holds format characters shows them escaped" {
 	stamp o/n %5
 	printf '%s\n' 'W|o/n#1|x' >"$FIXTURE"
-	# shellcheck disable=SC2016 # the hostile text must stay literal
-	CTL_STUB_STATUS=1 CTL_STUB_ERR='bad target "#(touch '"$BATS_TEST_TMPDIR"'/pwned)"' run launch
+	# shellcheck disable=SC2016 # the format text must stay literal
+	CTL_STUB_STATUS=1 CTL_STUB_ERR='bad target "#{session_name} 50%d #(x)"' run launch
 	[ "$status" -eq 0 ]
-	grep -q 'hand-off failed' "$OG_SHIM_LOG"
-	sleep 1
-	[ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+	# shellcheck disable=SC2016
+	grep -qF 'bad target "##{session_name} 50%%d ##(x)"' "$OG_SHIM_LOG"
 }

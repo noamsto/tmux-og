@@ -68,9 +68,11 @@ fi
 "$ctl" --display-error="$client" --sock="$sock" handoff "$pane" "$dir" "${lines[@]}" 2>"$work/err"
 status=$?
 if ((status != 0)); then
-	# ctl's error can quote a PR branch name; display-message would expand a
-	# `#(...)` in it, so double every `#`.
+	# ctl's error can quote a PR branch name. display-message expands `#{...}`
+	# formats and strftime `%` sequences (and an older resident server, #407, may
+	# still run `#(...)`; the pinned next-3.9 does not), so double `#` and `%`.
 	err=$(tail -n 1 "$work/err")
 	err=${err//#/##}
+	err=${err//'%'/%%}
 	tmux display-message -d 5000 "prdash: hand-off failed: ${err:-exit status $status}"
 fi

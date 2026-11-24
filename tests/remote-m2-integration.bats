@@ -4813,17 +4813,14 @@ EOF
 	[ "$handoff" = "lab other " ]
 }
 
-# handoff_rig <mode> brings up the prdash-in-a-mirror hand-off end to end: a
-# mirrored `rem` session of two windows (`main`, and `origin` where prdash was
-# pressed), an attached local client on the mirror session, a remote checkout
-# of o/n, and a `wt` on the remote's PATH that does what the worktrunk
+# handoff_remote_setup <mode> makes the remote side of the hand-off rigs: a
+# checkout of o/n, a `wt` on the remote's PATH that does what the worktrunk
 # post-switch hook does in <mode> (newwin: a new window `wtwin` beside the
 # float's, selected like `new-window` without -d; select: select-window of
-# `main`; session: switch-client to the session `other`). The prdash stub
-# reports one PR row, so only the launcher script, the real ctl and the real
-# daemon are under test.
-handoff_rig() {
-	local mode="$1" win
+# `main`; session: switch-client to the session `other`), and the remote
+# sessions `rem` (windows `main` and `origin`) and `other`.
+handoff_remote_setup() {
+	local mode="$1"
 	rig_co="$BATS_TEST_TMPDIR/co"
 	mkdir -p "$rig_co" "$BATS_TEST_TMPDIR/wtbin"
 	git -C "$rig_co" init -q
@@ -4847,6 +4844,16 @@ WT
 	$SRC set-option -g automatic-rename off
 	$SRC new-window -d -t rem -n origin
 	$SRC new-session -d -s other -x 100 -y 30
+}
+
+# handoff_rig <mode> brings up the prdash-in-a-mirror hand-off end to end: a
+# mirrored `rem` session of two windows (`main`, and `origin` where prdash was
+# pressed) with an attached local client on the mirror session, over
+# handoff_remote_setup. The prdash stub reports one PR row, so only the
+# launcher script, the real ctl and the real daemon are under test.
+handoff_rig() {
+	local mode="$1" win
+	handoff_remote_setup "$mode"
 	$DST new-session -d -s host-sess -x 100 -y 30
 	$OBS kill-server 2>/dev/null || true
 	$OBS new-session -d -s obsH -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host-sess"
@@ -4883,6 +4890,57 @@ handoff_press() {
 	local script="${PRDASH_MIRROR:-$BATS_TEST_DIRNAME/../scripts/tmux-prdash-mirror.sh}"
 	TMUX="$($DST display-message -p '#{socket_path}'),0,0" TMUX_PANE="$rig_local_pane" \
 		bash "$script" "$BATS_TEST_TMPDIR/prdash" "$CTL"
+}
+
+# handoff_rig_placed <mode> is handoff_rig for a placed mirror of the remote
+# window `origin` only (--select), in the local session `host` next to a local
+# window, with the attached client looking at that mirror window. It sets
+# rig_remote_pane (the remote `origin` pane) and placed_win; the hand-off is
+# sent by the test with the real ctl, since a placed mirror has no launcher.
+handoff_rig_placed() {
+	local mode="$1" origin_win
+	handoff_remote_setup "$mode"
+	into_host_up
+	$OBS kill-server 2>/dev/null || true
+	$OBS new-session -d -s obsH -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host"
+	for _ in $(seq 1 40); do
+		[ "$($DST list-clients -t host 2>/dev/null | grep -c '^')" -ge 1 ] && break
+		sleep 0.1
+	done
+	# The press happens in `origin`; a select of `main` is only news when it is not
+	# already the remote's current window.
+	$SRC select-window -t rem:origin
+	origin_win="$($SRC display-message -p -t rem:origin '#{window_id}')"
+	rig_remote_pane="$($SRC display-message -p -t rem:origin '#{pane_id}')"
+	bridge_up_select ho rem "$origin_win" 1 rem:origin || return 1
+	placed_win="$(placed_wins "$sock")"
+	$DST select-window -t "$placed_win"
+	for _ in $(seq 1 100); do
+		[ "$($DST list-clients -F '#{window_id}' | head -1)" = "$placed_win" ] && return 0
+		sleep 0.1
+	done
+	printf 'handoff_rig_placed: client never reached %s\n' "$placed_win" >&3
+	return 1
+}
+
+# handoff_send_placed sends the one-PR hand-off straight to the daemon, the way
+# the launcher would.
+handoff_send_placed() {
+	"$CTL" --sock "$sock" handoff "$rig_remote_pane" "$rig_co" "$(printf 'pr1\t{"repo":"o/n","kind":"pr","target":"feat-x","pr":7,"args":["switch","feat-x"],"key":"pr1"}')"
+}
+
+# wait_client_notice <text> polls until the attached local client's message log
+# holds <text>.
+wait_client_notice() {
+	local client got=""
+	client="$($DST list-clients -F '#{client_name}' | head -1)"
+	for _ in $(seq 1 100); do
+		got="$($DST show-messages -t "$client" 2>/dev/null || true)"
+		[[ $got == *"$1"* ]] && return 0
+		sleep 0.1
+	done
+	printf 'wait_client_notice: no %q in client messages: %q\n' "$1" "$got" >&3
+	return 1
 }
 
 # wait_client_view <want> polls until the attached local client's
@@ -4940,6 +4998,27 @@ wait_client_view() {
 	done
 	[ "$seen" = yes ] || printf 'no notice in client messages: %q\n' "$got" >&3
 	[ "$seen" = yes ]
+}
+
+@test "prdash hand-off: a placed mirror excluding the new window says it is not mirrored here" {
+	handoff_rig_placed newwin
+	handoff_send_placed
+	wait_client_notice "hand-off window is not mirrored here"
+	[ "$($DST list-clients -F '#{window_id}' | head -1)" = "$placed_win" ]
+}
+
+@test "prdash hand-off: a placed mirror excluding an existing window says it is not mirrored here" {
+	handoff_rig_placed select
+	handoff_send_placed
+	wait_client_notice "hand-off window is not mirrored here"
+	[ "$($DST list-clients -F '#{window_id}' | head -1)" = "$placed_win" ]
+}
+
+@test "prdash hand-off: a placed mirror cannot follow a session switch and says so" {
+	handoff_rig_placed session
+	handoff_send_placed
+	wait_client_notice "switching remote session is not followed"
+	[ "$($DST list-clients -F '#{window_id}' | head -1)" = "$placed_win" ]
 }
 
 # m2_pane_gate_failed prints why a renderer-pane readiness gate gave up, plus

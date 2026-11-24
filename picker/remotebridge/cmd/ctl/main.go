@@ -140,7 +140,13 @@ func main() {
 }
 
 func showError(client string, err error) error {
-	return runTmux("display-message", "-d", "5000", "-t", client, errorPrefix+err.Error())
+	return runTmux("display-message", "-d", "5000", "-t", client, errorPrefix+escapeFormat(err.Error()))
+}
+
+// escapeFormat stops display-message expanding #{...}, #(...) and strftime
+// sequences in text that may quote a remote branch name.
+func escapeFormat(s string) string {
+	return strings.NewReplacer("#", "##", "%", "%%").Replace(s)
 }
 
 func run(sock string, args []string) error {

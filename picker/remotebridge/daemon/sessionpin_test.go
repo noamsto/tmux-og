@@ -6,7 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
@@ -448,26 +448,20 @@ func TestSessionPinHandOffFailureNotice(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rt, _ := scriptedRT("%begin 1 1 1\n%end 1 1 1\n")
-			done := make(chan struct{})
-			noticed := make(chan struct{}, 1)
-			p := &sessionPin{
-				id:      "$0",
-				handOff: func(string) error { defer close(done); return tc.err },
-				failed:  func() { noticed <- struct{}{} },
-			}
-			p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt)
-			<-done
-			// failed runs on the hand-off goroutine right after handOff returns.
-			select {
-			case <-noticed:
-				if !tc.want {
-					t.Error("noticed a successful hand-off")
+			synctest.Test(t, func(t *testing.T) {
+				noticed := false
+				p := &sessionPin{
+					id:      "$0",
+					handOff: func(string) error { return tc.err },
+					failed:  func() { noticed = true },
 				}
-			case <-time.After(200 * time.Millisecond):
-				if tc.want {
-					t.Error("no notice for a failed hand-off")
+				p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt)
+				// failed runs on the hand-off goroutine right after handOff returns.
+				synctest.Wait()
+				if noticed != tc.want {
+					t.Errorf("noticed = %v, want %v", noticed, tc.want)
 				}
-			}
+			})
 		})
 	}
 }
