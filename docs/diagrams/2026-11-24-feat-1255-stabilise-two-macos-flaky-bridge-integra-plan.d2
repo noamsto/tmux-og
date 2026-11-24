@@ -1,0 +1,19 @@
+direction: down
+
+test: "bats test\ntests/*.bats" { class: good }
+obs: "OBS client\nresize / keypress"
+hook: "DST hook touches\n@bridge_nudge"
+poll: "daemon watchLocalClient\n1s poll, then\nrefresh-client -C"
+remote: "remote window\nand float-refit hook"
+mirror: "mirror float box\nand reseeded screen"
+stamp: "hook stamps @refit_for\n(set-option -gF)" { class: accent }
+
+obs -> hook: "SIGWINCH (client resize)" { style.animated: true }
+hook -> poll: "mtime advances" { style.animated: true }
+poll -> remote: "window resize" { style.animated: true }
+remote -> mirror: "reconcile + reseed" { style.animated: true }
+remote -> stamp: "refit ran for WxH"
+
+test -> obs: "send; resend until the state holds" { class: accent }
+test -> stamp: "wait: refit landed" { class: good }
+test -> mirror: "wait up to 20s: local == remote, screens equal" { class: good }

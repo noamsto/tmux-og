@@ -622,7 +622,9 @@ sorted_tiled_dims() {
 	# producing pane output, which must re-fit and re-seed the local mirror.
 	OBS="tmux -L m2obs"
 	$OBS new-session -d -s obs -x 100 -y 30 "$SRC attach -t rem"
-	for _ in $(seq 1 40); do
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	clients=0
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		clients="$($SRC list-clients -t rem 2>/dev/null | wc -l | tr -d ' ')"
 		[ "$clients" -ge 2 ] && break
 		sleep 0.1
@@ -631,15 +633,32 @@ sorted_tiled_dims() {
 	initial_dims="$(sorted_dims "$SRC" rem)"
 	$OBS resize-window -t obs -x 80 -y 24
 
-	# Let the re-seed frame drain without adding any remote output.
-	for _ in $(seq 1 50); do
+	# Dimensions agree before the repaint does, so wait for the mirror to take the
+	# remote's new size AND show the same screen. This does not isolate the
+	# re-seed: tmux rewraps the mirror pane's own grid, so plain output converges
+	# with or without it (measured with the re-seed disabled).
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		src_dims="$(sorted_dims "$SRC" rem)"
 		dst_dims="$(sorted_dims "$DST" host-sess:1)"
-		[ "$src_dims" != "$initial_dims" ] && [ "$dst_dims" = "$src_dims" ] && break
+		src_screen="$($SRC capture-pane -p -t rem)"
+		dst_screen="$($DST capture-pane -p -t host-sess:1)"
+		[ "$src_dims" != "$initial_dims" ] && [ "$dst_dims" = "$src_dims" ] &&
+			[ "$dst_screen" = "$src_screen" ] && break
 		sleep 0.1
 	done
-	src_screen="$($SRC capture-pane -p -t rem)"
-	dst_screen="$($DST capture-pane -p -t host-sess:1)"
+
+	if [ "$src_dims" = "$initial_dims" ] || [ "$dst_dims" != "$src_dims" ] || [ "$dst_screen" != "$src_screen" ]; then
+		{
+			echo "no repaint within ${RESIZE_CONVERGE_BUDGET_SECS}s: initial=$initial_dims src=$src_dims dst=$dst_dims"
+			echo "--- remote screen ---"
+			echo "$src_screen"
+			echo "--- mirror screen ---"
+			echo "$dst_screen"
+			echo "--- dg.log ---"
+			tail -40 "$BATS_TEST_TMPDIR/dg.log"
+		} >&3 2>&1 || true
+	fi
 
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
@@ -831,6 +850,8 @@ size_failed() {
 	local log
 	printf '%s\n--- SRC windows ---\n' "$1" >&3
 	$SRC list-windows -a -F '#{session_name}:#{window_index} #{window_width}x#{window_height}' >&3 2>&1 || true
+	printf -- '--- SRC clients ---\n' >&3
+	$SRC list-clients -F '#{client_name} control=#{client_control_mode} #{client_width}x#{client_height} session=#{session_name} flags=#{client_flags}' >&3 2>&1 || true
 	for log in "$BATS_TEST_TMPDIR"/sz-*.log; do
 		[ -f "$log" ] || continue
 		printf -- '--- %s ---\n' "${log##*/}" >&3
@@ -1053,7 +1074,9 @@ two_controllers_up() {
 	# Only the human leaves: detach-client -s rem would detach the bridge too,
 	# and killing the OBS server would take obs-d, the local client, with it.
 	$OBS kill-session -t obs-h
-	for _ in $(seq 1 40); do
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	modes=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
 		modes="$($SRC list-clients -t rem -F '#{client_control_mode}' | sort -u)"
 		[ "$modes" = 1 ] && break
 		sleep 0.1

@@ -91,8 +91,36 @@ press() { # key
 	send "$PREFIX"
 	sleep 0.2
 	send "$1"
-	sleep 0.5
 }
+
+# press_until <key> <cmd...> presses, then waits for the asserted state,
+# pressing again every 3s until it holds (20s overall). A second press sent
+# straight after the first float appears is dropped, not delayed: its bind never
+# runs (the window option it sets stays unset), while a pause of 0.2s or more
+# before it makes it land. Whether the harness (keys fed through the outer
+# server) or the bind drops it is not established. Resending is safe: with the
+# float open the bind only focuses it.
+press_until() {
+	local key=$1 deadline=$((SECONDS + 20)) next
+	shift
+	press "$key"
+	next=$((SECONDS + 3))
+	until "$@"; do
+		((SECONDS < deadline)) || {
+			echo "not true within 20s of pressing $key: $*" >&2
+			dump
+			return 1
+		}
+		if ((SECONDS >= next)); then
+			press "$key"
+			next=$((SECONDS + 3))
+		fi
+		sleep 0.1
+	done
+}
+
+has_labelled_float() { [[ -n "$(labelled_float "$1")" ]]; }
+pane_is_active() { [[ "$(inner display-message -p -t "$1" '#{pane_active}')" == 1 ]]; }
 
 # The pane id of the window's floating pane carrying that @pane_label, or empty.
 labelled_float() { # label
@@ -109,7 +137,10 @@ dump() {
 	# to the ctl verb and this file would assert nothing.
 	[ "$(inner display-message -p -t s: '#{&&:#{@bridge_win},#{@bridge_pane}}')" != 1 ]
 
-	press y
+	press_until y has_labelled_float yazi || {
+		echo "first press opened no yazi float" >&2
+		false
+	}
 	local first
 	first="$(labelled_float yazi)"
 	[ -n "$first" ] || {
@@ -129,16 +160,17 @@ dump() {
 	}
 	inner select-pane -t "$base"
 
-	press y
+	# The second press must focus the first float. A bind that stacked another
+	# float leaves the first one inactive (the new pane takes focus), so this
+	# wait times out and the case fails.
+	press_until y pane_is_active "$first" || {
+		echo "second press did not focus the open float" >&2
+		false
+	}
 	# One labelled float, and it is the pane the first press opened: a second
 	# float would be a different pane id, and the count would be 2.
 	[ "$(labelled_float yazi)" = "$first" ] || {
 		echo "second press stacked another float" >&2
-		dump
-		false
-	}
-	[ "$(inner display-message -p -t "$first" '#{pane_active}')" = 1 ] || {
-		echo "second press did not focus the open float" >&2
 		dump
 		false
 	}
