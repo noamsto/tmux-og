@@ -82,11 +82,11 @@ func TestSeedTerminalModes(t *testing.T) {
 
 // TestSeedTerminalModesBeforeTheRepaint: the mode clears/sets must precede the
 // repaint like the alt/app-cursor clears, so a listener parsing the seed sees
-// every DECSET before the 2J/captured content.
+// every DECSET before the clear/captured content.
 func TestSeedTerminalModesBeforeTheRepaint(t *testing.T) {
 	m := TerminalModes{BracketedPaste: true, FocusReporting: true}
 	out := string(Seed([]byte("x"), 0, 0, false, false, nil, &m, nil, nil))
-	paint := strings.Index(out, "\x1b[2J")
+	paint := strings.Index(out, clearScreen)
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
 	}
@@ -110,11 +110,11 @@ func TestSeedUnknownTerminalModesLeavesModesAlone(t *testing.T) {
 }
 
 // TestSeedClearsModesBeforeTheRepaint: ?1049l restores the saved main screen,
-// so it (and the app-cursor clear) must precede the 2J/captured repaint, or
+// so it (and the app-cursor clear) must precede the clear/captured repaint, or
 // the restore would clobber the freshly reseeded contents.
 func TestSeedClearsModesBeforeTheRepaint(t *testing.T) {
 	out := string(Seed([]byte("x"), 0, 0, true, true, nil, nil, nil, nil))
-	paint := strings.Index(out, "\x1b[2J")
+	paint := strings.Index(out, clearScreen)
 	if paint < 0 {
 		t.Fatalf("seed has no repaint: %q", out)
 	}
@@ -282,7 +282,7 @@ func TestSeedCursorStyle(t *testing.T) {
 			continue
 		}
 		at := strings.Index(out, tc.want)
-		if at < 0 || at > strings.Index(out, "\x1b[2J") {
+		if at < 0 || at > strings.Index(out, clearScreen) {
 			t.Errorf("%s blink=%v: seed %q must carry %q before the repaint", tc.shape, tc.blink, out, tc.want)
 		}
 	}
@@ -331,7 +331,7 @@ func TestSeedNilExtraWritesNothing(t *testing.T) {
 	}
 }
 
-// TestSeedBidiModes: bidi modes are set-only and land before the 2J clear;
+// TestSeedBidiModes: bidi modes are set-only and land before the clear;
 // off or unknown modes emit neither sequence.
 func TestSeedBidiModes(t *testing.T) {
 	for _, tc := range []struct {
@@ -347,17 +347,63 @@ func TestSeedBidiModes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := string(Seed([]byte("x"), 0, 0, false, false, nil, tc.modes, nil, nil))
-			clear := strings.Index(out, "\x1b[2J")
+			clear := strings.Index(out, clearScreen)
 			for _, seq := range []string{"\x1b[8h", "\x1b[?2501h"} {
 				i := strings.Index(out, seq)
 				if want := slices.Contains(tc.want, seq); (i >= 0) != want {
 					t.Errorf("seed %q contains %q = %v, want %v", out, seq, i >= 0, want)
 				} else if want && i > clear {
-					t.Errorf("%q written after the 2J clear in %q", seq, out)
+					t.Errorf("%q written after the clear in %q", seq, out)
 				}
 			}
 			if strings.Contains(out, "\x1b[8l") || strings.Contains(out, "\x1b[?2501l") {
 				t.Errorf("seed %q clears a bidi mode", out)
+			}
+		})
+	}
+}
+
+// TestSeedClearDoesNotScrollIntoHistory pins the byte shape of the clear, not
+// the constant: tmux copies the screen into history on ED2 and on ED0 at home,
+// so neither may appear, and the clear lands once, after every mode write and
+// before the captured bytes (#1239).
+func TestSeedClearDoesNotScrollIntoHistory(t *testing.T) {
+	wrap := true
+	for _, tc := range []struct {
+		name   string
+		alt    bool
+		modes  *TerminalModes
+		mouse  *MouseMode
+		extra  *Extra
+		wrap   *bool
+		cursor [2]int
+	}{
+		{name: "main bare"},
+		{name: "alt bare", alt: true},
+		{name: "main all", modes: &TerminalModes{BracketedPaste: true, FocusReporting: true, BidiDirect: true}, mouse: &MouseMode{All: true, SGR: true}, extra: &Extra{Style: &CursorStyle{Shape: "bar", Blink: true}, Colour: new("#ff8800")}, wrap: &wrap, cursor: [2]int{4, 7}},
+		{name: "alt all", alt: true, modes: &TerminalModes{CursorVisible: true}, mouse: &MouseMode{Standard: true}, extra: &Extra{Colour: new("none")}, wrap: &wrap},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := string(Seed([]byte("CAPTURED"), tc.cursor[0], tc.cursor[1], tc.alt, tc.alt, tc.mouse, tc.modes, tc.wrap, tc.extra))
+			if strings.Contains(out, "\x1b[2J") {
+				t.Errorf("seed %q clears with ED2", out)
+			}
+			for _, home := range []string{"\x1b[H", "\x1b[1;1H"} {
+				if strings.Contains(out, home+"\x1b[J") {
+					t.Errorf("seed %q runs ED0 straight after home %q", out, home)
+				}
+			}
+			if n := strings.Count(out, clearScreen); n != 1 {
+				t.Fatalf("seed %q carries the clear %d times, want 1", out, n)
+			}
+			clear := strings.Index(out, clearScreen)
+			if captured := strings.Index(out, "CAPTURED"); clear > captured {
+				t.Errorf("clear after the captured bytes in %q", out)
+			}
+			for _, seq := range []string{"\x1b[?1049l", "\x1b[?1049h", "\x1b[?1l", "\x1b[?1h", "\x1b[?7h", "\x1b[?2004h", "\x1b[?1003h", "\x1b[?1000h", "\x1b[?1006h", "\x1b[8h", "\x1b[5 q", "\x1b]12;", "\x1b]112"} {
+				if at := strings.Index(out, seq); at > clear {
+					t.Errorf("%q written after the clear in %q", seq, out)
+				}
 			}
 		})
 	}

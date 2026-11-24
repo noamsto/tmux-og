@@ -6246,6 +6246,155 @@ sibling_diag() {
 	[ "$dst_screen" = "$src_screen" ]
 }
 
+# #1239: a reseed repaints the visible screen and never adds lines to the
+# mirror pane's local history, so the mirror's history_size must equal the
+# remote's (which grows only by what the remote itself scrolled off, e.g. on a
+# shrink). The painter fills a fixed main-screen frame by CUP and repaints it
+# under a new frame number when its trigger file appears, so a changed number
+# in the mirror proves a reseed landed (output during a gap is never replayed).
+# The frame is three rows and the cursor stays on the last: a shrink then drops
+# blank rows below it instead of scrolling, so the remote's history stays 0 and
+# does not depend on the sequence of intermediate sizes the mirror never sees.
+
+# hist_painter writes the painter script to $1; its trigger file is $2.
+hist_painter() {
+	cat >"$1" <<-'EOF'
+		#!/bin/sh
+		paint() {
+			r=1
+			while [ "$r" -le 3 ]; do
+				printf '\033[%d;1HFRAME %s ROW %d\033[K' "$r" "$n" "$r"
+				r=$((r + 1))
+			done
+		}
+		n=10
+		paint
+		while :; do
+			if [ -e "$TRIG" ]; then
+				n=$(cat "$TRIG")
+				rm -f "$TRIG"
+				paint
+			fi
+			sleep 0.1
+		done
+	EOF
+}
+
+# hist_trigger <n> asks the painter to repaint as frame <n>.
+hist_trigger() {
+	printf '%s\n' "$1" >"$hist_trig.tmp"
+	mv "$hist_trig.tmp" "$hist_trig"
+}
+
+# hist_mirror_pane <remote-pane> prints the local pane that mirrors it.
+hist_mirror_pane() {
+	$DST list-panes -t host-sess:1 -F '#{@bridge_pane}|#{pane_id}' | awk -F'|' -v p="$1" '$1 == p {print $2; exit}'
+}
+
+# hist_settled <remote-pane> waits until the mirror pane has the remote pane's
+# size and screen, and, when <frame> is given, shows that frame.
+hist_settled() {
+	local rp="$1" frame="${2:-}" deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS)) mp state
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		mp="$(hist_mirror_pane "$rp")"
+		state="$($DST show-options -v -t host-sess -q @bridge_state 2>/dev/null || true)"
+		if [ -n "$mp" ] && [ -z "$state" ] &&
+			[ "$($DST display-message -p -t "$mp" '#{pane_width}x#{pane_height}')" = "$($SRC display-message -p -t "$rp" '#{pane_width}x#{pane_height}')" ] &&
+			[ "$($DST capture-pane -p -t "$mp")" = "$($SRC capture-pane -p -t "$rp")" ] &&
+			{ [ -z "$frame" ] || $DST capture-pane -p -t "$mp" | grep -q "FRAME $frame ROW"; }; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	printf 'hist_settled(%s): mirror=%s state=%q never matched remote %s\n' "$rp" "$mp" "$state" "$rp" >&3
+	return 1
+}
+
+# hist_wait_panes <n> waits until the mirror window lists n panes.
+hist_wait_panes() {
+	local deadline=$((SECONDS + PARK_WAIT_BUDGET_SECS)) got=0
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		got="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l | tr -d ' ')"
+		[ "$got" -eq "$1" ] && return 0
+		sleep 0.1
+	done
+	printf 'hist_wait_panes: mirror has %s panes, wanted %s\n' "$got" "$1" >&3
+	return 1
+}
+
+# hist_check <trigger> <remote-pane> <mirror-pane> samples both history sizes
+# over about a second, logs the pair, and records the trigger in hist_bad when
+# any sample differs or the mirror pane was rebuilt.
+hist_check() {
+	local trigger="$1" rp="$2" mp_before="$3" i mp m r unequal=0 rebuilt=no
+	for ((i = 0; i < 10; i++)); do
+		mp="$(hist_mirror_pane "$rp")"
+		[ "$mp" = "$mp_before" ] || rebuilt=yes
+		m="$($DST display-message -p -t "$mp" '#{history_size}')"
+		r="$($SRC display-message -p -t "$rp" '#{history_size}')"
+		[ "$m" = "$r" ] || unequal=$((unequal + 1))
+		sleep 0.1
+	done
+	printf 'hist %-9s mirror=%s remote=%s unequal_samples=%d/10 rebuilt=%s\n' "$trigger" "$m" "$r" "$unequal" "$rebuilt" >&3
+	if [ "$unequal" -gt 0 ] || [ "$rebuilt" = yes ]; then
+		hist_bad+=("$trigger")
+	fi
+}
+
+@test "a reseed adds no lines to the mirror's local history (#1239)" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	painted_pane="$($SRC split-window -v -P -F '#{pane_id}' -t rem)"
+	# bridge_up's marker goes to the active pane, which split-window made the
+	# painter's; aim it at the shell.
+	$SRC select-pane -t rem:1.1
+	$DST new-session -d -s host-sess -x 100 -y 30
+	bridge_up 2 hist
+
+	# Started only after the mirror is up: a respawn on SRC itself gets no reseed.
+	hist_trig="$BATS_TEST_TMPDIR/hist.trigger"
+	hist_painter "$BATS_TEST_TMPDIR/painter.sh"
+	$SRC send-keys -t "$painted_pane" "TRIG=$hist_trig exec sh $BATS_TEST_TMPDIR/painter.sh" Enter
+	hist_settled "$painted_pane" 10
+	mirror_pane="$(hist_mirror_pane "$painted_pane")"
+	[ -n "$mirror_pane" ]
+
+	hist_bad=()
+	hist_check attach "$painted_pane" "$mirror_pane"
+
+	# 1. Reconnect: the new frame can reach the mirror only through the reseed.
+	outage_start
+	hist_trigger 11
+	outage_end
+	hist_settled "$painted_pane" 11
+	hist_check reconnect "$painted_pane" "$mirror_pane"
+
+	# 2. Resize: a second client shrinks the window and becomes its latest client.
+	# Height only: a width shrink adds history on the remote that the mirror's own
+	# resize path does not reproduce.
+	before_dims="$($SRC display-message -p -t "$painted_pane" '#{pane_width}x#{pane_height}')"
+	obs_attach hist-obs 100 30 "$SRC" rem
+	$OBS resize-window -t hist-obs -x 100 -y 24
+	for _ in $(seq 1 $((RESIZE_CONVERGE_BUDGET_SECS * 10))); do
+		[ "$($SRC display-message -p -t "$painted_pane" '#{pane_width}x#{pane_height}')" != "$before_dims" ] && break
+		sleep 0.1
+	done
+	[ "$($SRC display-message -p -t "$painted_pane" '#{pane_width}x#{pane_height}')" != "$before_dims" ]
+	hist_settled "$painted_pane"
+	hist_check resize "$painted_pane" "$mirror_pane"
+
+	# 3. Reshape: a remote split, then closing the new pane again.
+	panes_before="$($DST list-panes -t host-sess:1 -F '#{pane_id}' | wc -l | tr -d ' ')"
+	extra_pane="$($SRC split-window -d -v -P -F '#{pane_id}' -t "$painted_pane")"
+	hist_wait_panes $((panes_before + 1))
+	$SRC kill-pane -t "$extra_pane"
+	hist_wait_panes "$panes_before"
+	hist_settled "$painted_pane"
+	hist_check reshape "$painted_pane" "$mirror_pane"
+
+	[ "${#hist_bad[@]}" -eq 0 ] || printf 'history differs from the remote after: %s\n' "${hist_bad[*]}" >&3
+	[ "${#hist_bad[@]}" -eq 0 ]
+}
+
 # argv survives a bare respawn-pane; pane -e does not. spawnRenderer now
 # passes sock + remote pane id as renderer arguments, so Respawn is a
 # reconnect, not a repair event — env no longer dies at dial. remain-on-exit
