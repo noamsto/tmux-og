@@ -6250,8 +6250,14 @@ sibling_diag() {
 # mirror pane's local history, so the mirror's history_size must equal the
 # remote's (which grows only by what the remote itself scrolled off, e.g. on a
 # shrink). The painter fills a fixed main-screen frame by CUP and repaints it
-# under a new frame number when its trigger file appears, so a changed number
-# in the mirror proves a reseed landed (output during a gap is never replayed).
+# under a new frame number when its trigger file appears. The reconnect row
+# triggers a repaint while the transport is down, so the mirror can show the new
+# number only after the post-outage reseed or output queued behind it; the sink
+# is FIFO, so the seed is ahead of any live output. The resize and reshape rows
+# drive live frames afterwards (hist_frames) so the confirmation reseed those
+# paths queue is ahead of a frame the mirror has visibly settled on before the
+# sampling starts. Each hist_check clears the mirror's history so a regression
+# in one path cannot ride on lines an earlier row left behind.
 # The frame is three rows and the cursor stays on the last: a shrink then drops
 # blank rows below it instead of scrolling, so the remote's history stays 0 and
 # does not depend on the sequence of intermediate sizes the mirror never sees.
@@ -6286,6 +6292,24 @@ hist_trigger() {
 	mv "$hist_trig.tmp" "$hist_trig"
 }
 
+# hist_frames <remote-pane> repaints three live frames, each waited for in the
+# mirror. Output is a wake for the daemon's main loop: two wakes make a queued
+# confirmation reseed due, and the third frame lands after it.
+hist_frames() {
+	local i
+	for i in 1 2 3; do
+		hist_frame=$((hist_frame + 1))
+		hist_trigger "$hist_frame"
+		hist_settled "$1" "$hist_frame"
+	done
+}
+
+# hist_log dumps the daemon log after a failed wait.
+hist_log() {
+	printf -- '--- daemon log ---\n' >&3
+	tail -40 "$BATS_TEST_TMPDIR/hist.log" >&3 2>/dev/null || true
+}
+
 # hist_mirror_pane <remote-pane> prints the local pane that mirrors it.
 hist_mirror_pane() {
 	$DST list-panes -t host-sess:1 -F '#{@bridge_pane}|#{pane_id}' | awk -F'|' -v p="$1" '$1 == p {print $2; exit}'
@@ -6306,7 +6330,11 @@ hist_settled() {
 		fi
 		sleep 0.1
 	done
-	printf 'hist_settled(%s): mirror=%s state=%q never matched remote %s\n' "$rp" "$mp" "$state" "$rp" >&3
+	printf 'hist_settled(%s): mirror=%s state=%q never matched remote %s\n--- mirror ---\n' "$rp" "$mp" "$state" "$rp" >&3
+	$DST capture-pane -p -t "$mp" >&3 2>&1 || true
+	printf -- '--- remote ---\n' >&3
+	$SRC capture-pane -p -t "$rp" >&3 2>&1 || true
+	hist_log
 	return 1
 }
 
@@ -6319,12 +6347,14 @@ hist_wait_panes() {
 		sleep 0.1
 	done
 	printf 'hist_wait_panes: mirror has %s panes, wanted %s\n' "$got" "$1" >&3
+	hist_log
 	return 1
 }
 
 # hist_check <trigger> <remote-pane> <mirror-pane> samples both history sizes
 # over about a second, logs the pair, and records the trigger in hist_bad when
-# any sample differs or the mirror pane was rebuilt.
+# any sample differs or the mirror pane was rebuilt. It then clears the mirror's
+# history so the next row starts from zero.
 hist_check() {
 	local trigger="$1" rp="$2" mp_before="$3" i mp m r unequal=0 rebuilt=no
 	for ((i = 0; i < 10; i++)); do
@@ -6339,6 +6369,7 @@ hist_check() {
 	if [ "$unequal" -gt 0 ] || [ "$rebuilt" = yes ]; then
 		hist_bad+=("$trigger")
 	fi
+	$DST clear-history -t "$mp"
 }
 
 @test "a reseed adds no lines to the mirror's local history (#1239)" {
@@ -6359,11 +6390,27 @@ hist_check() {
 	[ -n "$mirror_pane" ]
 
 	hist_bad=()
+	hist_frame=10
 	hist_check attach "$painted_pane" "$mirror_pane"
 
-	# 1. Reconnect: the new frame can reach the mirror only through the reseed.
+	# 1. Reconnect: the remote repaints while the transport is down, so the
+	# mirror shows the new frame only through the post-outage reseed or output
+	# queued behind it.
 	outage_start
 	hist_trigger 11
+	hist_frame=11
+	remote_shown=0
+	for _ in $(seq 1 50); do
+		if tmux -S "$src_sock.away" capture-pane -p -t "$painted_pane" | grep -q 'FRAME 11 ROW'; then
+			remote_shown=1
+			break
+		fi
+		sleep 0.1
+	done
+	[ "$remote_shown" = 1 ] || {
+		printf 'remote never showed FRAME 11 during the outage\n' >&3
+		false
+	}
 	outage_end
 	hist_settled "$painted_pane" 11
 	hist_check reconnect "$painted_pane" "$mirror_pane"
@@ -6380,6 +6427,7 @@ hist_check() {
 	done
 	[ "$($SRC display-message -p -t "$painted_pane" '#{pane_width}x#{pane_height}')" != "$before_dims" ]
 	hist_settled "$painted_pane"
+	hist_frames "$painted_pane"
 	hist_check resize "$painted_pane" "$mirror_pane"
 
 	# 3. Reshape: a remote split, then closing the new pane again.
@@ -6389,6 +6437,7 @@ hist_check() {
 	$SRC kill-pane -t "$extra_pane"
 	hist_wait_panes "$panes_before"
 	hist_settled "$painted_pane"
+	hist_frames "$painted_pane"
 	hist_check reshape "$painted_pane" "$mirror_pane"
 
 	[ "${#hist_bad[@]}" -eq 0 ] || printf 'history differs from the remote after: %s\n' "${hist_bad[*]}" >&3

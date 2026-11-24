@@ -363,11 +363,16 @@ func TestSeedBidiModes(t *testing.T) {
 	}
 }
 
-// TestSeedClearDoesNotScrollIntoHistory pins the byte shape of the clear, not
-// the constant: tmux copies the screen into history on ED2 and on ED0 at home,
-// so neither may appear, and the clear lands once, after every mode write and
+// TestSeedClearDoesNotScrollIntoHistory pins the byte shape of the clear
+// against a literal the test owns, so an edit of clearScreen cannot move the
+// pin: tmux copies the screen into history on ED2 and on ED0 at home, so
+// neither may appear, and the clear lands once, after every mode write and
 // before the captured bytes (#1239).
 func TestSeedClearDoesNotScrollIntoHistory(t *testing.T) {
+	const want = "\x1b[H\x1b[2K\x1b[2;1H\x1b[J\x1b[H"
+	if clearScreen != want {
+		t.Fatalf("clearScreen = %q, want %q", clearScreen, want)
+	}
 	wrap := true
 	for _, tc := range []struct {
 		name   string
@@ -393,10 +398,15 @@ func TestSeedClearDoesNotScrollIntoHistory(t *testing.T) {
 					t.Errorf("seed %q runs ED0 straight after home %q", out, home)
 				}
 			}
-			if n := strings.Count(out, clearScreen); n != 1 {
+			for _, bad := range []string{"\x1b[0J", "\x1b[2K\x1b[J"} {
+				if strings.Contains(out, bad) {
+					t.Errorf("seed %q erases with %q", out, bad)
+				}
+			}
+			if n := strings.Count(out, want); n != 1 {
 				t.Fatalf("seed %q carries the clear %d times, want 1", out, n)
 			}
-			clear := strings.Index(out, clearScreen)
+			clear := strings.Index(out, want)
 			if captured := strings.Index(out, "CAPTURED"); clear > captured {
 				t.Errorf("clear after the captured bytes in %q", out)
 			}
