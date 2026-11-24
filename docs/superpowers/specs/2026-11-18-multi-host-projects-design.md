@@ -666,3 +666,354 @@ to avoid editing `known_hosts`).
      again. tmux-og is public:
      the configured list is always the fallback and the only source when
      Tailscale is unavailable, and no code path requires Tailscale.
+
+## Host views (post-v1)
+
+A design spike (#1244), docs only: it changes no shipped code. A project's hub
+session gains three things: a **host bar** in its status line (one chip per
+host, the active one marked, click or a prefix key to switch), a **filtered
+view** (the hub shows only the marked hosts' windows), and an **omni window**
+(one tab whose shell always runs on the active host, in the worktree of the
+same branch there). The spike checks the one risky assumption: that a placed
+mirror window survives being taken out of the hub and put back.
+
+### Mechanism
+
+- **Views are window links.** Each host's mirror windows stay alive. The hub
+  shows a window only while it is linked into the hub; a hidden window sits in a
+  **holding session** (`og-hold-<slug>`, stamped `@og_project_hold=<key>`).
+  `next-window`, `prefix + n/p`, window numbers and the pickers skip hidden
+  windows natively, which a status-only filter cannot do.
+- **Omni window.** One shell window per host (the local shell; a placed mirror
+  of a remote window at the project's checkout on that host). Only the active
+  host's slot is linked into the hub; switching host replaces it in place, then
+  moves the new slot to the worktree of the same branch (below).
+- **Host bar.** `@og_active_host` and `@og_view_hosts` (the marked set) are
+  hub session options; `@og_hostbar` is the rendered chip string.
+
+### Spike method
+
+Scratch servers only. Each case ran on a fresh pair: a "remote" tmux
+(`-L m2src`) and a "local" one (`-L m2dst`), each with its own `TMUX_TMPDIR`,
+`CLAUDE_STATUS_DIR` and `XDG_DATA_HOME`, joined by the daemon's `--test-local`
+seam, exactly the harness of `tests/remote-m2-integration.bats` (no ssh: the
+findings concern the daemon, which the launcher only starts). Host `halo`,
+tmux `next-3.9`, daemon at `51b29973`. The local server had the harness's
+`DST_CONF` (`base-index 1`, `renumber-windows on`, `remain-on-exit on`, the
+nudge hooks). The probe scripts are not in the repo. The daemon was started
+the way `bridge_up_placed` does it:
+
+```bash
+daemon --test-local --src-socket m2src --dst-socket m2dst --session rem --window 1 \
+  --local-sess host --into '$N' --host lab --renderer <renderer> --sock <sock>
+```
+
+Three variants were measured. In every one the remote session `rem` has two
+windows and the subject is the mirror of `rem:1`:
+
+| Variant | Daemon placed into | Hide | Show |
+|---|---|---|---|
+| **A** unlink | the hub (`host`) | `tmux -L m2dst move-window -d -s @2 -t hold:` | `move-window -d -s @2 -t host:` |
+| **B** view link | the holding session (`hold`) | `unlink-window -t host:@2` (the window also stays in `hold`) | `link-window -d -s @2 -t host:` |
+| **C** unlink, stamp-scoped ownership | the hub | as A | as A |
+
+C is A with a scratch-patched daemon (a copy of `picker/` outside the repo; the
+patch is three queries, see "What the daemon asks"). B and C were measured to
+see whether "a window linked into two sessions" or a small daemon change is the
+safer route.
+
+**States.** *Unlinked*: hide, run the event at once, observe for 4 s or more
+while echoing on the remote every 1.2 s (the daemon's maintenance sweep runs
+off control-stream lines). *Relinked*: hide, wait 0.3 s, show, then run the
+event. B also has *linked* (never hidden).
+
+**Events** (all on the scratch servers):
+
+- reshape: `tmux -L m2src split-window -d -t rem:1`
+- reconnect: `kill -9` the daemon's `attach-session` child (the transport)
+- reseed: blank the mirror pane (`send-keys -R -t <pane>`), then force an
+  excursion, `tmux -L m2src switch-client -c <control client> -t other`; the
+  pin-back reseeds, and the pane must show the remote marker again
+- remote window close: `kill-window -t rem:1`
+- remote window add: `new-window -d -t rem:`
+- client resize: a pty client on the hub (`tmux -L m2obs new-session … 'tmux -L m2dst attach -t host'`),
+  then `tmux -L m2obs resize-window -t obs -x 140 -y 50`
+- teardown: `kill -TERM <daemon>`; and `kill-session -t rem` (the #934 path)
+- refused attach: `OG_DAEMON_RETRY_MAX_ELAPSED=2s OG_DAEMON_WAKE_MAX_ELAPSED=2s OG_DAEMON_RESTORE_MAX_ELAPSED=6s`,
+  the transport killed, the remote socket moved aside, a remote server without
+  `rem` started, then `send-keys` into the mirror pane until the log says
+  `refused the attach`
+
+### Findings: variant A (what the spike asked)
+
+"Own windows" means windows in any session (`list-windows -a`) whose
+`@bridge_sock` equals the daemon's socket.
+
+| Case | Unlinked (A) | Relinked after 0.3 s (A) | Deciding code |
+|---|---|---|---|
+| Hide and show, nothing else (`move-window` out and back) | The daemon **kills the window and builds a new one in the hub**: `@2` was gone and `@4` appended at the hub's end after 1.0 s and 4.1 s (two idle runs), at the first control-stream line after the 1 s floor; relinking `@2` then fails `can't find window: @2`. Mirror content keeps painting in the replacement. | Window kept, no duplicate, paints. | `windowSweeper.sweep` (`reconcilewindows.go:309`, floor `windowSweepInterval` `:274`, called per stream line, `daemon.go:1722`) reads `mirrorPaneRows` (`:158`, `list-panes -s -t <hub>`); a window the hub lacks is "lost", `healLostWindows` (`:123`) → `retireMirror` (`daemon.go:2267`) → `closeWindow` (`:2240`, `kill-window -t @2`, which removes the window from every session) → `reconcileWindows` → `createMirrorWindow` (`:293`, `new-window -a -t <hub>:{end}`). The same one-session view is `localWindowSet` (`localpanes.go:82`). |
+| Remote reshape (`split-window`) | Replaced as above; the rebuilt window shows both panes (2 panes, built from the remote's current layout). | Layout followed: 2 panes, window kept. | `%layout-change` routing is by registry entry, which the retire removed. |
+| Reconnect (transport killed) | Transport redialled (new `attach-session` child); the window was replaced as in row 1. | Redialled; window kept, paints. | `reattach` (`conn.go:390`); the retire as above. |
+| Reseed (blank pane, excursion) | Not reachable: the window was replaced first (its replacement is seeded fresh). | Marker back in the pane (2 occurrences; 0 right after the blank). | `reseedWindow` (`daemon.go:2498`) and the pin-back act on registry entries, not sessions. |
+| Remote window close | Window removed everywhere, **no leak**: the registry holds `@2`, and `kill-window -t @2` finds it in the holding session. | Removed. | `closeWindow` (`daemon.go:2240`). |
+| Remote window add | New window lands in the **hub**, not the holding session: the filtered view would show a hidden host's new window (`hub=[@3,@4,@5]`). | Same (`hub=[@2,@3,@4]`). | `createMirrorWindow` (`daemon.go:293`) always targets `cfg.target()`. |
+| Client resize (120x39 → 140x49 client) | The window had been replaced (as in row 1); the remote followed to 140x47. | Mirror and remote both followed within 1 s. | `localArea` (`cmd/daemon/main.go:593`) reads the hub's clients; the hub's `client-resized` hook touches the hub's `@bridge_nudge`. |
+| Teardown, SIGTERM and `kill-session -t rem` | Hub windows killed; **`@2` survives in the holding session** as a dead-renderer corpse (`remain-on-exit`), an orphan nothing will kill. | All killed. | `killOwnWindows` (`placedteardown.go:22`) lists the hub only through `ownWindows` (`placed.go:66`, `hostWindows` `:52`, `list-windows -t <hub>`). |
+| Refused attach | The daemon parks (`lab unreachable; parked until the mirror is focused or typed into`) and, with its window replaced and nothing viewable, never reaches `refused the attach`. | Woke on input, `refused the attach` ×6, `closeOwnWindows` killed the hub windows, daemon ended. | `localViewing` (`park.go:131`) counts only a hub client viewing an own window; a hidden window cannot be viewed. `closeOwnWindows` (`placedteardown.go:39`). |
+
+**Reading.** With the shipped daemon a hidden placed mirror is unsafe in A:
+the daemon asks "is my window still alive?" and "which windows are mine?" of one
+session, so the next sweep (1 to 4 s) kills the hidden window and recreates it
+in the hub, and a teardown leaks it. A fast relink (under about a second) is a
+race, not a mechanism.
+
+### Findings: variants B and C
+
+| Case | B: daemon in the holding session, view link | C: A with stamp-scoped ownership |
+|---|---|---|
+| Hide and show | Linked, unlinked and relinked all keep `@2` in `hold`; no replacement, no duplicate. | Hidden 4 s+ and relinked: no replacement; `@2` kept in `hold`, then back in the hub. |
+| Reshape | `hold`'s `@2` grew to 2 panes while unlinked from the hub, and after relink. | Same, hidden and relinked. |
+| Reconnect | Transport redialled; windows and link kept; paints. | Same. |
+| Reseed | Marker restored in linked, unlinked and relinked. | Marker restored while hidden and relinked. |
+| Remote window close | `@2` gone from `hold` and the hub (`kill-window` removes every link): no stale view link. | `@2` gone from `hold`. |
+| Remote window add | Lands in `hold` (hidden). A `window-linked` hook fires there with `@bridge_host` and `@bridge_sock` set but `@bridge_win` still empty, so a hook can link a marked host's window into the hub by `@bridge_host`. | Lands in the hub (visible). A `window-linked` hook moved it to `hold` (`run-shell -C "move-window -d -s #{hook_window} -t hold:"` behind an `if -F` on `@bridge_host` and the hub's session name): `hold=[@2,@4]` while hidden, `[@4]` after relink. |
+| Client resize | **No follow for 27 s**: the window stayed 100x30 and the remote 100x30 until the 30 s fallback poll; the measurement at 3 s still read 100x30. | Followed in 1 s while hidden and while shown (140x47). |
+| Teardown, SIGTERM and `kill-session -t rem` | All windows killed (the daemon's own session is `hold`). | All killed, hidden or not. |
+| Refused attach | Woke on input; `refused the attach`; all windows gone. | Same; hidden window included. |
+
+Why B fails resize: `readClients` and `localArea` read the clients of the
+daemon's own session (`cmd/daemon/main.go:707`, `-t <target>`), and the daemon
+stamps `@bridge_nudge` on that session (`registerResizeNudge`, `daemon.go:588`).
+A hub client's `client-resized` hook evaluates `#{@bridge_nudge}` in the hub, so
+it is unset and nothing nudges. Five more queries share the assumption (read in
+code, not measured): `ResolveLocalViewIdentity` (`viewident.go:147`),
+`clientViewsArgs` (`reveal.go:56`), `localViewing` (`park.go:131`),
+`paste.go:803` and `pasteprogress.go:138`.
+
+Also in B: a window moved **out of the daemon's session** is the same loss as
+in A. Measured: with the daemon in `hold`, `move-window -s @4 -t host:` made it
+kill `@4` and recreate `@5` in `hold`. In B a window may only be linked, never
+moved.
+
+### What the daemon asks (the symbols that decide the outcome)
+
+Placed ownership is by `@bridge_sock` (`ownWindows`, `placed.go:66`), but every
+*liveness and listing* question is scoped to the hub (`cfg.target()`):
+`hostWindows` (`placed.go:52`), `localWindowSet` (`localpanes.go:82`),
+`mirrorPaneRows` (`reconcilewindows.go:158`), `createMirrorWindow`
+(`daemon.go:293`), and, for panes, `localPaneMap` (`cmd/daemon/main.go:631`) and
+`paste.go:764`. The session pin itself (`pinLocalSession`, `ownership.go:24`;
+`ownsLocalSession`, `reopen.go:119`) is by session id and is unaffected.
+
+The scratch patch behind variant C is the first three of those, each changed
+from "windows of the hub" to "windows (`-a`) whose `@bridge_sock` is mine":
+`list-windows -a -F '#{window_id}|#{@bridge_sock}'` in `localWindowSet`,
+`list-panes -a -F …|#{@bridge_sock}` in `mirrorPaneRows`, and `list-windows -a`
+in `hostWindows`. Because the patch changed `hostWindows` itself, every caller
+moved with it: `ownWindows` (so `killOwnWindows`, `sweepStrayOwnWindows`,
+`rebuildPlaceholder`) and `unregisterPlacedNudge` (`mirroropts.go:116`). Client
+queries stay on the hub, which is where the clients are. It passed 22 runs (11
+events × hidden and relinked; the table above groups SIGTERM and
+`kill-session`). Not measured and not patched: `localPaneMap` and
+`paste.go:764` (a hidden window's agent status is not shipped to local options
+until it is shown again, and a paste into a hidden window cannot happen). For
+P5 `hostWindows` splits in two: an `-a` own-window listing for the callers
+above, and the hub-scoped listing kept for `unregisterPlacedNudge`, since a
+stale `@bridge_nudge` is the safe error. The daemon change is therefore **three
+measured queries (`hostWindows` split, `localWindowSet`, `mirrorPaneRows`) plus
+two pane maps (`localPaneMap`, `paste.go:764`) that P5 changes unmeasured**.
+
+### Recommended mechanism
+
+**C: the hub stays the daemon's target; hide is `move-window` into a holding
+session; ownership becomes stamp-scoped (three measured queries, two pane maps).** B needs the
+daemon to learn about clients of other sessions in six places and a nudge on a
+second session; A is unsafe. C changes only "which windows are mine", which the
+daemon already decides by stamp. The v1 claim "the bridge daemon does not
+change" is untouched: this is post-v1, and the change is P5's first step.
+
+- **Hide a host**: one tmux invocation,
+  `move-window -d -s @a -t <holding id>: ; move-window -d -s @b -t …`,
+  for every window of that host (read from a `list-windows -a` scan:
+  `@bridge_host` equal to the host, `@og_omni` empty). The omni slot is
+  excluded: it is linked in both the hub and the holding session, and
+  `move-window -s @N -t <holding>:` on such a window resolved the holding
+  session's own link and left the hub link in place (rc 0, nothing hidden), so
+  an omni slot is only ever swapped, never hidden. The local chip's windows are
+  the hub windows with no `@bridge_host` and no `@og_omni`. **Show** is the
+  same with `-t <hub id>:` over the windows in the holding session.
+  `move-window` with no index takes the lowest free index, filling gaps; D7's
+  ordering pass restores order when it is on.
+- **A new window of a hidden host** lands in the hub (measured) and a
+  `window-linked` hook moves it out. The hook is gated by a zero-fork `if -F` on
+  the hub's `@og_project` stamp, the window's `@bridge_host`, and the host
+  **not being in** `@og_view_hosts` (the gate pattern of `performance.md`). The
+  last condition matters: show is itself a `move-window` into the hub, which
+  fires `window-linked`, and a gate without it moves the window straight back
+  out (the C prototype's hook lacked it: after the relink `@4` was still
+  moved to `hold`).
+- **Holding session** is created on the first hide, never at project open
+  (nothing starts eagerly), stamped `@og_project_hold`, hidden from the session
+  and window pickers with the `@og_project` conditional-row idiom, and excluded
+  from persistence (`persist.md`; verify in P5).
+
+### Fallback if unlink proves unsafe
+
+If the daemon change is refused, or P5's own tests find C unsafe on some
+host/tmux combination: a **status-only filter**. Hidden windows stay in the hub
+and carry a window option `@og_view_hidden` (stamped by the same
+`window-linked` hook); the grid and tab formats skip them. This needs no daemon
+change but leaks: `prefix + n/p/l`, `select-window -t :N`, `last-window`,
+`M-1…M-7`, the window picker and wall, and window numbers all still see hidden
+windows. A shipped fallback must at least rebind `n`/`p` to skip hidden
+windows and mark them in the pickers. It is the fallback, not the plan.
+
+### Host bar and status-line clicks
+
+Measured on the wrapped build (`nix build .#default`, tmux-og's real config,
+`next-3.9`) on a scratch server (`-L clickp`, a pty client from a second
+server `-L clickobs`, SGR mouse reports written with
+`tmux -L clickobs send-keys -t obs -l $'\e[<0;<col>;<row>M'` then `m`, the
+technique of `tests/remote-m2-integration.bats`' `mouse_at`). The config was not
+modified; the prototype was `source-file`'d and set onto the scratch server:
+
+```tmux
+set -g @og_hostbar "#[range=user|h:local] local #[norange]#[range=user|h:lab] lab #[norange]#[range=user|h:argon] argon #[norange]"
+set -g status-format[0] "#{E:@og_hostbar}<the shipped format>"
+bind -T root MouseDown1Status if -F '#{m:h:*,#{mouse_status_range}}' \
+  "run-shell 'echo host=#{q:mouse_status_range} >> clicks'" 'switch-client -t ='
+```
+
+The clicks were made with these `h:<name>` keys (a 26-character name was a
+fourth chip). The `ogh:<index>` key form recommended below is the same
+mechanism with a prefix that cannot collide with `window`, `left` or
+`session`; it was exercised for the option-only update row, not for clicks.
+
+| Check | Result |
+|---|---|
+| A user range in the status format plus `MouseDown1Status` reading `#{mouse_status_range}` | Works. A click on a chip delivers `mouse_status_range` = the user name (`h:lab`; `host=h:argon` through the dispatch bind), `mouse_status_line` = the line (0), `mouse_x`. |
+| User range names | Truncated to 15 bytes: `h:abcdefghijklmnopqrstuvwxyz` arrived as `h:abcdefghijklm`. Use short keys (`ogh:<index>`), never the host name. |
+| Other ranges | A tab click reports `window`; the else branch `switch-client -t =` (the stock `MouseDown1Status` command, `list-keys -T root`) still selected window 3. The session name's `range=left` still fired `MouseDown1StatusLeft`. A chip click fires only `MouseDown1Status`. |
+| Replacing the stock bind | The first test bind, with no else branch, broke tab clicks (window stayed 1). The dispatch bind must keep `switch-client -t =` as its fallthrough. |
+| Composition with the reflowed grid | With 15 windows (`status` 4, the multi-line grid) reflow holds **session-level copies of `status-format[0..4]`**. A global `status-format[0]` edit after that did **not** reach the session: line 0 had no chips until a structural reflow (a new window) re-copied it. A session option change (`@og_active_host` lab → local, the chip text flipping between `lab` and `[lab]`) updated line 0 with no reflow and no format edit. |
+| Where the chips can live | Line 0 only. Lines 1 to 4 belong to reflow's grid and are overwritten on each full pass. |
+| Fold | Not measured. The folded line is its own session-level `status-format[0]` (`status-bar.md`), so it needs `#{E:@og_hostbar}` too or the chips vanish while folded. |
+| Right-click on a chip | Not measured (the stock `MouseDown3Status` window menu on a user range). Checked in P5. |
+
+So: P5 puts `#{E:@og_hostbar}` into the shipped global `status-format[0]` (and
+the folded line) **once**, so reflow's copies carry the indirection; after that
+every toggle is a session-option write, no reflow and no format edit. A chip
+click handler is `og-project-bin view <index>`; `prefix + <key>` is the same
+verb with `cycle`. Chip text is stamped by the P5 binary from the snapshot
+cache (live/idle/unreachable, drift); host names pass the existing
+`^[A-Za-z0-9][A-Za-z0-9._@-]*$` check, so `#{E:}` never expands remote text.
+
+### Omni window
+
+Slots are plain windows stamped `@og_omni=<host>` in the holding session; the
+hub holds exactly one at a time. Measured on a scratch server (`-f /dev/null`,
+`renumber-windows on`), with slots `A`, `B`, `C` in `hold` and a hub of five:
+
+- `link-window -d -s @B -t hub:3` on an occupied index fails (`index in use: 3`,
+  rc 1). `link-window -b` inserts and shifts later windows.
+- **`link-window -d -k -s @B -t hub:3` replaces the occupant in one command**:
+  the occupant (`slotLocal`) stayed alive in `hold` because it is linked there;
+  later windows did not move. This is the switch. `-k` is safe only because
+  every slot is also linked in `hold`: `move-window -k` over an ordinary hub
+  window (linked nowhere else) **destroyed it** (`tab2` was killed).
+- `unlink-window` leaves a gap (hub indices 2, 4) with `renumber-windows on`;
+  compaction happens on `kill-window`. A slot's index is therefore stable only
+  until some window dies, so the slot is found by `@og_omni`, not by a fixed
+  index.
+
+A remote slot is a placed mirror, so under C it is an ordinary own window of
+the hub's daemon and the omni switch is a `link-window -k` of two windows the
+daemon owns by stamp; the same stamp-scoped ownership covers it. (The omni
+switch itself was measured with plain windows; mirror windows were measured for
+hide and show above.)
+
+**Branch-follow rule.** On a switch to host H, with branch B the hub's current
+omni branch (`@og_omni_branch`, from the active slot's worktree), using H's
+cached snapshot (P1a/P2a):
+
+| Case | Behaviour |
+|---|---|
+| B has a worktree on H | Link the slot, then, only when its pane is at a shell prompt (`pane_current_command` is a shell and no foreground job; never type into a running program), send `cd -- <path>` and Enter. The path is the snapshot's, validated against the spec 2 charset, so no quoting is needed in fish or sh. The slot's own `@og_omni_branch` updates when its `@bridge_dir` follows. |
+| B has no worktree on H | Link the slot unmoved (it keeps its last cwd, or the checkout root for a fresh slot), set the status message `no <B> on <H>`, never create a worktree (a v1 non-goal). `og project new <B> --host H` is the way to make one. |
+| H unreachable (snapshot `unreachable`, or no snapshot) | Do not switch: the chip is dimmed with its cache age, a key press prints `<H> unreachable (cached Ns ago)`, and the active host stays. A host that drops while its slot is shown shows the daemon's existing reconnect state. |
+
+A fresh remote slot is created on first switch with `og project open`'s leaf
+path (`new-window -P -F … -c <worktree>` on the leaf), so a slot's first window
+already starts in the right directory.
+
+### What P1b must expose
+
+1. **Keep the leaf daemon `--into <hub id>`.** C depends on it; B would not.
+   P1b's plan already has it.
+2. **`ensureHostVisible(host)` as a seam in `og project open`.** After pickup
+   the wait-and-`select-window` step must make the host visible first, or the
+   select races the hide hook. A no-op until P5.
+3. **The local scan stays all-sessions** (`localscan.go`, `list-panes -a`), so
+   a hidden window in the holding session is still found for the "reuse a live
+   daemon" step. Add to P1b step 5a (plan): a `localscan.go` unit test over a
+   fake `list-panes -a` reply that holds a stamped mirror pane in a non-hub
+   session. (Not a bats case with a real daemon: the shipped daemon rebuilds a
+   moved window within 1 to 4 s, so such a test could pass on the replacement.)
+4. **From P1a/P2a:** per-host state (`live`/`idle`/`unreachable`, cache age)
+   and `Snapshot.Worktrees[].Branch/Path`, as an exported function, not a
+   second probe; the host-name validation, shared with the chips.
+5. **Hub id pair**: `@og_hold_id` (the holding session's `$N`), written when the
+   holding session is created.
+
+### Fork budget per toggle
+
+`strace -f -e trace=execve` on a scratch server of the wrapped build with a pty
+client attached (`-L forkp`, the hub and a holding session, 8 spare windows;
+the idle baseline was 116 to 143 execs per 3 s from the status pollers, so only
+hook-driven scripts are counted):
+
+| Operation (3 runs) | `tmux-reflow-windows` forks |
+|---|---|
+| `link-window` ×1, and ×3 in one invocation | 0, 0, 0 |
+| `unlink-window` ×1 | 1, 0, 1 |
+| `unlink-window` ×3 in one invocation | 3, 1, 3 |
+| `move-window` hold → hub / hub → hold | 2 / 1 in every run |
+| `link-window -k` omni swap (occupant also linked in `hold`) | 1 in every run |
+
+The `window-unlinked` hook is `run-shell -b … tmux-reflow-windows`, with no
+`--debounce`, so the bound is one reflow per unlinked window (the runs that
+show fewer did not spawn the job; the cause was not chased). A full reflow pass is about N+11 tmux execs on a multi-line grid,
+53 to 73 ms at 5 windows (`performance.md`, #1110). `link-window` fires no
+reflow, so the hub's `@reflow_key` stays at the old window count (measured
+`2:200:49` after the third window was linked; the tab itself rendered, the grid
+stayed stale). Budget: a host toggle with k windows is **one** `move-window`
+invocation plus **one** forced reflow (`tmux-reflow-windows --force <hub>`), not
+k passes. To get that, `window-unlinked` must skip its reflow while a batch flag
+(`@og_view_batch`, set by the toggle on the hub) is set, checked in a zero-fork
+`if -F`, and must skip it for sessions stamped `@og_project_hold` (a toggle
+shows windows by unlinking them from the holding session, which nobody views:
+`move-window` hold → hub measured 2 forks, hub → hold 1). `--debounce` is not
+enough: it still forks one bash per event (`scripts/tmux-reflow-windows.sh`,
+token write plus a short sleep) and coalesces passes, not forks. The toggle then
+clears the flag and runs one `tmux-reflow-windows --force <hub>`. P5 measures
+the result against this table.
+
+### Interaction with D7
+
+A filtered view does **not** replace host-grouped tab ordering: the view picks
+*which* windows are shown, D7 picks *in what order*, and they compose (D7's
+pass runs on `window-linked`/`window-unlinked`, which a toggle fires; its
+`move-window` operates on the linked windows only, so hidden ones are not
+reordered). A relinked window takes the lowest free index, so with D7 off a host
+comes back at a gap or the end; that is the reason to turn D7 on together with a
+non-default view. D7 stays off by default and independent.
+
+### Owner decisions (host views)
+
+| # | Decision | Options | Recommendation |
+|---|---|---|---|
+| D10 | Daemon change to make hide safe | Stamp-scoped ownership (C, three measured queries plus two pane maps); view-link into a holding daemon (B, about six queries plus a second nudge); status-only filter (fallback) | **C.** Measured safe 22/22; the smallest change; B fails resize (27 s). Keep the status filter as the fallback only. |
+| D11 | Prefix key to cycle the active host | `V`, `e`, `u` | **`V`** ("views"). Free in the shipped prefix table: `list-keys -T prefix` on the wrapped build leaves `e j K P Q R u U v V X` and `" % + ^` unbound (`h`/`H` are taken). Also register it in the which-key table at P5 (D6 rule). |
+| D12 | Host slots and omni slots: eager or on demand | Eager at project open; on demand | **On demand.** The holding session at the first hide, an omni slot at the first switch to its host. Eager means a remote shell and a mirror per host at project open, against "nothing starts at server boot". |
+| D13 | Is `local` a chip | Yes; no | **Yes**, the first chip: it is the omni slot of the local shell and the filter for local windows (the hub windows with no `@bridge_host` and no `@og_omni`). |
+| D14 | Default filter | All hosts marked; active host only | **All hosts marked.** A project opens as v1 shows it; the filter is something the user turns on. The active host drives only the omni window. |

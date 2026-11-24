@@ -77,15 +77,16 @@ outer() {
 }
 
 wait_for() {
-	# wait_for <seconds> <command...> -- polls until <command...> exits 0.
-	local timeout=$1
+	# wait_for <seconds> <command...> -- polls until <command...> exits 0, bounded
+	# by wall-clock time (a loaded runner stretches each poll, so counting
+	# iterations would stretch the bound with it).
+	local deadline=$((SECONDS + $1))
 	shift
-	local remaining=$timeout
-	while ((remaining-- > 0)); do
+	while :; do
 		"$@" && return 0
-		sleep 1
+		((SECONDS < deadline)) || return 1
+		sleep 0.1
 	done
-	return 1
 }
 
 client_count() { inner list-clients -t main -F '#{client_name}' 2>/dev/null | grep -c .; }
@@ -99,10 +100,20 @@ reload_count() { wc -l <"$RELOADS" 2>/dev/null || echo 0; }
 # settle -- waits for the backgrounded job to have released its lock (a job
 # already gone before the first check just means it finished faster than we
 # could observe it holding the lock), plus a trailing buffer for the negative
-# assertions that call this with no earlier positive wait of their own.
+# assertions that call this with no earlier positive wait of their own. The
+# buffer is at least one second and extends while reloads are still landing, so
+# a slow runner can only lengthen the window a broken handler has to show itself.
 settle() {
+	local before after deadline=$((SECONDS + 20))
 	wait_for 20 lock_gone
-	sleep 1
+	before="$(reload_count)"
+	while :; do
+		sleep 1
+		after="$(reload_count)"
+		[ "$after" = "$before" ] && lock_gone && return 0
+		before="$after"
+		((SECONDS < deadline)) || return 0
+	done
 }
 
 # report OUTER-WINDOW-ID light|dark -- fakes the terminal's theme response by
@@ -115,6 +126,27 @@ report() {
 	dark) seq=$'\e[?997;1n' ;;
 	esac
 	outer send-keys -t "$target" -l "$seq"
+}
+
+# report_until TARGET light|dark CONDITION... -- reports, then waits for the
+# condition. On a loaded runner the attach client may not be reading its tty yet
+# when the first report arrives, so one send can be lost; the same report is
+# resent every 3s, but only while the hook has not stamped it
+# (@og_client_theme_want is not yet the reported kind). A slow apply therefore
+# never starts a second handler job, which would hold the lock after settle.
+report_until() {
+	local target=$1 kind=$2 deadline=$((SECONDS + 20)) next
+	shift 2
+	report "$target" "$kind"
+	next=$((SECONDS + 3))
+	while ! "$@"; do
+		((SECONDS < deadline)) || return 1
+		if ((SECONDS >= next)); then
+			[ "$(inner show-options -gv @og_client_theme_want 2>/dev/null)" = "$kind" ] || report "$target" "$kind"
+			next=$((SECONDS + 3))
+		fi
+		sleep 0.1
+	done
 }
 
 # start_client -- prints the id of a new outer window whose command is a real
@@ -222,8 +254,7 @@ write_fake_toggle() {
 	state_before="$(cat "$XDG_STATE_HOME/theme-state.json")"
 	applied_before="$(inner show-options -gv @og_theme_applied 2>/dev/null)"
 
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 
 	[ "$(($(reload_count) - BASELINE))" -eq 1 ]
@@ -243,8 +274,7 @@ write_fake_toggle() {
 @test "repeat light report: no-op, reloads still 1" {
 	theme_setup
 
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 	local after_first
 	after_first="$(reload_count)"
@@ -278,8 +308,7 @@ write_fake_toggle() {
 
 	theme_setup
 
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 
 	# theme-toggle sits unused on PATH: the handler never shells out to it.
@@ -295,17 +324,17 @@ write_fake_toggle() {
 	wait_for 20 has_client_count 2
 
 	report "$CLIENT1" dark
-	report "$client2" light
+	report_until "$client2" light flavor_is latte
 	settle
 
-	wait_for 20 flavor_is latte
-	thm_bg_is '#eff1f5'
+	# The reload sets the flavor before it re-derives @thm_*, so the flavor
+	# reading latte does not mean thm_bg is set yet: wait on thm_bg itself.
+	wait_for 20 thm_bg_is '#eff1f5'
 }
 
 @test "attach burst (dark then light) on latte: no reload, never mocha" {
 	theme_setup
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 	local after_light
 	after_light="$(reload_count)"
@@ -326,8 +355,7 @@ write_fake_toggle() {
 	theme_setup
 	printf 'bogus-command-xyz\n' >"$HOME/.config/tmux/tmux.conf"
 
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 
 	local bg
@@ -378,10 +406,9 @@ write_fake_toggle() {
 	# A fresh report issued after the detach: any earlier attach-time report
 	# from the ssh client would have been gated out while CLIENT1 was still
 	# present, so re-issuing here is what makes this observable.
-	report "$client_ssh" light
+	report_until "$client_ssh" light flavor_is latte
 
-	wait_for 20 flavor_is latte
-	thm_bg_is '#eff1f5'
+	wait_for 20 thm_bg_is '#eff1f5'
 }
 
 @test "a failing plugin in the reload never paints a pane" {
@@ -389,8 +416,7 @@ write_fake_toggle() {
 	printf 'run-shell "echo x >> %s"\nrun-shell "exit 1"\nsource-file %s\n' "$RELOADS" "$TMUX_CONF" \
 		>"$HOME/.config/tmux/tmux.conf"
 
-	report "$CLIENT1" light
-	wait_for 20 applied_is light
+	report_until "$CLIENT1" light applied_is light
 	settle
 
 	no_pane_in_mode
@@ -435,9 +461,8 @@ assert_report_deferred_to_toggle() {
 	write_fake_toggle fail
 
 	"$BATS_TEST_TMPDIR/bin/theme-toggle" || true
-	report "$CLIENT1" light
 
-	wait_for 20 thm_bg_is '#eff1f5'
+	report_until "$CLIENT1" light thm_bg_is '#eff1f5'
 }
 
 @test "a process merely naming theme-toggle does not delay the report" {
@@ -447,13 +472,15 @@ assert_report_deferred_to_toggle() {
 	# argument, so the deferral must not treat it as a running toggle.
 	local dir="$BATS_TEST_TMPDIR/decoy"
 	mkdir -p "$dir"
-	echo 'sleep 8' >"$dir/theme-toggle"
-	(cd "$dir" && exec -a rg bash theme-toggle) &
+	# The decoy outlives the wait below (the handler defers up to
+	# OG_LOCK_STALE_SECONDS=60): a deferral on it would still miss the 20s wait.
+	# Its trap reaps its own sleep, and it holds no bats fd 3.
+	echo "trap 'kill \$!' TERM; sleep 60 & wait" >"$dir/theme-toggle"
+	(cd "$dir" && exec -a rg bash theme-toggle 3>&-) &
 	local decoy_pid=$!
 
-	report "$CLIENT1" light
 	local rc=0
-	wait_for 5 applied_is light || rc=1
+	report_until "$CLIENT1" light applied_is light || rc=1
 	kill "$decoy_pid" 2>/dev/null || true
 	[ "$rc" -eq 0 ]
 	flavor_is latte
