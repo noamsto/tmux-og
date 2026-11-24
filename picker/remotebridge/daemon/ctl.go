@@ -68,6 +68,9 @@ type ctlState struct {
 	view        *Viewing
 	relayTarget string
 	claimNow    func()
+
+	// handoff has its own mutex, so it sits outside the mu -> sendMu order.
+	handoff handoffWatch
 }
 
 func newCtlState() *ctlState {
@@ -181,6 +184,9 @@ type ctlRequest struct {
 	// on, or "" for a verb that reports nothing back (carouselprobe.go).
 	probePane  string
 	queueClaim bool
+	// armsHandoff carries the verb's flag of the same name through to the
+	// handler.
+	armsHandoff bool
 }
 
 // verb is one entry of the fixed translation table. The daemon builds every
@@ -216,6 +222,10 @@ type verb struct {
 	// (#593). A field here for needsView's reason: the table stays the only
 	// thing that knows what a verb means.
 	probe bool
+	// armsHandoff marks a verb that expects the remote to land the client on a
+	// window or session, so the daemon watches for the landing failing
+	// (handoffnotice.go). A field here for needsView's reason.
+	armsHandoff bool
 	// publishesEnv marks a verb that launches a process reading the session's
 	// relay and cell env, so the press first writes this controller's values
 	// there (pressEnvCmds) and queues an owner claim.
@@ -754,7 +764,7 @@ var verbs = map[string]verb{
 	// that read GitHub data, and nothing reaches the remote unless every entry
 	// passes. Even then the values ride only as positional parameters to a
 	// constant script, never as script text.
-	"handoff": {args: 2, optArgs: maxHandoffEntries - 1, layout: true, moves: true, build: func(pane, win, _ string, a []string) ([]string, error) {
+	"handoff": {args: 2, optArgs: maxHandoffEntries - 1, layout: true, moves: true, armsHandoff: true, build: func(pane, win, _ string, a []string) ([]string, error) {
 		es, err := parseHandoff(a[1:])
 		if err != nil {
 			return nil, err
@@ -1132,7 +1142,7 @@ func (c *ctlState) parseCtl(argv []string, sess string) (ctlRequest, error) {
 	if err != nil {
 		return ctlRequest{}, err
 	}
-	req := ctlRequest{cmds: cmds, wantWindows: v.windows, needsView: v.needsView}
+	req := ctlRequest{cmds: cmds, wantWindows: v.windows, needsView: v.needsView, armsHandoff: v.armsHandoff}
 	if v.publishesEnv {
 		req.cmds = append(pressEnvCmds(c.relayTarget, c.view), cmds...)
 		req.queueClaim = true
@@ -1264,6 +1274,9 @@ func handleCtl(cst *ctlState, rep *viewReplacer, probe *carouselProbe, argv []st
 	// budget reading an option nothing is going to stamp.
 	if req.probePane != "" {
 		probe.arm(req.probePane)
+	}
+	if req.armsHandoff {
+		cst.handoff.arm()
 	}
 	if req.queueClaim && cst.claimNow != nil {
 		cst.claimNow()

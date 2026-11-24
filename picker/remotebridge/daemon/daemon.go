@@ -75,7 +75,7 @@ type Config struct {
 	SendCtl func(cmds ...string) bool
 	// HandOff opens a remote session this bridge was switched to as a mirror of
 	// its own (injected; prod = og-remote-open, nil = off). See sessionPin.
-	HandOff func(remoteSession string)
+	HandOff func(remoteSession string) error
 	// Dial opens a fresh control-mode connection. Called for the first attach
 	// and again after every drop; nil is single-shot over Ctl — a drop is
 	// terminal, exactly the behaviour before #482.
@@ -1184,6 +1184,11 @@ func runMirror(cfg Config) error {
 	}
 	connCh := make(chan helloConn, 64)
 	cst := newMirrorCtlState(cfg.View, env.target, cfg.own, ownerOn)
+	pin.unhandled = func() {
+		if cst.handoff.take() {
+			notifyHost(cfg, noticeSessionNotFollowed)
+		}
+	}
 	// One query construction for the viewing identity, shared by the ctl
 	// handler's raise below, watchLocalClient's re-resolve (R10) and the
 	// startup seed in cmd/daemon/main.go, rather than building the
@@ -1519,6 +1524,12 @@ func runMirror(cfg Config) error {
 	// its floor on every reconnect.
 	sweeper := &windowSweeper{}
 
+	// selectedBeforeAdd is the remote window a %session-window-changed named
+	// before its own %window-add: a `new-window` without -d emits the select
+	// first, so the registry cannot translate it yet. The WindowAdd branch
+	// follows it once the mirror exists.
+	var selectedBeforeAdd string
+
 	// dispatch handles one notification, whether it came straight off the stream
 	// or a reply reader queued it while awaiting a reply. It reports whether the
 	// bridge is finished. Only the main loop calls it: several branches run their
@@ -1547,12 +1558,33 @@ func runMirror(cfg Config) error {
 		case controlmode.SessionChanged:
 			return pin.apply(l, reg, router, rt)
 		case controlmode.SessionWindowChanged:
-			if argv, ok := translateWindowNotification(l, reg); ok && hostCurrentIsOwn(cfg) {
-				_ = cfg.LocalTmux(argv...)
+			argv, ok := translateWindowNotification(l, reg)
+			switch {
+			case ok:
+				selectedBeforeAdd = ""
+				if hostCurrentIsOwn(cfg) {
+					cst.handoff.disarm()
+					_ = cfg.LocalTmux(argv...)
+				}
+			case len(l.Args) > 1 && (pin.id == "" || l.Args[0] == pin.id):
+				selectedBeforeAdd = l.Args[1]
 			}
 		case controlmode.WindowAdd:
 			if len(l.Args) > 0 {
 				addWindow(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
+				if l.Args[0] == selectedBeforeAdd {
+					selectedBeforeAdd = ""
+					argv, ok := translateWindowNotification(controlmode.Line{Kind: controlmode.SessionWindowChanged, Args: []string{"", l.Args[0]}}, reg)
+					switch {
+					case !ok:
+						if cst.handoff.take() {
+							notifyHost(cfg, noticeWindowNotMirrored)
+						}
+					case hostCurrentIsOwn(cfg):
+						cst.handoff.disarm()
+						_ = cfg.LocalTmux(argv...)
+					}
+				}
 			}
 		case controlmode.WindowClose:
 			if len(l.Args) > 0 {

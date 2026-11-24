@@ -62,6 +62,33 @@ Not done: rebuilding the mirror windows for the new session in place. A daemon
 mirrors exactly one remote session (see the invariant below); the excursion is
 pinned back and reseeded, never followed.
 
+### Window follow ordering and hand-off notices (#1261)
+
+A remote `new-window` without `-d` (the worktrunk post-switch hook's no-match
+branch, so prdash's Enter on a PR with no window) emits
+`%session-window-changed @N` **before** `%window-add @N`: the registry cannot
+translate the select yet, and `addWindow` never selects. The dispatch loop
+keeps the unmirrored id (`selectedBeforeAdd`, only for the pinned session, or any
+when pinning is off) and applies the follow after the `%window-add` has mirrored
+it, under the same `hostCurrentIsOwn` gate. So a dedicated mirror now follows
+any remote `new-window` without `-d`, not only a hand-off. The select-window
+(window already mirrored) and switch-client (session hand-off) branches already
+worked; the harness cases are the `prdash hand-off:` tests in
+`tests/remote-m2-integration.bats`.
+
+A served `handoff` ctl verb arms `handoffWatch` for 60s (`armsHandoff` in the
+verb table). While armed, a landing that fails raises a local
+`display-message -d 5000` on the mirror session's non-control clients
+(`notifyClients`; a placed mirror only those looking at one of its own
+windows): the window never gets mirrored (`--select` filter, `addWindow`
+failure), or a session switch arrives in a placed mirror where `HandOff` is
+off. A failing `og-remote-open` hand-off notifies regardless of the watch
+(`Config.HandOff` returns the error). A follow skipped because
+`hostCurrentIsOwn` is false stays silent: the user left the mirror. Accepted
+silent cases: `wt` selecting an existing window a `--select` filter excludes
+(no `%window-add`), and a remote without the post-switch hook. The `ctl` side
+(`--display-error`) and the launcher script's own notices are in `scripts.md`.
+
 ### Placed mirrors (`--into`, #985)
 
 The invariant is **one daemon ↔ one remote session ↔ one host session**. The host

@@ -36,11 +36,14 @@ printf '%s\n' "\$PRDASH_ACTION_FILE" >"\$OUT/prdash.action"
 printf '%s\n' "\$PRDASH_REPOS_ROOT" >"\$OUT/prdash.root"
 if [[ -d \$PRDASH_REPOS_ROOT && -z \$(ls -A "\$PRDASH_REPOS_ROOT") ]]; then echo empty >"\$OUT/prdash.rootstate"; fi
 cat "\$FIXTURE" >>"\$PRDASH_ACTION_FILE"
+exit "\${PRDASH_STUB_STATUS:-0}"
 STUB
 	cat >"$BATS_TEST_TMPDIR/bin/ctl" <<STUB
 #!$BASH
 printf '%s\n' "\$@" >>"\$OUT/ctl.argv"
 echo call >>"\$OUT/ctl.calls"
+if [[ -n \${CTL_STUB_ERR:-} ]]; then echo "\$CTL_STUB_ERR" >&2; fi
+exit "\${CTL_STUB_STATUS:-0}"
 STUB
 	chmod +x "$BATS_TEST_TMPDIR/bin/prdash" "$BATS_TEST_TMPDIR/bin/ctl"
 
@@ -108,6 +111,7 @@ launch() { env TMUX_PANE="$PANE" bash scripts/tmux-prdash-mirror.sh "$BATS_TEST_
 	[ "$status" -eq 0 ]
 	[ -f "$OUT/prdash.argv" ]
 	[ ! -e "$OUT/ctl.calls" ]
+	[ ! -s "$OG_SHIM_LOG" ]
 }
 
 @test "a line with shell syntax reaches ctl byte-identical and runs nothing" {
@@ -155,4 +159,41 @@ launch() { env TMUX_PANE="$PANE" bash scripts/tmux-prdash-mirror.sh "$BATS_TEST_
 	[ "$status" -eq 0 ]
 	[ ! -e "$OUT/ctl.calls" ]
 	grep -q 32 "$OG_SHIM_LOG"
+}
+
+@test "a failing prdash shows its status and forwards nothing" {
+	stamp o/n %5
+	printf '%s\n' 'W|o/n#1|x' >"$FIXTURE"
+	PRDASH_STUB_STATUS=3 run launch
+	[ "$status" -eq 0 ]
+	[ ! -e "$OUT/ctl.calls" ]
+	grep -q 'status 3' "$OG_SHIM_LOG"
+}
+
+@test "a failing ctl shows its last stderr line" {
+	stamp o/n %5
+	printf '%s\n' 'W|o/n#1|x' >"$FIXTURE"
+	CTL_STUB_STATUS=1 CTL_STUB_ERR=$'first\nno such client' run launch
+	[ "$status" -eq 0 ]
+	grep -q 'hand-off failed: no such client' "$OG_SHIM_LOG"
+	[ -z "$(grep first "$OG_SHIM_LOG" || true)" ]
+}
+
+@test "a failing ctl without stderr shows its exit status" {
+	stamp o/n %5
+	printf '%s\n' 'W|o/n#1|x' >"$FIXTURE"
+	CTL_STUB_STATUS=7 run launch
+	[ "$status" -eq 0 ]
+	grep -q 'hand-off failed: exit status 7' "$OG_SHIM_LOG"
+}
+
+@test "a failing ctl whose error quotes a #(command) runs nothing" {
+	stamp o/n %5
+	printf '%s\n' 'W|o/n#1|x' >"$FIXTURE"
+	# shellcheck disable=SC2016 # the hostile text must stay literal
+	CTL_STUB_STATUS=1 CTL_STUB_ERR='bad target "#(touch '"$BATS_TEST_TMPDIR"'/pwned)"' run launch
+	[ "$status" -eq 0 ]
+	grep -q 'hand-off failed' "$OG_SHIM_LOG"
+	sleep 1
+	[ ! -e "$BATS_TEST_TMPDIR/pwned" ]
 }

@@ -4813,6 +4813,134 @@ EOF
 	[ "$handoff" = "lab other " ]
 }
 
+# handoff_rig <mode> brings up the prdash-in-a-mirror hand-off end to end: a
+# mirrored `rem` session of two windows (`main`, and `origin` where prdash was
+# pressed), an attached local client on the mirror session, a remote checkout
+# of o/n, and a `wt` on the remote's PATH that does what the worktrunk
+# post-switch hook does in <mode> (newwin: a new window `wtwin` beside the
+# float's, selected like `new-window` without -d; select: select-window of
+# `main`; session: switch-client to the session `other`). The prdash stub
+# reports one PR row, so only the launcher script, the real ctl and the real
+# daemon are under test.
+handoff_rig() {
+	local mode="$1" win
+	rig_co="$BATS_TEST_TMPDIR/co"
+	mkdir -p "$rig_co" "$BATS_TEST_TMPDIR/wtbin"
+	git -C "$rig_co" init -q
+	git -C "$rig_co" remote add origin https://github.com/o/n.git
+	printf '%s\n' "$mode" >"$BATS_TEST_TMPDIR/wt.mode"
+	cat >"$BATS_TEST_TMPDIR/wtbin/wt" <<WT
+#!/bin/sh
+sess=\$(tmux display-message -t "\$TMUX_PANE" -p '#{session_name}')
+case \$(cat "$BATS_TEST_TMPDIR/wt.mode") in
+newwin) tmux new-window -a -t "\$sess" -n wtwin -c "$rig_co" ;;
+select) tmux select-window -t "\$sess:main" ;;
+session) tmux switch-client -t other ;;
+esac
+WT
+	chmod +x "$BATS_TEST_TMPDIR/wtbin/wt"
+	# The remote server inherits PATH when it starts, which is what the hand-off
+	# float restores.
+	export PATH="$BATS_TEST_TMPDIR/wtbin:$PATH"
+
+	$SRC new-session -d -s rem -n main -x 100 -y 30
+	$SRC set-option -g automatic-rename off
+	$SRC new-window -d -t rem -n origin
+	$SRC new-session -d -s other -x 100 -y 30
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$OBS kill-server 2>/dev/null || true
+	$OBS new-session -d -s obsH -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host-sess"
+	for _ in $(seq 1 40); do
+		[ "$($DST list-clients -t host-sess 2>/dev/null | grep -c '^')" -ge 1 ] && break
+		sleep 0.1
+	done
+
+	open_stub="$BATS_TEST_TMPDIR/remote-open-stub"
+	printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"%s/handoff.args"\nexit %s\n' "$BATS_TEST_TMPDIR" "${OPEN_STUB_EXIT:-0}" >"$open_stub"
+	chmod +x "$open_stub"
+	bridge_up 1 ho --host lab --remote-open "$open_stub" || return 1
+
+	cat >"$BATS_TEST_TMPDIR/prdash" <<PRDASH
+#!$BASH
+printf 'pr1\t{"repo":"o/n","kind":"pr","target":"feat-x","pr":7,"args":["switch","feat-x"],"key":"pr1"}\n' >"\$PRDASH_ACTION_FILE"
+PRDASH
+	chmod +x "$BATS_TEST_TMPDIR/prdash"
+
+	# The press happens in `origin`, the window the client is looking at.
+	$SRC select-window -t rem:origin
+	wait_client_view "host-sess origin" || return 1
+	rig_remote_pane="$($SRC display-message -p -t rem:origin '#{pane_id}')"
+	win="$($DST display-message -p -t host-sess:origin '#{window_id}')"
+	$DST set-option -w -t "$win" @bridge_repo o/n
+	$DST set-option -w -t "$win" @bridge_dir "$rig_co"
+	$DST set-option -w -t "$win" @og_prdash_origin "$rig_remote_pane"
+	$DST set-option -t host-sess @bridge_sock "$sock"
+	rig_local_pane="$($DST display-message -p -t "$win" '#{pane_id}')"
+}
+
+# handoff_press runs the mirror launcher exactly as the float does.
+handoff_press() {
+	TMUX="$($DST display-message -p '#{socket_path}'),0,0" TMUX_PANE="$rig_local_pane" \
+		bash "$BATS_TEST_DIRNAME/../scripts/tmux-prdash-mirror.sh" "$BATS_TEST_TMPDIR/prdash" "$CTL"
+}
+
+# wait_client_view <want> polls until the attached local client's
+# "<session> <window name>" is <want>, and prints what it saw when it never is.
+wait_client_view() {
+	local got=""
+	for _ in $(seq 1 100); do
+		got="$($DST list-clients -F '#{client_session} #{window_name}' | head -1)"
+		[ "$got" = "$1" ] && return 0
+		sleep 0.1
+	done
+	printf 'wait_client_view: client on %q, wanted %q\n' "$got" "$1" >&3
+	return 1
+}
+
+@test "prdash hand-off: a wt that opens a new remote window lands the local client on its mirror" {
+	handoff_rig newwin
+	handoff_press
+	wait_client_view "host-sess wtwin"
+}
+
+@test "prdash hand-off: a wt that selects an existing remote window lands the local client on its mirror" {
+	handoff_rig select
+	handoff_press
+	wait_client_view "host-sess main"
+}
+
+@test "prdash hand-off: a wt that switches the remote session hands that session to the launcher" {
+	handoff_rig session
+	handoff_press
+	local got=""
+	for _ in $(seq 1 100); do
+		got="$(tr '\n' ' ' <"$BATS_TEST_TMPDIR/handoff.args" 2>/dev/null || true)"
+		[ "$got" = "lab other " ] && break
+		sleep 0.1
+	done
+	[ "$got" = "lab other " ]
+	# Pinned back: the mirror's control client stays on its own session.
+	[ "$($SRC list-clients -F '#{client_control_mode} #{client_session}' | grep '^1 ' | head -1)" = "1 rem" ]
+}
+
+@test "prdash hand-off: a failing launcher hand-off shows a notice on the local client" {
+	OPEN_STUB_EXIT=1
+	handoff_rig session
+	handoff_press
+	local client got="" seen=no
+	client="$($DST list-clients -F '#{client_name}' | head -1)"
+	for _ in $(seq 1 100); do
+		got="$($DST show-messages -t "$client" 2>/dev/null || true)"
+		[[ $got == *"could not open the remote session as a mirror"* ]] && {
+			seen=yes
+			break
+		}
+		sleep 0.1
+	done
+	[ "$seen" = yes ] || printf 'no notice in client messages: %q\n' "$got" >&3
+	[ "$seen" = yes ]
+}
+
 # m2_pane_gate_failed prints why a renderer-pane readiness gate gave up, plus
 # both sides' pane lists and the daemon's own log, so a CI-only failure here is
 # diagnosable without a re-run.

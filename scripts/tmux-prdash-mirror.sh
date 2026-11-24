@@ -16,7 +16,8 @@
 # writes only path-free hand-off entries. Its action file is then forwarded in
 # ONE ctl call: a bulk `W` must run sequentially in a single remote float. The
 # daemon caps a hand-off at 32 entries; a larger one is refused here rather than
-# forwarded partially.
+# forwarded partially. A prdash that exits non-zero forwards nothing and says so;
+# so does a ctl that fails (ctl exits 0 once it has shown its own error banner).
 #
 # An invalid @bridge_repo falls back to the remote prdash (ctl `tool`). An
 # invalid pane id (never a remote pane) only notifies.
@@ -50,6 +51,11 @@ mkdir "$work/root"
 cd "$work" || exit 1
 
 PRDASH_ACTION_FILE="$work/handoff" PRDASH_REPOS_ROOT="$work/root" "$prdash" --repo "$repo"
+status=$?
+if ((status != 0)); then
+	tmux display-message -d 5000 "prdash: exited with status $status; nothing was handed off"
+	exit 0
+fi
 
 [[ -s $work/handoff ]] || exit 0
 mapfile -t lines <"$work/handoff"
@@ -59,4 +65,12 @@ if ((${#lines[@]} > 32)); then
 	exit 0
 fi
 
-"$ctl" --display-error="$client" --sock="$sock" handoff "$pane" "$dir" "${lines[@]}"
+"$ctl" --display-error="$client" --sock="$sock" handoff "$pane" "$dir" "${lines[@]}" 2>"$work/err"
+status=$?
+if ((status != 0)); then
+	# ctl's error can quote a PR branch name; display-message would expand a
+	# `#(...)` in it, so double every `#`.
+	err=$(tail -n 1 "$work/err")
+	err=${err//#/##}
+	tmux display-message -d 5000 "prdash: hand-off failed: ${err:-exit status $status}"
+fi
