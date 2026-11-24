@@ -796,7 +796,6 @@ func (o ownerCtl) dropped(name string) {
 	}
 }
 
-// ownsNow decides from a fresh read, falling back to the belief when it fails.
 func (o ownerCtl) ownsNow() bool {
 	st, ok := o.read()
 	if !ok {
