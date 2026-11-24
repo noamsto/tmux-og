@@ -539,3 +539,121 @@ func TestOwnerCtlCatchesUpWhenTheViewMoves(t *testing.T) {
 		})
 	}
 }
+
+const (
+	ourRecordClients     = "client-me|1|attached,control-mode"
+	foreignRecordClients = "client-me|1|attached,control-mode\nclient-b|1|attached,control-mode"
+)
+
+func wantOneRecalc(t *testing.T, sent *[]string) {
+	t.Helper()
+	if want := []string{ClientSizeCmd(100, 40)}; !reflect.DeepEqual(*sent, want) {
+		t.Errorf("sent %q, want %q", *sent, want)
+	}
+}
+
+// TestOwnerCtlLateJoinSnapshotRecalculates: the human left before its
+// %session-changed was handled, so the membership read enforce takes no longer
+// lists it; its %client-detached must still recalculate.
+func TestOwnerCtlLateJoinSnapshotRecalculates(t *testing.T) {
+	own := newSizeOwner(tokA)
+	own.noteClaim("client-me")
+	own.setSelf("client-me")
+	reply := ownerReadReply("client-me", tokA+"|client-me", ourRecordClients)
+	o, sent := testOwnerCtl(reply+reply, own, recordedCV())
+
+	o.sessionChanged("/dev/pts/3", "$1")
+	if len(*sent) != 0 {
+		t.Fatalf("join of a client already gone sent %q", *sent)
+	}
+	*sent = nil
+	o.detached("/dev/pts/3")
+	wantOneRecalc(t, sent)
+	o.detached("/dev/pts/3")
+	wantOneRecalc(t, sent)
+}
+
+// TestOwnerCtlClaimIfStaleReadThenDetachRecalculates: the activity read that
+// replaces the member set must not make a later detach of a member it dropped
+// silent.
+func TestOwnerCtlClaimIfStaleReadThenDetachRecalculates(t *testing.T) {
+	own := newSizeOwner(tokA)
+	own.noteClaim("client-me")
+	own.setSelf("client-me")
+	own.addMember("/dev/pts/3")
+	reply := ownerReadReply("client-me", tokA+"|client-me", ourRecordClients)
+	o, sent := testOwnerCtl(reply+reply, own, recordedCV())
+
+	o.claimIfStale()
+	if len(*sent) != 0 {
+		t.Fatalf("claimIfStale on a healthy record sent %q", *sent)
+	}
+	o.detached("/dev/pts/3")
+	wantOneRecalc(t, sent)
+}
+
+// TestOwnerCtlDroppedDecidesFromTheFreshRecord: the ownership belief lags
+// foreign claims and stale reports, so a departure is judged on a fresh read
+// and the belief only covers a failed one.
+func TestOwnerCtlDroppedDecidesFromTheFreshRecord(t *testing.T) {
+	const unsetReport = "client-me|attached,control-mode|"
+	ours := ownerReadReply("client-me", tokA+"|client-me", ourRecordClients)
+	tests := []struct {
+		name    string
+		cv      *converger
+		belief  bool
+		member  bool
+		script  string
+		recalcs int
+	}{
+		{"stale unset report", recordedCV(), false, true, ours, 1},
+		{"fresh record foreign", recordedCV(), true, true,
+			ownerReadReply("client-me", tokB+"|client-b", foreignRecordClients), 0},
+		{"read fails, belief true", recordedCV(), true, true, "", 1},
+		{"read fails, belief false", recordedCV(), false, true, "", 0},
+		{"not a member", recordedCV(), true, false, "", 0},
+		{"no client size recorded", newConverger(), true, true, ours, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			own := newSizeOwner(tokA)
+			own.noteClaim("client-me")
+			own.setSelf("client-me")
+			if tc.member {
+				own.setMembers([]string{"/dev/pts/3"})
+			}
+			if !tc.belief {
+				own.queueReport(unsetReport)
+			}
+			o, sent := testOwnerCtl(tc.script, own, tc.cv)
+
+			o.detached("/dev/pts/3")
+			if tc.recalcs == 1 {
+				wantOneRecalc(t, sent)
+			} else if len(*sent) != 0 {
+				t.Errorf("sent %q, want nothing", *sent)
+			}
+		})
+	}
+}
+
+// TestOwnerCtlStaleReportAfterClaimHeals: a report naming a foreign owner,
+// queued before our claim landed, flags us; the next report, showing the claim,
+// unflags us again.
+func TestOwnerCtlStaleReportAfterClaimHeals(t *testing.T) {
+	own := newSizeOwner(tokA)
+	own.noteClaim("client-me")
+	o, sent := testOwnerCtl("", own, recordedCV())
+
+	own.queueReport("client-me|attached,control-mode|" + tokB + "|client-b")
+	o.applyReport()
+	own.queueReport("client-me|attached,control-mode,ignore-size|" + tokA + "|client-me")
+	o.applyReport()
+	want := []string{
+		ignoreSizeCmd("", true), ClientSizeCmd(100, 40),
+		ignoreSizeCmd("", false), ClientSizeCmd(100, 40),
+	}
+	if !reflect.DeepEqual(*sent, want) {
+		t.Errorf("sent %q, want %q", *sent, want)
+	}
+}
