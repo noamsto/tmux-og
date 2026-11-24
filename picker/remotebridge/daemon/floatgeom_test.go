@@ -141,15 +141,6 @@ func TestFloatMoveArgv(t *testing.T) {
 	}
 }
 
-func TestFloatGeomStamp(t *testing.T) {
-	c := controlmode.PaneCell{ID: "%2", W: 58, H: 18, X: 11, Y: 6}
-	got := floatGeomStamp(c, 190, 45)
-	want := "60 20 10 5"
-	if got != want {
-		t.Errorf("floatGeomStamp = %q, want %q", got, want)
-	}
-}
-
 // TestFloatResizeExactUnderPaneBorderStatusLiveTmux drives the float resize
 // commands against a real server on every row where resize-pane -y's
 // pane-border-status bump fires, and on one where it does not: both the

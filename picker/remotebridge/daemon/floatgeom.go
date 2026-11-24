@@ -106,12 +106,3 @@ func floatMoveArgv(localPane string, c controlmode.PaneCell, winW, winH int) []s
 	_, _, x, y := outerFromCell(c, winW, winH)
 	return []string{"move-pane", "-t", localPane, "-X", strconv.Itoa(x), "-Y", strconv.Itoa(y)}
 }
-
-// floatGeomStamp returns the @float_geom option value for cell c: its outer
-// box as "<w> <h> <x> <y>", matching scripts/tmux-float-refit.sh's read order
-// (`read -r width height xoff yoff`), which feeds the four values straight
-// back into resize-pane -x/-y and move-pane -X/-Y.
-func floatGeomStamp(c controlmode.PaneCell, winW, winH int) string {
-	w, h, x, y := outerFromCell(c, winW, winH)
-	return strconv.Itoa(w) + " " + strconv.Itoa(h) + " " + strconv.Itoa(x) + " " + strconv.Itoa(y)
-}

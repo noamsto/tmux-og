@@ -874,22 +874,6 @@ func removeFloat(cfg Config, w *mirrorWindow, router *Router, remoteID string) {
 	delete(w.floatGeom, remoteID)
 }
 
-// stampFloatGeom records the geometry a local float was just created or moved
-// with in its @float_geom pane option.
-//
-// Nothing forces this for a daemon-made float — the repo's
-// float-conf-assertions check only greps `bind` lines out of the generated
-// tmux.conf, and these are not binds — but tmux-float-refit reasserts
-// @float_geom on every window-resized, so an unstamped float drifts off the
-// remote's geometry the first time the client resizes. The value is the outer
-// box, the space refit's resize-pane -x/-y and move-pane -X/-Y speak: stamping
-// the cell instead would shrink the float by two cells per axis per resize.
-func stampFloatGeom(cfg Config, local string, c controlmode.PaneCell, L controlmode.Layout) {
-	if err := cfg.LocalTmux("set-option", "-p", "-t", local, "@float_geom", floatGeomStamp(c, L.W, L.H)); err != nil {
-		fmt.Fprintf(os.Stderr, "daemon: reconcile float @float_geom %s: %v\n", local, err)
-	}
-}
-
 // reconcileFloats makes the mirror window hold one local floating pane per
 // remote float in L, each wired through the same renderer sequence a tiled
 // mirror pane gets.
@@ -924,7 +908,11 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 			fmt.Fprintf(os.Stderr, "daemon: reconcile float new-pane for %s: no pane id in %q\n", cell.ID, out)
 			continue
 		}
-		stampFloatGeom(cfg, local, cell, L)
+		// No @float_geom: the box is the remote's, written only by reconcile and
+		// the ctl verbs. tmux-float-refit's window-resized replay is a second
+		// writer that cannot compensate resize-pane -y's extra row under
+		// pane-border-status top and replays a stale box mid-resize; it skips an
+		// unstamped float.
 		w.localFloats[cell.ID] = local
 		w.floatGeom[cell.ID] = cell
 		// Created bare and respawned rather than created running the renderer:
@@ -996,7 +984,6 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 			fmt.Fprintf(os.Stderr, "daemon: reconcile float move-pane %s: %v\n", local, err)
 			continue
 		}
-		stampFloatGeom(cfg, local, cell, L)
 		w.floatGeom[cell.ID] = cell
 		s := router.sink(cell.ID)
 		if s == nil {
