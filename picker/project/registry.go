@@ -163,38 +163,36 @@ func declaredKey(name, what, raw string) (string, error) {
 
 var plainUserinfo = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-var malformedSchemes = map[string]bool{"http": true, "https": true, "ssh": true, "git": true, "file": true, "ftp": true, "ftps": true, "git+ssh": true, "ssh+git": true, "git+https": true}
-
 // credentialBearing reports whether a declared remote may embed a secret. It is the Go twin of
 // modules/project-credentials.nix; testdata/credential-cases.json pins both. A query or fragment
-// is refused outright; userinfo is allowed only as a plain ssh/git username (ssh://git@host,
-// git@host:o/r), never a password or any http(s)/other-scheme userinfo.
+// is refused outright. An `@` is allowed only after a bare username (scp form `git@host:o/r`) or an
+// ssh/git scheme and bare username (`ssh://git@host/o/r`); any other text before it, including a
+// mistyped scheme (`https:/u:TOK@h/o/r`), is refused, since it could be a credential. An `@` in a URL
+// path after a non-empty authority (`https://host/o/r@v1`) is not userinfo.
 func credentialBearing(raw string) bool {
 	if strings.ContainsAny(raw, "?#") {
 		return true
 	}
-	scheme, rest, hasScheme := strings.Cut(raw, "://")
-	authority, _, _ := strings.Cut(rest, "/")
-	if !hasScheme {
-		authority, _, _ = strings.Cut(raw, "/")
-	}
-	// A transport name before the first colon with no `://` is a mistyped scheme (`https:/u:TOK@h/o/r`)
-	// that would otherwise read as scp form; refuse it even for a bare username.
-	if head, _, ok := strings.Cut(raw, ":"); !hasScheme && ok && strings.Contains(raw, "@") && malformedSchemes[strings.ToLower(head)] {
-		return true
-	}
-	at := strings.LastIndexByte(authority, '@')
-	if at < 0 {
+	before, after, hasAt := strings.Cut(raw, "@")
+	if !hasAt {
 		return false
 	}
-	if hasScheme {
-		switch strings.ToLower(scheme) {
-		case "ssh", "git", "git+ssh", "ssh+git":
-		default:
-			return true
-		}
+	if plainUserinfo.MatchString(before) {
+		return strings.Contains(after, "@")
 	}
-	return !plainUserinfo.MatchString(authority[:at])
+	scheme, rest, hasScheme := strings.Cut(before, "://")
+	if !hasScheme {
+		return true
+	}
+	if authority, _, inPath := strings.Cut(rest, "/"); inPath {
+		return authority == ""
+	}
+	switch strings.ToLower(scheme) {
+	case "ssh", "git", "git+ssh", "ssh+git":
+	default:
+		return true
+	}
+	return !plainUserinfo.MatchString(rest) || strings.Contains(after, "@")
 }
 
 // entry accumulates one project while Merge walks the probes.
