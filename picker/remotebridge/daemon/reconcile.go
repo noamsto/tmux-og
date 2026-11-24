@@ -370,7 +370,7 @@ passes:
 // reconcileLayoutFrom, expressed as the same pure diff the reconcile itself
 // drives so the two can never disagree.
 func noFloatWork(w *mirrorWindow, L controlmode.Layout) bool {
-	ops := planFloatOps(w.floatGeom, mirrorableFloats(L))
+	ops := planFloatOps(w.floatGeom, mirrorableFloats(L), L.W, L.H)
 	return len(ops.Remove) == 0 && len(ops.Add) == 0 && len(ops.Move) == 0
 }
 
@@ -890,7 +890,7 @@ func removeFloat(cfg Config, w *mirrorWindow, router *Router, remoteID string) {
 // follow the remote's focus onto a float without re-asserting focus on one it
 // was already rendering.
 func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send func(string), router *Router, waitHellos helloWaiter, rt roundTrip) []string {
-	ops := planFloatOps(w.floatGeom, mirrorableFloats(L))
+	ops := planFloatOps(w.floatGeom, mirrorableFloats(L), L.W, L.H)
 
 	for _, id := range ops.Remove {
 		removeFloat(cfg, w, router, id)
@@ -914,7 +914,7 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 		// pane-border-status top and replays a stale box mid-resize; it skips an
 		// unstamped float.
 		w.localFloats[cell.ID] = local
-		w.floatGeom[cell.ID] = cell
+		w.floatGeom[cell.ID] = appliedFloat{cell, L.W, L.H}
 		// Created bare and respawned rather than created running the renderer:
 		// respawn-pane -k preserves a float's floatness, its geometry and the
 		// pane options markRendererPane writes, so a float takes the tiled
@@ -984,7 +984,7 @@ func reconcileFloats(cfg Config, w *mirrorWindow, L controlmode.Layout, send fun
 			fmt.Fprintf(os.Stderr, "daemon: reconcile float move-pane %s: %v\n", local, err)
 			continue
 		}
-		w.floatGeom[cell.ID] = cell
+		w.floatGeom[cell.ID] = appliedFloat{cell, L.W, L.H}
 		s := router.sink(cell.ID)
 		if s == nil {
 			continue

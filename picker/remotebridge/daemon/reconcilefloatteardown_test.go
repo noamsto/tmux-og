@@ -19,7 +19,7 @@ func TestDropMirroredPanesReapsMirroredFloats(t *testing.T) {
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 
 	dropMirroredPanes(cfg, w)
 
@@ -59,7 +59,7 @@ func TestResetWindowNeverMergesBackAFloatConn(t *testing.T) {
 	w.remotePanes = []string{"%1"}
 	w.localPanes = []string{"%l1"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.conns["%1"] = tiledConn
 	w.conns["%9"] = floatConn
 
@@ -180,7 +180,7 @@ func TestDropMirroredPanesRaisesFloatsDroppedOnlyForAFloat(t *testing.T) {
 	}
 
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	dropMirroredPanes(cfg, w)
 	if !w.floatsDropped {
 		t.Error("floatsDropped = false after the drop killed %l9; the failing exits then never re-add")

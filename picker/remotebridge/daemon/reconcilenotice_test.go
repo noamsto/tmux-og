@@ -445,7 +445,7 @@ func TestNoticeGeometryOnlyBehindAMirroredFloatAppliesFromNotification(t *testin
 
 	w := shapedMirror(t)
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	L := mustLayout(t, noticeReshapedFloatLayout)
 	script := strings.Join([]string{
 		"%begin 1 1 1", "0 0 0 0 0 0 0 0 0", "%end 1 1 1", // PaneSeed(%0): cursor
