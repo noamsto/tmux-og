@@ -560,3 +560,86 @@ rel() {
 	wait_tiled_agree "$skewed_local"
 	[[ "$(tiled_geoms "$SRC")" == "$remote_before" ]]
 }
+
+# --- local client resize (#1241) ---
+
+# resize_client resizes the observer's window, which is the pty the mirror's
+# attached client lives in: the client sees a real SIGWINCH, exactly as a
+# terminal resize does. It returns once the REMOTE window has taken the new
+# size (the client's rows less the two status lines), so a mismatch read afterwards
+# is a settled one, not the pre-resize state both servers still agree on.
+resize_client() {
+	local want="$1x$(($2 - 2))" deadline=$((SECONDS + 5))
+	$OBS resize-window -t obs -x "$1" -y "$2"
+	until [[ "$($SRC display-message -p -t "$RF" '#{window_width}x#{window_height}')" == "$want" ]]; do
+		((SECONDS < deadline)) || {
+			printf 'remote window never reached %s\n' "$want" >&3
+			return 1
+		}
+		sleep 0.1
+	done
+}
+
+# settle_agree gives the local float 4s to report the remote float's box, then
+# holds half a second and checks again: a local writer that lands after the
+# reconcile (the window-resized hook's fork) would only show in the second read.
+settle_agree() {
+	local l r deadline=$((SECONDS + 4))
+	until [[ "$(geom "$DST" "$LF")" == "$(geom "$SRC" "$RF")" ]]; do
+		((SECONDS < deadline)) && {
+			sleep 0.1
+			continue
+		}
+		break
+	done
+	sleep 0.5
+	l="$(geom "$DST" "$LF")"
+	r="$(geom "$SRC" "$RF")"
+	[[ $l == "$r" ]] && return 0
+	printf 'mirrored float disagrees with its remote after a client resize: local=%s remote=%s\n--- daemon log ---\n' "$l" "$r" >&3
+	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+	return 1
+}
+
+@test "a local client resize leaves a float on the top row the remote's size" {
+	mirror_up -x 40 -y 12 -X 10 -Y 5
+	# Shrinking squeezes the float against the top row (its inner top is row 1)
+	# in both windows; growing back leaves the remote float where it is.
+	resize_client 45 14
+	settle_agree
+	resize_client 150 40
+	settle_agree
+}
+
+# The remote's own tmux-float-refit re-derives a stamped float from percentages
+# on every resize; the mirror must follow what it does, with no stamp of its
+# own to help. The hook stands in for that script's resize-pane/move-pane.
+@test "a local client resize follows a remote float the remote refits itself" {
+	$SRC new-session -d -s rem -x 100 -y 30
+	$SRC split-window -d -h -t rem "sleep 300"
+	RF="$($SRC new-pane -d -t rem -x 60% -y 70% -X 20% -Y 15% -P -F '#{pane_id}' "sleep 300")"
+	$SRC set-hook -g window-resized "resize-pane -t $RF -x 60% -y 70% ; move-pane -t $RF -X 20% -Y 15%"
+	$DST new-session -d -s host-sess -x 100 -y 30
+	$DST set-option -g @splash_shown 1
+	"$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
+		--session rem --window 1 --local-sess host-sess \
+		--renderer "$RENDERER" --sock "$SOCK" >"$BATS_TEST_TMPDIR/daemon.log" 2>&1 &
+	DAEMON_PID=$!
+	$OBS new-session -d -s obs -x 100 -y 32 "env -u TMUX TERM=xterm-256color $TMUX_BIN -L fddst attach -t host-sess"
+	local deadline=$((SECONDS + BUDGET_SECS))
+	LF=""
+	until [[ -n $LF ]] && [[ "$($DST list-clients -t host-sess 2>/dev/null | wc -l)" -ge 1 ]]; do
+		LF="$(mirror_of "$RF")"
+		((SECONDS < deadline)) || {
+			echo "mirror never came up" >&3
+			return 1
+		}
+		sleep 0.1
+	done
+	local sz
+	for sz in "60 20" "150 40" "45 14" "100 32"; do
+		# shellcheck disable=SC2086 # word-split into width and height
+		resize_client $sz
+		settle_agree
+	done
+}
