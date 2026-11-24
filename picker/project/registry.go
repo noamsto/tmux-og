@@ -185,7 +185,7 @@ func credentialBearing(raw string) bool {
 		return true
 	}
 	if authority, _, inPath := strings.Cut(rest, "/"); inPath {
-		return authority == ""
+		return authority == "" || strings.Contains(rest, ":")
 	}
 	switch strings.ToLower(scheme) {
 	case "ssh", "git", "git+ssh", "ssh+git":

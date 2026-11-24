@@ -23,7 +23,7 @@
     else if !hasScheme
     then true
     else if lib.hasInfix "/" rest
-    then authority == ""
+    then authority == "" || lib.hasInfix ":" rest
     else !(schemeMayCarryUser && plainUserinfo rest) || builtins.length parts > 2;
 in
   lib.hasInfix "?" value
