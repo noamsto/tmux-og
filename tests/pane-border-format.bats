@@ -143,6 +143,29 @@ style() {
 	[ "$out" = "━━ lazygit ━━" ]
 }
 
+@test "carousel float renders aeye, local or mirrored; other floats keep their label chain" {
+	title
+	if ! tmux new-pane -t "$WIN" -O -K -C -x 60% -y 60% -X 20% -Y 20% -B heavy -A sh 2>/dev/null; then
+		skip "this tmux advertises -O/-K/-C but rejects them at parse time"
+	fi
+	float="$(tmux list-panes -t "$WIN" -f '#{pane_floating_flag}' -F '#{pane_id}' | head -n1)"
+	[ -n "$float" ] || skip "this tmux does not report pane_floating_flag"
+
+	tmux set -p -t "$float" @claude_img_src '1-%1'
+	[ "$(render "$float")" = "━━ aeye ━━" ]
+
+	tmux set-option -p -u -t "$float" @claude_img_src
+	tmux set -p -t "$float" @bridge_img_src 1
+	[ "$(render "$float")" = "━━ aeye ━━" ]
+
+	tmux set-option -p -u -t "$float" @bridge_img_src
+	tmux set -p -t "$float" @bridge_proc remote-zsh
+	[ "$(render "$float")" = "━━ remote-zsh ━━" ]
+
+	tmux set-option -p -u -t "$float" @bridge_proc
+	[ "$(render "$float")" = "━━ $(tmux display-message -p -t "$float" '#{pane_current_command}') ━━" ]
+}
+
 @test "aeye pane detected by start command, anchor keeps its title" {
 	tmux setw -t "$WIN" @crew_name coral
 	tmux setw -t "$WIN" @window_has_agent 1

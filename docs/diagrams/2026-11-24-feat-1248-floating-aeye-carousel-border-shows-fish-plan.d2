@@ -1,0 +1,28 @@
+direction: right
+
+carousel: "aeye carousel float\n(@claude_img_src local, @bridge_img_src mirrored)" {
+  style.fill: "#f5e0dc"
+}
+floatlabel: "FLOAT_LABEL\nscripts/tmux-apply-theme-colors.sh" {
+  style.fill: "#e3e8f7"
+}
+pane_label: "@pane_label"
+aeye: "AEYE condition\n(new: prints aeye)" {
+  style.fill: "#d6f5d6"
+  style.stroke-width: 3
+}
+bridge_proc: "@bridge_proc"
+cmd: "pane_current_command"
+border: "float border shows: aeye" {
+  style.fill: "#d6f5d6"
+}
+
+carousel -> floatlabel: "float branch, first"
+floatlabel -> pane_label: "1st"
+floatlabel -> aeye: "2nd (new)"
+floatlabel -> bridge_proc: "3rd"
+floatlabel -> cmd: "4th, fallback"
+pane_label -> border
+aeye -> border
+bridge_proc -> border
+cmd -> border

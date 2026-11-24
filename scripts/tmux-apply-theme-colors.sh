@@ -144,7 +144,7 @@ NAME_SEG="${HOST_SEG}#{?${CODENAME},#{?${HOST_PLAIN}, · ,}#[bold]${CODENAME}#[n
 STATE_SEG="#{?${LEAD_STATE},#{?#{||:${HOST_PLAIN},${CODENAME}}, · ,}${LEAD_STATE},}"
 TITLE_SEG="#{?${TITLE_SHOWN},#{?#{||:#{||:${HOST_PLAIN},${CODENAME}},${LEAD_STATE}}, · ,}#{=/${W}/…:${TITLE_SHOWN}},}"
 
-FLOAT_LABEL='#{?@pane_label,#{@pane_label},#{?@bridge_proc,#{@bridge_proc},#{pane_current_command}}}'
+FLOAT_LABEL="#{?@pane_label,#{@pane_label},#{?${AEYE},aeye,#{?@bridge_proc,#{@bridge_proc},#{pane_current_command}}}}"
 FLOAT_BRANCH="#{?pane_active,#[fg=${og_float}]━━ ${FLOAT_LABEL} ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ ${FLOAT_LABEL} ━━}"
 LABEL_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ #{@pane_label} ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ #{@pane_label} ━━}"
 AEYE_BRANCH="#{?pane_active,#[fg=${thm_mauve}]━━ aeye ━━,#[bg=${thm_bg}]#[fg=${og_dim}]━━ aeye ━━}"
