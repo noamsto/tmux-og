@@ -39,6 +39,7 @@ const (
 var (
 	float9          = controlmode.PaneCell{ID: "%9", W: 18, H: 6, X: 11, Y: 6}
 	float8          = controlmode.PaneCell{ID: "%8", W: 20, H: 8, X: 30, Y: 10}
+	appliedFloat9   = appliedFloat{float9, 190, 45}
 	wantFloatCreate = []string{
 		"new-pane", "-d", "-P", "-F", "#{pane_id}", "-t", "@101",
 		"-B", "heavy", "-A", "-x", "20", "-y", "8", "-X", "10", "-Y", "5",
@@ -207,7 +208,7 @@ func mirrorWithFloat() *mirrorWindow {
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 	return w
 }
@@ -231,7 +232,7 @@ func TestApplyLayoutReshapesBehindAMirroredFloat(t *testing.T) {
 	if got := f.verbs("kill-pane"); got != nil {
 		t.Errorf("issued %v, want the mirrored float left alone", got)
 	}
-	if w.localFloats["%9"] != "%l9" || w.floatGeom["%9"] != float9 {
+	if w.localFloats["%9"] != "%l9" || w.floatGeom["%9"] != appliedFloat9 {
 		t.Errorf("localFloats=%v floatGeom=%v, want the mirrored float still recorded", w.localFloats, w.floatGeom)
 	}
 	if w.floatsDropped {
@@ -535,7 +536,7 @@ func TestReconcileLayoutDoesNotRefocusAnAlreadyMirroredFloat(t *testing.T) {
 	f := &layoutTmux{windowID: "@101\n", newPaneIDs: []string{"%lf8\n"}}
 	w := shapedMirror(t)
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 
 	rt, _ := scriptedRT(strings.Join([]string{
 		"%begin 1 1 1", "@1 " + twoFloatLayout + " %9 0", "%end 1 1 1", // %9 is still active, %8 is the new one
@@ -584,7 +585,7 @@ func TestReconcileLayoutKeepsFloatsThroughAFailedPaneOp(t *testing.T) {
 	w.remotePanes = []string{"%0"}
 	w.localPanes = []string{"%l0"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 
 	rt, _ := scriptedRT("%begin 1 1 1\n@1 " + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
@@ -618,7 +619,7 @@ func TestReconcileLayoutRetiresAFailedPaneOpInALostWindow(t *testing.T) {
 	w.remotePanes = []string{"%0"}
 	w.localPanes = []string{"%l0"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 
 	rt, _ := scriptedRT("%begin 1 1 1\n@1 " + tiledFloatLayout + " %0 0\n%end 1 1 1\n")
@@ -647,7 +648,7 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedReset(t *testing.T) {
 	w.remotePanes = []string{"%7"} // no surviving pane -> planPaneOps.Reset
 	w.localPanes = []string{"%l7"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 
 	rt, _ := scriptedRT(strings.Join([]string{
@@ -680,7 +681,7 @@ func TestReconcileLayoutDoesNotReAddFloatsAfterAResetIntoALostWindow(t *testing.
 	w.remotePanes = []string{"%7"}
 	w.localPanes = []string{"%l7"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 
 	rt, _ := scriptedRT(strings.Join([]string{
@@ -714,7 +715,7 @@ func TestReconcileLayoutReAddsFloatsAfterAFailedDesyncReset(t *testing.T) {
 	w.remotePanes = []string{"%0"} // the remote's second pane makes ops.Append -> structural
 	w.localPanes = []string{"%l0"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 
 	rt, _ := scriptedRT(strings.Join([]string{

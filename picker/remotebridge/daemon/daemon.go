@@ -2805,7 +2805,7 @@ func rebindRenderer(cfg Config, hc helloConn, send func(string), router *Router,
 
 func rendererDims(mw *mirrorWindow, paneID string) controlmode.PaneCell {
 	if g, ok := mw.floatGeom[paneID]; ok {
-		return g
+		return g.cell
 	}
 	if mw.layout == "" {
 		return controlmode.PaneCell{}

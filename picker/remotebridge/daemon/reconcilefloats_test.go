@@ -91,6 +91,21 @@ func (f *floatTmux) at(verb, target string) int {
 	return -1
 }
 
+// assertNeverStampsFloatGeom fails if any recorded argv word mentions
+// @float_geom: scanning every argv, not one expected command, catches a stamp
+// issued through any verb, and matching a substring catches one hidden inside
+// an embedded tmux command string.
+func (f *floatTmux) assertNeverStampsFloatGeom(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.argv {
+		if slices.ContainsFunc(a, func(w string) bool { return strings.Contains(w, "@float_geom") }) {
+			t.Errorf("daemon stamped @float_geom: %v", a)
+		}
+	}
+}
+
 // hellos is the waiter for a test that adds floats: it hands back a canned
 // pane->conn map rather than waiting on a socket.
 func hellos(byPane map[string]net.Conn) helloWaiter {
@@ -113,10 +128,10 @@ func oneSeedScript(screen string) string {
 }
 
 // TestReconcileFloatsAddMirrorsARemoteFloat covers the whole Add path: the
-// outer-box create flags, the outer-box @float_geom stamp, the respawn that
-// puts a renderer in the pane, and both map entries. The stamp is the
-// non-obvious one — nothing enforces it for a daemon-made float, but
-// tmux-float-refit replays it on every window-resized.
+// outer-box create flags, the respawn that puts a renderer in the pane, and
+// both map entries. The daemon never stamps @float_geom on a mirrored float:
+// tmux-float-refit replays that option on window-resized, so a stamp would make
+// refit a second writer of the remote's box.
 func TestReconcileFloatsAddMirrorsARemoteFloat(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer func() { _ = conn.Close() }()
@@ -137,10 +152,7 @@ func TestReconcileFloatsAddMirrorsARemoteFloat(t *testing.T) {
 	if got := f.find("new-pane"); !reflect.DeepEqual(got, wantCreate) {
 		t.Errorf("new-pane argv = %v, want %v", got, wantCreate)
 	}
-	wantStamp := []string{"set-option", "-p", "-t", "%l9", "@float_geom", "60 20 10 5"}
-	if got := f.find("set-option", "-p", "-t", "%l9", "@float_geom"); !reflect.DeepEqual(got, wantStamp) {
-		t.Errorf("@float_geom stamp = %v, want %v", got, wantStamp)
-	}
+	f.assertNeverStampsFloatGeom(t)
 	wantSpawn := []string{"respawn-pane", "-k", "-t", "%l9", "--", "/nix/store/renderer", "/run/sock", "%7"}
 	if got := f.find("respawn-pane"); !reflect.DeepEqual(got, wantSpawn) {
 		t.Errorf("respawn-pane argv = %v, want %v", got, wantSpawn)
@@ -155,7 +167,7 @@ func TestReconcileFloatsAddMirrorsARemoteFloat(t *testing.T) {
 	if w.localFloats["%7"] != "%l9" {
 		t.Errorf("localFloats = %v, want %%7 -> %%l9", w.localFloats)
 	}
-	if w.floatGeom["%7"] != cell {
+	if w.floatGeom["%7"] != (appliedFloat{cell, 100, 40}) {
 		t.Errorf("floatGeom[%%7] = %v, want %v", w.floatGeom["%7"], cell)
 	}
 
@@ -239,7 +251,7 @@ func TestReconcileFloatsRemoveTearsDownTheLocalFloat(t *testing.T) {
 	f := &floatTmux{}
 	w := newRegistry().add("@1", "@101")
 	w.localFloats["%7"] = "%l9"
-	w.floatGeom["%7"] = controlmode.PaneCell{ID: "%7", W: 58, H: 18, X: 11, Y: 6}
+	w.floatGeom["%7"] = appliedFloat{controlmode.PaneCell{ID: "%7", W: 58, H: 18, X: 11, Y: 6}, 100, 40}
 	w.conns["%7"] = conn
 
 	reconcileFloats(f.config(), w, controlmode.Layout{W: 100, H: 40}, func(string) {}, router, noHellos, deadRT)
@@ -274,7 +286,7 @@ func TestReconcileFloatsMoveResizesThenMovesAndRepaints(t *testing.T) {
 	f := &floatTmux{}
 	w := newRegistry().add("@1", "@101")
 	w.localFloats["%7"] = "%l9"
-	w.floatGeom["%7"] = controlmode.PaneCell{ID: "%7", W: 58, H: 18, X: 11, Y: 6}
+	w.floatGeom["%7"] = appliedFloat{controlmode.PaneCell{ID: "%7", W: 58, H: 18, X: 11, Y: 6}, 100, 40}
 
 	moved := controlmode.PaneCell{ID: "%7", W: 68, H: 22, X: 21, Y: 9}
 	L := controlmode.Layout{W: 100, H: 40, Floats: []controlmode.PaneCell{moved}}
@@ -292,11 +304,8 @@ func TestReconcileFloatsMoveResizesThenMovesAndRepaints(t *testing.T) {
 	if r, m := f.at("if-shell", "%l9"), f.at("move-pane", "%l9"); r < 0 || m < 0 || r > m {
 		t.Errorf("resize at %d, move at %d: want the size asserted before the position", r, m)
 	}
-	wantStamp := []string{"set-option", "-p", "-t", "%l9", "@float_geom", "70 24 20 8"}
-	if got := f.find("set-option", "-p", "-t", "%l9", "@float_geom"); !reflect.DeepEqual(got, wantStamp) {
-		t.Errorf("@float_geom re-stamp = %v, want %v", got, wantStamp)
-	}
-	if w.floatGeom["%7"] != moved {
+	f.assertNeverStampsFloatGeom(t)
+	if w.floatGeom["%7"] != (appliedFloat{moved, 100, 40}) {
 		t.Errorf("floatGeom[%%7] = %v, want the cell just applied %v", w.floatGeom["%7"], moved)
 	}
 

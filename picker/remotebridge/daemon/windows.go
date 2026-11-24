@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 )
 
 // mirrorWindow is one remote window's local mirror: the remote window id it
@@ -36,7 +34,7 @@ type mirrorWindow struct {
 	// floatGeom maps a remote float pane id to the geometry last applied to
 	// its local mirror — the "have" side of planFloatOps, so a reconcile only
 	// ever reasserts what actually changed.
-	floatGeom map[string]controlmode.PaneCell
+	floatGeom map[string]appliedFloat
 	// floatsDropped records that a rebuild in this reconcile call has discarded
 	// the window's mirrored floats, telling a failing exit that it owes them a
 	// re-add.
@@ -117,7 +115,7 @@ func (r *registry) add(remoteID, localWin string) *mirrorWindow {
 		localWin:    localWin,
 		conns:       map[string]net.Conn{},
 		localFloats: map[string]string{},
-		floatGeom:   map[string]controlmode.PaneCell{},
+		floatGeom:   map[string]appliedFloat{},
 	}
 	r.byRemote[remoteID] = w
 	r.generation++

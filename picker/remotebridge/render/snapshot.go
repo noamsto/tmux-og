@@ -62,6 +62,13 @@ type Extra struct {
 	Colour *string
 }
 
+// clearScreen blanks the pane and homes the cursor without adding a line to
+// its history. Under scroll-on-clear tmux copies the visible screen into
+// history on ED2 and on ED0 at home, so every seed would otherwise stack one
+// more copy of the screen into the mirror. Erasing row 1 first leaves
+// nothing to copy, and the ED0 from row 2 then no longer starts at home.
+const clearScreen = "\x1b[H\x1b[2K\x1b[2;1H\x1b[J\x1b[H"
+
 // Seed paints captured as a full-screen repaint. A nil mouse, modes or wrap
 // means the remote's state is unknown, and leaves the local pane's modes as
 // they are: a transient read failure must not turn a working mirror
@@ -81,7 +88,7 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	// screen, so both clears run before the repaint below.
 	b.WriteString("\x1b[?1049l")
 	// ?1049l restores the pen saved at ?1049h (a reshape hold, or an earlier
-	// alt-screen seed), and the 2J below erases with that pen, so reset it again.
+	// alt-screen seed), and the clear below erases with that pen, so reset it again.
 	b.WriteString("\x1b[m")
 	if altScreen {
 		b.WriteString("\x1b[?1049h")
@@ -106,7 +113,7 @@ func Seed(captured []byte, cursorX, cursorY int, altScreen, appCursorKeys bool, 
 	if extra != nil {
 		writeExtra(&b, *extra)
 	}
-	b.WriteString("\x1b[2J\x1b[H") // clear + home
+	b.WriteString(clearScreen)
 	b.Write(captured)
 	fmt.Fprintf(&b, "\x1b[%d;%dH", cursorY+1, cursorX+1)
 	if modes != nil {

@@ -2228,7 +2228,7 @@ func TestCtlResolvesAMirroredFloatDuringAReconcile(t *testing.T) {
 	w.remotePanes = []string{"%0", "%1"}
 	w.localPanes = []string{"%l0", "%l1"}
 	w.localFloats["%9"] = "%l9"
-	w.floatGeom["%9"] = float9
+	w.floatGeom["%9"] = appliedFloat9
 	w.layout = "stale"
 
 	c := newCtlState()
