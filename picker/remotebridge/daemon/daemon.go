@@ -482,15 +482,15 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 		case <-stop:
 			return
 		case now := <-tick:
-			due := false
+			trigger := ""
 			if mtime, ok := nudged(); ok && mtime.After(lastNudge) {
 				lastNudge = mtime
-				due = true
+				trigger = "nudge"
 			}
-			if !due && now.Sub(lastCheck) >= resizeFallbackInterval {
-				due = true
+			if trigger == "" && now.Sub(lastCheck) >= resizeFallbackInterval {
+				trigger = "fallback"
 			}
-			if !due {
+			if trigger == "" {
 				continue
 			}
 			lastCheck = now
@@ -498,7 +498,10 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 			// The client size first: it governs what a window created after this
 			// point is born at, while the per-window caps below govern the ones
 			// that already exist (#449).
-			if w > 0 && h > 0 && cv.need(clientSizeKey, w, h) && !send(ClientSizeCmd(w, h)) {
+			needed := w > 0 && h > 0 && cv.need(clientSizeKey, w, h)
+			fmt.Fprintf(os.Stderr, "daemon: local client area %dx%d (%s), client size asserted=%v\n", w, h, trigger, needed)
+			if needed && !send(ClientSizeCmd(w, h)) {
+				fmt.Fprintln(os.Stderr, "daemon: client size send failed, will retry on the next check")
 				cv.unrecord(clientSizeKey, w, h)
 			}
 			// Active window first: each converge resizes the remote window,

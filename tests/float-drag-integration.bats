@@ -578,7 +578,9 @@ resize_diag() {
 		echo "local clients:"
 		$DST list-clients -F '#{client_name} #{client_width}x#{client_height} #{status} #{client_activity}' 2>&1 || true
 		nudge="$($DST show-options -t host-sess -qv @bridge_nudge 2>&1 || true)"
-		echo "nudge ${nudge}: $(ls -l -- "$nudge" 2>/dev/null || true); now ${EPOCHREALTIME:-$(date +%s)}"
+		echo "nudge ${nudge}: mtime $(stat -f '%Sm' -t '%H:%M:%S' -- "$nudge" 2>/dev/null || stat -c '%y' -- "$nudge" 2>/dev/null || true); now $(date +%H:%M:%S)"
+		echo "client-resized hooks: $($DST show-hooks -g client-resized 2>&1 | cut -c1-200)"
+		echo "debounce stamp: $(ls -ld /tmp/og-reflow-debounce.host-sess 2>&1 || true)"
 		echo "obs window: $($OBS display-message -p -t obs '#{window_width}x#{window_height}' 2>&1 || true)"
 	} 2>&1 | sed 's/^/diag: /' >&3 || true
 }
