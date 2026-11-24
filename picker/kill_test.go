@@ -204,7 +204,7 @@ func TestKillCancelWithNoAttemptsSurfacesStatus(t *testing.T) {
 	}
 }
 
-// A kill that hangs past remoteProbeTimeout surfaces a sanitized error: the
+// A kill that hangs past probekit.ProbeTimeout surfaces a sanitized error: the
 // raw control chars in a hostile session name never reach statusMsg or the
 // rendered hint line.
 func TestKillTimeoutSurfacesSanitizedError(t *testing.T) {

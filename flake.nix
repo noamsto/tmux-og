@@ -128,12 +128,17 @@
           # it is actively misleading — its `list-commands new-pane` advertises
           # -A and -B while its parser rejects both, so a capability probe
           # passes and the command still fails.
-          nativeBuildInputs = (old.nativeBuildInputs or []) ++ [(mkTmux pkgs)];
+          #
+          # git and dash: picker/project's probe-script tests run the shipped
+          # POSIX-sh scripts against real git repos, and compare dash with sh.
+          nativeBuildInputs = (old.nativeBuildInputs or []) ++ [(mkTmux pkgs) pkgs.git pkgs.dash];
           # Tells TestReflowRunShellArgsSurvivesFormatInjection (#368) to fail
           # rather than skip if tmux is somehow still missing, so pruning the
           # nativeBuildInputs entry above breaks loudly instead of silently
           # dropping the regression check.
           OG_REQUIRE_TMUX = "1";
+          # Same for the probe-script tests, for git, sh and dash.
+          OG_REQUIRE_GIT = "1";
           checkPhase = ''
             runHook preCheck
             export GOFLAGS=''${GOFLAGS//-trimpath/}
@@ -908,6 +913,19 @@
                 touch $out
               '';
 
+            # Declared project remotes reach the world-readable store, so
+            # modules/project-credentials.nix must refuse exactly what the Go
+            # credentialBearing refuses. Both read the same case table; the
+            # failure names the case index, never the value (it may be a secret).
+            project-credential-assertions = let
+              refused = import ./modules/project-credentials.nix {inherit lib;};
+              cases = builtins.fromJSON (builtins.readFile ./picker/project/testdata/credential-cases.json);
+              mismatches = lib.filter (i: refused (builtins.elemAt cases i).value != (builtins.elemAt cases i).refused) (lib.range 0 (builtins.length cases - 1));
+            in
+              assert lib.assertMsg (cases != []) "project-credential-assertions: no cases";
+              assert lib.assertMsg (mismatches == []) "project-credential-assertions: cases ${lib.concatMapStringsSep ", " toString mismatches} of picker/project/testdata/credential-cases.json disagree with modules/project-credentials.nix";
+                pkgs.runCommand "project-credential-assertions" {} "touch $out";
+
             # The float-refit WIRING (#371). tmux bakes a float's percentage
             # geometry into cells at creation and never revisits it, so every
             # float bind must hand its percentages to @float_geom for the
@@ -924,11 +942,20 @@
                 FLOAT_GROUP = "${tmuxConfig.script.tmux-float-group}/bin/tmux-float-group";
                 BRIDGE_CTL = tmuxConfig.picker-bridge-ctl-bin;
                 SMART_NAV = "${tmuxConfig.script.tmux-smart-nav}/bin/tmux-smart-nav";
+                OG_PROJECT = "${tmuxConfig.script.og-project}/bin/og-project";
               } ''
                 # smart-nav's bats suites sed the placeholder themselves, so a
                 # name drift between the script and the builder would test green.
                 ! grep -qF '@lib_float_cover@' "$SMART_NAV"
                 grep -qE 'source /nix/store/[^ ]+-lib-float-cover$' "$SMART_NAV"
+
+                # The og-project bats suite runs the shim unsubstituted (it falls
+                # back to OG_PROJECT_BIN), so a renamed placeholder would build
+                # clean and test green while the shipped shim kept the literal.
+                # Positive matches: a `! grep` line never fails under `set -e`.
+                grep -qE '^bin="/nix/store/[^"]+/bin/og-project-bin"$' "$OG_PROJECT"
+                grep -qE '^registry="/nix/store/[^"]+-tmux-og-projects\.json"$' "$OG_PROJECT"
+                grep -qE '^remote_open="/nix/store/[^"]+/bin/og-remote-open"$' "$OG_PROJECT"
 
                 # The crew-dash launcher reaches tmux-float-group by a substituted
                 # store path (a pane shell may not carry the wrapper's PATH). Its
@@ -1929,6 +1956,16 @@
                 # never execs it (no ssh in the sandbox to attempt).
                 ro_target=$("$OG_BIN" remote open --help | tail -1)
                 [ -x "$ro_target" ]
+
+                # og intercepts a sole --help and, without a model, prints only
+                # the summary and target; `project` has a model, so this is its
+                # own help, the target last.
+                rc=0
+                project_help_out=$("$OG_BIN" project --help) || rc=$?
+                [ "$rc" -eq 0 ]
+                grep -qF "Usage: og project <subcommand>" <<<"$project_help_out"
+                project_target=$(tail -1 <<<"$project_help_out")
+                [ -x "$project_target" ]
 
                 # 6: an unknown token exits 2 with empty stdout.
                 rc=0
@@ -3312,6 +3349,19 @@
                 bats tests/remote-picker.bats
                 bats tests/remote-auth.bats
                 bats tests/remote-theme.bats
+                touch $out
+              '';
+
+            og-project-tests =
+              pkgs.runCommand "og-project-tests" {
+                nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnugrep pkgs.bash pkgs.git];
+                OG_PROJECT_BIN = "${pickerChecked}/bin/og-project-bin";
+              } ''
+                cp -r ${scriptsSrc ["og-project.sh"]} scripts
+                cp -r ${testsSrc ["og-project.bats"]} tests
+                export HOME=$TMPDIR/home
+                mkdir -p "$HOME"
+                bats tests/og-project.bats
                 touch $out
               '';
 

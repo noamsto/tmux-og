@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
 // remoteResourcesSeparator ends the pane-PID section of the payload. It must
@@ -34,10 +36,10 @@ const remoteResourcesSeparator = "PSTABLE"
 
 // remoteResourcesCmd emits, in order: the remote's online core count, one
 // `<session>|<pane_pid>` line per pane, the separator, then the process table.
-// Fish-safe, like every command remoteTmuxCmd builds. getconf rather than
+// Fish-safe, like every command probekit.RemoteTmuxCmd builds. getconf rather than
 // nproc: nproc is coreutils-only and a macOS remote has none.
 var remoteResourcesCmd = `getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1; ` +
-	remoteTmuxCmd(`list-panes -a -F '#{session_name}|#{pane_pid}'`) +
+	probekit.RemoteTmuxCmd(`list-panes -a -F '#{session_name}|#{pane_pid}'`) +
 	`; echo ` + remoteResourcesSeparator + `; ps ` + strings.Join(psArgs, " ")
 
 // remoteHostResources is one host's reply: per-session totals in the same
@@ -115,20 +117,13 @@ func parseRemoteResources(stdout string) remoteHostResources {
 	return remoteHostResources{cores: cores, bySession: res}
 }
 
-// sshRemoteResources fetches one host's table. Bounded by remoteProbeTimeout
+// sshRemoteResources fetches one host's table. Bounded by probekit.ProbeTimeout
 // like every other probe, and reuses a live ControlMaster when there is one.
 var sshRemoteResources = func(host string) (remoteHostResources, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probekit.ProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=2",
-		"-T",
-		host,
-		"--",
-		remoteResourcesCmd,
-	)
+	cmd := exec.CommandContext(ctx, "ssh", probekit.SSHArgv(host, remoteResourcesCmd)...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

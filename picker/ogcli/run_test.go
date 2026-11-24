@@ -219,3 +219,61 @@ func TestCompletionCompLine(t *testing.T) {
 		t.Errorf("hidden completion command offered: %q", got.stdout)
 	}
 }
+
+func projectVerbs(target string) []Verb {
+	return []Verb{{Verb: "project", Target: target, Summary: "Multi-host projects", Model: "project"}}
+}
+
+func TestRunProjectModel(t *testing.T) {
+	target := stubTarget(t, t.TempDir())
+	verbs := projectVerbs(target)
+
+	for _, flag := range []string{"--help", "-h"} {
+		got := runOg(t, verbs, nil, "project", flag)
+		if got.code != 0 || got.stubOut != "" {
+			t.Fatalf("%s: code %d, ran target %q (stderr %q)", flag, got.code, got.stubOut, got.stderr)
+		}
+		if first, _, _ := strings.Cut(got.stdout, "\n"); first != "og project — Multi-host projects" {
+			t.Errorf("%s: first line %q", flag, first)
+		}
+		for _, want := range []string{"Usage: og project <subcommand>", "  status [<project>]"} {
+			if !strings.Contains(got.stdout, want) {
+				t.Errorf("%s: help lacks %q:\n%s", flag, want, got.stdout)
+			}
+		}
+		if last := lastLine(got.stdout); last != target {
+			t.Errorf("%s: last line %q, want the target", flag, last)
+		}
+	}
+
+	got := runOg(t, verbs, nil, "project", "status", "--help")
+	if want := "2\n[status]\n[--help]\n"; got.code != 0 || got.stubOut != want {
+		t.Errorf("code %d, stub saw %q, want %q (stderr %q)", got.code, got.stubOut, want, got.stderr)
+	}
+}
+
+func TestProjectModelShapeAndCompletion(t *testing.T) {
+	target := stubTarget(t, t.TempDir())
+	verbs := projectVerbs(target)
+
+	parser, err := buildParser(mustTable(t, verbs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := child(t, parser.Model.Node, "project")
+	if got := positionals(project); !slices.Equal(got, []string{"args"}) {
+		t.Errorf("project positionals = %v, want the passthrough arg", got)
+	}
+	if len(flagNames(project)) != 0 || len(project.Children) != 0 {
+		t.Errorf("project has flags %v / children %v", flagNames(project), childNames(project))
+	}
+
+	got := runOg(t, verbs, []string{"COMP_LINE=og project status "})
+	if got.code != 0 || got.stubOut != "" {
+		t.Errorf("completion of `og project status`: code %d, ran target %q (stderr %q)", got.code, got.stubOut, got.stderr)
+	}
+	got = runOg(t, verbs, []string{"COMP_LINE=og pro"})
+	if strings.TrimSpace(got.stdout) != "project" {
+		t.Errorf("noun completion = %q", got.stdout)
+	}
+}

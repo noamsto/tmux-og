@@ -30,29 +30,16 @@ const remoteZoxideScript = `z=$(command -v zoxide 2>/dev/null || echo /etc/profi
 
 var remoteZoxideBody = "sh -c " + shellQuote(remoteZoxideScript)
 
-// remoteZoxideArgv is sshProbe's ssh invocation for remoteZoxideBody. Never a
-// non-batch ssh: a prompt would land in the picker's pty.
-func remoteZoxideArgv(host string) []string {
-	return []string{
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=2",
-		"-T",
-		host,
-		"--",
-		remoteZoxideBody,
-	}
-}
-
 // fetchRemoteZoxideFn is seamed for tests.
 var fetchRemoteZoxideFn = sshRemoteZoxide
 
 // sshRemoteZoxide returns host's raw zoxide entries; the error is an ssh
 // failure, timeout or non-zero exit, never an absent zoxide.
 func sshRemoteZoxide(host string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probekit.ProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh", remoteZoxideArgv(host)...) //nolint:gosec // G204: fixed binary, argv passed without a shell
+	cmd := exec.CommandContext(ctx, "ssh", probekit.SSHArgv(host, remoteZoxideBody)...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

@@ -1,0 +1,28 @@
+I|id|u
+T||@x|/home/u/ok|s
+T||@7|/home/u/o k|s
+T||@8|/home/u/ok|sess|with|pipes
+T||@9
+R|/home/u/ok/.git|main|https://github.com/o/ok
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok|main
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok-a|feat|x
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok-b|feat[31m
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok-c|feat
+x
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/o k|main
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/../etc|main
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|relative/p|main
+W|/home/u/ok/.git|NOTHEX|/home/u/ok-d|main
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok-e|-rf
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok-f|$(reboot)
+W|/home/u/ok/.git|1111111111111111111111111111111111111111|/home/u/ok-g
+W|/home/u/unknown/.git|1111111111111111111111111111111111111111|/home/u/x|main
+R|/home/u/evil/.git|main|#(touch /tmp/pwn)
+R|/home/u/evil2/.git|main|https://github.com/o/r$(id)
+R|relative/.git|main|https://github.com/o/rel
+R|/home/u/badbr/.git|ma;in|https://github.com/o/badbr
+D|/home/u/ok/.git|x|1|
+D|/home/u/ok/.git|1||
+D|/home/u/ok/.git|1|2|zz
+D|/home/u/ok/.git|1|2|
+Z|whatever

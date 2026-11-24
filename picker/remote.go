@@ -24,10 +24,6 @@ import (
 	"github.com/noamsto/tmux-og/picker/probekit"
 )
 
-// remoteProbeTimeout bounds each per-host ssh list-sessions probe so a down
-// host cannot stall the session picker's async remote section.
-const remoteProbeTimeout = 3 * time.Second
-
 // remoteIdentityPreamble prints machine-id (or uuid/hostname fallback) and the
 // remote username on separate lines. Folded into remoteListSessionsCmd so
 // identity rides the existing ssh probe with no extra round trip.
@@ -49,34 +45,13 @@ const remoteSessionRowsFormat = "#{?#{@bridge_placed},S|#{session_id}|#{session_
 // command begins with the identity preamble (machine-id line, username line),
 // then one S|$N|created|name line per session — the id a kill targets and the
 // #{session_created} it re-checks first; the name comes last so it may hold `|`.
-var remoteListSessionsBody = remoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `'`)
-
-// remoteTmuxBin resolves the remote's tmux without a shell assignment: PATH
-// first, then the nix per-user profile a non-interactive ssh does not see.
-const remoteTmuxBin = `$(command -v tmux 2>/dev/null || echo /etc/profiles/per-user/$(id -un)/bin/tmux)`
-
-// remoteTmuxCmd runs one tmux argument string under the same TMUX_TMPDIR /
-// binary resolution as og-remote-open. Both legs name the PARENT of the
-// socket dir — tmux appends tmux-<uid> to $TMUX_TMPDIR itself — so
-// /run/user/<uid> on Linux and /tmp on macOS, which has no $XDG_RUNTIME_DIR
-// and keeps its server at tmux's own /tmp/tmux-<uid> default. It tries Linux
-// first and a wrong guess costs a stat.
-// Both legs are silenced and OR'd, so a missing server yields empty stdout
-// rather than an error a caller would read as unreachable. Everything it emits
-// must stay fish-safe: no `var=value` assignments — fish login shells reject
-// them, and the picker would mark a reachable host unreachable.
-func remoteTmuxCmd(args string) string {
-	leg := func(tmpdir string) string {
-		return `env TMUX_TMPDIR=` + tmpdir + ` ` + remoteTmuxBin + ` ` + args + ` 2>/dev/null`
-	}
-	return leg(`/run/user/$(id -u)`) + ` || ` + leg(`/tmp`)
-}
+var remoteListSessionsBody = probekit.RemoteTmuxCmd(`list-sessions -F '` + remoteSessionRowsFormat + `'`)
 
 var remoteListSessionsCmd = remoteIdentityPreamble + `; ` + remoteListSessionsBody
 
 // remoteKillScript runs one tmux subcommand ($1) on target ($2) against the
 // first of /run/user/<uid>, /tmp whose server answers list-sessions — the
-// probe's own selection rule — and nowhere else. remoteTmuxCmd's `||` would
+// probe's own selection rule — and nowhere else. probekit.RemoteTmuxCmd's `||` would
 // retry a failed kill on the second server and hit an unrelated id there.
 // Before exec it compares the target's live #{session_created} against $3 (the
 // probe's value), so a server restart that renumbers $N refuses instead of
@@ -548,7 +523,7 @@ func sshKillRemoteSession(host, sessionID, created string) error {
 
 // sshKillRemoteSessionCtx is sshKillRemoteSession parameterized on a parent
 // ctx, so a kill run can bound and cancel an in-flight ssh (killRun in
-// kill.go). It derives its own remoteProbeTimeout deadline from ctx.
+// kill.go). It derives its own probekit.ProbeTimeout deadline from ctx.
 func sshKillRemoteSessionCtx(ctx context.Context, host, sessionID, created string) error {
 	if !isTmuxID(sessionID, '$') || !isDigits(created) {
 		return errRemoteKillNoID
@@ -559,17 +534,10 @@ func sshKillRemoteSessionCtx(ctx context.Context, host, sessionID, created strin
 // sshKillCtx runs a remote kill command body on host over ssh, classifying a
 // failure with classifyKillErr.
 func sshKillCtx(ctx context.Context, host, body string) error {
-	ctx, cancel := context.WithTimeout(ctx, remoteProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, probekit.ProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=2",
-		"-T",
-		host,
-		"--",
-		body,
-	)
+	cmd := exec.CommandContext(ctx, "ssh", probekit.SSHArgv(host, body)...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -603,17 +571,10 @@ func sshListRemoteSessions(host string) (remoteProbeResult, error) {
 // sshProbe runs remoteCmd on host under the probe bounds and parses whatever
 // stdout it produced, even on failure, alongside the classified error.
 func sshProbe(host, remoteCmd string, parse func(string) remoteProbeResult) (remoteProbeResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probekit.ProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=2",
-		"-T",
-		host,
-		"--",
-		remoteCmd,
-	)
+	cmd := exec.CommandContext(ctx, "ssh", probekit.SSHArgv(host, remoteCmd)...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -749,17 +710,10 @@ func restorableFromProbeOutput(stdout string) (remuxManifest, error) {
 // as remoteProbeNoServer — a live server's sessions come from
 // sshListRemoteSessions instead.
 func sshListRestorableSessions(host string) (remuxManifest, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probekit.ProbeTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ssh", //nolint:gosec // G204: fixed binary, argv passed without a shell
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=2",
-		"-T",
-		host,
-		"--",
-		remoteRestorableCmd,
-	)
+	cmd := exec.CommandContext(ctx, "ssh", probekit.SSHArgv(host, remoteRestorableCmd)...) //nolint:gosec // G204: fixed binary, argv passed without a shell
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
