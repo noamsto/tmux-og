@@ -320,5 +320,8 @@ grid_windows() {
 
 	bash "$REFLOW" S 60 --force >/dev/null 2>&1
 
+	# A grid really rendered (single-line mode stamps the tag empty too).
+	[ "$(tmux show-options -t S -qv status)" -ge 3 ]
+	[ "$(tmux show -v -t S @window_split)" != 999 ]
 	[ -z "$(tmux show -wv -t S:0 @window_repo_disp)" ]
 }
