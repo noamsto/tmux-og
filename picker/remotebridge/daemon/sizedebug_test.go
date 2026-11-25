@@ -126,3 +126,46 @@ func TestSizeDebugFanoutBarrierDoesNotShiftOrdinal(t *testing.T) {
 		t.Fatalf("traced = %v, want exactly two entries", st.traced)
 	}
 }
+
+// On: a reply body carrying interior newlines, CRs and an ESC sequence is
+// stripped to printable text, so it logs as exactly one line with no control
+// bytes instead of forging a log line or emitting a terminal sequence.
+func TestSizeDebugSanitizesReplyBody(t *testing.T) {
+	buf := armSizeDebug(t, true)
+	st := newStream(io.Discard)
+
+	if _, ok := st.stampAll("refresh-client -C 150x40"); !ok {
+		t.Fatal("stampAll failed")
+	}
+	claimSeq(clientReply(controlmode.End, "a\nb\rc\x1b[31md"), st)
+
+	out := buf.String()
+	if n := strings.Count(out, "\n"); n != 2 {
+		t.Fatalf("trace lines = %d, want 2 (sent + reply): %q", n, out)
+	}
+	if strings.ContainsAny(out, "\r\x1b") {
+		t.Fatalf("trace output has control bytes: %q", out)
+	}
+	if !strings.Contains(out, "reply #1 to refresh-client -C 150x40: %end abc[31md\n") {
+		t.Fatalf("missing sanitized reply in %q", out)
+	}
+}
+
+// On: a reply body over 200 bytes is capped at 200 bytes in the trace.
+func TestSizeDebugCapsOverlongReplyBody(t *testing.T) {
+	buf := armSizeDebug(t, true)
+	st := newStream(io.Discard)
+
+	if _, ok := st.stampAll("refresh-client -C 150x40"); !ok {
+		t.Fatal("stampAll failed")
+	}
+	claimSeq(clientReply(controlmode.End, strings.Repeat("x", 300)), st)
+
+	out := buf.String()
+	if !strings.Contains(out, strings.Repeat("x", 200)+"\n") {
+		t.Fatalf("capped body missing in %q", out)
+	}
+	if strings.Contains(out, strings.Repeat("x", 201)) {
+		t.Fatalf("body not capped at 200 bytes: %q", out)
+	}
+}

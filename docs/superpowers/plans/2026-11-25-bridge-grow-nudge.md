@@ -129,3 +129,13 @@ Files: `tests/float-drag-integration.bats` only. `flake.nix` only if an env var 
 - The script bats test is red before and green after.
 - `float-drag-integration-tests` is green on 3 consecutive darwin runs of the final head.
 - `go test -race ./remotebridge/...`, `nix build .#default`, `nix flake check` and `nix build .#lint` all pass.
+
+## Review amendments (round 1)
+
+- S4's end-to-end case no longer plants stamps. It unsets `client-resized`, so only the daemon's reveal-poll signal can carry the grow, which pins the `geomSignal` wiring in `runMirror`. The script fix stays pinned by `reflow-fanout.bats`. `float-drag-integration.bats` now pins `TMPDIR` to the test dir.
+- S1 changes:
+  - The debounce never writes through a symlinked stamp; it fails open instead, and logs `debounce_failopen` when debug logging is on.
+  - The script cases use run-unique sessions and create files exclusively (noclobber).
+  - Case (c) is made deterministic with a fake `sleep`.
+  - A new case (d) covers the symlink.
+- S3: trace lines pass remote-derived text through `printable` and the 200-byte cap.

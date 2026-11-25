@@ -81,10 +81,13 @@ func sizeGeomSig(m map[string]string) string {
 	return b.String()
 }
 
-// traceBody trims a reply body and caps it at 200 bytes, so one oversized
-// %error or %end cannot flood the trace.
+// traceBody renders remote-derived text for the trace. It trims it, drops
+// every control character (printable), then caps it at 200 bytes, so a reply
+// body or a remote-supplied command cannot forge log lines, emit terminal
+// escape sequences, or flood the trace — the daemon-side sanitizing rule in
+// CLAUDE.md.
 func traceBody(data []byte) string {
-	s := strings.TrimSpace(string(data))
+	s := printable(strings.TrimSpace(string(data)))
 	if len(s) > 200 {
 		s = s[:200]
 	}

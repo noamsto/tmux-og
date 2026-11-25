@@ -822,7 +822,7 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 				s.traced = make(map[uint64]string)
 			}
 			s.traced[s.sent] = cmd
-			sizeDebugf("sent #%d %s", s.sent, cmd)
+			sizeDebugf("sent #%d %s", s.sent, traceBody([]byte(cmd)))
 		}
 		// The tag is a format to display-message: keep it a literal, never
 		// remote-derived text. No -t either — a target that vanished would
@@ -907,7 +907,7 @@ func (s *stream) traceReply(seq uint64, l controlmode.Line) {
 	if l.Kind == controlmode.Error {
 		kind = "%error"
 	}
-	sizeDebugf("reply #%d to %s: %s %s", seq, cmd, kind, traceBody(l.Data))
+	sizeDebugf("reply #%d to %s: %s %s", seq, traceBody([]byte(cmd)), kind, traceBody(l.Data))
 }
 
 func (s *stream) close() {

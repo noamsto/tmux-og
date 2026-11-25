@@ -59,28 +59,25 @@ fi
 # hook backgrounds this (-b), so the sleep is off the server's command queue.
 # Each invocation stamps a token and waits out the burst; only the last one to
 # stamp (the final width) survives the token check and reflows — the rest bail.
-# The stamp is keyed per user AND per tmux server (#1266): a fixed /tmp path is
-# shared by every user on a host, and on a multi-user build machine (nix's
-# _nixbldN) the first user's stamp locked every other user out — the write
-# failed, the read-back returned the foreign token, and the reflow exited
-# before touching the bridge nudge, so a local resize never reached the remote.
-# $TMPDIR keeps an isolated (test) base private, $UID separates users that
-# share one, and the $TMUX socket path separates servers while staying stable
-# across restarts (a pid would leak a stamp per restart). When TMUX is unset
-# (a direct invocation) the socket field is empty. The write fails OPEN: a
-# stamp this invocation cannot write must never silence the reflow, so a failed
-# write skips the debounce and falls through to the reflow. `2>/dev/null` sits
-# before the `>` so bash's own "cannot create" message is swallowed too.
+# The stamp is keyed per user AND per tmux server (#1266): $TMPDIR keeps an
+# isolated (test) base private, $UID separates users that share /tmp, and the
+# $TMUX socket path separates servers; when TMUX is unset the socket field is
+# empty. A symlinked stamp is never followed, and a stamp this invocation
+# cannot write fails OPEN — logged when debug logging is on — so the miss falls
+# through to the reflow instead of silencing it. `2>/dev/null` sits before the
+# `>` so bash's own "cannot create" message is swallowed too.
 if ((DEBOUNCE)); then
 	sock=""
 	[[ -n ${TMUX:-} ]] && sock=${TMUX%,*,*}
 	stamp="${TMPDIR:-/tmp}/og-reflow-debounce.${UID}.${sock//\//_}.${SESSION//\//_}"
 	token=$EPOCHREALTIME
-	if printf '%s' "$token" 2>/dev/null >"$stamp"; then
+	if [[ ! -L $stamp ]] && printf '%s' "$token" 2>/dev/null >"$stamp"; then
 		sleep 0.12
 		last=""
 		[[ -f $stamp ]] && last=$(<"$stamp")
 		[[ $last == "$token" ]] || exit 0
+	else
+		log_enabled && log_event reflow event debounce_failopen sess "$SESSION"
 	fi
 fi
 

@@ -39,7 +39,7 @@ func TestActivityRows(t *testing.T) {
 		"",
 		"0|tty4|6|@7|focused|not-a-number|80|24|attached",
 		"0|tty5|7|@7|focused||80|24|attached",
-		"0|tty6|8|@7|focused|105|80|24", // six fields: predates the geometry tail (#1266)
+		"0|tty6|8|@7|focused|105|80|24", // eight fields: missing the geometry tail's status (#1266)
 		"0|tty7|9|@7|focused|106|80|24|attached",
 	}, "\n") + "\n"
 

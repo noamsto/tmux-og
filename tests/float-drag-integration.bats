@@ -32,6 +32,8 @@ setup() {
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
+	# Keep the reflow lock and debounce stamps private to the test (as reflow-fanout.bats does).
+	export TMPDIR="$BATS_TEST_TMPDIR"
 
 	TEST_HOME="$BATS_TEST_TMPDIR/home"
 	mkdir -p "$TEST_HOME"
@@ -59,11 +61,6 @@ setup() {
 teardown() {
 	[[ -n ${DAEMON_PID:-} ]] && kill "$DAEMON_PID" 2>/dev/null
 	[[ -n ${DAEMON_PID:-} ]] && wait "$DAEMON_PID" 2>/dev/null
-	# Only the #1266 case plants the shared legacy stamp; remove it by exact name.
-	if [[ -n ${LEGACY_STAMP_1266:-} ]]; then
-		rm -f -- "$LEGACY_STAMP_1266"
-		LEGACY_STAMP_1266=""
-	fi
 	$OBS kill-server 2>/dev/null || true
 	$DST kill-server 2>/dev/null || true
 	$SRC kill-server 2>/dev/null || true
@@ -695,33 +692,17 @@ settle_agree() {
 	settle_agree
 }
 
-# #1266: a local client grow must reach the remote even when the debounced
-# reflow cannot nudge it. The fixed script fails OPEN on the unwritable stamps
-# below, but the stale legacy token still proves the pre-#1266 path: the old
-# script read it back, saw a foreign token and exited before the nudge. With
-# only the reflow blocked, the daemon's reveal poll is what carries the
-# grow to the remote.
-@test "a client grow reaches the remote when the debounced reflow cannot nudge (#1266)" {
+# #1266: a local client grow must reach the remote even with no client-resized
+# nudge at all. This stands in for any lost nudge, such as #1266's foreign
+# debounce stamp. A mirror window is window-size manual, so a grow fires no
+# window-resized either; only the daemon's reveal-poll geometry signal can
+# carry the grow. The shrink still converges without client-resized: the local
+# window shrinks with the client, so window-resized nudges, and the reveal poll
+# marks too.
+@test "a client grow reaches the remote with no client-resized nudge (#1266)" {
 	mirror_up -x 40 -y 12 -X 10 -Y 5
-	# Plant an unwritable stale token at the legacy path (the pre-#1266
-	# location) and at the per-user/per-server path. /tmp is shared on darwin,
-	# so a legacy stamp that is not ours is left alone; the variable lets
-	# teardown remove only one this test planted.
-	local legacy="/tmp/og-reflow-debounce.host-sess"
-	if [[ ! -e $legacy ]]; then
-		printf 'stale' >"$legacy"
-		chmod 444 "$legacy"
-		LEGACY_STAMP_1266="$legacy"
-	fi
-	local sock stamp
-	sock="$($DST display-message -p '#{socket_path}')"
-	stamp="${TMPDIR:-/tmp}/og-reflow-debounce.$UID.${sock//\//_}.host-sess"
-	printf 'stale' >"$stamp"
-	chmod 444 "$stamp"
-	# Root can write a 444 file anyway, so skip when the unwritability the
-	# case depends on cannot hold.
-	[[ -z $LEGACY_STAMP_1266 || ! -w $legacy ]] || skip "legacy stamp $legacy is writable (running as root?)"
-	[[ ! -w $stamp ]] || skip "new stamp $stamp is writable (running as root?)"
+	# No reflow nudge exists for a client resize.
+	$DST set-hook -gu client-resized
 
 	resize_client 45 14
 	settle_agree

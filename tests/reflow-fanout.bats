@@ -939,59 +939,104 @@ reflow_stamp_path() {
 }
 
 @test "debounce stamp: a stale legacy /tmp stamp does not silence the reflow (#1266)" {
+	local sess="dbc-a$$"
+	tmux new-session -d -s "$sess"
 	local nudge="$TDIR/nudge-a"
 	# The path the old script used. It is shared with every other build user on
-	# the host, so refuse to clobber one that is not ours.
-	local legacy="/tmp/og-reflow-debounce.S"
-	[ -e "$legacy" ] && skip "legacy stamp $legacy already exists (not ours)"
-	printf 'stale' >"$legacy"
-	chmod 444 "$legacy"
+	# the host, so create it exclusively and never follow (or clobber) a symlink.
+	local legacy="/tmp/og-reflow-debounce.$sess"
+	if ! (
+		set -o noclobber
+		printf 'stale' >"$legacy"
+	) 2>/dev/null; then
+		skip "cannot create $legacy exclusively"
+	fi
 	LEGACY_STAMP="$legacy" # ours now; teardown may remove it
+	chmod 444 "$legacy"
 	[[ -w $legacy ]] && skip "legacy stamp $legacy is writable (running as root?)"
 
 	rm -f "$nudge"
-	tmux set -q @bridge_nudge "$nudge"
-	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1
+	tmux set -q -t "$sess" @bridge_nudge "$nudge"
+	tmux run-shell "$REFLOW --debounce $sess 200" >/dev/null 2>&1
 	[ -e "$nudge" ]
 }
 
 @test "debounce stamp: an unwritable new stamp fails open and still nudges (#1266)" {
+	local sess="dbc-b$$"
+	tmux new-session -d -s "$sess"
 	local nudge="$TDIR/nudge-b"
 	local stamp
-	stamp="$(reflow_stamp_path S)"
-	printf 'stale' >"$stamp"
+	stamp="$(reflow_stamp_path "$sess")"
+	rm -f "$stamp"
+	if ! (
+		set -o noclobber
+		printf 'stale' >"$stamp"
+	) 2>/dev/null; then
+		skip "cannot create $stamp exclusively"
+	fi
 	chmod 444 "$stamp"
 	[[ -w $stamp ]] && skip "new stamp $stamp is writable (running as root?)"
 
 	rm -f "$nudge"
-	tmux set -q @bridge_nudge "$nudge"
-	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1
+	tmux set -q -t "$sess" @bridge_nudge "$nudge"
+	tmux run-shell "$REFLOW --debounce $sess 200" >/dev/null 2>&1
 	[ -e "$nudge" ]
 }
 
 @test "debounce stamp: a writable stamp still debounces a burst (#1266)" {
+	local sess="dbc-c$$"
+	tmux new-session -d -s "$sess"
 	local nudge="$TDIR/nudge-c"
 	local stamp
-	stamp="$(reflow_stamp_path S)"
+	stamp="$(reflow_stamp_path "$sess")"
 	rm -f "$stamp" "$nudge"
-	tmux set -q @bridge_nudge "$nudge"
+	tmux set -q -t "$sess" @bridge_nudge "$nudge"
 
-	# First run: let it stamp its token, then clobber the stamp while it sleeps
-	# (0.12s, orders of magnitude longer than the write). Its read-back sees the
-	# foreign token and it exits before touching the nudge.
-	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1 &
-	local rpid=$!
-	local i
-	for i in $(seq 1 100); do
-		[ -s "$stamp" ] && break
-		sleep 0.005
-	done
-	[ -s "$stamp" ]
-	printf 'not-its-token' >"$stamp"
-	wait "$rpid"
+	# A fake `sleep` the reflow's `sleep 0.12` resolves to: it clobbers the stamp
+	# with a foreign token while the reflow sleeps, so its read-back sees the
+	# foreign token and it exits before touching the nudge. The real sleep's
+	# absolute path is baked in so the exec cannot recurse.
+	local real_sleep
+	real_sleep="$(command -v sleep)"
+	mkdir -p "$TDIR/fakebin"
+	cat >"$TDIR/fakebin/sleep" <<-EOF
+		#!/bin/sh
+		printf 'not-its-token' >"\$OG_TEST_CLOBBER_STAMP"
+		exec "$real_sleep" "\$@"
+	EOF
+	chmod +x "$TDIR/fakebin/sleep"
+	# A run-shell job takes its environment from the server's global environment.
+	local orig_path="$PATH"
+	tmux set-environment -g PATH "$TDIR/fakebin:$orig_path"
+	tmux set-environment -g OG_TEST_CLOBBER_STAMP "$stamp"
+	tmux run-shell "$REFLOW --debounce $sess 200" >/dev/null 2>&1
 	[ ! -e "$nudge" ]
 
-	# A lone run whose token survives does touch the nudge.
-	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1
+	# Restore the real PATH (unsetting it would leave the reflow unable to
+	# resolve tmux) and drop the clobber target: a lone run now survives and
+	# nudges.
+	tmux set-environment -g PATH "$orig_path"
+	tmux set-environment -gu OG_TEST_CLOBBER_STAMP
+	tmux run-shell "$REFLOW --debounce $sess 200" >/dev/null 2>&1
+	[ -e "$nudge" ]
+}
+
+@test "debounce stamp: a symlinked stamp is not followed (#1266)" {
+	local sess="dbc-d$$"
+	tmux new-session -d -s "$sess"
+	local nudge="$TDIR/nudge-d"
+	local stamp
+	stamp="$(reflow_stamp_path "$sess")"
+	local victim="$TDIR/victim"
+	printf 'known-content' >"$victim"
+	rm -f "$stamp"
+	ln -s "$victim" "$stamp"
+
+	rm -f "$nudge"
+	tmux set -q -t "$sess" @bridge_nudge "$nudge"
+	tmux run-shell "$REFLOW --debounce $sess 200" >/dev/null 2>&1
+	local got
+	got=$(<"$victim")
+	[ "$got" = "known-content" ]
 	[ -e "$nudge" ]
 }
