@@ -198,6 +198,7 @@ has_zoom=0
 # The repo-tag field (#1216) follows it, evaluated with the same predicate as
 # status-format[1]'s crewRepoTag (generator/render/status.go) so a hidden tag
 # reads empty and its width is charged only when the tag is drawn; '|' squashed.
+# The grid draws it too, from the @window_repo_disp stamp (#1267).
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
@@ -206,7 +207,8 @@ FMT='#{window_index}|#{window_id}|#{@window_label_clipped}|#{@branch}|#{pane_cur
 declare -A win_short win_short_dw win_long_dw
 declare -A win_id win_id_dw win_rest_short win_rest_long win_pr win_pr_dw
 declare -A win_crew win_crew_dw win_crew_disp win_zoom_dw win_clip_prev
-declare -A win_host win_host_dw win_host_disp win_bhost win_repo win_repo_dw
+declare -A win_host win_host_dw win_host_disp win_bhost win_repo win_repo_dw win_repo_disp
+repo_any=0
 host_any=0         # 1 when some window is placed (gates the badge fragment in ENTRY)
 CREW_HOST_ICON='⇄' # plain Unicode (not a Nerd Font glyph); nerd alt: nf-md-remote
 crew_colw=0        # widest codename → shared agent-badge column (0 when no window is tagged)
@@ -345,12 +347,13 @@ while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prn
 		win_bhost[$idx]=""
 	fi
 
-	# Repo tag "<repo> " (#1216): drawn only by the single-line status-format[1],
-	# so it is charged in the fit totals below but not in the grid floor.
+	# Repo tag "<repo> " (#1216): charged in the fit totals and the grid floor
+	# below; the grid draws it from the @window_repo_disp stamp (#1267).
 	if [[ -n $crepo ]]; then
 		win_repo[$idx]="$crepo"
 		measure_display_width "${crepo} "
 		win_repo_dw[$idx]=$REPLY_DW
+		repo_any=1
 	else
 		win_repo[$idx]=""
 		win_repo_dw[$idx]=0
@@ -409,8 +412,8 @@ LONG_TRUNC_FLOOR=24
 # whole column — shows more.
 SINGLE_CLIP_FLOOR=16
 
-# Per-window widths driving the grid: a floor (id + badge + zoom marker, none of
-# which the renderer can shrink) and a want (floor + the whole branch/title).
+# Per-window widths driving the grid: a floor (id + badges + repo tag + zoom
+# marker, none of which the renderer can shrink) and a want (floor + the whole branch/title).
 # Wants go in uncapped, with MAX_REST_WIDTH passed alongside them —
 # reflow_fit_columns owns the cap (#688). The single-line fit totals are
 # uncapped and unpadded either way: that path renders full names via the global
@@ -424,7 +427,7 @@ pr_list=""
 total_long=0
 total_short=0
 for idx in "${indices[@]}"; do
-	floor=$((win_id_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx] + win_zoom_dw[$idx]))
+	floor=$((win_id_dw[$idx] + win_host_dw[$idx] + win_crew_dw[$idx] + win_repo_dw[$idx] + win_zoom_dw[$idx]))
 	rest_long=$((win_long_dw[$idx] - win_id_dw[$idx]))
 	rest_long_list+="${rest_long_list:+ }$rest_long"
 	rest_short=$((win_short_dw[$idx] - win_id_dw[$idx]))
@@ -475,6 +478,7 @@ for pos in "${!indices[@]}"; do
 		win_id_disp[$idx]="${win_id[$idx]}"
 		win_crew_disp[$idx]="${win_crew[$idx]}"
 		win_host_disp[$idx]="${win_host[$idx]}"
+		win_repo_disp[$idx]=""
 		# Empty unless rung 1.5 shaved this row to fit. The clip lands on the
 		# display copy alone — @window_label_rest_long stays the full identity
 		# the pickers and tmux-statusline read.
@@ -501,9 +505,14 @@ for pos in "${!indices[@]}"; do
 	cur_crew_dw=${win_crew_dw[$idx]}
 	cur_host="${win_host[$idx]}"
 	cur_host_dw=${win_host_dw[$idx]}
+	cur_repo=""
+	((win_repo_dw[$idx] > 0)) && cur_repo="${win_repo[$idx]} "
+	cur_repo_dw=${win_repo_dw[$idx]}
 	cur_id="${win_id[$idx]}"
 	cur_id_dw=${win_id_dw[$idx]}
-	if ((cur_host_dw + cur_crew_dw + cur_id_dw > identity_avail)); then
+	if ((cur_host_dw + cur_crew_dw + cur_repo_dw + cur_id_dw > identity_avail)); then
+		cur_repo=""
+		cur_repo_dw=0
 		cur_crew=""
 		cur_crew_dw=0
 		cur_host=""
@@ -521,8 +530,9 @@ for pos in "${!indices[@]}"; do
 	# label with no leading gap.
 	win_crew_disp[$idx]="$cur_crew"
 	win_host_disp[$idx]="$cur_host"
+	win_repo_disp[$idx]="$cur_repo"
 
-	rest_avail=$((identity_avail - cur_host_dw - cur_crew_dw - cur_id_dw))
+	rest_avail=$((identity_avail - cur_host_dw - cur_crew_dw - cur_repo_dw - cur_id_dw))
 	((rest_avail < 0)) && rest_avail=0
 	if ((rest_avail == 0)); then
 		cur_rest=""
@@ -686,6 +696,7 @@ build_window_argv() {
 		set -w -t "$target" @window_crew_disp "${win_crew_disp[$idx]}" ';'
 		set -w -t "$target" @window_host_disp "${win_host_disp[$idx]}" ';'
 		set -w -t "$target" @window_host_color "$hcolor" ';'
+		set -w -t "$target" @window_repo_disp "${win_repo_disp[$idx]}" ';'
 		set -w -t "$target" @window_repo_color "$rcolor"
 	)
 	if [[ ${win_clip[$idx]} != "${win_clip_prev[$idx]}" ]]; then
@@ -849,11 +860,16 @@ CREW=""
 # like the crew badge.
 HOST=""
 ((host_any)) && HOST="#[fg=#{?#{@window_host_color},#{E:@window_host_color},#{@og_c_host_peach}}#,bg=#{@thm_bg}]#{@window_host_disp}${BASE}"
+# Repo tag of a window whose crew repo differs from the session's, in its stamped
+# palette colour (peach fallback), between the host and crew badges. Emitted only
+# when some window carries one (repo_any).
+REPO=""
+((repo_any)) && REPO="#[fg=#{?#{@window_repo_color},#{E:@window_repo_color},#{@og_c_host_peach}}#,bg=#{@thm_bg}]#{@window_repo_disp}${BASE}"
 # A placed tab's index takes the same colour as its badge; non-placed tabs keep
 # BASE. BASE is re-asserted after it so the label reverts to the tab colour.
 IDXC="${IDX}"
 ((host_any)) && IDXC="#{?#{@window_host_color},#[fg=#{E:@window_host_color}#,bg=#{@thm_bg}],}${IDX}#{?#{@window_host_color},${BASE},}"
-ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${CREW}${LABEL_Z}${ICONFG} ${ICON}${PRCOLOR}#{@window_pr_glyph}${PRNUM}#{@window_pr_num}#[nounderscore]#{@window_pr_pad}${AGO}#[norange]"
+ENTRY="#[range=window|#{window_index}]#[nobold]${BASE}${IDXC}: ${HOST}${REPO}${CREW}${LABEL_Z}${ICONFG} ${ICON}${PRCOLOR}#{@window_pr_glyph}${PRNUM}#{@window_pr_num}#[nounderscore]#{@window_pr_pad}${AGO}#[norange]"
 
 # Multi-line branches stay on direct `tmux set` calls: FMT0 contains embedded
 # single quotes (e.g. '#{session_name}') that break outer-single-quoted
