@@ -106,11 +106,7 @@ type Config struct {
 	// HoldFreezeMax overrides the pump's hold deadline (holdFreezeMax). Test
 	// only: 0 keeps the 1s production deadline.
 	HoldFreezeMax time.Duration
-	// SizeDebug arms the size-decision trace (#1266): the watcher's chosen
-	// trigger, each size assert it sends or skips as already asserted, the
-	// reveal poll's geometry changes, and every size command's wire ordinal
-	// with the remote's reply. Off by default — Run arms the package switch
-	// from this. See sizedebug.go.
+	// SizeDebug arms the size-decision trace (sizedebug.go, #1266).
 	SizeDebug bool
 	// View is the daemon's live view-identity cell — see Viewing's doc in
 	// viewident.go for the full State model (Desired/Advertised/Relay).
@@ -458,11 +454,9 @@ const resizeFallbackInterval = 30 * time.Second
 // The reveal poll (watchReveal) is a second, hook-independent trigger: the
 // mirror window is pinned to the remote's size, so a local client grow fires
 // no window-resized and leaves no nudge at all (#1266). clientsMoved reports
-// whether the reveal poll saw a client-geometry change since the last tick;
-// every tick calls it, whose take-and-clear also consumes a mark the nudge
-// already accounted for, so one event never costs two area reads. The trigger
-// is nudge when the mtime advanced, else clients when the signal was set, else
-// the 30s fallback.
+// whether the reveal poll saw a client-geometry change since the last tick.
+// Every tick consumes it, so a nudge and a mark for one event cost one area
+// read.
 //
 // On a size change it re-pushes ConvergeCmd per mirrored window, which resizes
 // the remote and makes it emit %layout-change per window, driving the existing
@@ -498,14 +492,9 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), c
 			return
 		case now := <-tick:
 			nudgeMoved := false
-			var nudgeAt time.Time
-			haveNudge := false
-			if mtime, ok := nudged(); ok {
-				nudgeAt, haveNudge = mtime, true
-				if mtime.After(lastNudge) {
-					lastNudge = mtime
-					nudgeMoved = true
-				}
+			if mtime, ok := nudged(); ok && mtime.After(lastNudge) {
+				lastNudge = mtime
+				nudgeMoved = true
 			}
 			moved := clientsMoved()
 			trigger := ""
@@ -524,8 +513,8 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), c
 			w, h := area()
 			if sizeDebug.Load() {
 				nudgeText := "none"
-				if trigger == "nudge" && haveNudge {
-					nudgeText = nudgeAt.Format(time.RFC3339Nano)
+				if nudgeMoved {
+					nudgeText = lastNudge.Format(time.RFC3339Nano)
 				}
 				sizeDebugf("tick %s nudge=%s area=%dx%d", trigger, nudgeText, w, h)
 			}
@@ -886,10 +875,8 @@ func (s *stream) claim(body []byte) uint64 {
 	return s.seen
 }
 
-// traceReply logs the remote's reply to a traced size command. seq is the
-// ordinal claimSeq gave the reply (0 for a block that answers none of ours);
-// the traced entry is taken under s.mu and deleted, so a reply never logs
-// twice. A no-op unless the size trace is armed.
+// traceReply logs the remote's reply to a traced size command; seq is the
+// ordinal claimSeq gave the reply (0 for a block that answers none of ours).
 func (s *stream) traceReply(seq uint64, l controlmode.Line) {
 	if seq == 0 || !sizeDebug.Load() {
 		return
@@ -1556,10 +1543,7 @@ func runMirror(cfg Config) error {
 		}
 		return fi.ModTime(), true
 	}
-	// The reveal poll's geometry signal: one instance shared by both watchers.
-	// watchReveal marks it on a client-geometry change; watchLocalClient
-	// consumes it every tick (see watchLocalClient). When cfg.LocalSess is ""
-	// the reveal watcher does not run, so nothing ever marks (#1266).
+	// watchReveal marks it, watchLocalClient consumes it (#1266).
 	geom := &geomSignal{}
 	// The same tick drives the viewing-identity re-resolve (R10), through the
 	// resolveView built above.

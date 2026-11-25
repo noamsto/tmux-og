@@ -692,13 +692,10 @@ settle_agree() {
 	settle_agree
 }
 
-# #1266: a local client grow must reach the remote even with no client-resized
-# nudge at all. This stands in for any lost nudge, such as #1266's foreign
-# debounce stamp. A mirror window is window-size manual, so a grow fires no
-# window-resized either; only the daemon's reveal-poll geometry signal can
-# carry the grow. The shrink still converges without client-resized: the local
-# window shrinks with the client, so window-resized nudges, and the reveal poll
-# marks too.
+# A local client grow must reach the remote with no client-resized nudge at all
+# (any lost nudge, e.g. #1266's foreign debounce stamp). A mirror window is
+# window-size manual, so a grow fires no window-resized either: only the
+# daemon's reveal-poll geometry signal can carry it.
 @test "a client grow reaches the remote with no client-resized nudge (#1266)" {
 	mirror_up -x 40 -y 12 -X 10 -Y 5
 	# No reflow nudge exists for a client resize.
@@ -706,9 +703,9 @@ settle_agree() {
 
 	resize_client 45 14
 	settle_agree
-	# Deliberate ordering delay, not a wait for a condition: it lets the
-	# watcher consume the shrink refit's leftover nudge before the grow. This is
-	# the deterministic #1266 repro that otherwise only macOS hit by timing.
+	# Deliberate ordering delay, not a wait for a condition: the watcher
+	# consumes the shrink refit's leftover nudge before the grow, which would
+	# otherwise carry the grow by luck.
 	sleep 2
 	resize_client 150 40
 	settle_agree

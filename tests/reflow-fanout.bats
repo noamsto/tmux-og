@@ -913,13 +913,10 @@ reflow_manual_window() {
 # ---------------------------------------------------------------------------
 # debounce stamp (#1266)
 #
-# A debounced reflow's stamp must be keyed per user AND per tmux server, and a
-# write that fails must fail OPEN. Before the fix the stamp lived at a fixed
-# /tmp/og-reflow-debounce.<session>. On a host where several users (nix's
-# _nixbldN) share /tmp the first user's file locked every other user out: the
-# write failed, the read-back returned the foreign token, the reflow exited
-# before the `touch -- "$NUDGE"` that is the bridge's resize nudge (#433), and
-# a local resize never reached the remote.
+# A debounced reflow's stamp is keyed per user and tmux server, and a stamp it
+# cannot write (or a symlinked one) fails OPEN. A foreign stamp at the old fixed
+# /tmp/og-reflow-debounce.<session> used to bail every debounced reflow before
+# its `touch -- "$NUDGE"` (the bridge's resize nudge, #433).
 #
 # Each case drives the real script through `tmux run-shell` (synchronous, so
 # TMUX is set exactly as the client-resized hook sets it) against the private

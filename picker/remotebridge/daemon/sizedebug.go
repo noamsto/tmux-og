@@ -84,8 +84,7 @@ func sizeGeomSig(m map[string]string) string {
 // traceBody renders remote-derived text for the trace. It trims it, drops
 // every control character (printable), then caps it at 200 bytes, so a reply
 // body or a remote-supplied command cannot forge log lines, emit terminal
-// escape sequences, or flood the trace — the daemon-side sanitizing rule in
-// CLAUDE.md.
+// escape sequences, or flood the trace.
 func traceBody(data []byte) string {
 	s := printable(strings.TrimSpace(string(data)))
 	if len(s) > 200 {

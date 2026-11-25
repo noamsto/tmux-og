@@ -116,10 +116,7 @@ func activityRows(out string) []activityRow {
 }
 
 // geomSignal is the one-shot flag watchReveal sets when the client geometry
-// changed and watchLocalClient consumes. take clears it, so a geometry change
-// costs at most one extra area read and a nudge and a mark on the same tick
-// still cost one (#1266). A nil *geomSignal is a no-op, so a watchReveal that
-// is never wired to a resize watcher marks nothing.
+// changed and watchLocalClient consumes (#1266). A nil *geomSignal is a no-op.
 type geomSignal struct {
 	marked atomic.Bool
 }
