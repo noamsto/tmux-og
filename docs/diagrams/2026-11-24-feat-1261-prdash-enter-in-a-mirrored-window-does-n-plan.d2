@@ -1,0 +1,24 @@
+direction: right
+title: "#1261 plan: follow the select once the window is mirrored" {near: top-center; shape: text; style.font-size: 20}
+
+local: "Local host" {
+  script: "tmux-prdash-mirror.sh\n+ notice on prdash/ctl failure" {style.stroke: green}
+  mirror: "mirror windows\nclient follows to the new one"
+}
+daemon: "bridge daemon (daemon.go dispatch)" {
+  swc: "SessionWindowChanged\nunmirrored → selectedBeforeAdd" {style.stroke: green}
+  wadd: "WindowAdd\naddWindow, then follow selectedBeforeAdd" {style.stroke: green}
+  reg: "registry"
+  open: "HandOff failure\n→ notice on local clients" {style.stroke: green}
+  swc -> reg: "lookup misses"
+  wadd -> reg: "registers @N"
+}
+remote: "Remote host" {
+  float: "handoff float\nwt switch"
+  hook: "post-switch hook\nnew-window -a"
+  float -> hook
+}
+local.script -> remote.float: "FrameCtl handoff"
+remote.hook -> daemon.swc: "1. %session-window-changed @N"
+remote.hook -> daemon.wadd: "2. %window-add @N"
+daemon.wadd -> local.mirror: "select-window"

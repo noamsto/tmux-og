@@ -1,0 +1,23 @@
+direction: right
+title: "#1261 today: wt's new-window select outruns its own %window-add" {near: top-center; shape: text; style.font-size: 20}
+
+local: "Local host" {
+  script: "tmux-prdash-mirror.sh\nctl handoff"
+  mirror: "mirror windows\n(client sits on 'origin')"
+}
+daemon: "bridge daemon (daemon.go dispatch)" {
+  swc: "SessionWindowChanged\ntranslateWindowNotification"
+  wadd: "WindowAdd\naddWindow"
+  reg: "registry\n(remote id -> local window)"
+  swc -> reg: "@N not there yet → dropped" {style.stroke: red}
+  wadd -> reg: "registers @N, mirrors it\nnever selects it" {style.stroke: red}
+}
+remote: "Remote host" {
+  float: "handoff float\nwt switch"
+  hook: "post-switch hook\nnew-window -a"
+  float -> hook
+}
+local.script -> remote.float: "FrameCtl handoff"
+remote.hook -> daemon.swc: "1. %session-window-changed @N"
+remote.hook -> daemon.wadd: "2. %window-add @N"
+daemon.wadd -> local.mirror: "client stays put" {style.stroke-dash: 3}

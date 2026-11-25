@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/noamsto/tmux-og/picker/remotebridge/controlmode"
 	"github.com/noamsto/tmux-og/picker/remotebridge/wire"
@@ -38,7 +39,7 @@ func TestParseSessionChanged(t *testing.T) {
 func TestSessionPinIgnoresOwnSession(t *testing.T) {
 	rt, sent := scriptedRT("%exit\n")
 	handedOff := false
-	p := &sessionPin{id: "$0", handOff: func(string) { handedOff = true }}
+	p := &sessionPin{id: "$0", handOff: func(string) error { handedOff = true; return nil }}
 
 	p.apply(controlmode.ParseLine("%session-changed $0 A"), newRegistry(), NewRouter(), rt)
 
@@ -92,7 +93,7 @@ func TestSessionPinSwitchesBackReseedsAndHandsOff(t *testing.T) {
 	rt, sent := scriptedRT(script)
 
 	gotHandOff := make(chan string, 1)
-	p := &sessionPin{id: "$0", handOff: func(s string) { gotHandOff <- s }}
+	p := &sessionPin{id: "$0", handOff: func(s string) error { gotHandOff <- s; return nil }}
 
 	go p.apply(controlmode.ParseLine("%session-changed $5 other proj"), reg, router, rt)
 
@@ -125,7 +126,7 @@ func TestSessionPinEndsWhenPinnedSessionIsGone(t *testing.T) {
 		"%begin 1 2 1\ncan't find session: $0\n%error 1 2 1\n"
 	rt, sent := scriptedRT(script)
 	handedOff := false
-	p := &sessionPin{id: "$0", handOff: func(string) { handedOff = true }}
+	p := &sessionPin{id: "$0", handOff: func(string) error { handedOff = true; return nil }}
 
 	var ended bool
 	logs := captureRouterStderr(t, func() {
@@ -432,4 +433,47 @@ func capturedPanes(sent string) []string {
 		}
 	}
 	return ids
+}
+
+// A hand-off that fails raises the notice; one that succeeds stays quiet.
+func TestSessionPinHandOffFailureNotice(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"failure notifies", errors.New("launcher exited 1"), true},
+		{"success is quiet", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, _ := scriptedRT("%begin 1 1 1\n%end 1 1 1\n")
+			synctest.Test(t, func(t *testing.T) {
+				noticed := false
+				p := &sessionPin{
+					id:      "$0",
+					handOff: func(string) error { return tc.err },
+					failed:  func() { noticed = true },
+				}
+				p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt)
+				// failed runs on the hand-off goroutine right after handOff returns.
+				synctest.Wait()
+				if noticed != tc.want {
+					t.Errorf("noticed = %v, want %v", noticed, tc.want)
+				}
+			})
+		})
+	}
+}
+
+// With no hand-off to run (a placed mirror) the pin reports the switch as
+// unhandled; the Run wiring turns that into a notice only while a press is armed.
+func TestSessionPinUnhandledSwitch(t *testing.T) {
+	rt, _ := scriptedRT("%begin 1 1 1\n%end 1 1 1\n")
+	unhandled := 0
+	p := &sessionPin{id: "$0", unhandled: func() { unhandled++ }}
+	p.apply(controlmode.ParseLine("%session-changed $5 other"), newRegistry(), NewRouter(), rt)
+	if unhandled != 1 {
+		t.Errorf("unhandled calls = %d, want 1", unhandled)
+	}
 }
