@@ -106,6 +106,8 @@ type Config struct {
 	// HoldFreezeMax overrides the pump's hold deadline (holdFreezeMax). Test
 	// only: 0 keeps the 1s production deadline.
 	HoldFreezeMax time.Duration
+	// SizeDebug arms the size-decision trace (sizedebug.go, #1266).
+	SizeDebug bool
 	// View is the daemon's live view-identity cell — see Viewing's doc in
 	// viewident.go for the full State model (Desired/Advertised/Relay).
 	// Desired is what every dial's argv reads; Relay is the single capability
@@ -449,6 +451,13 @@ const resizeFallbackInterval = 30 * time.Second
 // tick's stat still sees it and converges — one poll cycle later than the hook
 // itself.
 //
+// The reveal poll (watchReveal) is a second, hook-independent trigger: the
+// mirror window is pinned to the remote's size, so a local client grow fires
+// no window-resized and leaves no nudge at all (#1266). clientsMoved reports
+// whether the reveal poll saw a client-geometry change since the last tick.
+// Every tick consumes it, so a nudge and a mark for one event cost one area
+// read.
+//
 // On a size change it re-pushes ConvergeCmd per mirrored window, which resizes
 // the remote and makes it emit %layout-change per window, driving the existing
 // reconcile + re-seed (and the re-fit of the local window to the remote's new
@@ -474,7 +483,7 @@ const resizeFallbackInterval = 30 * time.Second
 // as sent: the view keeps the value and the next claim publishes it. This
 // watcher must NEVER write Advertised — only a publish site does that (see
 // Viewing's State model).
-func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), activeWin func() string, resolveView func() (ViewIdentity, bool), view *Viewing, env relayEnv, reg *registry, cv *converger, send func(...string) bool, stop <-chan struct{}, tick <-chan time.Time) {
+func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), clientsMoved func() bool, activeWin func() string, resolveView func() (ViewIdentity, bool), view *Viewing, env relayEnv, reg *registry, cv *converger, send func(...string) bool, stop <-chan struct{}, tick <-chan time.Time) {
 	var lastNudge time.Time
 	lastCheck := time.Now()
 	for {
@@ -482,12 +491,19 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 		case <-stop:
 			return
 		case now := <-tick:
-			trigger := ""
+			nudgeMoved := false
 			if mtime, ok := nudged(); ok && mtime.After(lastNudge) {
 				lastNudge = mtime
-				trigger = "nudge"
+				nudgeMoved = true
 			}
-			if trigger == "" && now.Sub(lastCheck) >= resizeFallbackInterval {
+			moved := clientsMoved()
+			trigger := ""
+			switch {
+			case nudgeMoved:
+				trigger = "nudge"
+			case moved:
+				trigger = "clients"
+			case now.Sub(lastCheck) >= resizeFallbackInterval:
 				trigger = "fallback"
 			}
 			if trigger == "" {
@@ -495,20 +511,41 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 			}
 			lastCheck = now
 			w, h := area()
+			if sizeDebug.Load() {
+				nudgeText := "none"
+				if nudgeMoved {
+					nudgeText = lastNudge.Format(time.RFC3339Nano)
+				}
+				sizeDebugf("tick %s nudge=%s area=%dx%d", trigger, nudgeText, w, h)
+			}
 			// The client size first: it governs what a window created after this
 			// point is born at, while the per-window caps below govern the ones
 			// that already exist (#449).
 			needed := w > 0 && h > 0 && cv.need(clientSizeKey, w, h)
 			fmt.Fprintf(os.Stderr, "daemon: local client area %dx%d (%s), client size asserted=%v\n", w, h, trigger, needed)
-			if needed && !send(ClientSizeCmd(w, h)) {
-				fmt.Fprintln(os.Stderr, "daemon: client size send failed, will retry on the next check")
-				cv.unrecord(clientSizeKey, w, h)
+			if needed {
+				if send(ClientSizeCmd(w, h)) {
+					sizeDebugf("client size %dx%d sent", w, h)
+				} else {
+					sizeDebugf("client size %dx%d send failed", w, h)
+					fmt.Fprintln(os.Stderr, "daemon: client size send failed, will retry on the next check")
+					cv.unrecord(clientSizeKey, w, h)
+				}
+			} else {
+				sizeDebugf("client size %dx%d skipped (asserted)", w, h)
 			}
 			// Active window first: each converge resizes the remote window,
 			// whose %layout-change queues a reconcile — so this order is the
 			// order the main loop works through them in (#557).
 			for _, remoteID := range activeFirst(reg, activeWin(), reg.remoteIDs()) {
-				if cv.need(remoteID, w, h) && !send(ConvergeCmd(remoteID, w, h)) {
+				if !cv.need(remoteID, w, h) {
+					sizeDebugf("cap %s %dx%d skipped", remoteID, w, h)
+					continue
+				}
+				if send(ConvergeCmd(remoteID, w, h)) {
+					sizeDebugf("cap %s %dx%d sent", remoteID, w, h)
+				} else {
+					sizeDebugf("cap %s %dx%d send failed", remoteID, w, h)
 					cv.unrecord(remoteID, w, h)
 				}
 			}
@@ -644,6 +681,10 @@ type stream struct {
 	awaitHigh uint64
 	// parked is the one reply routeWhile set aside to keep reading; see park.
 	parked *parkedReply
+	// traced maps a size command's ordinal to the command itself, so
+	// claimSeq can log the remote's reply against it. Nil unless the size
+	// trace is armed, so debug-off costs no allocation (#1266).
+	traced map[uint64]string
 	// guard, when non-nil, bounds one wait on this connection — a reply read
 	// or a flush of the write buffer. A fired guard closes the connection (see
 	// ctlConn.armStall), which poisons the stream for every later caller; nil
@@ -757,11 +798,21 @@ func (s *stream) stampAll(cmds ...string) (seqs []uint64, ok bool) {
 	if s.closed {
 		return nil, false
 	}
+	traced := sizeDebug.Load()
 	seqs = make([]uint64, 0, len(cmds))
 	for _, cmd := range cmds {
 		_, _ = fmt.Fprintf(s.w, "%s\n", cmd)
 		s.sent++
 		seqs = append(seqs, s.sent)
+		// Size-decision traffic only, and only when the trace is armed: the
+		// ordinal is the command's own s.sent, never the fanout barrier's.
+		if traced && isSizeTraced(cmd) {
+			if s.traced == nil {
+				s.traced = make(map[uint64]string)
+			}
+			s.traced[s.sent] = cmd
+			sizeDebugf("sent #%d %s", s.sent, traceBody([]byte(cmd)))
+		}
 		// The tag is a format to display-message: keep it a literal, never
 		// remote-derived text. No -t either — a target that vanished would
 		// answer with an error block and leave the swallow window open.
@@ -824,9 +875,32 @@ func (s *stream) claim(body []byte) uint64 {
 	return s.seen
 }
 
+// traceReply logs the remote's reply to a traced size command; seq is the
+// ordinal claimSeq gave the reply (0 for a block that answers none of ours).
+func (s *stream) traceReply(seq uint64, l controlmode.Line) {
+	if seq == 0 || !sizeDebug.Load() {
+		return
+	}
+	s.mu.Lock()
+	cmd, ok := s.traced[seq]
+	if ok {
+		delete(s.traced, seq)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	kind := "%end"
+	if l.Kind == controlmode.Error {
+		kind = "%error"
+	}
+	sizeDebugf("reply #%d to %s: %s %s", seq, traceBody([]byte(cmd)), kind, traceBody(l.Data))
+}
+
 func (s *stream) close() {
 	s.mu.Lock()
 	s.closed = true
+	s.traced = nil
 	s.mu.Unlock()
 }
 
@@ -1003,6 +1077,9 @@ func dropUnclaimedPlaceholder(cfg Config, reg *registry, placeholder string) {
 // runMirror is one mirror's lifetime, from the first dial to teardown; Run
 // calls it again when a reattach ends on a different tmux server.
 func runMirror(cfg Config) error {
+	// Arm (or disarm) the size trace before any send. Run never clears it, so a
+	// re-open keeps whatever this process was launched with (#1266).
+	sizeDebug.Store(cfg.SizeDebug)
 	cfg.opts = newMirrorOpts()
 	cfg.filter = newWindowFilter(cfg.Select)
 	router := NewRouter()
@@ -1466,12 +1543,14 @@ func runMirror(cfg Config) error {
 		}
 		return fi.ModTime(), true
 	}
+	// watchReveal marks it, watchLocalClient consumes it (#1266).
+	geom := &geomSignal{}
 	// The same tick drives the viewing-identity re-resolve (R10), through the
 	// resolveView built above.
 	ticker := time.NewTicker(resizePollInterval)
 	go func() {
 		defer ticker.Stop()
-		watchLocalClient(cfg.LocalArea, nudged, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, env, reg, cv, sendCtl, stopWatch, ticker.C)
+		watchLocalClient(cfg.LocalArea, nudged, geom.take, func() string { return localActiveWindow(cfg) }, resolveView, cfg.View, env, reg, cv, sendCtl, stopWatch, ticker.C)
 	}()
 
 	// Re-seed mirror panes a local client starts displaying (see watchReveal).
@@ -1492,7 +1571,7 @@ func runMirror(cfg Config) error {
 		revealTicker := time.NewTicker(resizePollInterval)
 		go func() {
 			defer revealTicker.Stop()
-			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.target())...) }, isMirror, cfg.Placed, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, activity, stopWatch, revealTicker.C)
+			watchReveal(func() (string, error) { return cfg.LocalTmuxOut(clientViewsArgs(cfg.target())...) }, isMirror, cfg.Placed, reveals, func() bool { return sendCtl(wakeCmd(cfg.RemoteSession)) }, activity, geom, stopWatch, revealTicker.C)
 		}()
 	}
 
@@ -2430,7 +2509,9 @@ func (p *ctlPump) Next() (controlmode.Line, bool) {
 func claimSeq(l controlmode.Line, st *stream) uint64 {
 	// A block flagged 0 answers a command we never sent, so it takes no ordinal.
 	if (l.Kind == controlmode.End || l.Kind == controlmode.Error) && l.Flags == controlmode.ClientCommandFlag {
-		return st.claim(l.Data)
+		seq := st.claim(l.Data)
+		st.traceReply(seq, l)
+		return seq
 	}
 	return 0
 }

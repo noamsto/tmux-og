@@ -32,6 +32,8 @@ setup() {
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
 	unset TMUX
+	# Keep the reflow lock and debounce stamps private to the test (as reflow-fanout.bats does).
+	export TMPDIR="$BATS_TEST_TMPDIR"
 
 	TEST_HOME="$BATS_TEST_TMPDIR/home"
 	mkdir -p "$TEST_HOME"
@@ -86,7 +88,7 @@ mirror_up() {
 	$DST new-session -d -s host-sess -x 100 -y 30
 	# The splash popup would take the first click.
 	$DST set-option -g @splash_shown 1
-	"$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
+	OG_BRIDGE_SIZE_DEBUG=1 "$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
 		--session rem --window 1 --local-sess host-sess \
 		--renderer "$RENDERER" --sock "$SOCK" >"$BATS_TEST_TMPDIR/daemon.log" 2>&1 &
 	DAEMON_PID=$!
@@ -127,7 +129,7 @@ mirror_tiled_up() {
 	$DST new-session -d -s host-sess -x 100 -y 30
 	# The splash popup would take the first click.
 	$DST set-option -g @splash_shown 1
-	"$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
+	OG_BRIDGE_SIZE_DEBUG=1 "$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
 		--session rem --window 1 --local-sess host-sess \
 		--renderer "$RENDERER" --sock "$SOCK" >"$BATS_TEST_TMPDIR/daemon.log" 2>&1 &
 	DAEMON_PID=$!
@@ -581,6 +583,9 @@ resize_diag() {
 		echo "nudge ${nudge}: mtime $(stat -f '%Sm' -t '%H:%M:%S' -- "$nudge" 2>/dev/null || stat -c '%y' -- "$nudge" 2>/dev/null || true); now $(date +%H:%M:%S)"
 		echo "client-resized hooks: $($DST show-hooks -g client-resized 2>&1 | cut -c1-200)"
 		echo "debounce stamp: $(ls -ld /tmp/og-reflow-debounce.host-sess 2>&1 || true)"
+		local sock
+		sock="$($DST display-message -p '#{socket_path}' 2>&1 || true)"
+		echo "debounce stamp (new): $(ls -ld "${TMPDIR:-/tmp}/og-reflow-debounce.$UID.${sock//\//_}.host-sess" 2>&1 || true)"
 		echo "obs window: $($OBS display-message -p -t obs '#{window_width}x#{window_height}' 2>&1 || true)"
 	} 2>&1 | sed 's/^/diag: /' >&3 || true
 }
@@ -600,7 +605,7 @@ resize_client() {
 				"$($DST display-message -p -t "$LF" '#{window_width}x#{window_height}')" >&3
 			resize_diag
 			echo '--- daemon log ---' >&3
-			tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+			tail -80 "$BATS_TEST_TMPDIR/daemon.log" >&3
 			return 1
 		}
 		sleep 0.1
@@ -620,7 +625,7 @@ settle_agree() {
 			((SECONDS < deadline)) || {
 				printf 'remote refit never ran at %s within %ss: @refit_for=%s remote=%s\n--- daemon log ---\n' \
 					"$expected" "$CONVERGE_SECS" "$($SRC show-options -gv @refit_for)" "$(geom "$SRC" "$RF")" >&3
-				tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+				tail -80 "$BATS_TEST_TMPDIR/daemon.log" >&3
 				return 1
 			}
 			sleep 0.1
@@ -635,7 +640,7 @@ settle_agree() {
 	r="$(geom "$SRC" "$RF")"
 	[[ $l == "$r" ]] && return 0
 	printf 'mirrored float disagrees with its remote after a client resize (waited %ss): local=%s remote=%s\n--- daemon log ---\n' "$CONVERGE_SECS" "$l" "$r" >&3
-	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+	tail -80 "$BATS_TEST_TMPDIR/daemon.log" >&3
 	return 1
 }
 
@@ -684,5 +689,24 @@ settle_agree() {
 		sleep 0.1
 	done
 	resize_client 100 32
+	settle_agree
+}
+
+# A local client grow must reach the remote with no client-resized nudge at all
+# (any lost nudge, e.g. #1266's foreign debounce stamp). A mirror window is
+# window-size manual, so a grow fires no window-resized either: only the
+# daemon's reveal-poll geometry signal can carry it.
+@test "a client grow reaches the remote with no client-resized nudge (#1266)" {
+	mirror_up -x 40 -y 12 -X 10 -Y 5
+	# No reflow nudge exists for a client resize.
+	$DST set-hook -gu client-resized
+
+	resize_client 45 14
+	settle_agree
+	# Deliberate ordering delay, not a wait for a condition: the watcher
+	# consumes the shrink refit's leftover nudge before the grow, which would
+	# otherwise carry the grow by luck.
+	sleep 2
+	resize_client 150 40
 	settle_agree
 }

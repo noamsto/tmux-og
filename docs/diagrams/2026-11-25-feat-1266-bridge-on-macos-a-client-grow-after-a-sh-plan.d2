@@ -1,0 +1,19 @@
+direction: right
+grow: "local client grows\n(SIGWINCH)"
+hook: "client-resized hook\ntmux-reflow-windows --debounce"
+stamp: "CHANGED: TMPDIR/og-reflow-debounce.<uid>.<socket>.<session>\nwrite fails → skip debounce (fail-open)" {style.stroke: green}
+nudge: "@bridge_nudge file mtime"
+reveal: "CHANGED: watchReveal 1s list-clients\n+ client_width|client_height|status" {style.stroke: green}
+geom: "NEW: geomSignal\n(marked on geometry change)" {style.stroke: green}
+watch: "watchLocalClient tick\ntrigger: nudge | clients | fallback" {style.stroke: green}
+debug: "NEW: OG_BRIDGE_SIZE_DEBUG\ntick/decision + refresh-client -C sent/reply trace" {style.stroke: green}
+remote: "remote refresh-client -C 150x38"
+grow -> hook
+hook -> stamp
+stamp -> nudge: "touch"
+grow -> reveal: "client size changes"
+reveal -> geom: "mark"
+nudge -> watch: "mtime advanced"
+geom -> watch: "take()"
+watch -> remote: "ClientSizeCmd + ConvergeCmd"
+watch -> debug {style.stroke-dash: 4}

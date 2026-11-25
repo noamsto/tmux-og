@@ -675,6 +675,25 @@ and the racing close usually lands first); they extract the real hook from `TMUX
   events that already run a reflow, gated `window-resized[20]` / `client-detached`
   hooks for the other two — so the touch rides every event that can move the
   local area while the daemon still pays one stat a tick, not a fork.
+  **A client grow has only the `client-resized` reflow to touch it** (#1266):
+  `FitWindowCmd` pins the mirror window (`window-size manual`), so a grow fires
+  no local `window-resized`. When that one debounced reflow bailed (its stamp was
+  owned by another user), the grow reached the remote only if a leftover nudge
+  from the daemon's own refit happened to be consumed after it, else at the 30s
+  `resizeFallbackInterval`. The watcher therefore has a second, hook-independent
+  trigger: `watchReveal`'s existing 1s `list-clients` row carries
+  `#{client_width}|#{client_height}|#{status}` (no extra fork; `clientGeoms` maps
+  `name|created` to `w|h|status` for non-control rows), and the poll marks a
+  shared `geomSignal` on its first successful read and whenever that map changes
+  (a resize, a status-line change, an attach or detach). `watchLocalClient`
+  takes (consumes) the mark every tick: trigger `nudge` when the mtime advanced,
+  else `clients`, else `fallback`, so a nudge and a mark on one tick cost one
+  `LocalArea` read. A grow with no nudge now lands within about two ticks. No
+  reveal watcher (empty `LocalSess`) means no mark, and behaviour unchanged.
+  Pinned by `TestWatchLocalClientGrowWithoutNudge`, the `TestWatchReveal*`
+  geometry cases, and the float-drag bats case "a client grow reaches the remote
+  with no client-resized nudge (#1266)", which unsets `client-resized` so only
+  the reveal poll can carry the grow.
   Registration also clears the four pre-#820 session hooks a reused session
   may still carry; teardown only unsets the option. **Placed, it stays a session
   option** on the host session, not window-scoped: `tmux-reflow-windows` reads it
@@ -688,6 +707,23 @@ and the racing close usually lands first); they extract the real hook from `TMUX
   only when no other daemon's placed window remains in `$N`; a race between two
   exiting daemons leaves either the option set (one cheap `touch` per hook) or a
   survivor on its 30s `resizeFallbackInterval`, both benign.
+- **Size-decision trace: `--size-debug` / `OG_BRIDGE_SIZE_DEBUG`** (off by
+  default; on for any value but empty or `0`; #1266). `runMirror` arms a
+  package `atomic.Bool` from `Config.SizeDebug`, so every site costs one atomic
+  load when off. Lines on stderr, prefixed `daemon: size: `: each watcher tick
+  that fires (trigger, nudge mtime, area) and its per-decision outcome
+  (`client size WxH sent|skipped (asserted)|send failed`, the same per
+  `cap @N`); the reveal poll's geometry change (`clients changed: old -> new`);
+  and a wire trace in `stream`: every command written by `stampAll` that starts
+  `refresh-client -C ` or carries `ignore-size` (`ClientSizeCmd`, `ConvergeCmd`,
+  `recalcCmd`, the owner's `ignoreSizeCmd`) logs `sent #<ordinal>`, and
+  `claimSeq` logs its `%end`/`%error` reply against that ordinal (body trimmed
+  to 200 bytes). The ordinal map exists only while the trace is armed and is
+  dropped on `close`. Remote-derived text in a line (reply bodies, a client name
+  inside a command) passes through `printable` and a 200-byte cap, so it cannot
+  forge lines or emit escape sequences. `float-drag-integration-tests` runs its
+  daemons with it on, and its resize/settle failure dumps print the last 80 log
+  lines.
 - **`@bridge_host`** — the ssh host the mirror's windows really live on. Dedicated: session-scoped, stamped by `og-remote-open`, nothing on the windows; placed: window-scoped only (stamped by the daemon with `@bridge_sock`/`@bridge_session`, `@bridge_placed` marking the mode), and the programmatic "is this window a mirror" test (see "Placed mirrors"). `tmux-statusline` renders it top-right as the active window's host on `@bridge_win` windows (and beside the session name on a dedicated mirror), so a mirror is never read as local; a placed window's tab also shows it, and a placed tab and the session's `@session_host_marker` are coloured per host (the dedicated marker is coloured by `tmux-statusline` from `picker/hostcolor`) (`status-bar.md`).
 - **`@bridge_session_path`** — remote `#{session_path}`, stamped once per bridge by the daemon (session-scoped; placed: window-scoped on each own window). The mirror session's own `session_path` is the launcher's cwd (`og-remote-open` passes no `-c`), so the session picker's Path column reads this instead on a `@bridge_host` row, and renders nothing when it is unset.
 - **`get-clipboard request`** (`set -s`, next to `set-clipboard on`, #694): tmux answers an app's OSC 52 *read* per `get-clipboard`, not `set-clipboard`. The default `buffer` replies synchronously from the server's own newest paste buffer, so on a mirrored host the query never crosses the bridge and the remote app pastes stale remote content. With `request`, a server whose only clients are control-mode stays silent, the query propagates through the bridge, and the local tmux asks the local terminal. Tradeoff: on a terminal with no OSC 52 read support an app's read now returns nothing instead of tmux's newest buffer — tmux has no fallback. Asserted in `float-conf-assertions`.

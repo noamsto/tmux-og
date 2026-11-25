@@ -247,6 +247,7 @@ func main() {
 	remoteOpenBin := flag.String("remote-open", os.Getenv("OG_DAEMON_REMOTE_OPEN"), "absolute path to og-remote-open (empty = a remote switch-client is pinned back but never handed off)")
 	pauseAfter := flag.Int("pause-after", envIntDefault("OG_DAEMON_PAUSE_AFTER", 1), "seconds of client-read stall before tmux pauses a pane's %output (0 disables); the daemon answers %pause with a %continue re-seed")
 	predict := flag.String("predict", envDefault("OG_DAEMON_PREDICT", "auto"), "predictive local echo in mirror panes: auto (only while echo latency is high), on, or off")
+	sizeDebug := flag.Bool("size-debug", envBool("OG_BRIDGE_SIZE_DEBUG"), "trace every size decision to stderr as 'daemon: size: ...' lines; defaults from OG_BRIDGE_SIZE_DEBUG (non-empty and not 0)")
 	// --test-local is Task 9's offline seam: instead of ssh, both "remote" and
 	// "local" are separate local tmux servers on their own -L sockets, so the
 	// bats integration test never touches the network. --session/--window
@@ -495,6 +496,7 @@ func main() {
 		RemoteWindow:   strconv.Itoa(*window),
 		PauseAfterSecs: *pauseAfter,
 		Predict:        predictMode,
+		SizeDebug:      *sizeDebug,
 		RendererBin:    *rendererBin,
 		LocalTmux:      runLocalTmux,
 		LocalTmuxOut:   runLocalTmuxOut,
@@ -1049,6 +1051,13 @@ func envDurationDefault(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// envBool reports whether the named env var is on: non-empty and not "0".
+// The daemon's optional debug switches read their default this way.
+func envBool(key string) bool {
+	v := os.Getenv(key)
+	return v != "" && v != "0"
 }
 
 // shellQuote single-quotes s for a POSIX shell, escaping embedded single

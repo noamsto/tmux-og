@@ -59,14 +59,26 @@ fi
 # hook backgrounds this (-b), so the sleep is off the server's command queue.
 # Each invocation stamps a token and waits out the burst; only the last one to
 # stamp (the final width) survives the token check and reflows — the rest bail.
+# The stamp is keyed per user AND per tmux server (#1266): $TMPDIR keeps an
+# isolated (test) base private, $UID separates users that share /tmp, and the
+# $TMUX socket path separates servers; when TMUX is unset the socket field is
+# empty. A symlinked stamp is never followed, and a stamp this invocation
+# cannot write fails OPEN — logged when debug logging is on — so the miss falls
+# through to the reflow instead of silencing it. `2>/dev/null` sits before the
+# `>` so bash's own "cannot create" message is swallowed too.
 if ((DEBOUNCE)); then
-	stamp="/tmp/og-reflow-debounce.${SESSION//\//_}"
+	sock=""
+	[[ -n ${TMUX:-} ]] && sock=${TMUX%,*,*}
+	stamp="${TMPDIR:-/tmp}/og-reflow-debounce.${UID}.${sock//\//_}.${SESSION//\//_}"
 	token=$EPOCHREALTIME
-	printf '%s' "$token" >"$stamp" 2>/dev/null
-	sleep 0.12
-	last=""
-	[[ -f $stamp ]] && last=$(<"$stamp")
-	[[ $last == "$token" ]] || exit 0
+	if [[ ! -L $stamp ]] && printf '%s' "$token" 2>/dev/null >"$stamp"; then
+		sleep 0.12
+		last=""
+		[[ -f $stamp ]] && last=$(<"$stamp")
+		[[ $last == "$token" ]] || exit 0
+	else
+		log_enabled && log_event reflow event debounce_failopen sess "$SESSION"
+	fi
 fi
 
 # Fast-path: skip if window count + size unchanged since last reflow. Layout

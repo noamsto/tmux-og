@@ -721,7 +721,7 @@ func TestWatchLocalClientReconvergesOnChange(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() bool { return false }, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -769,6 +769,116 @@ func TestWatchLocalClientReconvergesOnChange(t *testing.T) {
 	}
 }
 
+// TestWatchLocalClientGrowWithoutNudge is the #1266 regression: a local client
+// grow that leaves no resize nudge — the mirror window is pinned to the
+// remote's size, so no window-resized fires — must still reach the remote
+// through the reveal poll's geometry signal. It reads no clock: the nudge and
+// the signal come from channels, and every tick send is a barrier that returns
+// only once the previous tick is fully processed. area is a per-tick counter,
+// so a tick that should not read it is observable without a blocking send.
+func TestWatchLocalClientGrowWithoutNudge(t *testing.T) {
+	tick := make(chan time.Time)
+	stop := make(chan struct{})
+	nudgeCh := make(chan nudgeResult)
+	movedCh := make(chan bool)
+	var areaW, areaH, areaCalls atomic.Int32
+	nudged := func() (time.Time, bool) { n := <-nudgeCh; return n.t, n.ok }
+	clientsMoved := func() bool { return <-movedCh }
+	area := func() (int, int) {
+		areaCalls.Add(1)
+		return int(areaW.Load()), int(areaH.Load())
+	}
+
+	reg := newRegistry()
+	reg.add("@1", "@101")
+	reg.add("@2", "host-sess:2")
+	cv := newConverger()
+	view := &Viewing{Relay: graphics.NewRelaySource(graphics.Relay{})}
+
+	var sent []string
+	send := func(s ...string) bool { sent = append(sent, s...); return true }
+
+	done := make(chan struct{})
+	go func() {
+		watchLocalClient(area, nudged, clientsMoved, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
+		close(done)
+	}()
+
+	// barrier starts one tick and blocks until the watcher has finished the
+	// previous one (it must be back at its select to receive this tick), so the
+	// previous tick's area read and sends are all visible afterwards.
+	barrier := func() {
+		t.Helper()
+		select {
+		case tick <- time.Now():
+		case <-time.After(2 * time.Second):
+			t.Fatal("the watcher did not return to its select")
+		}
+	}
+
+	t1 := time.Now()
+	t2 := t1.Add(time.Second)
+	t3 := t2.Add(time.Second)
+
+	// Tick 1: the shrink's nudge, 45x12: the client size and both caps go out.
+	barrier()
+	areaW.Store(45)
+	areaH.Store(12)
+	nudgeCh <- nudgeResult{t: t1, ok: true}
+	movedCh <- false
+
+	// Tick 2: the daemon's own refit nudge (t2), same size: nothing to send.
+	barrier()
+	areaW.Store(45)
+	areaH.Store(12)
+	nudgeCh <- nudgeResult{t: t2, ok: true}
+	movedCh <- false
+
+	// Tick 3: a fresh nudge and a mark coincide. One area read (the nudge
+	// wins, and the mark is consumed with it), no send because the size is
+	// unchanged.
+	barrier()
+	areaW.Store(45)
+	areaH.Store(12)
+	nudgeCh <- nudgeResult{t: t3, ok: true}
+	movedCh <- true
+
+	// Tick 4: no new nudge, but the reveal poll marked the client's grow: the
+	// client size goes first, then each window's cap.
+	barrier()
+	areaW.Store(150)
+	areaH.Store(38)
+	nudgeCh <- nudgeResult{t: t3, ok: true}
+	movedCh <- true
+
+	// Tick 5: the mark was consumed, no new nudge: area must not be read.
+	barrier()
+	nudgeCh <- nudgeResult{t: t3, ok: true}
+	movedCh <- false
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchLocalClient did not return after stop was closed")
+	}
+
+	// remoteIDs snapshots a map, so the per-window sends land in either order.
+	sort.Strings(sent)
+	want := []string{
+		ClientSizeCmd(45, 12), ConvergeCmd("@1", 45, 12), ConvergeCmd("@2", 45, 12),
+		ClientSizeCmd(150, 38), ConvergeCmd("@1", 150, 38), ConvergeCmd("@2", 150, 38),
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent = %v, want %v", sent, want)
+	}
+	// Ticks 1-4 read area; tick 5 (no trigger) must not.
+	if got := areaCalls.Load(); got != 4 {
+		t.Fatalf("area calls = %d, want 4", got)
+	}
+}
+
 // TestWatchLocalClientConvergesActiveWindowFirst pins the #557 ordering: the
 // window the local client is looking at is converged ahead of the background
 // ones, so its %layout-change (and the reconcile it queues) lands first on a
@@ -792,7 +902,7 @@ func TestWatchLocalClientConvergesActiveWindowFirst(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "@102" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() bool { return false }, func() string { return "@102" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -836,7 +946,7 @@ func TestWatchLocalClientDoesNotRecordAWriteThatDidNotHappen(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() bool { return false }, func() string { return "" }, noResolveView, view, relayEnv{target: "sess"}, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
@@ -907,7 +1017,7 @@ func runWatchLocalClientViewEnv(t *testing.T, env relayEnv, seedRelay graphics.R
 
 	done := make(chan struct{})
 	go func() {
-		watchLocalClient(area, nudged, func() string { return "" }, resolveView, view, env, reg, cv, send, stop, tick)
+		watchLocalClient(area, nudged, func() bool { return false }, func() string { return "" }, resolveView, view, env, reg, cv, send, stop, tick)
 		close(done)
 	}()
 
