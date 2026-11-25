@@ -1,0 +1,30 @@
+direction: down
+
+stream: remote control stream {
+  attach: "%client-session-changed human <session>"
+  detach: "%client-detached human"
+}
+
+loop: main loop (daemon.go dispatch, one goroutine) {
+  sc: "ownerCtl.sessionChanged\naddMember(human)"
+  rd: "read() (pure)\nsetMembers(snapshot)"
+  dep: "NEW sizeOwner.departed\nvanished names recorded" {style.stroke: green}
+  det: "ownerCtl.detached -> dropped(human)"
+  who: "NEW member := dropMember\nleft := takeDeparted" {style.stroke: green}
+  fresh: "NEW ownsNow: fresh read()\nfallback to belief if read fails" {style.stroke: green}
+  skiplog: "NEW log when owner skips" {style.stroke: green}
+  recalc: "recalc: send recalcCmd\n(refresh-client -C, all windows)"
+}
+
+reconn: "reconnected / reopened\nNEW clearDeparted after read" {style.stroke: green}
+
+stream.attach -> loop.sc: "handled late"
+loop.sc -> loop.rd: "enforce / claimIfStale / any read"
+loop.rd -> loop.dep: "human absent from snapshot"
+stream.detach -> loop.det
+loop.det -> loop.who
+loop.dep -> loop.who: "consumed once"
+loop.who -> loop.fresh: "member or departed"
+loop.who -> loop.skiplog: "neither, and belief says owner"
+loop.fresh -> loop.recalc: "record ours"
+reconn -> loop.dep: "clears stale entries"

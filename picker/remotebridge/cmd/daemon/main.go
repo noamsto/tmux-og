@@ -434,14 +434,16 @@ func main() {
 	// opens the session it named as a mirror of its own, so `sesh connect` from a
 	// bridged shell lands somewhere instead of no-opping. The launcher switches
 	// the local client to the new mirror itself.
-	var handOff func(string)
+	var handOff func(string) error
 	if *remoteOpenBin != "" {
-		handOff = func(sess string) {
+		handOff = func(sess string) error {
 			cmd := exec.Command(*remoteOpenBin, *host, sess) //nolint:gosec // argv is fixed or config-derived and exec'd directly, no shell
 			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
+			err := cmd.Run()
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "daemon: hand off %s:%s: %v\n", *host, sess, err)
 			}
+			return err
 		}
 	}
 

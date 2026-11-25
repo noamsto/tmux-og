@@ -149,7 +149,11 @@ type sessionPin struct {
 	// handOff opens the session we were switched to as a mirror of its own, so
 	// the gesture that switched us does what the user meant instead of nothing.
 	// nil disables it.
-	handOff func(session string)
+	handOff func(session string) error
+	// failed raises the notice for a handOff that returned an error; unhandled
+	// is called when there is no handOff to run (a placed mirror), so a
+	// hand-off press that the session switch alone cannot satisfy is not silent.
+	failed, unhandled func()
 	// activeWin reports the mirror session's locally-current window, for
 	// active-first reseed ordering (#557).
 	activeWin func() string
@@ -158,6 +162,7 @@ type sessionPin struct {
 func newSessionPin(cfg Config, rt roundTrip) *sessionPin {
 	p := &sessionPin{
 		handOff:   cfg.HandOff,
+		failed:    func() { notifyHost(cfg, noticeHandOffFailed) },
 		activeWin: func() string { return localActiveWindow(cfg) },
 	}
 	id, err := readIdentity(rt, cfg.RemoteSession)
@@ -200,8 +205,18 @@ func (p *sessionPin) apply(l controlmode.Line, reg *registry, router *Router, rt
 		return false
 	}
 	p.reseed(reg, router, rt)
-	if p.handOff != nil && away != "" {
-		go p.handOff(away)
+	switch {
+	case away == "":
+	case p.handOff == nil:
+		if p.unhandled != nil {
+			p.unhandled()
+		}
+	default:
+		go func() {
+			if err := p.handOff(away); err != nil && p.failed != nil {
+				p.failed()
+			}
+		}()
 	}
 	return false
 }

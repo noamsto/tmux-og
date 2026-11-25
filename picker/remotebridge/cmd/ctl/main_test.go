@@ -64,7 +64,7 @@ func TestShowErrorPassesExactCtlErrorToTmux(t *testing.T) {
 	if err := showError("/dev/pts/1", err); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"display-message", "-d", "5000", "-t", "/dev/pts/1", errorPrefix + err.Error()}
+	want := []string{"display-message", "-d", "5000", "-t", "/dev/pts/1", errorPrefix + "carousel: pane %%99 is not mirrored by this bridge"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tmux argv = %#v, want %#v", got, want)
 	}
@@ -262,5 +262,22 @@ func TestShowErrorWithTmuxServer(t *testing.T) {
 	}
 	if !strings.Contains(string(out), want) {
 		t.Fatalf("tmux messages = %q, want %q", out, want)
+	}
+}
+
+func TestEscapeFormat(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"plain", "bridge daemon unreachable", "bridge daemon unreachable"},
+		{"format", "branch #{pane_id}", "branch ##{pane_id}"},
+		{"command", "feat-#(touch x)", "feat-##(touch x)"},
+		{"strftime", "100%d", "100%%d"},
+		{"both", "#%", "##%%"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := escapeFormat(tc.in); got != tc.want {
+				t.Errorf("escapeFormat(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

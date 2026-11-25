@@ -243,6 +243,7 @@ type sizeOwner struct {
 	pendingReport *selfReport
 	claimWanted   bool
 	members       map[string]bool
+	departed      map[string]bool
 	mark          activityMark
 	release       *pendingRelease
 	// wake is the main loop's nudge; the loop does the claim round-trips.
@@ -250,7 +251,7 @@ type sizeOwner struct {
 }
 
 func newSizeOwner(token string) *sizeOwner {
-	return &sizeOwner{token: token, members: map[string]bool{}, wake: make(chan struct{}, 1)}
+	return &sizeOwner{token: token, members: map[string]bool{}, departed: map[string]bool{}, wake: make(chan struct{}, 1)}
 }
 
 func (o *sizeOwner) isOwner() bool {
@@ -380,16 +381,23 @@ func (o *sizeOwner) setSelf(name string) {
 func (o *sizeOwner) setMembers(names []string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.members = make(map[string]bool, len(names))
+	next := make(map[string]bool, len(names))
 	for _, n := range names {
-		o.members[n] = true
+		next[n] = true
 	}
+	for n := range o.members {
+		if !next[n] {
+			o.departed[n] = true
+		}
+	}
+	o.members = next
 }
 
 func (o *sizeOwner) addMember(name string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.members[name] = true
+	delete(o.departed, name)
 }
 
 // dropMember reports whether name was on the session.
@@ -399,6 +407,22 @@ func (o *sizeOwner) dropMember(name string) bool {
 	was := o.members[name]
 	delete(o.members, name)
 	return was
+}
+
+// takeDeparted reports whether a read dropped name from the member set, and
+// consumes the entry.
+func (o *sizeOwner) takeDeparted(name string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	was := o.departed[name]
+	delete(o.departed, name)
+	return was
+}
+
+func (o *sizeOwner) clearDeparted() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	clear(o.departed)
 }
 
 // recordedOwner is the owner last seen, from a report, a read or our own claim.
@@ -633,6 +657,7 @@ func (o ownerCtl) reconnected() {
 	if !ok {
 		return
 	}
+	o.own.clearDeparted()
 	switch {
 	case st.ownerToken == o.own.token, st.ownerToken == "" && o.own.isOwnedBefore():
 		o.claimWith(st)
@@ -649,6 +674,7 @@ func (o ownerCtl) reopened() {
 	if !ok {
 		return
 	}
+	o.own.clearDeparted()
 	switch {
 	case st.ownerToken == o.own.token, st.ownerToken == "" && !st.otherControl():
 		o.claimWith(st)
@@ -755,12 +781,34 @@ func (o ownerCtl) sessionChanged(name, sid string) {
 
 // dropped recalculates when a client leaves the owner's session: tmux resizes
 // only the current window for a lost client (resize.c, now=0), and the
-// non-current ones would keep its clamp.
+// non-current ones would keep its clamp. Every read replaces the member set, so
+// a client that left before this event was handled is no longer a member; the
+// departed set remembers it. Ownership is decided from a fresh read, as the
+// belief can lag a claim made while the client was leaving.
 func (o ownerCtl) dropped(name string) {
-	if !o.own.isOwner() || !o.own.dropMember(name) {
+	member := o.own.dropMember(name)
+	left := o.own.takeDeparted(name)
+	if !member && !left {
 		return
 	}
-	if cmd, ok := recalcCmd(o.cv); ok {
-		o.send(cmd)
+	if o.ownsNow() {
+		o.recalc(name)
 	}
+}
+
+func (o ownerCtl) ownsNow() bool {
+	st, ok := o.read()
+	if !ok {
+		return o.own.isOwner()
+	}
+	return st.ownerToken == o.own.token
+}
+
+func (o ownerCtl) recalc(name string) {
+	cmd, ok := recalcCmd(o.cv)
+	if !ok {
+		o.logf("%q left; no client size recorded yet, skipping recalculation", name)
+		return
+	}
+	o.send(cmd)
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -232,6 +233,104 @@ func TestRemoteZoxideRowsExclude(t *testing.T) {
 	m.tmuxOpts["@picker_zoxide_exclude"] = "/tmp/*,.ssh"
 	if names := remoteDirNames(m.remoteZoxideRows("alpha")); fmt.Sprint(names) != "[proj]" {
 		t.Fatalf("names = %v, want [proj]", names)
+	}
+}
+
+func TestRemoteZoxideRowsExcludeDeepTmp(t *testing.T) {
+	m := zoxideHostModel("/home/u/proj", "/tmp/claude-1000/a/scratchpad/x", "/home/u/proj")
+	m.tmuxOpts["@picker_zoxide_exclude"] = "/tmp/*"
+	if names := remoteDirNames(m.remoteZoxideRows("alpha")); fmt.Sprint(names) != "[proj]" {
+		t.Fatalf("names = %v, want [proj] (deep /tmp hidden, folded duplicate deduped)", names)
+	}
+}
+
+// Runs remoteZoxideScript under real shells against a temp tree with a stub
+// zoxide on PATH: a repo, its linked worktree, a worktree subdir, a plain dir,
+// a missing dir and the repo's own entry.
+func TestRemoteZoxideScriptFoldsWorktrees(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		if os.Getenv("OG_REQUIRE_GIT") != "" {
+			t.Fatal("OG_REQUIRE_GIT set but git is missing")
+		}
+		t.Skip("git not on PATH")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+	)
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	repo := filepath.Join(root, "repo")
+	wt := filepath.Join(root, "wt", "feature")
+	plain := filepath.Join(root, "plain dir")
+	for _, d := range []string{repo, plain} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(repo, "init", "-q")
+	git(repo, "commit", "-q", "--allow-empty", "-m", "init")
+	git(repo, "worktree", "add", "-q", "-b", "feature", wt)
+	sub := filepath.Join(wt, "sub", "deeper")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(root, "gone")
+
+	// worktree.useRelativePaths needs git >= 2.48; skip the sub-case without it.
+	entries := []string{sub, plain, wt, missing, repo}
+	rel := filepath.Join(root, "wt", "relative")
+	relCmd := exec.Command("git", "-c", "worktree.useRelativePaths=true", "worktree", "add", "-q", "-b", "relative", rel)
+	relCmd.Dir = repo
+	relCmd.Env = env
+	if out, err := relCmd.CombinedOutput(); err != nil {
+		t.Logf("relative-gitdir worktree skipped: %v\n%s", err, out)
+	} else if gitFile, readErr := os.ReadFile(filepath.Join(rel, ".git")); readErr != nil {
+		t.Fatal(readErr)
+	} else if !strings.HasPrefix(string(gitFile), "gitdir: ..") {
+		t.Logf("relative-gitdir worktree skipped: git ignored worktree.useRelativePaths (.git = %q)", gitFile)
+	} else {
+		entries = append([]string{rel}, entries...)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := "#!/bin/sh\ncat <<'EOF'\n" + strings.Join(entries, "\n") + "\nEOF\n"
+	if err := os.WriteFile(filepath.Join(bin, "zoxide"), []byte(stub), 0o755); err != nil { //nolint:gosec // G306: test stub must be executable
+		t.Fatal(err)
+	}
+
+	want := []string{repo, plain}
+	for _, shell := range []string{"sh", "bash", "dash"} {
+		if _, err := exec.LookPath(shell); err != nil {
+			if shell == "dash" && os.Getenv("OG_REQUIRE_GIT") != "" {
+				t.Fatal("OG_REQUIRE_GIT set but dash is missing")
+			}
+			continue
+		}
+		cmd := exec.Command(shell, "-c", remoteZoxideScript) //nolint:gosec // G204: fixed shell names, constant script
+		cmd.Env = append(env, "PATH="+bin+":"+os.Getenv("PATH"))
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: %v", shell, err)
+		}
+		got := splitRemoteZoxideOutput(string(out))
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: got %q, want %q", shell, got, want)
+		}
 	}
 }
 

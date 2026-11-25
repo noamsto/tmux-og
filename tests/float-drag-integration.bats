@@ -566,6 +566,25 @@ rel() {
 
 # --- local client resize (#1241) ---
 
+# resize_diag prints, to fd 3, the state that says why the daemon never pushed
+# the new size; every command is guarded so it cannot change the outcome.
+resize_diag() {
+	local nudge
+	{
+		echo "remote clients:"
+		$SRC list-clients -F '#{client_name} #{client_width}x#{client_height} #{client_flags}' 2>&1 || true
+		echo "remote windows:"
+		$SRC list-windows -F '#{window_id} #{window_width}x#{window_height}' 2>&1 || true
+		echo "local clients:"
+		$DST list-clients -F '#{client_name} #{client_width}x#{client_height} #{status} #{client_activity}' 2>&1 || true
+		nudge="$($DST show-options -t host-sess -qv @bridge_nudge 2>&1 || true)"
+		echo "nudge ${nudge}: mtime $(stat -f '%Sm' -t '%H:%M:%S' -- "$nudge" 2>/dev/null || stat -c '%y' -- "$nudge" 2>/dev/null || true); now $(date +%H:%M:%S)"
+		echo "client-resized hooks: $($DST show-hooks -g client-resized 2>&1 | cut -c1-200)"
+		echo "debounce stamp: $(ls -ld /tmp/og-reflow-debounce.host-sess 2>&1 || true)"
+		echo "obs window: $($OBS display-message -p -t obs '#{window_width}x#{window_height}' 2>&1 || true)"
+	} 2>&1 | sed 's/^/diag: /' >&3 || true
+}
+
 # resize_client resizes the observer's window, which is the pty the mirror's
 # attached client lives in: the client sees a real SIGWINCH, exactly as a
 # terminal resize does. It returns once the REMOTE window has taken the new
@@ -576,9 +595,11 @@ resize_client() {
 	$OBS resize-window -t obs -x "$1" -y "$2"
 	until [[ "$($SRC display-message -p -t "$RF" '#{window_width}x#{window_height}')" == "$want" ]]; do
 		((SECONDS < deadline)) || {
-			printf 'remote window never reached %s within %ss: remote now %s, local mirror now %s\n--- daemon log ---\n' \
+			printf 'remote window never reached %s within %ss: remote now %s, local mirror now %s\n--- diagnostics ---\n' \
 				"$want" "$CONVERGE_SECS" "$($SRC display-message -p -t "$RF" '#{window_width}x#{window_height}')" \
 				"$($DST display-message -p -t "$LF" '#{window_width}x#{window_height}')" >&3
+			resize_diag
+			echo '--- daemon log ---' >&3
 			tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
 			return 1
 		}

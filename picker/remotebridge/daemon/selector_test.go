@@ -311,3 +311,26 @@ func TestWindowFilterKeepsExclusionOnMalformedFlagOrFailedRead(t *testing.T) {
 		t.Fatal("a failed list-panes read changed the excluded set")
 	}
 }
+
+func TestWindowFilterExcludes(t *testing.T) {
+	var nilFilter *windowFilter
+	f := &windowFilter{unselected: map[string]struct{}{"@2": {}}}
+	tests := []struct {
+		name string
+		f    *windowFilter
+		id   string
+		want bool
+	}{
+		{"nil filter", nilFilter, "@2", false},
+		{"zero filter", &windowFilter{}, "@2", false},
+		{"known excluded", f, "@2", true},
+		{"unknown id", f, "@9", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.f.excludes(tc.id); got != tc.want {
+				t.Errorf("excludes(%q) = %v, want %v", tc.id, got, tc.want)
+			}
+		})
+	}
+}

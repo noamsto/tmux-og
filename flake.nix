@@ -137,7 +137,7 @@
           # nativeBuildInputs entry above breaks loudly instead of silently
           # dropping the regression check.
           OG_REQUIRE_TMUX = "1";
-          # Same for the probe-script tests, for git, sh and dash.
+          # Same for the probe-script and remote-zoxide script tests, for git, sh and dash.
           OG_REQUIRE_GIT = "1";
           checkPhase = ''
             runHook preCheck
@@ -281,7 +281,7 @@
           # and SIGKILL it for a bare-EOF drop. On darwin this resolves to
           # unixtools' shim — ps/sysctl/top/watch, no pgrep — which is why
           # transport_child reads the process table rather than pgrepping.
-          nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq (mkTmux pkgs)];
+          nativeBuildInputs = [pkgs.bats pkgs.coreutils pkgs.gnused pkgs.gnugrep pkgs.procps pkgs.jq pkgs.git (mkTmux pkgs)];
           DAEMON = "${pickerChecked}/bin/og-remote-bridge-daemon";
           RENDERER = "${pickerChecked}/bin/og-remote-bridge-renderer";
           # M2.3 structural input: the tests drive ctl straight at the
@@ -298,6 +298,9 @@
           # Same "raw source ships" reasoning as DETACH: og-open needs no
           # build-time placeholder substitution either.
           OG_OPEN = ./scripts/og-open.sh;
+          # Same reasoning again: the prdash hand-off cases run the launcher
+          # script as shipped.
+          PRDASH_MIRROR = ./scripts/tmux-prdash-mirror.sh;
           # The dwindle mirror cases extract the real window-layout-changed[20]
           # hook (it embeds the store path of tmux-dwindle) from this conf.
           TMUX_OG_CONF = tmuxConfig.tmuxConf;

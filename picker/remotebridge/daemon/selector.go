@@ -214,6 +214,15 @@ func (f *windowFilter) noteListed(wins []remoteWindow) {
 	f.unselected = next
 }
 
+// excludes reports whether the last read listed id as not matching the selector.
+func (f *windowFilter) excludes(id string) bool {
+	if f == nil {
+		return false
+	}
+	_, out := f.unselected[id]
+	return out
+}
+
 // excludeUnselected points the router at the panes of unselected windows, which
 // have no sink and never will, so their output is discarded rather than buffered
 // until it expires. Positive evidence only: a failed read leaves the set as is.

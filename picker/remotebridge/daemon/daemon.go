@@ -75,7 +75,7 @@ type Config struct {
 	SendCtl func(cmds ...string) bool
 	// HandOff opens a remote session this bridge was switched to as a mirror of
 	// its own (injected; prod = og-remote-open, nil = off). See sessionPin.
-	HandOff func(remoteSession string)
+	HandOff func(remoteSession string) error
 	// Dial opens a fresh control-mode connection. Called for the first attach
 	// and again after every drop; nil is single-shot over Ctl — a drop is
 	// terminal, exactly the behaviour before #482.
@@ -482,15 +482,15 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 		case <-stop:
 			return
 		case now := <-tick:
-			due := false
+			trigger := ""
 			if mtime, ok := nudged(); ok && mtime.After(lastNudge) {
 				lastNudge = mtime
-				due = true
+				trigger = "nudge"
 			}
-			if !due && now.Sub(lastCheck) >= resizeFallbackInterval {
-				due = true
+			if trigger == "" && now.Sub(lastCheck) >= resizeFallbackInterval {
+				trigger = "fallback"
 			}
-			if !due {
+			if trigger == "" {
 				continue
 			}
 			lastCheck = now
@@ -498,7 +498,10 @@ func watchLocalClient(area func() (int, int), nudged func() (time.Time, bool), a
 			// The client size first: it governs what a window created after this
 			// point is born at, while the per-window caps below govern the ones
 			// that already exist (#449).
-			if w > 0 && h > 0 && cv.need(clientSizeKey, w, h) && !send(ClientSizeCmd(w, h)) {
+			needed := w > 0 && h > 0 && cv.need(clientSizeKey, w, h)
+			fmt.Fprintf(os.Stderr, "daemon: local client area %dx%d (%s), client size asserted=%v\n", w, h, trigger, needed)
+			if needed && !send(ClientSizeCmd(w, h)) {
+				fmt.Fprintln(os.Stderr, "daemon: client size send failed, will retry on the next check")
 				cv.unrecord(clientSizeKey, w, h)
 			}
 			// Active window first: each converge resizes the remote window,
@@ -1184,6 +1187,11 @@ func runMirror(cfg Config) error {
 	}
 	connCh := make(chan helloConn, 64)
 	cst := newMirrorCtlState(cfg.View, env.target, cfg.own, ownerOn)
+	pin.unhandled = func() {
+		if cst.handoff.take() {
+			notifyHost(cfg, noticeSessionNotFollowed)
+		}
+	}
 	// One query construction for the viewing identity, shared by the ctl
 	// handler's raise below, watchLocalClient's re-resolve (R10) and the
 	// startup seed in cmd/daemon/main.go, rather than building the
@@ -1519,6 +1527,12 @@ func runMirror(cfg Config) error {
 	// its floor on every reconnect.
 	sweeper := &windowSweeper{}
 
+	// selectedBeforeAdd is the remote window a %session-window-changed named
+	// before its own %window-add: a `new-window` without -d emits the select
+	// first, so the registry cannot translate it yet. The WindowAdd branch
+	// follows it once the mirror exists.
+	var selectedBeforeAdd string
+
 	// dispatch handles one notification, whether it came straight off the stream
 	// or a reply reader queued it while awaiting a reply. It reports whether the
 	// bridge is finished. Only the main loop calls it: several branches run their
@@ -1547,12 +1561,39 @@ func runMirror(cfg Config) error {
 		case controlmode.SessionChanged:
 			return pin.apply(l, reg, router, rt)
 		case controlmode.SessionWindowChanged:
-			if argv, ok := translateWindowNotification(l, reg); ok && hostCurrentIsOwn(cfg) {
-				_ = cfg.LocalTmux(argv...)
+			argv, ok := translateWindowNotification(l, reg)
+			switch {
+			case ok:
+				selectedBeforeAdd = ""
+				if hostCurrentIsOwn(cfg) {
+					cst.handoff.disarm()
+					_ = cfg.LocalTmux(argv...)
+				}
+			case len(l.Args) > 1 && (pin.id == "" || l.Args[0] == pin.id):
+				if cfg.filter.excludes(l.Args[1]) {
+					if cst.handoff.take() {
+						notifyHost(cfg, noticeWindowNotMirrored)
+					}
+					break
+				}
+				selectedBeforeAdd = l.Args[1]
 			}
 		case controlmode.WindowAdd:
 			if len(l.Args) > 0 {
 				addWindow(flowCfg, send, router, waitHellosFn, cst, reg, cv, rt, l.Args[0])
+				if l.Args[0] == selectedBeforeAdd {
+					selectedBeforeAdd = ""
+					argv, ok := translateWindowNotification(controlmode.Line{Kind: controlmode.SessionWindowChanged, Args: []string{"", l.Args[0]}}, reg)
+					switch {
+					case !ok:
+						if cst.handoff.take() {
+							notifyHost(cfg, noticeWindowNotMirrored)
+						}
+					case hostCurrentIsOwn(cfg):
+						cst.handoff.disarm()
+						_ = cfg.LocalTmux(argv...)
+					}
+				}
 			}
 		case controlmode.WindowClose:
 			if len(l.Args) > 0 {

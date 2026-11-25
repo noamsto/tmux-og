@@ -370,6 +370,30 @@ func TestSizeOwnerMembers(t *testing.T) {
 	if !o.dropMember("z") {
 		t.Error("setMembers lost a member")
 	}
+
+	o = newSizeOwner(tokA)
+	o.setMembers([]string{"a", "b"})
+	o.setMembers([]string{"b", "c"})
+	if !o.takeDeparted("a") || o.takeDeparted("a") {
+		t.Error("a name that vanished through setMembers must be consumable once")
+	}
+	if o.takeDeparted("b") || o.takeDeparted("c") {
+		t.Error("a name still in the set must not be departed")
+	}
+	o.setMembers(nil)
+	o.addMember("b")
+	if o.takeDeparted("b") {
+		t.Error("addMember must clear a departed entry")
+	}
+	if !o.takeDeparted("c") {
+		t.Error("c vanished and must be departed")
+	}
+	o.setMembers([]string{"x"})
+	o.setMembers(nil)
+	o.clearDeparted()
+	if o.takeDeparted("x") {
+		t.Error("clearDeparted must empty the set")
+	}
 }
 
 func TestRecalcCmd(t *testing.T) {
