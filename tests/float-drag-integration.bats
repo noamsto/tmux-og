@@ -59,6 +59,11 @@ setup() {
 teardown() {
 	[[ -n ${DAEMON_PID:-} ]] && kill "$DAEMON_PID" 2>/dev/null
 	[[ -n ${DAEMON_PID:-} ]] && wait "$DAEMON_PID" 2>/dev/null
+	# Only the #1266 case plants the shared legacy stamp; remove it by exact name.
+	if [[ -n ${LEGACY_STAMP_1266:-} ]]; then
+		rm -f -- "$LEGACY_STAMP_1266"
+		LEGACY_STAMP_1266=""
+	fi
 	$OBS kill-server 2>/dev/null || true
 	$DST kill-server 2>/dev/null || true
 	$SRC kill-server 2>/dev/null || true
@@ -86,7 +91,7 @@ mirror_up() {
 	$DST new-session -d -s host-sess -x 100 -y 30
 	# The splash popup would take the first click.
 	$DST set-option -g @splash_shown 1
-	"$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
+	OG_BRIDGE_SIZE_DEBUG=1 "$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
 		--session rem --window 1 --local-sess host-sess \
 		--renderer "$RENDERER" --sock "$SOCK" >"$BATS_TEST_TMPDIR/daemon.log" 2>&1 &
 	DAEMON_PID=$!
@@ -127,7 +132,7 @@ mirror_tiled_up() {
 	$DST new-session -d -s host-sess -x 100 -y 30
 	# The splash popup would take the first click.
 	$DST set-option -g @splash_shown 1
-	"$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
+	OG_BRIDGE_SIZE_DEBUG=1 "$DAEMON" --test-local --src-socket fdsrc --dst-socket fddst \
 		--session rem --window 1 --local-sess host-sess \
 		--renderer "$RENDERER" --sock "$SOCK" >"$BATS_TEST_TMPDIR/daemon.log" 2>&1 &
 	DAEMON_PID=$!
@@ -581,6 +586,9 @@ resize_diag() {
 		echo "nudge ${nudge}: mtime $(stat -f '%Sm' -t '%H:%M:%S' -- "$nudge" 2>/dev/null || stat -c '%y' -- "$nudge" 2>/dev/null || true); now $(date +%H:%M:%S)"
 		echo "client-resized hooks: $($DST show-hooks -g client-resized 2>&1 | cut -c1-200)"
 		echo "debounce stamp: $(ls -ld /tmp/og-reflow-debounce.host-sess 2>&1 || true)"
+		local sock
+		sock="$($DST display-message -p '#{socket_path}' 2>&1 || true)"
+		echo "debounce stamp (new): $(ls -ld "${TMPDIR:-/tmp}/og-reflow-debounce.$UID.${sock//\//_}.host-sess" 2>&1 || true)"
 		echo "obs window: $($OBS display-message -p -t obs '#{window_width}x#{window_height}' 2>&1 || true)"
 	} 2>&1 | sed 's/^/diag: /' >&3 || true
 }
@@ -600,7 +608,7 @@ resize_client() {
 				"$($DST display-message -p -t "$LF" '#{window_width}x#{window_height}')" >&3
 			resize_diag
 			echo '--- daemon log ---' >&3
-			tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+			tail -80 "$BATS_TEST_TMPDIR/daemon.log" >&3
 			return 1
 		}
 		sleep 0.1
@@ -620,7 +628,7 @@ settle_agree() {
 			((SECONDS < deadline)) || {
 				printf 'remote refit never ran at %s within %ss: @refit_for=%s remote=%s\n--- daemon log ---\n' \
 					"$expected" "$CONVERGE_SECS" "$($SRC show-options -gv @refit_for)" "$(geom "$SRC" "$RF")" >&3
-				tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+				tail -80 "$BATS_TEST_TMPDIR/daemon.log" >&3
 				return 1
 			}
 			sleep 0.1
@@ -635,7 +643,7 @@ settle_agree() {
 	r="$(geom "$SRC" "$RF")"
 	[[ $l == "$r" ]] && return 0
 	printf 'mirrored float disagrees with its remote after a client resize (waited %ss): local=%s remote=%s\n--- daemon log ---\n' "$CONVERGE_SECS" "$l" "$r" >&3
-	tail -20 "$BATS_TEST_TMPDIR/daemon.log" >&3
+	tail -80 "$BATS_TEST_TMPDIR/daemon.log" >&3
 	return 1
 }
 
@@ -684,5 +692,43 @@ settle_agree() {
 		sleep 0.1
 	done
 	resize_client 100 32
+	settle_agree
+}
+
+# #1266: a local client grow must reach the remote even when the debounced
+# reflow cannot nudge it. The fixed script fails OPEN on the unwritable stamps
+# below, but the stale legacy token still proves the pre-#1266 path: the old
+# script read it back, saw a foreign token and exited before the nudge. With
+# only the reflow blocked, the daemon's reveal poll is what carries the
+# grow to the remote.
+@test "a client grow reaches the remote when the debounced reflow cannot nudge (#1266)" {
+	mirror_up -x 40 -y 12 -X 10 -Y 5
+	# Plant an unwritable stale token at the legacy path (the pre-#1266
+	# location) and at the per-user/per-server path. /tmp is shared on darwin,
+	# so a legacy stamp that is not ours is left alone; the variable lets
+	# teardown remove only one this test planted.
+	local legacy="/tmp/og-reflow-debounce.host-sess"
+	if [[ ! -e $legacy ]]; then
+		printf 'stale' >"$legacy"
+		chmod 444 "$legacy"
+		LEGACY_STAMP_1266="$legacy"
+	fi
+	local sock stamp
+	sock="$($DST display-message -p '#{socket_path}')"
+	stamp="${TMPDIR:-/tmp}/og-reflow-debounce.$UID.${sock//\//_}.host-sess"
+	printf 'stale' >"$stamp"
+	chmod 444 "$stamp"
+	# Root can write a 444 file anyway, so skip when the unwritability the
+	# case depends on cannot hold.
+	[[ -z $LEGACY_STAMP_1266 || ! -w $legacy ]] || skip "legacy stamp $legacy is writable (running as root?)"
+	[[ ! -w $stamp ]] || skip "new stamp $stamp is writable (running as root?)"
+
+	resize_client 45 14
+	settle_agree
+	# Deliberate ordering delay, not a wait for a condition: it lets the
+	# watcher consume the shrink refit's leftover nudge before the grow. This is
+	# the deterministic #1266 repro that otherwise only macOS hit by timing.
+	sleep 2
+	resize_client 150 40
 	settle_agree
 }

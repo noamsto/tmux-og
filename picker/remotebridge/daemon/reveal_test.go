@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"reflect"
 	"strings"
@@ -30,19 +31,20 @@ func TestClientViewsSkipsControlAndMalformed(t *testing.T) {
 
 func TestActivityRows(t *testing.T) {
 	out := strings.Join([]string{
-		"0|tty0|1|@7|focused|100",
-		"0|tty1|2|@7|active,focused,UTF-8|101",
-		"0|tty2|3|@7|active,UTF-8|102",
-		"0|tty3|4|@7|unfocused|103",
-		"1|ctl|5|@7|focused|104",
+		"0|tty0|1|@7|focused|100|80|24|attached",
+		"0|tty1|2|@7|active,focused,UTF-8|101|80|24|attached",
+		"0|tty2|3|@7|active,UTF-8|102|80|24|attached",
+		"0|tty3|4|@7|unfocused|103|80|24|attached",
+		"1|ctl|5|@7|focused|104|80|24|attached",
 		"",
-		"0|tty4|6|@7|focused|not-a-number",
-		"0|tty5|7|@7|focused|",
-		"0|tty6|8|@7",
+		"0|tty4|6|@7|focused|not-a-number|80|24|attached",
+		"0|tty5|7|@7|focused||80|24|attached",
+		"0|tty6|8|@7|focused|105|80|24", // six fields: predates the geometry tail (#1266)
+		"0|tty7|9|@7|focused|106|80|24|attached",
 	}, "\n") + "\n"
 
 	got := activityRows(out)
-	want := []activityRow{{true, 100, "@7"}, {true, 101, "@7"}, {false, 102, "@7"}, {false, 103, "@7"}}
+	want := []activityRow{{true, 100, "@7"}, {true, 101, "@7"}, {false, 102, "@7"}, {false, 103, "@7"}, {true, 106, "@7"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("activityRows = %v, want %v", got, want)
 	}
@@ -93,7 +95,7 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchReveal(query, isMirror, false, q, wake, nil, stop, tick)
+		watchReveal(query, isMirror, false, q, wake, nil, nil, stop, tick)
 		close(done)
 	}()
 	step := func(out string) {
@@ -117,22 +119,23 @@ func TestWatchRevealQueuesMirrorWindowsAndWakes(t *testing.T) {
 		}
 	}
 
+	row := "0|tty0|1|@7|focused|5|80|24|attached\n"
 	// No clients attached at all: an empty read reveals nothing.
 	step("")
 	// A control-mode client and a non-mirror window queue nothing and don't wake.
-	step(strings.Join([]string{"1|ctl|1|@9|focused|5", "0|tty0|1|@3|focused|5"}, "\n") + "\n")
+	step(strings.Join([]string{"1|ctl|1|@9|focused|5|80|24|attached", "0|tty0|1|@3|focused|5|80|24|attached"}, "\n") + "\n")
 	// The same client switches onto @7, a mirror window: queued once, one wake.
-	step("0|tty0|1|@7|focused|5\n")
+	step(row)
 	// Unchanged view set: nothing new.
-	step("0|tty0|1|@7|focused|5\n")
-	drain("0|tty0|1|@7|focused|5\n", []string{"@7"}, 1)
+	step(row)
+	drain(row, []string{"@7"}, 1)
 
 	// The client leaves the mirror session and comes back to the same window.
 	// No hook need fire for either move: polling every tick sees the view
 	// disappear and reappear, which is a reveal.
 	step("")
-	step("0|tty0|1|@7|focused|5\n")
-	drain("0|tty0|1|@7|focused|5\n", []string{"@7"}, 2)
+	step(row)
+	drain(row, []string{"@7"}, 2)
 
 	close(stop)
 	select {
@@ -150,7 +153,7 @@ func TestWatchRevealReportsActivity(t *testing.T) {
 	var queryAt int64
 	query := func() (string, error) {
 		queryAt = time.Now().Unix()
-		return "0|tty0|1|@7|focused|42\n", nil
+		return "0|tty0|1|@7|focused|42|80|24|attached\n", nil
 	}
 	type call struct {
 		rows []activityRow
@@ -161,7 +164,7 @@ func TestWatchRevealReportsActivity(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		watchReveal(query, func(string) bool { return false }, false, &revealQueue{}, func() bool { return true }, activity, stop, tick)
+		watchReveal(query, func(string) bool { return false }, false, &revealQueue{}, func() bool { return true }, activity, nil, stop, tick)
 		close(done)
 	}()
 
@@ -189,7 +192,7 @@ func TestWatchRevealReportsActivity(t *testing.T) {
 // dedicated session's clients all show this daemon's mirrors, so it keeps
 // every row.
 func TestWatchRevealPlacedActivityOnlyFromMirrors(t *testing.T) {
-	out := "0|tty0|1|@3|focused|40\n0|tty1|2|@7|focused|41\n0|tty2|3|@9|focused|42\n"
+	out := "0|tty0|1|@3|focused|40|80|24|attached\n0|tty1|2|@7|focused|41|80|24|attached\n0|tty2|3|@9|focused|42|80|24|attached\n"
 	isMirror := func(win string) bool { return win == "@7" }
 	for _, tc := range []struct {
 		name   string
@@ -206,7 +209,7 @@ func TestWatchRevealPlacedActivityOnlyFromMirrors(t *testing.T) {
 			activity := func(rows []activityRow, _ int64) { calls <- rows }
 			done := make(chan struct{})
 			go func() {
-				watchReveal(func() (string, error) { return out, nil }, isMirror, tc.placed, &revealQueue{}, func() bool { return true }, activity, stop, tick)
+				watchReveal(func() (string, error) { return out, nil }, isMirror, tc.placed, &revealQueue{}, func() bool { return true }, activity, nil, stop, tick)
 				close(done)
 			}()
 
@@ -222,6 +225,215 @@ func TestWatchRevealPlacedActivityOnlyFromMirrors(t *testing.T) {
 				t.Fatal("watchReveal did not return after stop was closed")
 			}
 		})
+	}
+}
+
+func TestClientGeomsSkipsControlAndMalformed(t *testing.T) {
+	out := strings.Join([]string{
+		"1|ctl|1|@9|focused|5|80|24|attached",    // control-mode: skipped
+		"",                                       // blank: skipped
+		"0|bad|only-three",                       // malformed: skipped
+		"0|tty0|100|@7|focused|5|80|24|attached", // kept
+		"0|tty1|200|@7|focused|5|120|40|detached", // kept
+	}, "\n") + "\n"
+
+	got := clientGeoms(out)
+	want := map[string]string{
+		"tty0|100": "80|24|attached",
+		"tty1|200": "120|40|detached",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("clientGeoms = %v, want %v", got, want)
+	}
+}
+
+func TestGeomSignalTakeConsumes(t *testing.T) {
+	var g geomSignal
+	if g.take() {
+		t.Fatal("take on an unmarked signal reported a mark")
+	}
+	g.mark()
+	if !g.take() {
+		t.Fatal("take did not report the mark")
+	}
+	if g.take() {
+		t.Fatal("take did not consume the mark")
+	}
+
+	var nilGeom *geomSignal
+	nilGeom.mark() // must not panic
+	if nilGeom.take() {
+		t.Fatal("a nil geomSignal reported a mark")
+	}
+}
+
+// revealHarness drives watchReveal through a channel-backed query and a real
+// geomSignal, with the watcher's next query as the barrier after each poll.
+type revealHarness struct {
+	t           *testing.T
+	ticker      chan time.Time
+	stop        chan struct{}
+	queryCh     chan queryResult
+	queryCalled chan struct{}
+	done        chan struct{}
+	geom        *geomSignal
+}
+
+type queryResult struct {
+	out string
+	err error
+}
+
+func newRevealHarness(t *testing.T) *revealHarness {
+	t.Helper()
+	h := &revealHarness{
+		t:           t,
+		ticker:      make(chan time.Time),
+		stop:        make(chan struct{}),
+		queryCh:     make(chan queryResult),
+		queryCalled: make(chan struct{}),
+		done:        make(chan struct{}),
+		geom:        &geomSignal{},
+	}
+	query := func() (string, error) {
+		h.queryCalled <- struct{}{}
+		r := <-h.queryCh
+		return r.out, r.err
+	}
+	go func() {
+		watchReveal(query, func(string) bool { return false }, false, &revealQueue{}, func() bool { return true }, nil, h.geom, h.stop, h.ticker)
+		close(h.done)
+	}()
+	return h
+}
+
+// start begins the first poll and waits for the watcher to ask for its result.
+func (h *revealHarness) start() {
+	h.t.Helper()
+	h.ticker <- time.Now()
+	<-h.queryCalled
+}
+
+// poll delivers a successful result, then starts the next poll and blocks
+// until the watcher has fully processed the result — it has looped back to its
+// select and asked for the next query. The watcher is left waiting on that
+// query's result, so the caller inspects the signal and then either polls
+// again or closes.
+func (h *revealHarness) poll(out string) {
+	h.t.Helper()
+	h.pollErr(out, nil)
+}
+
+// pollErr is poll with a failed query, which the watcher skips.
+func (h *revealHarness) pollErr(out string, err error) {
+	h.t.Helper()
+	h.queryCh <- queryResult{out: out, err: err}
+	h.ticker <- time.Now()
+	<-h.queryCalled
+}
+
+func (h *revealHarness) close() {
+	h.t.Helper()
+	// Release the query the last poll left waiting; the watcher processes the
+	// empty result and returns to select, where stop releases it.
+	h.queryCh <- queryResult{}
+	close(h.stop)
+	select {
+	case <-h.done:
+	case <-time.After(2 * time.Second):
+		h.t.Fatal("watchReveal did not return after stop was closed")
+	}
+}
+
+// TestWatchRevealMarksGeometryChanges pins the resize watcher's second
+// trigger (#1266): the first successful poll marks, an identical poll does
+// not, and a width, height or status change does.
+func TestWatchRevealMarksGeometryChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cur  string
+		mark bool
+	}{
+		{"identical does not mark", "80|24|attached", false},
+		{"width marks", "81|24|attached", true},
+		{"height marks", "80|25|attached", true},
+		{"status marks", "80|24|detached", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRevealHarness(t)
+			defer h.close()
+			h.start()
+			h.poll("0|tty0|1|@7|focused|42|80|24|attached\n")
+			if !h.geom.take() {
+				t.Fatal("the first successful poll did not mark")
+			}
+			h.poll("0|tty0|1|@7|focused|42|" + tc.cur + "\n")
+			if got := h.geom.take(); got != tc.mark {
+				t.Fatalf("mark after the second poll = %v, want %v", got, tc.mark)
+			}
+		})
+	}
+}
+
+func TestWatchRevealMarksAttachAndDetach(t *testing.T) {
+	rowA := "0|tty0|1|@7|focused|42|80|24|attached\n"
+	rowB := "0|tty1|2|@8|focused|43|80|24|attached\n"
+	t.Run("attach", func(t *testing.T) {
+		h := newRevealHarness(t)
+		defer h.close()
+		h.start()
+		h.poll(rowA)
+		h.geom.take()
+		h.poll(rowA + rowB)
+		if !h.geom.take() {
+			t.Fatal("a client attach did not mark")
+		}
+	})
+	t.Run("detach", func(t *testing.T) {
+		h := newRevealHarness(t)
+		defer h.close()
+		h.start()
+		h.poll(rowA + rowB)
+		h.geom.take()
+		h.poll(rowA)
+		if !h.geom.take() {
+			t.Fatal("a client detach did not mark")
+		}
+	})
+}
+
+// A failed query neither marks nor resets the baseline: the poll after it sees
+// the same geometry and stays quiet.
+func TestWatchRevealFailedQueryKeepsBaseline(t *testing.T) {
+	h := newRevealHarness(t)
+	defer h.close()
+	row := "0|tty0|1|@7|focused|42|80|24|attached\n"
+	h.start()
+	h.poll(row)
+	if !h.geom.take() {
+		t.Fatal("the first successful poll did not mark")
+	}
+	h.pollErr("", errors.New("boom"))
+	if h.geom.take() {
+		t.Fatal("a failed query marked")
+	}
+	h.poll(row)
+	if h.geom.take() {
+		t.Fatal("a failed query reset the baseline, so the identical poll read as a change")
+	}
+}
+
+// A control-mode row is not a view, so a change only in its geometry must not
+// mark.
+func TestWatchRevealIgnoresControlRows(t *testing.T) {
+	h := newRevealHarness(t)
+	defer h.close()
+	h.start()
+	h.poll("1|ctl|1|@9|focused|42|80|24|attached\n")
+	h.geom.take()
+	h.poll("1|ctl|1|@9|focused|42|81|25|detached\n")
+	if h.geom.take() {
+		t.Fatal("a control-mode row's geometry change marked")
 	}
 }
 

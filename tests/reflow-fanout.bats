@@ -89,6 +89,11 @@ teardown() {
 	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	tmux kill-server 2>/dev/null || true
 	tmux -L og1038 kill-server 2>/dev/null || true
+	# The debounce tests plant a legacy /tmp stamp; remove it only if this test
+	# created it (LEGACY_STAMP stays empty otherwise), never another user's.
+	if [[ -n ${LEGACY_STAMP:-} ]]; then
+		rm -f -- "$LEGACY_STAMP"
+	fi
 }
 
 run_update_icons() {
@@ -903,4 +908,90 @@ reflow_manual_window() {
 	reflow_manual_window typed on
 	[ "$(tmux show -wv -t S:0 @window_label_short)" = "d" ]
 	[ "$(tmux show -wv -t S:0 @window_label_rest_long)" = "d" ]
+}
+
+# ---------------------------------------------------------------------------
+# debounce stamp (#1266)
+#
+# A debounced reflow's stamp must be keyed per user AND per tmux server, and a
+# write that fails must fail OPEN. Before the fix the stamp lived at a fixed
+# /tmp/og-reflow-debounce.<session>. On a host where several users (nix's
+# _nixbldN) share /tmp the first user's file locked every other user out: the
+# write failed, the read-back returned the foreign token, the reflow exited
+# before the `touch -- "$NUDGE"` that is the bridge's resize nudge (#433), and
+# a local resize never reached the remote.
+#
+# Each case drives the real script through `tmux run-shell` (synchronous, so
+# TMUX is set exactly as the client-resized hook sets it) against the private
+# server, with @bridge_nudge pointing at a fresh file. The reflow touches the
+# nudge only after the debounce read-back, so a touched file means the debounce
+# did not bail.
+#
+# A stamp is made unwritable with mode 444. Root can write a 444 file anyway,
+# so assert `! -w` and skip with a reason when the check cannot hold.
+LEGACY_STAMP=""
+
+# The stamp path the script computes for the current server and session.
+reflow_stamp_path() {
+	local sess=$1 sock
+	sock=$(tmux display-message -p '#{socket_path}')
+	printf '%s/og-reflow-debounce.%s.%s.%s' "${TMPDIR:-/tmp}" "$UID" "${sock//\//_}" "${sess//\//_}"
+}
+
+@test "debounce stamp: a stale legacy /tmp stamp does not silence the reflow (#1266)" {
+	local nudge="$TDIR/nudge-a"
+	# The path the old script used. It is shared with every other build user on
+	# the host, so refuse to clobber one that is not ours.
+	local legacy="/tmp/og-reflow-debounce.S"
+	[ -e "$legacy" ] && skip "legacy stamp $legacy already exists (not ours)"
+	printf 'stale' >"$legacy"
+	chmod 444 "$legacy"
+	LEGACY_STAMP="$legacy" # ours now; teardown may remove it
+	[[ -w $legacy ]] && skip "legacy stamp $legacy is writable (running as root?)"
+
+	rm -f "$nudge"
+	tmux set -q @bridge_nudge "$nudge"
+	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1
+	[ -e "$nudge" ]
+}
+
+@test "debounce stamp: an unwritable new stamp fails open and still nudges (#1266)" {
+	local nudge="$TDIR/nudge-b"
+	local stamp
+	stamp="$(reflow_stamp_path S)"
+	printf 'stale' >"$stamp"
+	chmod 444 "$stamp"
+	[[ -w $stamp ]] && skip "new stamp $stamp is writable (running as root?)"
+
+	rm -f "$nudge"
+	tmux set -q @bridge_nudge "$nudge"
+	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1
+	[ -e "$nudge" ]
+}
+
+@test "debounce stamp: a writable stamp still debounces a burst (#1266)" {
+	local nudge="$TDIR/nudge-c"
+	local stamp
+	stamp="$(reflow_stamp_path S)"
+	rm -f "$stamp" "$nudge"
+	tmux set -q @bridge_nudge "$nudge"
+
+	# First run: let it stamp its token, then clobber the stamp while it sleeps
+	# (0.12s, orders of magnitude longer than the write). Its read-back sees the
+	# foreign token and it exits before touching the nudge.
+	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1 &
+	local rpid=$!
+	local i
+	for i in $(seq 1 100); do
+		[ -s "$stamp" ] && break
+		sleep 0.005
+	done
+	[ -s "$stamp" ]
+	printf 'not-its-token' >"$stamp"
+	wait "$rpid"
+	[ ! -e "$nudge" ]
+
+	# A lone run whose token survives does touch the nudge.
+	tmux run-shell "$REFLOW --debounce S 200" >/dev/null 2>&1
+	[ -e "$nudge" ]
 }

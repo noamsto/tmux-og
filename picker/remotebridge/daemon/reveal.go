@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,8 +51,10 @@ func (q *revealQueue) take() []string {
 // attaches of the same client NAME apart — a detach/reattach gets a fresh
 // created stamp, and that is what a re-attach needs to look like a reveal
 // again rather than an unchanged view. client_flags and client_activity trail
-// for activityRows; clientViews reads only the first four fields.
-const clientViewsFormat = "#{client_control_mode}|#{client_name}|#{client_created}|#{window_id}|#{client_flags}|#{client_activity}"
+// for activityRows; the width/height/status tail feeds clientGeoms, watchReveal's
+// geometry signal to the resize watcher (#1266). clientViews reads only the
+// first four fields.
+const clientViewsFormat = "#{client_control_mode}|#{client_name}|#{client_created}|#{window_id}|#{client_flags}|#{client_activity}|#{client_width}|#{client_height}|#{status}"
 
 // clientViewsArgs returns the list-clients argv for sess.
 func clientViewsArgs(sess string) []string {
@@ -84,7 +88,9 @@ func clientViews(out string) map[string]string {
 
 // activityRows parses the same list-clients output as clientViews into one
 // activityRow per non-control client, skipping blank and malformed lines and
-// rows whose activity stamp is missing or unparsable.
+// rows whose activity stamp is missing or unparsable. clientViewsFormat now
+// carries a width/height/status tail, so a well-formed row has all nine fields;
+// a six-field row predates the tail and is malformed (#1266).
 func activityRows(out string) []activityRow {
 	var rows []activityRow
 	for line := range strings.SplitSeq(out, "\n") {
@@ -92,8 +98,8 @@ func activityRows(out string) []activityRow {
 		if line == "" {
 			continue
 		}
-		fields := strings.SplitN(line, "|", 6)
-		if len(fields) != 6 || fields[0] == "1" {
+		fields := strings.SplitN(line, "|", 9)
+		if len(fields) != 9 || fields[0] == "1" {
 			continue
 		}
 		stamp, err := strconv.ParseInt(fields[5], 10, 64)
@@ -107,6 +113,51 @@ func activityRows(out string) []activityRow {
 		})
 	}
 	return rows
+}
+
+// geomSignal is the one-shot flag watchReveal sets when the client geometry
+// changed and watchLocalClient consumes. take clears it, so a geometry change
+// costs at most one extra area read and a nudge and a mark on the same tick
+// still cost one (#1266). A nil *geomSignal is a no-op, so a watchReveal that
+// is never wired to a resize watcher marks nothing.
+type geomSignal struct {
+	marked atomic.Bool
+}
+
+// mark records that the client geometry changed. Safe on a nil receiver.
+func (g *geomSignal) mark() {
+	if g == nil {
+		return
+	}
+	g.marked.Store(true)
+}
+
+// take reports whether a mark was pending and clears it.
+func (g *geomSignal) take() bool {
+	if g == nil {
+		return false
+	}
+	return g.marked.Swap(false)
+}
+
+// clientGeoms maps each non-control view's "<name>|<created>" identity to its
+// "<width>|<height>|<status>" geometry, skipping control-mode and malformed
+// rows. watchReveal diffs successive polls with maps.Equal: a resize, a
+// status-line count change and an attach or detach all move the map (#1266).
+func clientGeoms(out string) map[string]string {
+	geoms := map[string]string{}
+	for line := range strings.SplitSeq(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "|", 9)
+		if len(fields) != 9 || fields[0] == "1" {
+			continue
+		}
+		geoms[fields[1]+"|"+fields[2]] = fields[6] + "|" + fields[7] + "|" + fields[8]
+	}
+	return geoms
 }
 
 // revealedWindows returns, sorted and deduped, the window ids of views in cur
@@ -160,11 +211,19 @@ func wakeCmd(remoteSession string) string {
 // placed narrows activity to rows showing a window isMirror accepts: a placed
 // host session also holds local windows and other daemons' mirrors, and input
 // there is not input on this controller.
+//
+// geom, when non-nil, is marked on the first successful poll and whenever the
+// non-control clients' geometry (name|created -> width|height|status) differs
+// from the previous successful poll: the resize watcher's second, hook-
+// independent trigger (#1266). A failed query leaves the baseline untouched and
+// marks nothing.
 func watchReveal(query func() (string, error), isMirror func(localWin string) bool, placed bool,
 	q *revealQueue, wake func() bool, activity func(rows []activityRow, now int64),
-	stop <-chan struct{}, tick <-chan time.Time,
+	geom *geomSignal, stop <-chan struct{}, tick <-chan time.Time,
 ) {
 	var prev map[string]string
+	var prevGeom map[string]string
+	first := true
 	for {
 		select {
 		case <-stop:
@@ -179,6 +238,15 @@ func watchReveal(query func() (string, error), isMirror func(localWin string) bo
 				continue
 			}
 			cur := clientViews(out)
+			curGeom := clientGeoms(out)
+			if first || !maps.Equal(prevGeom, curGeom) {
+				if sizeDebug.Load() {
+					sizeDebugf("clients changed: %s -> %s", sizeGeomSig(prevGeom), sizeGeomSig(curGeom))
+				}
+				geom.mark()
+			}
+			prevGeom = curGeom
+			first = false
 			queued := false
 			for _, win := range revealedWindows(prev, cur) {
 				if isMirror(win) {

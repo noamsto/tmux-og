@@ -675,6 +675,38 @@ and the racing close usually lands first); they extract the real hook from `TMUX
   events that already run a reflow, gated `window-resized[20]` / `client-detached`
   hooks for the other two — so the touch rides every event that can move the
   local area while the daemon still pays one stat a tick, not a fork.
+  **A client grow has only the `client-resized` reflow to touch it** (#1266):
+  `FitWindowCmd` pins the mirror window (`window-size manual`), so a grow fires
+  no local `window-resized`. When that one debounced reflow bailed (its stamp was
+  owned by another user), the grow reached the remote only if a leftover nudge
+  from the daemon's own refit happened to be consumed after it, else at the 30s
+  `resizeFallbackInterval`. The watcher therefore has a second, hook-independent
+  trigger: `watchReveal`'s existing 1s `list-clients` row carries
+  `#{client_width}|#{client_height}|#{status}` (no extra fork; `clientGeoms` maps
+  `name|created` to `w|h|status` for non-control rows), and the poll marks a
+  shared `geomSignal` on its first successful read and whenever that map changes
+  (a resize, a status-line change, an attach or detach). `watchLocalClient`
+  takes (consumes) the mark every tick: trigger `nudge` when the mtime advanced,
+  else `clients`, else `fallback`, so a nudge and a mark on one tick cost one
+  `LocalArea` read. A grow with no nudge now lands within about two ticks. No
+  reveal watcher (empty `LocalSess`) means no mark, and behaviour unchanged.
+  Pinned by `TestWatchLocalClientGrowWithoutNudge`, the `TestWatchReveal*`
+  geometry cases, and the float-drag bats case "a client grow reaches the remote
+  when the debounced reflow cannot nudge (#1266)".
+- **Size-decision trace: `--size-debug` / `OG_BRIDGE_SIZE_DEBUG`** (off by
+  default; on for any value but empty or `0`; #1266). `runMirror` arms a
+  package `atomic.Bool` from `Config.SizeDebug`, so every site costs one atomic
+  load when off. Lines on stderr, prefixed `daemon: size: `: each watcher tick
+  that fires (trigger, nudge mtime, area) and its per-decision outcome
+  (`client size WxH sent|skipped (asserted)|send failed`, the same per
+  `cap @N`); the reveal poll's geometry change (`clients changed: old -> new`);
+  and a wire trace in `stream`: every command written by `stampAll` that starts
+  `refresh-client -C ` or carries `ignore-size` (`ClientSizeCmd`, `ConvergeCmd`,
+  `recalcCmd`, the owner's `ignoreSizeCmd`) logs `sent #<ordinal>`, and
+  `claimSeq` logs its `%end`/`%error` reply against that ordinal (body trimmed
+  to 200 bytes). The ordinal map exists only while the trace is armed and is
+  dropped on `close`. `float-drag-integration-tests` runs its daemons with it on
+  and dumps the last 80 log lines on failure.
   Registration also clears the four pre-#820 session hooks a reused session
   may still carry; teardown only unsets the option. **Placed, it stays a session
   option** on the host session, not window-scoped: `tmux-reflow-windows` reads it
