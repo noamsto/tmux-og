@@ -1,0 +1,19 @@
+direction: right
+grow: "local client grows\n(SIGWINCH)"
+hook: "client-resized hook\ntmux-reflow-windows --debounce"
+stamp: "/tmp/og-reflow-debounce.host-sess\n(owned by another _nixbld user)" {style.stroke: red}
+bail: "token mismatch → exit 0\n(before touch -- @bridge_nudge)" {style.stroke: red}
+manual: "mirror window = window-size manual\n(FitWindowCmd resize-window)"
+wr: "window-resized[20] nudge\n(never fires on grow)" {style.stroke: red}
+nudge: "@bridge_nudge file mtime"
+watch: "watchLocalClient\n(1s tick: nudge? else 30s fallback)"
+remote: "remote refresh-client -C\nstays 45x12" {style.stroke: red}
+grow -> hook
+hook -> stamp: "write fails, reads foreign token"
+stamp -> bail
+bail -> nudge: "no touch" {style.stroke-dash: 4}
+grow -> manual
+manual -> wr: "no resize"
+wr -> nudge: "no touch" {style.stroke-dash: 4}
+nudge -> watch: "mtime unchanged"
+watch -> remote: "no ClientSizeCmd until 30s fallback > 20s wait"
