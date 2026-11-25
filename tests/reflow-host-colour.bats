@@ -288,7 +288,6 @@ picker_token() {
 	[ "$(tmux show -wv -t S:0 @window_pr_num)" = "#12" ]
 }
 
-# #1267: the multi-line grid drew and charged neither the repo tag nor its width.
 grid_windows() {
 	local i
 	for i in 1 2 3 4 5; do tmux new-window -d; done

@@ -198,7 +198,6 @@ has_zoom=0
 # The repo-tag field (#1216) follows it, evaluated with the same predicate as
 # status-format[1]'s crewRepoTag (generator/render/status.go) so a hidden tag
 # reads empty and its width is charged only when the tag is drawn; '|' squashed.
-# The grid draws it too, from the @window_repo_disp stamp (#1267).
 # The four @bridge_* label fields between them are daemon-sanitized (never
 # contain '|'). Only these four are pulled here: the seven @bridge_* colour/state
 # values are read live by the format fragments below, so naming them would only
@@ -348,7 +347,7 @@ while IFS='|' read -r idx wid wclip branch pane_path zoomed iprov iid ititle prn
 	fi
 
 	# Repo tag "<repo> " (#1216): charged in the fit totals and the grid floor
-	# below; the grid draws it from the @window_repo_disp stamp (#1267).
+	# below; the grid draws it from the @window_repo_disp stamp.
 	if [[ -n $crepo ]]; then
 		win_repo[$idx]="$crepo"
 		measure_display_width "${crepo} "
