@@ -1,0 +1,16 @@
+name: Cascade bump
+
+on:
+  repository_dispatch:
+    types: [upstream-updated]
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+
+jobs:
+  bump:
+    uses: noamsto/.github/.github/workflows/cascade-bump.yml@v1
+    secrets:
+      CASCADE_APP_PRIVATE_KEY: ${{ secrets.CASCADE_APP_PRIVATE_KEY }}
