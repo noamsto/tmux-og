@@ -4878,14 +4878,38 @@ WT
 	$SRC new-session -d -s other -x 100 -y 30
 }
 
+# wait_mirror_repo <win> polls until the daemon has stamped the mirror window
+# with the repo and checkout dir it learned from the remote's @git_root (origin
+# probe, then label row: two async hops). @bridge_repo and @bridge_dir are
+# daemon-owned, so a test that wrote them itself would race the daemon's first
+# label apply, which unsets both for a window it has no stamp for (#1271).
+wait_mirror_repo() {
+	local win="$1" repo="" dir=""
+	for _ in $(seq 1 200); do
+		repo="$($DST show-options -wqv -t "$win" @bridge_repo 2>/dev/null || true)"
+		dir="$($DST show-options -wqv -t "$win" @bridge_dir 2>/dev/null || true)"
+		[ "$repo" = o/n ] && [ "$dir" = "$rig_co" ] && return 0
+		sleep 0.1
+	done
+	printf 'wait_mirror_repo: mirror carries repo %q dir %q, wanted o/n %q\n' "$repo" "$dir" "$rig_co" >&3
+	printf 'remote origin stamp: %q\n--- daemon log ---\n' "$($SRC show-options -wqv -t rem:origin @og_bridge_origin 2>/dev/null || true)" >&3
+	tail -20 "$BATS_TEST_TMPDIR/ho.log" >&3 2>/dev/null || true
+	return 1
+}
+
 # handoff_rig <mode> brings up the prdash-in-a-mirror hand-off end to end: a
 # mirrored `rem` session of two windows (`main`, and `origin` where prdash was
 # pressed) with an attached local client on the mirror session, over
 # handoff_remote_setup. The prdash stub reports one PR row, so only the
-# launcher script, the real ctl and the real daemon are under test.
+# launcher script, the real ctl and the real daemon are under test. The daemon
+# stamps @bridge_repo/@bridge_dir from the remote window's @git_root; the rig
+# never writes those daemon-owned options itself.
 handoff_rig() {
 	local mode="$1" win
 	handoff_remote_setup "$mode"
+	# The remote window the press happens in names its checkout the way tmux-og
+	# stamps it, so the daemon's origin probe ships @bridge_dir/@bridge_repo itself.
+	$SRC set-option -w -t rem:origin @git_root "$rig_co"
 	$DST new-session -d -s host-sess -x 100 -y 30
 	$OBS kill-server 2>/dev/null || true
 	$OBS new-session -d -s obsH -x 100 -y 30 "env TERM=xterm-256color $DST attach -t host-sess"
@@ -4910,8 +4934,7 @@ PRDASH
 	wait_client_view "host-sess origin" || return 1
 	rig_remote_pane="$($SRC display-message -p -t rem:origin '#{pane_id}')"
 	win="$($DST display-message -p -t host-sess:origin '#{window_id}')"
-	$DST set-option -w -t "$win" @bridge_repo o/n
-	$DST set-option -w -t "$win" @bridge_dir "$rig_co"
+	wait_mirror_repo "$win" || return 1
 	$DST set-option -w -t "$win" @og_prdash_origin "$rig_remote_pane"
 	$DST set-option -t host-sess @bridge_sock "$sock"
 	rig_local_pane="$($DST display-message -p -t "$win" '#{pane_id}')"
