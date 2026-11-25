@@ -151,6 +151,31 @@ func TestSizeDebugSanitizesReplyBody(t *testing.T) {
 	}
 }
 
+// On: a traced command carrying remote-derived text (a client name inside an
+// ignore-size flip) is sanitized in both the sent and the reply line.
+func TestSizeDebugSanitizesTracedCommand(t *testing.T) {
+	buf := armSizeDebug(t, true)
+	st := newStream(io.Discard)
+
+	if _, ok := st.stampAll("refresh-client -t 'evil\x1b[31m\nname' -f ignore-size"); !ok {
+		t.Fatal("stampAll failed")
+	}
+	claimSeq(clientReply(controlmode.End, ""), st)
+
+	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("trace lines = %d, want 2 (sent + reply): %q", len(lines), buf.String())
+	}
+	if !strings.HasPrefix(lines[0], "daemon: size: sent #1 ") || !strings.HasPrefix(lines[1], "daemon: size: reply #1 to ") {
+		t.Fatalf("unexpected trace lines: %q", lines)
+	}
+	for _, l := range lines {
+		if strings.ContainsAny(l, "\r\x1b") {
+			t.Fatalf("trace line has control bytes: %q", l)
+		}
+	}
+}
+
 // On: a reply body over 200 bytes is capped at 200 bytes in the trace.
 func TestSizeDebugCapsOverlongReplyBody(t *testing.T) {
 	buf := armSizeDebug(t, true)
