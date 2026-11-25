@@ -1,0 +1,20 @@
+direction: right
+
+rig: "handoff_rig" {
+  git: "SRC set-option -w rem:origin\n@git_root <co>  (new)" {style.stroke: green}
+  gate: "wait_mirror_repo\n(new, state-based)" {style.stroke: green}
+}
+remote: "remote window origin\n@git_root=<co>"
+daemon: "remotebridge daemon" {
+  probe: "originprobe.go:\ngit remote get-url origin"
+  apply: "label row ->\nstamps @bridge_repo o/n,\n@bridge_dir <co>"
+}
+launcher: "tmux-prdash-mirror.sh"
+handoff: "ctl handoff -> wt float"
+
+rig.git -> remote
+remote -> daemon.probe
+daemon.probe -> daemon.apply
+daemon.apply -> rig.gate: "polled until o/n + <co>"
+rig.gate -> launcher: "press only after the gate"
+launcher -> handoff

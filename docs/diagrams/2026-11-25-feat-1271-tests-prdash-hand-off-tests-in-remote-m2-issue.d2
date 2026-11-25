@@ -1,0 +1,19 @@
+direction: right
+
+rig: "handoff_rig\n(tests/remote-m2-integration.bats)" {
+  stamp: "DST set-option @bridge_repo o/n\n@bridge_dir <co>"
+}
+daemon: "remotebridge daemon\n(windowlabels.go)" {
+  apply: "first label apply:\nempty repo/dir -> set-option -u"
+  probe: "originprobe.go\nneeds remote @git_root"
+}
+remote: "remote window origin\n(no @git_root)"
+launcher: "tmux-prdash-mirror.sh"
+tool: "ctl tool prdash\n(remote prdash float)"
+handoff: "ctl handoff -> wt float"
+
+rig.stamp -> daemon.apply: "two writers,\nloaded runner: apply lands last" {style.stroke: red}
+remote -> daemon.apply: "label row, no dir"
+daemon.apply -> launcher: "@bridge_repo empty"
+launcher -> tool: "documented fallback"
+launcher -> handoff: "never reached" {style.stroke-dash: 4}
