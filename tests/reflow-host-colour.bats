@@ -287,3 +287,40 @@ picker_token() {
 	[ "$((base - REPLY_DW))" -ge 12 ]
 	[ "$(tmux show -wv -t S:0 @window_pr_num)" = "#12" ]
 }
+
+grid_windows() {
+	local i
+	for i in 1 2 3 4 5; do tmux new-window -d; done
+	for i in 0 1 2 3 4 5; do
+		tmux set -wq -t "S:$i" @branch "feat/a-long-branch-name-number-$i-with-plenty-of-room-to-clip-here"
+	done
+	tmux set -wq -t S:0 @crew_repo foreignrepo
+	tmux set -wq -t S:1 @crew_repo "$(tmux display-message -t S:1 -p '#{b:session_path}')"
+}
+
+@test "the multi-line grid draws a foreign-repo tag after the index, and not a same-repo one" {
+	grid_windows
+
+	bash "$REFLOW" S 140 --force >/dev/null 2>&1
+
+	[ "$(tmux show-options -t S -qv status)" -ge 3 ]
+	[ "$(tmux show -wv -t S:0 @window_repo_disp)" = "foreignrepo " ]
+	[ -z "$(tmux show -wv -t S:1 @window_repo_disp)" ]
+
+	local row own
+	row="$(tmux display-message -t S -p "$(tmux show -v 'status-format[1]')" | sed 's/#\[[^]]*\]//g')"
+	[[ $row == *'0: foreignrepo '* ]]
+	own="$(tmux display-message -t S:1 -p '#{b:session_path}')"
+	[[ $row != *"1: ${own} "* ]]
+}
+
+@test "the grid drops the repo tag when its column cannot fit it" {
+	grid_windows
+
+	bash "$REFLOW" S 60 --force >/dev/null 2>&1
+
+	# A grid really rendered (single-line mode stamps the tag empty too).
+	[ "$(tmux show-options -t S -qv status)" -ge 3 ]
+	[ "$(tmux show -v -t S @window_split)" != 999 ]
+	[ -z "$(tmux show -wv -t S:0 @window_repo_disp)" ]
+}
