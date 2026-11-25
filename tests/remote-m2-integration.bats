@@ -1087,6 +1087,38 @@ two_controllers_up() {
 	size_daemons_stop
 }
 
+@test "a non-current mirrored window converges after a client detaches that the daemon handles late (#1257)" {
+	# Setup as the #979 case above, which explains obs-d and why the human leaves by kill-session.
+	$SRC new-session -d -s rem -x 120 -y 40
+	$SRC new-window -t 'rem:{end}' -a
+	$SRC select-window -t rem:1
+	$DST new-session -d -s host-sess -x 150 -y 45
+	obs_attach obs-d 150 45 "$DST" host-sess
+	size_daemon_up sz-b m2dst "$DST" rem
+	# A stopped daemon stands in for a starved CI runner: it handles the attach
+	# notification only after the human already left, so its membership read
+	# drops the human before the matching %client-detached is dispatched.
+	kill -STOP "$daemon_pid"
+	obs_attach obs-h 100 30 "$SRC" rem
+	$SRC select-window -t rem:2
+	type_until obs-h '100x*'
+	$SRC select-window -t rem:1
+
+	$OBS kill-session -t obs-h
+	deadline=$((SECONDS + RESIZE_CONVERGE_BUDGET_SECS))
+	modes=""
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		modes="$($SRC list-clients -t rem -F '#{client_control_mode}' | sort -u)"
+		[ "$modes" = 1 ] && break
+		sleep 0.1
+	done
+	[ "$modes" = 1 ] # the human is gone and the bridge's control client stays
+	kill -CONT "$daemon_pid"
+
+	wait_src_all '150x*'
+	size_daemons_stop
+}
+
 # Regression for #185: a SIGTERM'd daemon must run teardown, not leave its unix
 # socket + pidfile behind (which blocks the next launch from binding) and not
 # orphan the local mirror session. teardown otherwise runs only on %exit/EOF.

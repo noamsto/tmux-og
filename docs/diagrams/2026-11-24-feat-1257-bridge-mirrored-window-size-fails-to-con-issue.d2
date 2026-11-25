@@ -1,0 +1,31 @@
+direction: down
+
+stream: remote control stream {
+  attach: "%client-session-changed human <session>"
+  detach: "%client-detached human"
+}
+
+loop: main loop (daemon.go dispatch, one goroutine) {
+  sc: "ownerCtl.sessionChanged\naddMember(human)"
+  enf: "ownerCtl.enforce -> read()"
+  set: "setMembers(list-clients snapshot)\nREPLACES the set"
+  det: "ownerCtl.detached -> dropped(human)"
+  gate: "dropped: !isOwner() || !dropMember(human)"
+  skip: "silent return: no recalc" {style.stroke: red}
+  recalc: "send recalcCmd\n(refresh-client -C, all windows)"
+}
+
+tmux: remote tmux {
+  lost: "server_client_lost\nrecalculate now=0: current windows only"
+  stuck: "non-current window keeps\ndeparted client's size" {style.stroke: red}
+}
+
+stream.attach -> loop.sc: "handled late (starved/stopped)"
+loop.sc -> loop.enf
+loop.enf -> loop.set: "human already gone\nsnapshot omits it"
+stream.detach -> loop.det
+loop.det -> loop.gate
+loop.gate -> loop.skip: "member=false"
+loop.gate -> loop.recalc: "owner && member" {style.stroke-dash: 3}
+loop.skip -> tmux.stuck
+tmux.lost -> tmux.stuck: "only fixes current windows"
