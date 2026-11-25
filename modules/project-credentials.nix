@@ -4,27 +4,28 @@
 {lib}: value: let
   plainUserinfo = u: builtins.match "[A-Za-z0-9._-]+" u != null;
 
-  # Everything before the last `@`, or null without one.
-  userinfoOf = authority: let
-    parts = lib.splitString "@" authority;
-  in
-    if builtins.length parts < 2
-    then null
-    else lib.concatStringsSep "@" (lib.init parts);
-
-  # `builtins.split` cuts at every `://`; the first piece is the scheme and the next
-  # (up to its own first `/`) the authority.
-  schemeParts = builtins.split "://" value;
-  hasScheme = builtins.length schemeParts > 1;
-  scheme = lib.toLower (builtins.elemAt schemeParts 0);
-  firstSegment = s: builtins.head (lib.splitString "/" s);
-  authority =
-    if hasScheme
-    then firstSegment (builtins.elemAt schemeParts 2)
-    else firstSegment value;
-  userinfo = userinfoOf authority;
+  # Mirrors credentialBearing: an `@` is allowed only after a bare username or an
+  # ssh/git scheme and bare username, and a `@` in a URL path after an authority is not userinfo.
+  parts = lib.splitString "@" value;
+  hasAt = builtins.length parts > 1;
+  before = builtins.head parts;
+  urlParts = lib.splitString "://" before;
+  hasScheme = builtins.length urlParts > 1;
+  scheme = lib.toLower (builtins.head urlParts);
+  rest = lib.concatStringsSep "://" (builtins.tail urlParts);
+  authority = builtins.head (lib.splitString "/" rest);
   schemeMayCarryUser = builtins.elem scheme ["ssh" "git" "git+ssh" "ssh+git"];
+  refused =
+    if !hasAt
+    then false
+    else if plainUserinfo before
+    then builtins.length parts > 2
+    else if !hasScheme
+    then true
+    else if lib.hasInfix "/" rest
+    then authority == "" || lib.hasInfix ":" rest
+    else !(schemeMayCarryUser && plainUserinfo rest) || builtins.length parts > 2;
 in
   lib.hasInfix "?" value
   || lib.hasInfix "#" value
-  || (userinfo != null && !((!hasScheme || schemeMayCarryUser) && plainUserinfo userinfo))
+  || refused
