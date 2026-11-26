@@ -506,11 +506,11 @@
         "tmux-upstream": "tmux-upstream"
       },
       "locked": {
-        "lastModified": 1795694426,
-        "narHash": "sha256-WeHq6tTT5DS54wV+HUk47q9k2NQisXc6N3UfxedQl7o=",
+        "lastModified": 1795694919,
+        "narHash": "sha256-6jBrtD0xVbRxCMamBdQwO+KKIRGLMmqLAH4Uo/JXfkc=",
         "owner": "noamsto",
         "repo": "tmux-remux",
-        "rev": "b3b83819c1a614b48b726afb88055e94396939c3",
+        "rev": "d88b2d97af274e05a7fc8a96f20c239814c46fd6",
         "type": "github"
       },
       "original": {
