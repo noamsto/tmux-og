@@ -7308,9 +7308,9 @@ attach_pty_client() {
 #
 # The dial is failed with the outage file, never a moved-aside SRC socket:
 # attach-session is CMD_STARTSERVER, so a dial with the path vacated starts a
-# fresh server that unlinks the path before bind. A dial straddling the
-# move-back deleted the restored socket, orphaning SRC — which holds bats'
-# fd 3 — and hung the suite until its timeout (#1285).
+# fresh server that unlinks the path before bind. A dial straddling a
+# move-back deletes the restored socket and orphans SRC, which holds bats'
+# fd 3 and hangs the suite until its timeout (#1285).
 #
 # The outage stays in force through the reads below, so no late dial can
 # succeed and change the identity under them.
@@ -7318,13 +7318,7 @@ attach_pty_client() {
 # The liveness marker is split across printf's arguments: the typed command
 # line echoes in the pane, so an unsplit marker matched before any output.
 gxr7_failures() {
-	local log="$BATS_TEST_TMPDIR/gxr7.log" n
-	[ -f "$log" ] || {
-		echo 0
-		return 0
-	}
-	n="$(grep -c 'keeping the current connection' "$log" || true)"
-	echo "${n:-0}"
+	grep -c 'keeping the current connection' "$BATS_TEST_TMPDIR/gxr7.log" || true
 }
 
 @test "a replacement whose dial fails leaves the mirror live and the old identity advertised" {
@@ -7401,7 +7395,6 @@ gxr7_failures() {
 	kill "$daemon_pid" 2>/dev/null || true
 	wait "$daemon_pid" 2>/dev/null || true
 	tmux -L m2obs kill-server 2>/dev/null || true
-	rm -f "$OG_DAEMON_TEST_OUTAGE_FILE"
 
 	if [ "$failed1" != yes ] || [ "$failed2" != yes ]; then
 		tail -40 "$BATS_TEST_TMPDIR/gxr7.log" >&3 2>/dev/null || true
