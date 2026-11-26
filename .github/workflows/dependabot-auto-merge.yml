@@ -1,31 +1,11 @@
 name: Dependabot auto-merge
 
-# A dependency bump with green CI has nothing left for a human to decide.
-# Auto-merge queues the PR and GitHub merges it the moment the required checks
-# pass, so a red build simply leaves it sitting instead of needing a sweep.
 on: pull_request
 
-# Dependabot-triggered runs get a read-only token unless it is raised here.
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
   auto-merge:
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: dependabot/fetch-metadata@v3
-        id: metadata
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Enable auto-merge
-        # Nix flake inputs are commit pins, so update-type comes back empty for
-        # them — excluding majors rather than allow-listing patch/minor keeps
-        # those bumps eligible while still holding back Go/Action majors.
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    uses: noamsto/.github/.github/workflows/dependabot-auto-merge.yml@v1
