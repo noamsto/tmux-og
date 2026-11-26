@@ -1,0 +1,34 @@
+direction: right
+
+producer: "tmux-remux list --json\n(store.Event + pkg/manifest.Manifest)" {
+  shape: rectangle
+}
+
+event_decode: "picker/remote.go\nnewestSnapshotManifest()\nremuxEvent (internal/store mirror)" {
+  shape: rectangle
+}
+
+manifest_decode: "github.com/noamsto/tmux-remux/pkg/manifest\nmanifest.Manifest / manifest.Session" {
+  shape: rectangle
+  style.stroke: "#a6e3a1"
+}
+
+contract_test: "picker/remote_test.go\nTestRemuxListJSONContract" {
+  shape: rectangle
+  style.stroke: "#a6e3a1"
+}
+
+probe: "picker/remote.go\nrestorableFromProbeOutput()\nfilterThrowawaySessions()" {
+  shape: rectangle
+}
+
+picker_ui: "picker/remote.go\ncollectRemoteItems()\nremoteSessionRowItem()" {
+  shape: rectangle
+}
+
+producer -> event_decode: "NDJSON lines"
+event_decode -> manifest_decode: "json.Unmarshal(ManifestJSON)"
+manifest_decode -> probe: "host check + filter"
+probe -> picker_ui: "restorable rows"
+producer -> contract_test: "realistic NDJSON fixture"
+contract_test -> manifest_decode: "verifies wire contract"
