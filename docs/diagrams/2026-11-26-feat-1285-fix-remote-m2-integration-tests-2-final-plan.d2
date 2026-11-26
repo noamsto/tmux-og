@@ -1,0 +1,26 @@
+direction: right
+title: "#1285 — the dial fails through the outage file; teardown reaps orphans" {near: top-center; shape: text; style.font-size: 20}
+
+test: "remote-m2-integration.bats\n'a replacement whose dial fails…'" {
+  outage: "touch OG_DAEMON_TEST_OUTAGE_FILE\n(new)" {style.stroke: green}
+  presses: "ctl carousel, then repeat\nuntil the log shows 2 failures (new)" {style.stroke: green}
+  live: "printf '%s_%s' GXR7 LIVE_<pid>\nliveness on real output (new)" {style.stroke: green}
+  read: "final_termname, transport,\nDST alive — outage still on"
+  outage -> presses -> live -> read
+}
+daemon: "daemon (replaceConn)" {
+  dial: "test-local dial argv = false\n→ EOF → notReplaced\n'keeping the current connection'"
+}
+src: "real SRC server\n(socket never moved)"
+teardown: "teardown()" {
+  kill: "kill-server SRC/DST/DST2/OBS"
+  trip: "tmux tripwire (new): argv0 tmux +\nBATS_TEST_TMPDIR, alive after 10 s\n→ kill -9, name it, fail the test" {style.stroke: green}
+  kill -> trip
+}
+bats: "bats suite end: fd 3 closes"
+
+test.presses -> daemon.dial: raise
+daemon.dial -> test.presses: "log line counted" {style.stroke-dash: 3}
+test.read -> src: "reachable throughout"
+teardown.kill -> src
+teardown.trip -> bats: "no orphan can hold fd 3"
