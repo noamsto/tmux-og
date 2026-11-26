@@ -1,0 +1,27 @@
+direction: right
+
+producer: "tmux-remux list --json\n(store.Event + snapshot.Manifest)" {
+  shape: rectangle
+}
+
+event_decode: "picker/remote.go\nnewestSnapshotManifest()\nremuxEvent (local copy)" {
+  shape: rectangle
+}
+
+manifest_decode: "picker/remote.go\nremuxManifest / remuxManifestSession\n(hand-copied structs)" {
+  shape: rectangle
+  style.stroke: "#e06c75"
+}
+
+probe: "picker/remote.go\nrestorableFromProbeOutput()\nfilterThrowawaySessions()" {
+  shape: rectangle
+}
+
+picker_ui: "picker/remote.go\ncollectRemoteItems()\nremoteSessionRowItem()" {
+  shape: rectangle
+}
+
+producer -> event_decode: "NDJSON lines"
+event_decode -> manifest_decode: "json.Unmarshal(ManifestJSON)"
+manifest_decode -> probe: "host check + filter"
+probe -> picker_ui: "restorable rows"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,14 +14,15 @@ import (
 
 	"github.com/noamsto/tmux-og/picker/hostcolor"
 	"github.com/noamsto/tmux-og/picker/probekit"
+	"github.com/noamsto/tmux-remux/pkg/manifest"
 )
 
 // noRestore is a stub restoreProbe for tests that don't exercise the
 // tmux-remux-snapshot listing. Every collectRemoteItems call needs an
 // explicit one — passing nil would fall back to the real ssh implementation
 // and either hang or flake in CI.
-func noRestore(string) (remuxManifest, error) {
-	return remuxManifest{}, errors.New("no snapshot")
+func noRestore(string) (manifest.Manifest, error) {
+	return manifest.Manifest{}, errors.New("no snapshot")
 }
 
 func probeWithSessions(sessions ...string) remoteProbeResult {
@@ -204,14 +206,14 @@ func TestCollectRemoteItemsRestorableSessions(t *testing.T) {
 	opts := map[string]string{"@remote_bridge_hosts": "tp-g6"}
 	probe := func(string) (remoteProbeResult, error) { return remoteProbeResult{}, probekit.ErrRemoteNoServer }
 	savedAt := time.Now().Add(-2 * time.Hour).UnixMilli()
-	restoreProbe := func(host string) (remuxManifest, error) {
+	restoreProbe := func(host string) (manifest.Manifest, error) {
 		if host != "tp-g6" {
-			return remuxManifest{}, errors.New("wrong host")
+			return manifest.Manifest{}, errors.New("wrong host")
 		}
-		return remuxManifest{
+		return manifest.Manifest{
 			Host:    "tp-g6",
 			SavedAt: savedAt,
-			Sessions: []remuxManifestSession{
+			Sessions: []manifest.Session{
 				{Name: "work", LastAttached: 123},
 			},
 		}, nil
@@ -510,7 +512,7 @@ func TestNewestSnapshotManifestNoneFound(t *testing.T) {
 }
 
 func TestFilterThrowawaySessions(t *testing.T) {
-	in := []remuxManifestSession{
+	in := []manifest.Session{
 		{Name: "probe-verify", LastAttached: 0},
 		{Name: "work", LastAttached: 1745700000},
 	}
@@ -521,7 +523,7 @@ func TestFilterThrowawaySessions(t *testing.T) {
 }
 
 func TestFilterThrowawaySessionsAllThrowaway(t *testing.T) {
-	in := []remuxManifestSession{{Name: "probe-verify", LastAttached: 0}}
+	in := []manifest.Session{{Name: "probe-verify", LastAttached: 0}}
 	if got := filterThrowawaySessions(in); len(got) != 0 {
 		t.Fatalf("got %+v, want empty", got)
 	}
@@ -590,6 +592,141 @@ func TestRestorableFromProbeOutput(t *testing.T) {
 				t.Fatalf("got %+v, want the one attached session", m.Sessions)
 			}
 		})
+	}
+}
+
+func TestRemuxListJSONContract(t *testing.T) {
+	olderManifest := `{"v":1,"host":"tp-g6","tmux_pid":1111,"saved_at":1745700000000,"sessions":[{"name":"stale","last_attached":1745699000,"windows":[]}]}`
+	newestManifest := `{
+		"v": 1,
+		"host": "tp-g6",
+		"tmux_pid": 4242,
+		"saved_at": 1745700500000,
+		"scrollback_skipped": true,
+		"bridged": ["lab-mono"],
+		"sessions": [
+			{
+				"name": "work",
+				"last_attached": 1745700400,
+				"placed_bridges": [
+					{"host": "lab", "remote_session": "mono"}
+				],
+				"windows": [
+					{
+						"index": 1,
+						"name": "code",
+						"layout": "bb62,159x48,0,0,1",
+						"id": "@4",
+						"automatic_rename": true,
+						"decoration": {"@window_has_agent": "1"},
+						"panes": [
+							{
+								"index": 0,
+								"cwd": "/home/user/repo",
+								"command": "nvim",
+								"command_args": ["nvim", "."],
+								"last_used": 1745700450,
+								"child_count": 2,
+								"scrollback_sha": "deadbeef",
+								"id": "%7",
+								"relaunch": "claude --resume abc",
+								"decoration": {"@agent_state": "idle"}
+							}
+						]
+					}
+				]
+			},
+			{
+				"name": "probe-verify",
+				"last_attached": 0,
+				"windows": [
+					{
+						"index": 0,
+						"name": "bash",
+						"layout": "b25d,80x24,0,0,0",
+						"panes": [
+							{
+								"index": 0,
+								"cwd": "/tmp",
+								"command": "bash",
+								"last_used": 0,
+								"child_count": 0
+							}
+						]
+					}
+				]
+			}
+		]
+	}`
+
+	mustEvent := func(ts int64, kind, manifestJSON string) string {
+		b, err := json.Marshal(remuxEvent{Ts: ts, Kind: kind, ManifestJSON: manifestJSON})
+		if err != nil {
+			t.Fatalf("marshal event: %v", err)
+		}
+		return string(b)
+	}
+
+	ndjson := strings.Join([]string{
+		mustEvent(100, "snapshot", olderManifest),
+		mustEvent(200, "close", "{}"),
+		`{"Ts":250,"Kind":"snapshot","ManifestJSON":"{\"host\":\"tp-g6`, // malformed/truncated line
+		mustEvent(300, "snapshot", newestManifest),
+	}, "\n")
+
+	m, ok := newestSnapshotManifest(ndjson)
+	if !ok {
+		t.Fatal("newestSnapshotManifest returned ok=false")
+	}
+	if m.V != manifest.CurrentVersion {
+		t.Errorf("V = %d, want %d", m.V, manifest.CurrentVersion)
+	}
+	if m.Host != "tp-g6" || m.TmuxPID != 4242 || m.SavedAt != 1745700500000 || !m.ScrollbackSkipped {
+		t.Errorf("unexpected top-level manifest fields: %+v", m)
+	}
+	if len(m.Bridged) != 1 || m.Bridged[0] != "lab-mono" {
+		t.Errorf("Bridged = %v, want [lab-mono]", m.Bridged)
+	}
+	if len(m.Sessions) != 2 {
+		t.Fatalf("len(Sessions) = %d, want 2", len(m.Sessions))
+	}
+
+	work := m.Sessions[0]
+	if work.Name != "work" || work.LastAttached != 1745700400 {
+		t.Errorf("work session = %+v", work)
+	}
+	if len(work.PlacedBridges) != 1 || work.PlacedBridges[0] != (manifest.PlacedBridge{Host: "lab", RemoteSession: "mono"}) {
+		t.Errorf("PlacedBridges = %+v", work.PlacedBridges)
+	}
+	if len(work.Windows) != 1 {
+		t.Fatalf("len(work.Windows) = %d, want 1", len(work.Windows))
+	}
+	w := work.Windows[0]
+	if w.Index != 1 || w.Name != "code" || w.ID != "@4" || !w.AutomaticRename || w.Decoration["@window_has_agent"] != "1" {
+		t.Errorf("window = %+v", w)
+	}
+	if len(w.Panes) != 1 {
+		t.Fatalf("len(w.Panes) = %d, want 1", len(w.Panes))
+	}
+	p := w.Panes[0]
+	if p.Index != 0 || p.Cwd != "/home/user/repo" || p.Command != "nvim" || p.ID != "%7" ||
+		p.Relaunch != "claude --resume abc" || p.Decoration["@agent_state"] != "idle" ||
+		p.ScrollbackSHA != "deadbeef" || p.ChildCount != 2 || len(p.CommandArgs) != 2 {
+		t.Errorf("pane = %+v", p)
+	}
+	if m.Sessions[1].Name != "probe-verify" || m.Sessions[1].LastAttached != 0 {
+		t.Errorf("throwaway session = %+v", m.Sessions[1])
+	}
+
+	got, err := restorableFromProbeOutput("tp-g6\n" + ndjson)
+	if err != nil {
+		t.Fatalf("restorableFromProbeOutput error: %v", err)
+	}
+	if got.V != manifest.CurrentVersion {
+		t.Errorf("restorable V = %d, want %d", got.V, manifest.CurrentVersion)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].Name != "work" {
+		t.Fatalf("restorableFromProbeOutput sessions = %+v, want only [work]", got.Sessions)
 	}
 }
 

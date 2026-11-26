@@ -22,6 +22,7 @@ import (
 	"github.com/noamsto/tmux-og/picker/ownerdir"
 	"github.com/noamsto/tmux-og/picker/palette"
 	"github.com/noamsto/tmux-og/picker/probekit"
+	"github.com/noamsto/tmux-remux/pkg/manifest"
 )
 
 // remoteIdentityPreamble prints machine-id (or uuid/hostname fallback) and the
@@ -586,23 +587,10 @@ func sshProbe(host, remoteCmd string, parse func(string) remoteProbeResult) (rem
 	return parsed, nil
 }
 
-// remuxManifestSession is the subset of a tmux-remux snapshot session the
-// picker needs to render a restorable row.
-type remuxManifestSession struct {
-	Name         string `json:"name"`
-	LastAttached int64  `json:"last_attached"`
-}
-
-// remuxManifest mirrors tmux-remux's snapshot.Manifest (internal/snapshot/manifest.go
-// in noamsto/tmux-remux) — only the fields the picker reads.
-type remuxManifest struct {
-	Host     string                 `json:"host"`
-	SavedAt  int64                  `json:"saved_at"`
-	Sessions []remuxManifestSession `json:"sessions"`
-}
-
-// remuxEvent mirrors the fields of tmux-remux's store.Event this package
-// needs, as emitted (one JSON object per line) by `tmux-remux list --json`.
+// remuxEvent mirrors the fields of tmux-remux's internal store.Event this
+// package needs, as emitted (one JSON object per line) by `tmux-remux list --json`
+// (`store.Event` is in tmux-remux/internal/store, not exported in pkg/manifest,
+// while the embedded ManifestJSON decodes into manifest.Manifest).
 // The upstream type carries no json tags, so field names must match Go's
 // default (capitalized) encoding exactly.
 type remuxEvent struct {
@@ -618,7 +606,7 @@ type remuxEvent struct {
 // unioning across snapshots would resurrect sessions closed since. Malformed
 // lines are skipped: this reads over an ssh pipe, where truncated output is a
 // real failure mode, not a programming error.
-func newestSnapshotManifest(ndjson string) (remuxManifest, bool) {
+func newestSnapshotManifest(ndjson string) (manifest.Manifest, bool) {
 	var best remuxEvent
 	found := false
 	for line := range strings.SplitSeq(ndjson, "\n") {
@@ -638,11 +626,11 @@ func newestSnapshotManifest(ndjson string) (remuxManifest, bool) {
 		}
 	}
 	if !found {
-		return remuxManifest{}, false
+		return manifest.Manifest{}, false
 	}
-	var m remuxManifest
+	var m manifest.Manifest
 	if err := json.Unmarshal([]byte(best.ManifestJSON), &m); err != nil {
-		return remuxManifest{}, false
+		return manifest.Manifest{}, false
 	}
 	return m, true
 }
@@ -653,8 +641,8 @@ func newestSnapshotManifest(ndjson string) (remuxManifest, bool) {
 // rather than one a person was actually using. This is a principled signal,
 // not a name denylist: any detached-and-abandoned session is caught the same
 // way.
-func filterThrowawaySessions(sessions []remuxManifestSession) []remuxManifestSession {
-	out := make([]remuxManifestSession, 0, len(sessions))
+func filterThrowawaySessions(sessions []manifest.Session) []manifest.Session {
+	out := make([]manifest.Session, 0, len(sessions))
 	for _, s := range sessions {
 		if s.LastAttached == 0 {
 			continue
@@ -688,17 +676,17 @@ func formatSnapshotAge(savedAtMillis int64, now time.Time) string {
 // throwaway sessions. Split out from sshListRestorableSessions so the host
 // check — the one security-relevant rule here, guarding against a stale or
 // wrong-host state.db producing rows — is testable without a real ssh.
-func restorableFromProbeOutput(stdout string) (remuxManifest, error) {
+func restorableFromProbeOutput(stdout string) (manifest.Manifest, error) {
 	remoteHostname, ndjson, ok := strings.Cut(stdout, "\n")
 	if !ok {
-		return remuxManifest{}, errors.New("no manifest data")
+		return manifest.Manifest{}, errors.New("no manifest data")
 	}
 	m, found := newestSnapshotManifest(ndjson)
 	if !found {
-		return remuxManifest{}, errors.New("no snapshot to restore")
+		return manifest.Manifest{}, errors.New("no snapshot to restore")
 	}
 	if m.Host != strings.TrimSpace(remoteHostname) {
-		return remuxManifest{}, fmt.Errorf("snapshot host %q does not match %q", m.Host, remoteHostname)
+		return manifest.Manifest{}, fmt.Errorf("snapshot host %q does not match %q", m.Host, remoteHostname)
 	}
 	m.Sessions = filterThrowawaySessions(m.Sessions)
 	return m, nil
@@ -709,7 +697,7 @@ func restorableFromProbeOutput(stdout string) (remuxManifest, error) {
 // restorableFromProbeOutput. Only meaningful once a host has already probed
 // as remoteProbeNoServer — a live server's sessions come from
 // sshListRemoteSessions instead.
-func sshListRestorableSessions(host string) (remuxManifest, error) {
+func sshListRestorableSessions(host string) (manifest.Manifest, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), probekit.ProbeTimeout)
 	defer cancel()
 
@@ -718,7 +706,7 @@ func sshListRestorableSessions(host string) (remuxManifest, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return remuxManifest{}, probekit.ClassifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
+		return manifest.Manifest{}, probekit.ClassifyProbeErr(err, stdout.String(), stderr.String(), ctx.Err() != nil)
 	}
 	return restorableFromProbeOutput(stdout.String())
 }
@@ -1021,7 +1009,7 @@ func remoteHostRowForState(tmuxOpts map[string]string, host string, state remote
 // sessions) by probing every configured host over ssh. Runs off the
 // first-paint path; the result merges via remoteMsg, replacing
 // pendingRemoteItems's synchronous placeholder (#312).
-func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, probe func(string) (remoteProbeResult, error), restoreProbe func(string) (remuxManifest, error)) []listItem {
+func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, probe func(string) (remoteProbeResult, error), restoreProbe func(string) (manifest.Manifest, error)) []listItem {
 	hosts := parseRemoteHosts(envOrMap("REMOTE_BRIDGE_HOSTS", tmuxOpts, "@remote_bridge_hosts", ""))
 	if len(hosts) == 0 {
 		return nil
@@ -1043,7 +1031,7 @@ func collectRemoteItems(tmuxOpts map[string]string, bridges map[string]bool, pro
 		sessionIDs      map[string]string
 		sessionCreated  map[string]string
 		state           remoteProbeState
-		restorable      []remuxManifestSession
+		restorable      []manifest.Session
 		manifestSavedAt int64
 		drop            bool
 		tailscaleURL    string
