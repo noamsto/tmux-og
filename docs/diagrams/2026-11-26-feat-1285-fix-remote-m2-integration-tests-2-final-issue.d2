@@ -1,0 +1,27 @@
+direction: right
+title: "#1285 — dial-fails test races its own socket restore" {near: top-center; shape: text; style.font-size: 20}
+
+test: "remote-m2-integration.bats\n'a replacement whose dial fails…'" {
+  mv_away: "mv m2src → m2src.bak"
+  presses: "ctl carousel ×2\n(nack on RAISE, not on completion)"
+  live: "liveness poll\n(grep matches the typed command echo → exits at once)"
+  mv_back: "mv m2src.bak → m2src"
+  read: "final_termname = control_termname"
+  mv_away -> presses -> live -> mv_back -> read
+}
+
+daemon: "daemon (replaceConn)" {
+  dial: "dial: tmux -L m2src -C attach-session\n(CMD_STARTSERVER)"
+}
+transient: "auto-started tmux server\nclient.c:159 unlink(path)\nserver.c:121 unlink+bind" {style.stroke: red}
+src: "real SRC server (session rem)\nholds bats fd 3" {style.stroke: red}
+teardown: "teardown: SRC kill-server\n(reaches the stale path, not SRC)"
+bats: "bats suite end\nwaits for EOF on fd 3 → 14m timeout" {style.stroke: red}
+
+test.presses -> daemon.dial: raise
+daemon.dial -> transient: "socket path vacant → start server"
+test.mv_back -> transient: "lands inside the unlink window" {style.stroke: red}
+transient -> src: "unlinks the RESTORED socket → orphaned" {style.stroke: red}
+test.read -> src: "unreachable → \"\" ≠ tmux-256color (not ok 24)" {style.stroke: red}
+teardown -> src: "misses it" {style.stroke-dash: 3}
+src -> bats: "fd 3 never closes (hang after test 40)" {style.stroke: red}

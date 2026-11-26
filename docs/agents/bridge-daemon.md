@@ -256,8 +256,19 @@ path, which every caller already handles.
   — no control output at all, the production network-loss shape — the park
   cases also set `OG_DAEMON_TEST_OUTAGE_FILE` (`--test-outage-file`,
   test-local only): while that file exists the test-local dial runs `false`
-  instead of `tmux -C attach-session`. An exhausted retry budget is no longer
-  terminal on its own (#729): it parks instead (below), and only reaches
+  instead of `tmux -C attach-session`. The outage file is also the only safe
+  way for any test to make a dial fail (#1285): with the socket path vacated,
+  the dial's tmux client and the server it starts both `unlink` the path
+  before `bind`, so a dial still starting when a test moves the socket back
+  deletes the restored socket. SRC is then unreachable by path — teardown's
+  `kill-server` misses it — and, since a tmux server keeps the fd 3 bats
+  handed it, it holds the suite open until the outer timeout, with no test
+  named. The park helpers stay safe because they create the outage file
+  before moving the socket aside and remove it only after moving it back.
+  `teardown`'s tmux tripwire (a process whose argv0 is `tmux` and whose args
+  carry `$BATS_TEST_TMPDIR`, still alive after `kill-server`) kills such an
+  orphan and fails the test that leaked it. An exhausted retry budget is no
+  longer terminal on its own (#729): it parks instead (below), and only reaches
   teardown if the park wait itself answers false — `Shutdown` or the local
   mirror session gone.
 - **The local mirror session is another ending** (#680). A session that is gone

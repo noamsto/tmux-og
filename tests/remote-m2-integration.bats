@@ -45,6 +45,8 @@ setup() {
 	unset AEYE_CELL_PX OG_RELAY_GRAPHICS
 	OG_TMUX_DIR="/tmp/og-m2-bats-$$"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	unset TMUX
+	OG_TEST_ISOLATED=1
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
@@ -65,10 +67,13 @@ setup() {
 	# clients (#979).
 	DST2="tmux -L m2dst2 -f $DST_CONF"
 	OBS="tmux -L m2obs"
-	# src_sock is SRC's own listening socket path — the park tests' outage_start
-	# renames it aside so a reattach dial gets ENOENT instead of reconnecting to
-	# the still-live SRC server (see outage_start below). teardown() needs this
-	# set even when a test aborts before reaching outage_end.
+	# src_sock is SRC's own listening socket path. The park tests' outage_start
+	# renames it aside only so writes to SRC during the outage go through
+	# `tmux -S "$src_sock.away"` — the dial failure itself comes from
+	# OG_DAEMON_TEST_OUTAGE_FILE, since a moved socket alone lets a dial start a
+	# fresh server that deletes the restored path (#1285; see outage_start
+	# below). teardown() needs this set even when a test aborts before reaching
+	# outage_end.
 	src_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2src"
 	# The park helpers' outage lever; see outage_start.
 	export OG_DAEMON_TEST_OUTAGE_FILE="$BATS_TEST_TMPDIR/outage"
@@ -136,7 +141,8 @@ reap_jobs() {
 
 # shellcheck disable=SC2086 # $SRC/$DST/$DST2 are "tmux -L name -f conf" command lines
 teardown() {
-	local leaked
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
+	local leaked leaked_tmux leaked_args i
 	reap_jobs
 	size_daemons_stop
 	# A park case that ends mid-outage leaves SRC's socket moved aside — kill
@@ -155,8 +161,26 @@ teardown() {
 		kill -9 $leaked 2>/dev/null || true
 		printf 'teardown: leaked daemon pid(s) %safter reap_jobs\n' "$leaked" >&3
 	fi
+	# Twin tripwire (#1126) for scratch tmux servers: one that outlives kill-server
+	# (#1285: its socket unlinked) keeps fd 3 open and hangs the suite with no
+	# test named. argv0 must BE tmux — store paths like tmux-og-go-tools sit in
+	# daemon args. Polled for up to 10s (each kill-server's own bound; normally
+	# one pass): a server still shutting down is not a leak, only one alive past
+	# that.
+	for ((i = 0; i < 100; i++)); do
+		leaked_tmux="$(ps -Aww -o pid=,args= | TEST_DIR="$BATS_TEST_TMPDIR" awk '$2 ~ /(^|\/)tmux$/ && index($0, ENVIRON["TEST_DIR"]) { printf "%s ", $1 }')"
+		[ -z "$leaked_tmux" ] && break
+		sleep 0.1
+	done
+	if [ -n "$leaked_tmux" ]; then
+		leaked_args="${leaked_tmux% }"
+		leaked_args="$(ps -ww -o pid=,args= -p "${leaked_args// /,}" 2>/dev/null)"
+		# shellcheck disable=SC2086 # word-split the pid list
+		kill -9 $leaked_tmux 2>/dev/null || true
+		printf 'teardown: leaked tmux server(s) after kill-server: %s\n' "${leaked_args:-$leaked_tmux}" >&3
+	fi
 	rm -rf "${OG_TMUX_DIR:-}"
-	[ -z "$leaked" ]
+	[ -z "$leaked" ] && [ -z "$leaked_tmux" ]
 }
 
 # sorted_dims prints TARGET_ARGS's pane dims, one "WxH" per line, sorted —
@@ -7279,25 +7303,27 @@ attach_pty_client() {
 }
 
 # Acceptance 7, offline: a replacement whose DIAL fails must leave the mirror
-# live and the old identity advertised — no teardown, no killed session.
-# Under --test-local the dial is a fixed `tmux -L m2src -C attach-session`, so
-# the way to fail it deterministically is to make that exact command unable to
-# connect while the EXISTING control client — already connected, its fd long
-# past any path lookup — keeps working: rename the m2src socket file away.
+# live and the old identity advertised — no teardown, no killed session — and
+# a press after that failure must raise (and fail) again: replacer.done()
+# clears inFlight on every outcome, so the seam re-arms rather than latching.
+# A stuck in-flight seam would nack the second press identically, so the
+# witness is a SECOND "keeping the current connection" line in the log.
 #
-# A plain unlink would also break every OTHER $SRC command bats itself would
-# issue from here on: has-session, display-message and send-keys are all
-# brand-new client connections too, not a persistent one, so there would be
-# nothing left to assert against except $DST. Renaming instead of removing
-# keeps that door open — moved back before the end, the path resolves again
-# and normal $SRC introspection (and teardown's own kill-server) works.
+# The dial is failed with the outage file, never a moved-aside SRC socket:
+# attach-session is CMD_STARTSERVER, so a dial with the path vacated starts a
+# fresh server that unlinks the path before bind. A dial straddling a
+# move-back deletes the restored socket and orphans SRC, which holds bats'
+# fd 3 and hangs the suite until its timeout (#1285).
 #
-# Liveness while the socket is unreachable is proved without any $SRC command
-# after the move: a remote command scheduled with a `sleep` BEFORE the move
-# produces its output AFTER it, and that output still crosses the daemon's
-# already-open connection to reach the mirror pane — the same "sleep inside
-# one remote command" trick send_straddled_sixel uses to straddle a Feed
-# boundary, applied here to straddle the socket's unavailability instead.
+# The outage stays in force through the reads below, so no late dial can
+# succeed and change the identity under them.
+#
+# The liveness marker is split across printf's arguments: the typed command
+# line echoes in the pane, so an unsplit marker matched before any output.
+gxr7_failures() {
+	grep -c 'keeping the current connection' "$BATS_TEST_TMPDIR/gxr7.log" || true
+}
+
 @test "a replacement whose dial fails leaves the mirror live and the old identity advertised" {
 	$SRC new-session -d -s rem -x 100 -y 30
 	$DST new-session -d -s host-sess -x 100 -y 30
@@ -7316,32 +7342,48 @@ attach_pty_client() {
 	# exactly what raises a replacement on the next carousel press.
 	attach_pty_client foot
 
-	SOCK="$TMUX_TMPDIR/tmux-$(id -u)/m2src"
-	[ -S "$SOCK" ]
-
-	# Scheduled while $SRC can still reach the remote by path; its output
-	# lands on the daemon's still-open connection well after the move below.
-	marker="GXR7_LIVE_$$"
-	$SRC send-keys -t rem "sh -c 'sleep 2; printf \"$marker\\n\"'" Enter
-
-	mv "$SOCK" "$SOCK.bak"
+	# Every dial from here on yields no control output: the identity read
+	# fails and replaceConn keeps the current connection.
+	: >"$OG_DAEMON_TEST_OUTAGE_FILE"
 
 	run "$CTL" --sock "$sock" carousel "$pane"
 	press1_status="$status"
 	press1_output="$output"
 
-	sleep 0.3
-	# Repeatable, not a one-shot latch: replacer.done() clears inFlight on
-	# every outcome (replacer.go), so a second press while Advertised is
-	# still stale raises — and fails — again rather than getting stuck
-	# "in flight" forever.
-	run "$CTL" --sock "$sock" carousel "$pane"
-	press2_status="$status"
-	press2_output="$output"
+	failed1=no
+	deadline=$((SECONDS + 10))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$(gxr7_failures)" -ge 1 ] && {
+			failed1=yes
+			break
+		}
+		sleep 0.1
+	done
 
+	# A press after the failed replacement raises — and fails — again.
+	failed2=no
+	all_nacked=yes
+	if [ "$failed1" = yes ]; then
+		for _ in $(seq 1 10); do
+			run "$CTL" --sock "$sock" carousel "$pane"
+			if [ "$status" -eq 0 ] || [[ $output != *"press again"* ]]; then
+				all_nacked=no
+			fi
+			for _ in $(seq 1 20); do
+				[ "$(gxr7_failures)" -ge 2 ] && {
+					failed2=yes
+					break
+				}
+				sleep 0.1
+			done
+			[ "$failed2" = yes ] && break
+		done
+	fi
+
+	$SRC send-keys -t rem "printf '%s_%s\\n' GXR7 LIVE_$$" Enter
 	live=no
 	for _ in $(seq 1 40); do
-		$DST capture-pane -p -t host-sess:1.0 2>/dev/null | grep -q "$marker" && {
+		$DST capture-pane -p -t host-sess:1.0 2>/dev/null | grep -q "GXR7_LIVE_$$" && {
 			live=yes
 			break
 		}
@@ -7349,10 +7391,6 @@ attach_pty_client() {
 	done
 
 	new_transport="$(transport_child)"
-
-	# Restored before any further $SRC command — including teardown's own
-	# kill-server — needs the path back.
-	mv "$SOCK.bak" "$SOCK"
 	final_termname="$(control_termname)"
 	dst_alive_status=0
 	$DST has-session -t '=host-sess' || dst_alive_status=$?
@@ -7361,10 +7399,15 @@ attach_pty_client() {
 	wait "$daemon_pid" 2>/dev/null || true
 	tmux -L m2obs kill-server 2>/dev/null || true
 
+	if [ "$failed1" != yes ] || [ "$failed2" != yes ]; then
+		tail -40 "$BATS_TEST_TMPDIR/gxr7.log" >&3 2>/dev/null || true
+	fi
+
 	[ "$press1_status" -ne 0 ]
 	[[ $press1_output == *"press again"* ]]
-	[ "$press2_status" -ne 0 ]
-	[[ $press2_output == *"press again"* ]]
+	[ "$failed1" = yes ]
+	[ "$failed2" = yes ]
+	[ "$all_nacked" = yes ]
 	[ "$live" = yes ]
 	# The daemon's own control client to the remote never died or got
 	# replaced...
