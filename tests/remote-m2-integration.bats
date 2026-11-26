@@ -45,6 +45,8 @@ setup() {
 	unset AEYE_CELL_PX OG_RELAY_GRAPHICS
 	OG_TMUX_DIR="/tmp/og-m2-bats-$$"
 	export TMUX_TMPDIR="$OG_TMUX_DIR"
+	unset TMUX
+	OG_TEST_ISOLATED=1
 	export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
 	rm -rf "$OG_TMUX_DIR"
 	mkdir -p "$TMUX_TMPDIR"
@@ -139,6 +141,7 @@ reap_jobs() {
 
 # shellcheck disable=SC2086 # $SRC/$DST/$DST2 are "tmux -L name -f conf" command lines
 teardown() {
+	[[ -n ${OG_TEST_ISOLATED:-} ]] || return 0
 	local leaked leaked_tmux leaked_args i
 	reap_jobs
 	size_daemons_stop
