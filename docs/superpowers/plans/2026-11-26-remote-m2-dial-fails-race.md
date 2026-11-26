@@ -68,7 +68,7 @@ Gate: `shellcheck` via the lint build later; quick run: `bats --filter 'a replac
 After the existing `kill-server` lines and alongside the daemon tripwire (both
 computed before either fails; `rm -rf "$OG_TMUX_DIR"` still always runs; final
 status `[ -z "$leaked" ] && [ -z "$leaked_tmux" ]`):
-- bounded poll (≤ 30 × 0.1 s; normally one `ps` pass) for processes where
+- bounded poll (≤ 100 × 0.1 s, each kill-server's own 10 s bound; normally one `ps` pass) for processes where
   `ps -Aww -o pid=,args=` field 2 (argv0) is `tmux` or ends in `/tmux`, AND
   `index($0, ENVIRON["TEST_DIR"])` (`$BATS_TEST_TMPDIR`); pattern via ENVIRON,
   as the daemon tripwire. Covers SRC/DST/DST2 (started `-f $BATS_TEST_TMPDIR/*.conf`)

@@ -65,10 +65,13 @@ setup() {
 	# clients (#979).
 	DST2="tmux -L m2dst2 -f $DST_CONF"
 	OBS="tmux -L m2obs"
-	# src_sock is SRC's own listening socket path — the park tests' outage_start
-	# renames it aside so a reattach dial gets ENOENT instead of reconnecting to
-	# the still-live SRC server (see outage_start below). teardown() needs this
-	# set even when a test aborts before reaching outage_end.
+	# src_sock is SRC's own listening socket path. The park tests' outage_start
+	# renames it aside only so writes to SRC during the outage go through
+	# `tmux -S "$src_sock.away"` — the dial failure itself comes from
+	# OG_DAEMON_TEST_OUTAGE_FILE, since a moved socket alone lets a dial start a
+	# fresh server that deletes the restored path (#1285; see outage_start
+	# below). teardown() needs this set even when a test aborts before reaching
+	# outage_end.
 	src_sock="$TMUX_TMPDIR/tmux-$(id -u)/m2src"
 	# The park helpers' outage lever; see outage_start.
 	export OG_DAEMON_TEST_OUTAGE_FILE="$BATS_TEST_TMPDIR/outage"
@@ -158,8 +161,10 @@ teardown() {
 	# Twin tripwire (#1126) for scratch tmux servers: one that outlives kill-server
 	# (#1285: its socket unlinked) keeps fd 3 open and hangs the suite with no
 	# test named. argv0 must BE tmux — store paths like tmux-og-go-tools sit in
-	# daemon args. Polled: OBS's attach clients may still be exiting.
-	for ((i = 0; i < 30; i++)); do
+	# daemon args. Polled for up to 10s (each kill-server's own bound; normally
+	# one pass): a server still shutting down is not a leak, only one alive past
+	# that.
+	for ((i = 0; i < 100; i++)); do
 		leaked_tmux="$(ps -Aww -o pid=,args= | TEST_DIR="$BATS_TEST_TMPDIR" awk '$2 ~ /(^|\/)tmux$/ && index($0, ENVIRON["TEST_DIR"]) { printf "%s ", $1 }')"
 		[ -z "$leaked_tmux" ] && break
 		sleep 0.1

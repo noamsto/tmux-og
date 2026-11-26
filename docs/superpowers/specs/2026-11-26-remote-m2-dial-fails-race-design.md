@@ -81,7 +81,7 @@ C. Liveness after the failures: once both failures are logged, `send-keys` a
    (bounded poll). That output crosses the daemon's original connection after
    both failed dials.
 D. Teardown tripwire (defense-in-depth for invariant 2, generalising #1126's daemon
-   tripwire): after the `kill-server` calls, poll (bounded, ~3s, normal case one
+   tripwire): after the `kill-server` calls, poll (bounded, 10 s, normal case one
    `ps`) for processes whose args contain `tmux` and `$BATS_TEST_TMPDIR` (every
    scratch server in this file is started with `-f $BATS_TEST_TMPDIR/*.conf`, or
    in OBS's case a pane command containing it); survivors are `kill -9`ed, named
